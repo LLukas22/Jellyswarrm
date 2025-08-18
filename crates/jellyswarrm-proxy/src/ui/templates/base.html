@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="auto">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Jellyswarrm{% endblock %}</title>
+    
+    <!-- Pico CSS -->
+    <link rel="stylesheet" href="/resources/pico.min.css">
+    
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="/resources/fontawesome/css/all.min.css">
+    
+    <!-- HTMX -->
+    <script src="/resources/htmx.min.js"></script>
+    
+    {% block head %}{% endblock %}
+</head>
+<body>
+    {% block body %}{% endblock %}
+
+    <!-- HTMX Configuration -->
+    <script>
+        // Theme switcher
+        function toggleTheme() {
+            const html = document.documentElement;
+            const currentTheme = html.getAttribute('data-theme');
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+            html.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+        }
+
+        // Load saved theme
+        document.addEventListener('DOMContentLoaded', function() {
+            const savedTheme = localStorage.getItem('theme');
+            if (savedTheme) {
+                document.documentElement.setAttribute('data-theme', savedTheme);
+            }
+        });
+    </script>
+    
+    {% block scripts %}{% endblock %}
+</body>
+</html>

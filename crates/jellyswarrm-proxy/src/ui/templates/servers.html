@@ -1,0 +1,33 @@
+<div id="messages"></div>
+
+<header>
+    <h1>Server Management</h1>
+    <h3>Add, prioritize and monitor Jellyfin servers.</h3>
+</header>
+
+<section id="add-server" aria-labelledby="add-server-heading">
+    <h2 id="add-server-heading" style="margin-bottom:.5rem;">Add Server</h2>
+    <form hx-post="/ui/servers" hx-target="#server-list" hx-swap="innerHTML" hx-disabled-elt="this" hx-on::after-request="if(event.detail.successful) this.reset()">
+        <div class="grid" style="--pico-grid-gap:1rem;">
+            <label> Name
+                <input type="text" name="name" placeholder="e.g. Media Vault" autocomplete="off" required>
+            </label>
+            <label> URL
+                <input type="url" name="url" placeholder="http://192.168.0.10:8096" inputmode="url" required>
+            </label>
+            <label> Priority
+                <input type="number" name="priority" value="100" min="1" max="999" required>
+            </label>
+            <div style="display:flex; align-items:center; padding-top:1.5rem;">
+                <button type="submit">Add</button>
+            </div>
+        </div>
+    </form>
+    <p style="font-size:.8rem; opacity:.7; margin-top:.5rem;">Higher numbers imply higher importance in routing logic for e.g. styling.</p>
+</section>
+
+<hr />
+
+<section id="server-list" hx-get="/ui/servers/list" hx-trigger="load">
+    <p>Loading servers...</p>
+</section>

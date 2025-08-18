@@ -1,0 +1,82 @@
+{
+    "Name": "Jared Harris",
+    "ServerId": "0555e8a91bfc4189a2585ede39a52dc8",
+    "Id": "4489f6a0e2abc608b915830a0ce2e0ac",
+    "Etag": "1b9a1765f1e6c5b894eef0803d88f32d",
+    "DateCreated": "2025-06-05T15:19:33.0995621Z",
+    "CanDelete": false,
+    "CanDownload": false,
+    "SortName": "Jared Harris",
+    "PremiereDate": "1961-08-24T00:00:00.0000000Z",
+    "ExternalUrls": [
+        {
+            "Name": "IMDb",
+            "Url": "https://www.imdb.com/name/nm0364813"
+        },
+        {
+            "Name": "TheMovieDb",
+            "Url": "https://www.themoviedb.org/person/15440"
+        },
+        {
+            "Name": "TheTVDB",
+            "Url": "https://www.thetvdb.com/people/360332"
+        }
+    ],
+    "ProductionLocations": [
+        "London, England, UK"
+    ],
+    "Path": "/config/metadata/People/J/Jared Harris",
+    "EnableMediaSourceDisplay": true,
+    "ChannelId": null,
+    "Overview": "Jared Francis Harris (born August 24, 1961) is a British actor who has appeared in film, television, and theater. He is the son of the late Irish actor Richard Harris and the Welsh actress Elizabeth Rees-Williams.\n\nHarris was born in Hammersmith, London, in 1961. He studied drama and literature at Duke University in North Carolina, and then went on to train at the Royal Central School of Speech and Drama in London.\n\nHarris made his film debut in 1989 with a small role in the film The Rachel Papers. He went on to appear in a number of films, including The Last of the Mohicans (1992), Natural Born Killers (1994), Smoke (1995), Happiness (1998), and How to Kill Your Neighbor\u0027s Dog (2000).\n\nIn 2007, Harris began a recurring role as Lane Pryce in the AMC television series Mad Men. He was nominated for a Primetime Emmy Award for Outstanding Supporting Actor in a Drama Series for his performance.\n\nHarris has also had notable roles in television series such as Fringe, The Crown, and The Expanse. In 2019, he won the British Academy Television Award for Best Actor for his performance as Valery Legasov in the HBO miniseries Chernobyl.\n\nOn stage, Harris has appeared in productions of The Crucible, The Cherry Orchard, and The Homecoming. He has also directed several stage productions, including The Glass Menagerie and The Birthday Party.",
+    "Taglines": [],
+    "Genres": [],
+    "PlayAccess": "Full",
+    "RemoteTrailers": [],
+    "ProviderIds": {
+        "Tmdb": "15440",
+        "Tvdb": "360332",
+        "Imdb": "nm0364813"
+    },
+    "ParentId": null,
+    "Type": "Person",
+    "People": [],
+    "Studios": [],
+    "GenreItems": [],
+    "LocalTrailerCount": 0,
+    "UserData": {
+        "PlaybackPositionTicks": 0,
+        "PlayCount": 0,
+        "IsFavorite": false,
+        "Played": false,
+        "Key": "Person-Jared Harris",
+        "ItemId": "00000000000000000000000000000000"
+    },
+    "ChildCount": 7,
+    "SpecialFeatureCount": 0,
+    "DisplayPreferencesId": "b607178b0ac2f604a458d3d2363fdc83",
+    "Tags": [],
+    "PrimaryImageAspectRatio": 0.666,
+    "ImageTags": {
+        "Primary": "2d12c0bcb33d62f4247037e5de68160f"
+    },
+    "BackdropImageTags": [],
+    "ImageBlurHashes": {
+        "Primary": {
+            "2d12c0bcb33d62f4247037e5de68160f": "dxJ7]?og9^xtHqRjIoRjTKt7xZbHIpaytRjZIUaenhWV"
+        }
+    },
+    "LocationType": "FileSystem",
+    "MediaType": "Unknown",
+    "LockedFields": [],
+    "TrailerCount": 0,
+    "MovieCount": 0,
+    "SeriesCount": 1,
+    "ProgramCount": 0,
+    "EpisodeCount": 5,
+    "SongCount": 0,
+    "AlbumCount": 0,
+    "ArtistCount": 0,
+    "MusicVideoCount": 0,
+    "LockData": false
+}

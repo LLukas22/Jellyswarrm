@@ -1,0 +1,23 @@
+<div id="settings-messages"></div>
+<form hx-post="/ui/settings/save" hx-target="#settings-form" hx-swap="outerHTML" hx-disabled-elt="this">
+  <fieldset>
+    <label>Server ID
+      <input type="text" name="server_id" value="{{ server_id }}" disabled>
+    </label>
+    <label>Public Address
+      <input type="text" name="public_address" value="{{ public_address }}" required>
+    </label>
+    <label>Server Name
+      <input type="text" name="server_name" value="{{ server_name }}" required>
+    </label>
+    <label>Add Server Names to Media
+      <input type="checkbox" role="switch" name="include_server_name_in_media" value="true" {% if include_server_name_in_media %}checked{% endif %}>
+    </label>
+  </fieldset>
+  <div style="display:flex; gap:.5rem;">
+    <button type="submit">Save</button>
+    <button type="button" hx-get="/ui/settings/form" hx-target="#settings-form" class="secondary">Reset</button>
+    <button type="button" hx-post="/ui/settings/reload" hx-target="#settings-messages" class="secondary">Reload From Disk</button>
+  </div>
+  <p style="font-size:.75rem; opacity:.7; margin-top:.5rem;">Edits persist to TOML.</p>
+</form>

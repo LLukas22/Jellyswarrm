@@ -1,0 +1,20 @@
+# Rust build artifacts
+/target
+
+# Node modules (reinstalled inside image)
+/ui/node_modules
+
+# Git
+.git
+.gitignore
+
+# Local data & logs
+/logs
+/data
+*.log
+*.db
+
+# Editor/OS noise
+.DS_Store
+.vscode
+.idea

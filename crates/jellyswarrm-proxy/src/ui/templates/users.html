@@ -1,0 +1,31 @@
+<header>
+    <h1>User Management</h1>
+    <h3>Create users and map credentials to each server.</h3>
+    <h6>Warning: If a mapping is added to a user all existing sessions will be invalidated.</h6>
+</header>
+
+<hr />
+
+<section id="add-user" aria-labelledby="add-user-heading">
+    <h2 id="add-user-heading" style="margin-bottom:.5rem;">Add User</h2>
+    <form hx-post="/ui/users" hx-target="#user-list" hx-swap="innerHTML" hx-disabled-elt="this", hx-on::after-request="if(event.detail.successful) this.reset()">
+        <div class="grid" style="--pico-grid-gap:1rem;">
+            <label>Username
+                <input type="text" name="username" placeholder="e.g. alice" autocomplete="off" required>
+            </label>
+            <label>Password
+                <input type="password" name="password" placeholder="••••••" required>
+            </label>
+            <div style="display:flex; align-items:center; padding-top:1.5rem;">
+                <button type="submit">Add</button>
+            </div>
+        </div>
+    </form>
+</section>
+
+<hr />
+
+<h2 id="users-heading" style="margin-bottom:.5rem;">Users</h2>
+<section id="user-list" hx-get="/ui/users/list" hx-trigger="load">
+    <p>Loading users...</p>
+</section>

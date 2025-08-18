@@ -1,0 +1,764 @@
+{
+	"Items": [
+		{
+			"Name": "DOG & CHAINSAW",
+			"ServerId": "0555e8a91bfc4189a2585ede39a52dc8",
+			"Id": "4d03fa91f6365b7d6f21da42070b506c",
+			"CanDelete": true,
+			"HasSubtitles": true,
+			"Container": "mkv,webm",
+			"PremiereDate": "2022-10-12T00:00:00.0000000Z",
+			"OfficialRating": "TV-MA",
+			"ChannelId": null,
+			"Overview": "Denji is a teenager who lives his life as a Devil Hunter.\n\nAiming to pay off the debt he inherited from his father, he starts hunting devils for the yakuza with his buddy Pochita, a \"Chainsaw Devil\", while living a tragically poor life.\n\nJust when things seem like they couldn't get any worse, Denji gets betrayed and killed by the yakuza. As Denji starts passing out, he hears someone calling from inside his head...",
+			"CommunityRating": 7.25,
+			"RunTimeTicks": 15270250496,
+			"ProductionYear": 2022,
+			"IndexNumber": 1,
+			"ParentIndexNumber": 1,
+			"IsFolder": false,
+			"Type": "Episode",
+			"ParentLogoItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentBackdropItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentBackdropImageTags": [
+				"450e93012eb5f84dd187e51e9ccc00b0"
+			],
+			"UserData": {
+				"PlayedPercentage": 23.749760424362325,
+				"PlaybackPositionTicks": 3626647909,
+				"PlayCount": 2,
+				"IsFavorite": false,
+				"LastPlayedDate": "2024-10-15T14:29:10.287164Z",
+				"Played": false,
+				"Key": "397934001001",
+				"ItemId": "00000000000000000000000000000000"
+			},
+			"SeriesName": "Chainsaw Man",
+			"SeriesId": "d530a8428e87018e832e3d65b04775c5",
+			"SeasonId": "b7f6b36a38d8864f7b0e704c1108823a",
+			"PrimaryImageAspectRatio": 1.7777777777777777,
+			"SeriesPrimaryImageTag": "a88eeb71365d9ef18a68e1eeaa2d845e",
+			"SeasonName": "Season 1",
+			"VideoType": "VideoFile",
+			"ImageTags": {
+				"Primary": "b756a1325f06d0631203f79c9dfdb269"
+			},
+			"BackdropImageTags": [],
+			"ParentLogoImageTag": "8ca9220e416270ca60ef644f1ea1094d",
+			"ImageBlurHashes": {
+				"Primary": {
+					"b756a1325f06d0631203f79c9dfdb269": "W~K^+@xvM{bFX9og~ptRayoIj]of%Mozs:e-oLofxus.j[bIofay",
+					"a88eeb71365d9ef18a68e1eeaa2d845e": "dvIEU3nm-7xs}ni}wKn%-Ps,WCk8-js.bHsCxUX5jIo2"
+				},
+				"Logo": {
+					"8ca9220e416270ca60ef644f1ea1094d": "HJO:@Sxut74nofWB4n-;%M~qWBxuM{WBt7Rjt7t7"
+				},
+				"Thumb": {
+					"a2b37e353fdddbb88d64308edbec3f4e": "NPFr-X9ZMwjZbIV@~q9Fxts.jts:bbRPW;jZV@bF"
+				},
+				"Backdrop": {
+					"450e93012eb5f84dd187e51e9ccc00b0": "WLFr^t4nwHoz%N%2_401aKRiRjj@tRoLofxtWAtQ-=My9Fofx]xu"
+				}
+			},
+			"ParentThumbItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentThumbImageTag": "a2b37e353fdddbb88d64308edbec3f4e",
+			"LocationType": "FileSystem",
+			"MediaType": "Video"
+		},
+		{
+			"Name": "ARRIVAL IN TOKYO",
+			"ServerId": "0555e8a91bfc4189a2585ede39a52dc8",
+			"Id": "72ea8d462e2c1671fe4a90e6fd32f018",
+			"CanDelete": true,
+			"HasSubtitles": true,
+			"Container": "mkv,webm",
+			"PremiereDate": "2022-10-19T00:00:00.0000000Z",
+			"OfficialRating": "TV-MA",
+			"ChannelId": null,
+			"Overview": "After being taken into custody by Makima, one of the Public Safety Devil Hunters, Denji finds himself head over heels in love with her thanks to her suggestive insinuations.\n\nWishing to team up with Makima, Denji arrives at the Devil Hunters Headquarters in Tokyo, and gets introduced to Aki Hayakawa, a senior hunter that he was supposed to partner with. But then Hayakawa beats Denji up, and demands that he “quit this job”...",
+			"CommunityRating": 7.938,
+			"RunTimeTicks": 14370599936,
+			"ProductionYear": 2022,
+			"IndexNumber": 2,
+			"ParentIndexNumber": 1,
+			"IsFolder": false,
+			"Type": "Episode",
+			"ParentLogoItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentBackdropItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentBackdropImageTags": [
+				"450e93012eb5f84dd187e51e9ccc00b0"
+			],
+			"UserData": {
+				"PlaybackPositionTicks": 0,
+				"PlayCount": 0,
+				"IsFavorite": false,
+				"Played": false,
+				"Key": "397934001002",
+				"ItemId": "00000000000000000000000000000000"
+			},
+			"SeriesName": "Chainsaw Man",
+			"SeriesId": "d530a8428e87018e832e3d65b04775c5",
+			"SeasonId": "b7f6b36a38d8864f7b0e704c1108823a",
+			"PrimaryImageAspectRatio": 1.7777777777777777,
+			"SeriesPrimaryImageTag": "a88eeb71365d9ef18a68e1eeaa2d845e",
+			"SeasonName": "Season 1",
+			"VideoType": "VideoFile",
+			"ImageTags": {
+				"Primary": "073fe46cd68c3cb8ee0d144edb2f6ccd"
+			},
+			"BackdropImageTags": [],
+			"ParentLogoImageTag": "8ca9220e416270ca60ef644f1ea1094d",
+			"ImageBlurHashes": {
+				"Primary": {
+					"073fe46cd68c3cb8ee0d144edb2f6ccd": "WIB3.[WC01oftRRj~qof9FayofM{%Nj[IUs:M{M{?boMM{fjM{Rj",
+					"a88eeb71365d9ef18a68e1eeaa2d845e": "dvIEU3nm-7xs}ni}wKn%-Ps,WCk8-js.bHsCxUX5jIo2"
+				},
+				"Logo": {
+					"8ca9220e416270ca60ef644f1ea1094d": "HJO:@Sxut74nofWB4n-;%M~qWBxuM{WBt7Rjt7t7"
+				},
+				"Thumb": {
+					"a2b37e353fdddbb88d64308edbec3f4e": "NPFr-X9ZMwjZbIV@~q9Fxts.jts:bbRPW;jZV@bF"
+				},
+				"Backdrop": {
+					"450e93012eb5f84dd187e51e9ccc00b0": "WLFr^t4nwHoz%N%2_401aKRiRjj@tRoLofxtWAtQ-=My9Fofx]xu"
+				}
+			},
+			"ParentThumbItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentThumbImageTag": "a2b37e353fdddbb88d64308edbec3f4e",
+			"LocationType": "FileSystem",
+			"MediaType": "Video"
+		},
+		{
+			"Name": "MEOWY'S WHEREABOUTS",
+			"ServerId": "0555e8a91bfc4189a2585ede39a52dc8",
+			"Id": "eb8f0e3d6c6a038ff21416166759193c",
+			"CanDelete": true,
+			"HasSubtitles": true,
+			"Container": "mkv,webm",
+			"PremiereDate": "2022-10-26T00:00:00.0000000Z",
+			"OfficialRating": "TV-MA",
+			"ChannelId": null,
+			"Overview": "Denji decides that his new dream is \"to fondle some boobs.\"\n\nHis partner, Power the Blood Fiend, offers to let him feel her boobs only if he rescues her old pet cat Meowy from a devil.\n\nWith his dream in sight, Denji is all fired up and ready to go, until...",
+			"CommunityRating": 7.938,
+			"RunTimeTicks": 14369920000,
+			"ProductionYear": 2022,
+			"IndexNumber": 3,
+			"ParentIndexNumber": 1,
+			"IsFolder": false,
+			"Type": "Episode",
+			"ParentLogoItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentBackdropItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentBackdropImageTags": [
+				"450e93012eb5f84dd187e51e9ccc00b0"
+			],
+			"UserData": {
+				"PlaybackPositionTicks": 0,
+				"PlayCount": 0,
+				"IsFavorite": false,
+				"Played": false,
+				"Key": "397934001003",
+				"ItemId": "00000000000000000000000000000000"
+			},
+			"SeriesName": "Chainsaw Man",
+			"SeriesId": "d530a8428e87018e832e3d65b04775c5",
+			"SeasonId": "b7f6b36a38d8864f7b0e704c1108823a",
+			"PrimaryImageAspectRatio": 1.7777777777777777,
+			"SeriesPrimaryImageTag": "a88eeb71365d9ef18a68e1eeaa2d845e",
+			"SeasonName": "Season 1",
+			"VideoType": "VideoFile",
+			"ImageTags": {
+				"Primary": "e53fe47bcefc686229d75e211d5bfc4f"
+			},
+			"BackdropImageTags": [],
+			"ParentLogoImageTag": "8ca9220e416270ca60ef644f1ea1094d",
+			"ImageBlurHashes": {
+				"Primary": {
+					"e53fe47bcefc686229d75e211d5bfc4f": "WUGR|}~pMxM{%g?b-p%1bIS4M|M{IoWX%Mt7M|Rkxat7xuxtxuxu",
+					"a88eeb71365d9ef18a68e1eeaa2d845e": "dvIEU3nm-7xs}ni}wKn%-Ps,WCk8-js.bHsCxUX5jIo2"
+				},
+				"Logo": {
+					"8ca9220e416270ca60ef644f1ea1094d": "HJO:@Sxut74nofWB4n-;%M~qWBxuM{WBt7Rjt7t7"
+				},
+				"Thumb": {
+					"a2b37e353fdddbb88d64308edbec3f4e": "NPFr-X9ZMwjZbIV@~q9Fxts.jts:bbRPW;jZV@bF"
+				},
+				"Backdrop": {
+					"450e93012eb5f84dd187e51e9ccc00b0": "WLFr^t4nwHoz%N%2_401aKRiRjj@tRoLofxtWAtQ-=My9Fofx]xu"
+				}
+			},
+			"ParentThumbItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentThumbImageTag": "a2b37e353fdddbb88d64308edbec3f4e",
+			"LocationType": "FileSystem",
+			"MediaType": "Video"
+		},
+		{
+			"Name": "RESCUE",
+			"ServerId": "0555e8a91bfc4189a2585ede39a52dc8",
+			"Id": "fed8d8c1f66948f495a57a283ab72b7d",
+			"CanDelete": true,
+			"HasSubtitles": true,
+			"Container": "mkv,webm",
+			"PremiereDate": "2022-11-02T00:00:00.0000000Z",
+			"OfficialRating": "TV-MA",
+			"ChannelId": null,
+			"Overview": "After a fierce battle, Denji defeats the “Bat Devil” and rescues Power even after she had trapped him.\n\nHe says it is all for the sake of “touching Power’s boobs”.\n\nPower mocks his ridiculous motivation saying “that’s a pretty dumb reason”, but still agrees to let him fondle her boobs.\n\nAs Denji gets thrilled with the idea, he faces a sudden attack from out of nowhere...",
+			"CommunityRating": 7.857,
+			"RunTimeTicks": 14370599936,
+			"ProductionYear": 2022,
+			"IndexNumber": 4,
+			"ParentIndexNumber": 1,
+			"IsFolder": false,
+			"Type": "Episode",
+			"ParentLogoItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentBackdropItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentBackdropImageTags": [
+				"450e93012eb5f84dd187e51e9ccc00b0"
+			],
+			"UserData": {
+				"PlaybackPositionTicks": 0,
+				"PlayCount": 0,
+				"IsFavorite": false,
+				"Played": false,
+				"Key": "397934001004",
+				"ItemId": "00000000000000000000000000000000"
+			},
+			"SeriesName": "Chainsaw Man",
+			"SeriesId": "d530a8428e87018e832e3d65b04775c5",
+			"SeasonId": "b7f6b36a38d8864f7b0e704c1108823a",
+			"PrimaryImageAspectRatio": 1.7777777777777777,
+			"SeriesPrimaryImageTag": "a88eeb71365d9ef18a68e1eeaa2d845e",
+			"SeasonName": "Season 1",
+			"VideoType": "VideoFile",
+			"ImageTags": {
+				"Primary": "fa4c444639f8dceaa5fabe0428a815c7"
+			},
+			"BackdropImageTags": [],
+			"ParentLogoImageTag": "8ca9220e416270ca60ef644f1ea1094d",
+			"ImageBlurHashes": {
+				"Primary": {
+					"fa4c444639f8dceaa5fabe0428a815c7": "WEE33g%N~q%M%Mo#_3xuR*ayIoxv-;jZD%NG%2of-;xuWBM{s:j[",
+					"a88eeb71365d9ef18a68e1eeaa2d845e": "dvIEU3nm-7xs}ni}wKn%-Ps,WCk8-js.bHsCxUX5jIo2"
+				},
+				"Logo": {
+					"8ca9220e416270ca60ef644f1ea1094d": "HJO:@Sxut74nofWB4n-;%M~qWBxuM{WBt7Rjt7t7"
+				},
+				"Thumb": {
+					"a2b37e353fdddbb88d64308edbec3f4e": "NPFr-X9ZMwjZbIV@~q9Fxts.jts:bbRPW;jZV@bF"
+				},
+				"Backdrop": {
+					"450e93012eb5f84dd187e51e9ccc00b0": "WLFr^t4nwHoz%N%2_401aKRiRjj@tRoLofxtWAtQ-=My9Fofx]xu"
+				}
+			},
+			"ParentThumbItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentThumbImageTag": "a2b37e353fdddbb88d64308edbec3f4e",
+			"LocationType": "FileSystem",
+			"MediaType": "Video"
+		},
+		{
+			"Name": "GUN DEVIL",
+			"ServerId": "0555e8a91bfc4189a2585ede39a52dc8",
+			"Id": "3397df3329573781c04a6fe6ace76f76",
+			"CanDelete": true,
+			"HasSubtitles": true,
+			"Container": "mkv,webm",
+			"PremiereDate": "2022-11-09T00:00:00.0000000Z",
+			"OfficialRating": "TV-MA",
+			"ChannelId": null,
+			"Overview": "Aki Hayakawa, Denji, and Power start living together.\n\nDenji finally fulfills his dream of touching Power’s boobs, but is shocked when things do not turn out the way he expected.  As Denji realizes that chasing his dream was more fun than achieving it, Makima approaches him and says, \"If you can kill the Gun Devil, I’ll grant you one wish.”",
+			"CommunityRating": 7.538,
+			"RunTimeTicks": 14369920000,
+			"ProductionYear": 2022,
+			"IndexNumber": 5,
+			"ParentIndexNumber": 1,
+			"IsFolder": false,
+			"Type": "Episode",
+			"ParentLogoItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentBackdropItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentBackdropImageTags": [
+				"450e93012eb5f84dd187e51e9ccc00b0"
+			],
+			"UserData": {
+				"PlaybackPositionTicks": 0,
+				"PlayCount": 0,
+				"IsFavorite": false,
+				"Played": false,
+				"Key": "397934001005",
+				"ItemId": "00000000000000000000000000000000"
+			},
+			"SeriesName": "Chainsaw Man",
+			"SeriesId": "d530a8428e87018e832e3d65b04775c5",
+			"SeasonId": "b7f6b36a38d8864f7b0e704c1108823a",
+			"PrimaryImageAspectRatio": 1.7777777777777777,
+			"SeriesPrimaryImageTag": "a88eeb71365d9ef18a68e1eeaa2d845e",
+			"SeasonName": "Season 1",
+			"VideoType": "VideoFile",
+			"ImageTags": {
+				"Primary": "d08a3e8c62f1d8a909bea2a4c9393a28"
+			},
+			"BackdropImageTags": [],
+			"ParentLogoImageTag": "8ca9220e416270ca60ef644f1ea1094d",
+			"ImageBlurHashes": {
+				"Primary": {
+					"d08a3e8c62f1d8a909bea2a4c9393a28": "WSIzFyt3I:WBNGxF}?NaNGoKoLn%M|oyofR+afs:$%s:ofWVWCj[",
+					"a88eeb71365d9ef18a68e1eeaa2d845e": "dvIEU3nm-7xs}ni}wKn%-Ps,WCk8-js.bHsCxUX5jIo2"
+				},
+				"Logo": {
+					"8ca9220e416270ca60ef644f1ea1094d": "HJO:@Sxut74nofWB4n-;%M~qWBxuM{WBt7Rjt7t7"
+				},
+				"Thumb": {
+					"a2b37e353fdddbb88d64308edbec3f4e": "NPFr-X9ZMwjZbIV@~q9Fxts.jts:bbRPW;jZV@bF"
+				},
+				"Backdrop": {
+					"450e93012eb5f84dd187e51e9ccc00b0": "WLFr^t4nwHoz%N%2_401aKRiRjj@tRoLofxtWAtQ-=My9Fofx]xu"
+				}
+			},
+			"ParentThumbItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentThumbImageTag": "a2b37e353fdddbb88d64308edbec3f4e",
+			"LocationType": "FileSystem",
+			"MediaType": "Video"
+		},
+		{
+			"Name": "KILL DENJI",
+			"ServerId": "0555e8a91bfc4189a2585ede39a52dc8",
+			"Id": "7c619fe95e7dad05193f31ac6dd8e6e5",
+			"CanDelete": true,
+			"HasSubtitles": true,
+			"Container": "mkv,webm",
+			"PremiereDate": "2022-11-16T00:00:00.0000000Z",
+			"OfficialRating": "TV-MA",
+			"ChannelId": null,
+			"Overview": "Denji and Tokyo Special Division 4 members enter a hotel to collect a piece of the Gun Devil. However, they end up being trapped on the 8th floor due to the devil’s extraordinary power.\n\nWith the members being cornered on the endless 8th floor with seemingly no way to escape, the devil makes them an offer: “If you let me eat Denji, I will let all of the other devil hunters leave in one piece.”",
+			"CommunityRating": 7.615,
+			"RunTimeTicks": 14369599488,
+			"ProductionYear": 2022,
+			"IndexNumber": 6,
+			"ParentIndexNumber": 1,
+			"IsFolder": false,
+			"Type": "Episode",
+			"ParentLogoItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentBackdropItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentBackdropImageTags": [
+				"450e93012eb5f84dd187e51e9ccc00b0"
+			],
+			"UserData": {
+				"PlaybackPositionTicks": 0,
+				"PlayCount": 0,
+				"IsFavorite": false,
+				"Played": false,
+				"Key": "397934001006",
+				"ItemId": "00000000000000000000000000000000"
+			},
+			"SeriesName": "Chainsaw Man",
+			"SeriesId": "d530a8428e87018e832e3d65b04775c5",
+			"SeasonId": "b7f6b36a38d8864f7b0e704c1108823a",
+			"PrimaryImageAspectRatio": 1.7777777777777777,
+			"SeriesPrimaryImageTag": "a88eeb71365d9ef18a68e1eeaa2d845e",
+			"SeasonName": "Season 1",
+			"VideoType": "VideoFile",
+			"ImageTags": {
+				"Primary": "513aa49e983817ea9b3d392842a692d6"
+			},
+			"BackdropImageTags": [],
+			"ParentLogoImageTag": "8ca9220e416270ca60ef644f1ea1094d",
+			"ImageBlurHashes": {
+				"Primary": {
+					"513aa49e983817ea9b3d392842a692d6": "WZG*4oof0fs.$$R%ayR*oKt6xaa#9aayxtoeoKR*WCj[xZoJI;WV",
+					"a88eeb71365d9ef18a68e1eeaa2d845e": "dvIEU3nm-7xs}ni}wKn%-Ps,WCk8-js.bHsCxUX5jIo2"
+				},
+				"Logo": {
+					"8ca9220e416270ca60ef644f1ea1094d": "HJO:@Sxut74nofWB4n-;%M~qWBxuM{WBt7Rjt7t7"
+				},
+				"Thumb": {
+					"a2b37e353fdddbb88d64308edbec3f4e": "NPFr-X9ZMwjZbIV@~q9Fxts.jts:bbRPW;jZV@bF"
+				},
+				"Backdrop": {
+					"450e93012eb5f84dd187e51e9ccc00b0": "WLFr^t4nwHoz%N%2_401aKRiRjj@tRoLofxtWAtQ-=My9Fofx]xu"
+				}
+			},
+			"ParentThumbItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentThumbImageTag": "a2b37e353fdddbb88d64308edbec3f4e",
+			"LocationType": "FileSystem",
+			"MediaType": "Video"
+		},
+		{
+			"Name": "THE TASTE OF A KISS",
+			"ServerId": "0555e8a91bfc4189a2585ede39a52dc8",
+			"Id": "33f299181cbd3a2128ddd4b20ddb424b",
+			"CanDelete": true,
+			"HasSubtitles": true,
+			"Container": "mkv,webm",
+			"PremiereDate": "2022-11-23T00:00:00.0000000Z",
+			"OfficialRating": "TV-MA",
+			"ChannelId": null,
+			"Overview": "Aki gets stabbed by Kobeni while protecting Denji. Seeing this, Denji jumps inside the “Eternity Devil” and starts attacking it. He fails to kill the “Eternity Devil” and his chainsaw power ends up fading after losing too much blood. But then, he manages to restore his power after eating the devil’s flesh and drinking its blood, and begins to fight back.\n\nAs Himeno watches Denji, she remembers the saying, “The Devil Hunters that devils fear are the ones with a few screws loose...”",
+			"CommunityRating": 7.385,
+			"RunTimeTicks": 14370599936,
+			"ProductionYear": 2022,
+			"IndexNumber": 7,
+			"ParentIndexNumber": 1,
+			"IsFolder": false,
+			"Type": "Episode",
+			"ParentLogoItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentBackdropItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentBackdropImageTags": [
+				"450e93012eb5f84dd187e51e9ccc00b0"
+			],
+			"UserData": {
+				"PlaybackPositionTicks": 0,
+				"PlayCount": 0,
+				"IsFavorite": false,
+				"Played": false,
+				"Key": "397934001007",
+				"ItemId": "00000000000000000000000000000000"
+			},
+			"SeriesName": "Chainsaw Man",
+			"SeriesId": "d530a8428e87018e832e3d65b04775c5",
+			"SeasonId": "b7f6b36a38d8864f7b0e704c1108823a",
+			"PrimaryImageAspectRatio": 1.7777777777777777,
+			"SeriesPrimaryImageTag": "a88eeb71365d9ef18a68e1eeaa2d845e",
+			"SeasonName": "Season 1",
+			"VideoType": "VideoFile",
+			"ImageTags": {
+				"Primary": "73ef014d62eae3e064ed1c33e76fae19"
+			},
+			"BackdropImageTags": [],
+			"ParentLogoImageTag": "8ca9220e416270ca60ef644f1ea1094d",
+			"ImageBlurHashes": {
+				"Primary": {
+					"73ef014d62eae3e064ed1c33e76fae19": "WTLO1l?GGb.TVr-:.8kDSP%MVsVsM{oexZV@bct7~qWVt7W=Ioxa",
+					"a88eeb71365d9ef18a68e1eeaa2d845e": "dvIEU3nm-7xs}ni}wKn%-Ps,WCk8-js.bHsCxUX5jIo2"
+				},
+				"Logo": {
+					"8ca9220e416270ca60ef644f1ea1094d": "HJO:@Sxut74nofWB4n-;%M~qWBxuM{WBt7Rjt7t7"
+				},
+				"Thumb": {
+					"a2b37e353fdddbb88d64308edbec3f4e": "NPFr-X9ZMwjZbIV@~q9Fxts.jts:bbRPW;jZV@bF"
+				},
+				"Backdrop": {
+					"450e93012eb5f84dd187e51e9ccc00b0": "WLFr^t4nwHoz%N%2_401aKRiRjj@tRoLofxtWAtQ-=My9Fofx]xu"
+				}
+			},
+			"ParentThumbItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentThumbImageTag": "a2b37e353fdddbb88d64308edbec3f4e",
+			"LocationType": "FileSystem",
+			"MediaType": "Video"
+		},
+		{
+			"Name": "GUNFIRE",
+			"ServerId": "0555e8a91bfc4189a2585ede39a52dc8",
+			"Id": "f1f7b15334cfca68e7169c98ff4fab24",
+			"CanDelete": true,
+			"HasSubtitles": true,
+			"Container": "mkv,webm",
+			"PremiereDate": "2022-11-30T00:00:00.0000000Z",
+			"OfficialRating": "TV-MA",
+			"ChannelId": null,
+			"Overview": "Denji experiences his first, yet devastating, kiss.\n\nAn intoxicated Denji is taken to Himeno's house, where she starts seducing him. Feeling torn between Makima, whom he admires, and Himeno, who is standing in front of him, he decides to fall into temptation. However, Denji then finds something in his pocket: The Chupa Chups lollipop that Makima gave him.",
+			"CommunityRating": 7.4,
+			"RunTimeTicks": 14370239488,
+			"ProductionYear": 2022,
+			"IndexNumber": 8,
+			"ParentIndexNumber": 1,
+			"IsFolder": false,
+			"Type": "Episode",
+			"ParentLogoItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentBackdropItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentBackdropImageTags": [
+				"450e93012eb5f84dd187e51e9ccc00b0"
+			],
+			"UserData": {
+				"PlaybackPositionTicks": 0,
+				"PlayCount": 0,
+				"IsFavorite": false,
+				"Played": false,
+				"Key": "397934001008",
+				"ItemId": "00000000000000000000000000000000"
+			},
+			"SeriesName": "Chainsaw Man",
+			"SeriesId": "d530a8428e87018e832e3d65b04775c5",
+			"SeasonId": "b7f6b36a38d8864f7b0e704c1108823a",
+			"PrimaryImageAspectRatio": 1.7777777777777777,
+			"SeriesPrimaryImageTag": "a88eeb71365d9ef18a68e1eeaa2d845e",
+			"SeasonName": "Season 1",
+			"VideoType": "VideoFile",
+			"ImageTags": {
+				"Primary": "c2130c4f687a9c7763405530750b317c"
+			},
+			"BackdropImageTags": [],
+			"ParentLogoImageTag": "8ca9220e416270ca60ef644f1ea1094d",
+			"ImageBlurHashes": {
+				"Primary": {
+					"c2130c4f687a9c7763405530750b317c": "WHD9YTtlI[tSNHt7~pxut8xuW=W;ozxu%M%Lt7oe-;%Mt8t7ofof",
+					"a88eeb71365d9ef18a68e1eeaa2d845e": "dvIEU3nm-7xs}ni}wKn%-Ps,WCk8-js.bHsCxUX5jIo2"
+				},
+				"Logo": {
+					"8ca9220e416270ca60ef644f1ea1094d": "HJO:@Sxut74nofWB4n-;%M~qWBxuM{WBt7Rjt7t7"
+				},
+				"Thumb": {
+					"a2b37e353fdddbb88d64308edbec3f4e": "NPFr-X9ZMwjZbIV@~q9Fxts.jts:bbRPW;jZV@bF"
+				},
+				"Backdrop": {
+					"450e93012eb5f84dd187e51e9ccc00b0": "WLFr^t4nwHoz%N%2_401aKRiRjj@tRoLofxtWAtQ-=My9Fofx]xu"
+				}
+			},
+			"ParentThumbItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentThumbImageTag": "a2b37e353fdddbb88d64308edbec3f4e",
+			"LocationType": "FileSystem",
+			"MediaType": "Video"
+		},
+		{
+			"Name": "FROM KYOTO",
+			"ServerId": "0555e8a91bfc4189a2585ede39a52dc8",
+			"Id": "b2cc878d5527f239f3f7a6a0ea3812d9",
+			"CanDelete": true,
+			"HasSubtitles": true,
+			"Container": "mkv,webm",
+			"PremiereDate": "2022-12-07T00:00:00.0000000Z",
+			"OfficialRating": "TV-MA",
+			"ChannelId": null,
+			"Overview": "A fierce battle unfolds between Denji and the menacing Samurai Sword. But even after Denji takes one of Samurai Sword's companions hostage, Samurai Sword slashes through them both until Denji is captured. Meanwhile, after seemingly being killed, Makima turns out to be alive. She sets out to rescue Denji with the help of Public Safety Devil Hunters from Kyoto, Kurose and Tendo.",
+			"CommunityRating": 7.714,
+			"RunTimeTicks": 14371200000,
+			"ProductionYear": 2022,
+			"IndexNumber": 9,
+			"ParentIndexNumber": 1,
+			"IsFolder": false,
+			"Type": "Episode",
+			"ParentLogoItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentBackdropItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentBackdropImageTags": [
+				"450e93012eb5f84dd187e51e9ccc00b0"
+			],
+			"UserData": {
+				"PlaybackPositionTicks": 0,
+				"PlayCount": 0,
+				"IsFavorite": false,
+				"Played": false,
+				"Key": "397934001009",
+				"ItemId": "00000000000000000000000000000000"
+			},
+			"SeriesName": "Chainsaw Man",
+			"SeriesId": "d530a8428e87018e832e3d65b04775c5",
+			"SeasonId": "b7f6b36a38d8864f7b0e704c1108823a",
+			"PrimaryImageAspectRatio": 1.7777777777777777,
+			"SeriesPrimaryImageTag": "a88eeb71365d9ef18a68e1eeaa2d845e",
+			"SeasonName": "Season 1",
+			"VideoType": "VideoFile",
+			"ImageTags": {
+				"Primary": "ac9a6c1f4e808eac403c10c24f0e8f00"
+			},
+			"BackdropImageTags": [],
+			"ParentLogoImageTag": "8ca9220e416270ca60ef644f1ea1094d",
+			"ImageBlurHashes": {
+				"Primary": {
+					"ac9a6c1f4e808eac403c10c24f0e8f00": "WfGu,p-;-=?bt7WB_4xaxux]RiWBxvM{ogoLIUWB%Moft7M{j[kC",
+					"a88eeb71365d9ef18a68e1eeaa2d845e": "dvIEU3nm-7xs}ni}wKn%-Ps,WCk8-js.bHsCxUX5jIo2"
+				},
+				"Logo": {
+					"8ca9220e416270ca60ef644f1ea1094d": "HJO:@Sxut74nofWB4n-;%M~qWBxuM{WBt7Rjt7t7"
+				},
+				"Thumb": {
+					"a2b37e353fdddbb88d64308edbec3f4e": "NPFr-X9ZMwjZbIV@~q9Fxts.jts:bbRPW;jZV@bF"
+				},
+				"Backdrop": {
+					"450e93012eb5f84dd187e51e9ccc00b0": "WLFr^t4nwHoz%N%2_401aKRiRjj@tRoLofxtWAtQ-=My9Fofx]xu"
+				}
+			},
+			"ParentThumbItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentThumbImageTag": "a2b37e353fdddbb88d64308edbec3f4e",
+			"LocationType": "FileSystem",
+			"MediaType": "Video"
+		},
+		{
+			"Name": "BRUISED & BATTERED",
+			"ServerId": "0555e8a91bfc4189a2585ede39a52dc8",
+			"Id": "489519627711cbe20bfe1b78f90c3968",
+			"CanDelete": true,
+			"HasSubtitles": true,
+			"Container": "mkv,webm",
+			"PremiereDate": "2022-12-14T00:00:00.0000000Z",
+			"OfficialRating": "TV-MA",
+			"ChannelId": null,
+			"Overview": "Samurai Sword's vicious attack resulted in many lost personnel for Public Safety Devil Extermination Division 4.\n\nAki Hayakawa wakes up in a hospital bed, unable to accept the reality of losing Himeno. Kurose and Tendo then appear in front of Hayakawa, letting him know that they are now in charge of coaching him.\n\nMeanwhile, Makima introduces Denji and Power to a member of Public Safety who will act as their mentor in order to strengthen Division 4.",
+			"CommunityRating": 7.083,
+			"RunTimeTicks": 15270400000,
+			"ProductionYear": 2022,
+			"IndexNumber": 10,
+			"ParentIndexNumber": 1,
+			"IsFolder": false,
+			"Type": "Episode",
+			"ParentLogoItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentBackdropItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentBackdropImageTags": [
+				"450e93012eb5f84dd187e51e9ccc00b0"
+			],
+			"UserData": {
+				"PlaybackPositionTicks": 0,
+				"PlayCount": 0,
+				"IsFavorite": false,
+				"Played": false,
+				"Key": "397934001010",
+				"ItemId": "00000000000000000000000000000000"
+			},
+			"SeriesName": "Chainsaw Man",
+			"SeriesId": "d530a8428e87018e832e3d65b04775c5",
+			"SeasonId": "b7f6b36a38d8864f7b0e704c1108823a",
+			"PrimaryImageAspectRatio": 1.7777777777777777,
+			"SeriesPrimaryImageTag": "a88eeb71365d9ef18a68e1eeaa2d845e",
+			"SeasonName": "Season 1",
+			"VideoType": "VideoFile",
+			"ImageTags": {
+				"Primary": "867d0ee8c338df470876df6a719530b7"
+			},
+			"BackdropImageTags": [],
+			"ParentLogoImageTag": "8ca9220e416270ca60ef644f1ea1094d",
+			"ImageBlurHashes": {
+				"Primary": {
+					"867d0ee8c338df470876df6a719530b7": "WbDS:xWC-;t7o}W=_4xat7ofkXR*?cxuWBt7R-WW%hogWBkCR+WV",
+					"a88eeb71365d9ef18a68e1eeaa2d845e": "dvIEU3nm-7xs}ni}wKn%-Ps,WCk8-js.bHsCxUX5jIo2"
+				},
+				"Logo": {
+					"8ca9220e416270ca60ef644f1ea1094d": "HJO:@Sxut74nofWB4n-;%M~qWBxuM{WBt7Rjt7t7"
+				},
+				"Thumb": {
+					"a2b37e353fdddbb88d64308edbec3f4e": "NPFr-X9ZMwjZbIV@~q9Fxts.jts:bbRPW;jZV@bF"
+				},
+				"Backdrop": {
+					"450e93012eb5f84dd187e51e9ccc00b0": "WLFr^t4nwHoz%N%2_401aKRiRjj@tRoLofxtWAtQ-=My9Fofx]xu"
+				}
+			},
+			"ParentThumbItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentThumbImageTag": "a2b37e353fdddbb88d64308edbec3f4e",
+			"LocationType": "FileSystem",
+			"MediaType": "Video"
+		},
+		{
+			"Name": "MISSION START",
+			"ServerId": "0555e8a91bfc4189a2585ede39a52dc8",
+			"Id": "8755c9cad18eac40b86160efbb434b07",
+			"CanDelete": true,
+			"HasSubtitles": true,
+			"Container": "mkv,webm",
+			"PremiereDate": "2022-12-21T00:00:00.0000000Z",
+			"OfficialRating": "TV-MA",
+			"ChannelId": null,
+			"Overview": "Denji and Power complete their training with Kishibe, while Aki Hayakawa makes a new contract with the \"Future Devil\" through Kurose and Tendo.\n\nMeanwhile, Makima threatens the yakuza boss into revealing the names of all those who have made contracts with the \"Gun Devil,\" along with the location of Samurai Sword's hideout.\n\nThe time has finally come for Public Safety to begin their counterattack against Samurai Sword and his companions.",
+			"CommunityRating": 6.846,
+			"RunTimeTicks": 14370879488,
+			"ProductionYear": 2022,
+			"IndexNumber": 11,
+			"ParentIndexNumber": 1,
+			"IsFolder": false,
+			"Type": "Episode",
+			"ParentLogoItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentBackdropItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentBackdropImageTags": [
+				"450e93012eb5f84dd187e51e9ccc00b0"
+			],
+			"UserData": {
+				"PlaybackPositionTicks": 0,
+				"PlayCount": 0,
+				"IsFavorite": false,
+				"Played": false,
+				"Key": "397934001011",
+				"ItemId": "00000000000000000000000000000000"
+			},
+			"SeriesName": "Chainsaw Man",
+			"SeriesId": "d530a8428e87018e832e3d65b04775c5",
+			"SeasonId": "b7f6b36a38d8864f7b0e704c1108823a",
+			"PrimaryImageAspectRatio": 1.7777777777777777,
+			"SeriesPrimaryImageTag": "a88eeb71365d9ef18a68e1eeaa2d845e",
+			"SeasonName": "Season 1",
+			"VideoType": "VideoFile",
+			"ImageTags": {
+				"Primary": "baaaf66c20c4caa669cda394d0c78651"
+			},
+			"BackdropImageTags": [],
+			"ParentLogoImageTag": "8ca9220e416270ca60ef644f1ea1094d",
+			"ImageBlurHashes": {
+				"Primary": {
+					"baaaf66c20c4caa669cda394d0c78651": "W44epDSi01%L?aE2-oR.EN%L-oIVVsbIo~oeniWrXTozn+RjWVtR",
+					"a88eeb71365d9ef18a68e1eeaa2d845e": "dvIEU3nm-7xs}ni}wKn%-Ps,WCk8-js.bHsCxUX5jIo2"
+				},
+				"Logo": {
+					"8ca9220e416270ca60ef644f1ea1094d": "HJO:@Sxut74nofWB4n-;%M~qWBxuM{WBt7Rjt7t7"
+				},
+				"Thumb": {
+					"a2b37e353fdddbb88d64308edbec3f4e": "NPFr-X9ZMwjZbIV@~q9Fxts.jts:bbRPW;jZV@bF"
+				},
+				"Backdrop": {
+					"450e93012eb5f84dd187e51e9ccc00b0": "WLFr^t4nwHoz%N%2_401aKRiRjj@tRoLofxtWAtQ-=My9Fofx]xu"
+				}
+			},
+			"ParentThumbItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentThumbImageTag": "a2b37e353fdddbb88d64308edbec3f4e",
+			"LocationType": "FileSystem",
+			"MediaType": "Video"
+		},
+		{
+			"Name": "KATANA VS. CHAINSAW",
+			"ServerId": "0555e8a91bfc4189a2585ede39a52dc8",
+			"Id": "f1f43e97cf6a9a2a5cd5809aa7eaef0d",
+			"CanDelete": true,
+			"HasSubtitles": true,
+			"Container": "mkv,webm",
+			"PremiereDate": "2022-12-28T00:00:00.0000000Z",
+			"OfficialRating": "TV-MA",
+			"ChannelId": null,
+			"Overview": "Sawatari sends the \"Ghost Devil\" after Hayakawa, and he's nearly killed before the \"Ghost Devil\" stops and hands him a cigarette with a message from Himeno. The words inside give Hayakawa the strength to kill the “Ghost Devil” and capture Sawatari.\n\nMeanwhile, Denji heads into his rematch with Samurai Sword. With a pull of the starter on his chest, he transforms into Chainsaw Man.\n\nAnd now, the last battle between Chainsaw Man and Samurai Sword has finally begun...",
+			"CommunityRating": 7.643,
+			"RunTimeTicks": 14370239488,
+			"ProductionYear": 2022,
+			"IndexNumber": 12,
+			"ParentIndexNumber": 1,
+			"IsFolder": false,
+			"Type": "Episode",
+			"ParentLogoItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentBackdropItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentBackdropImageTags": [
+				"450e93012eb5f84dd187e51e9ccc00b0"
+			],
+			"UserData": {
+				"PlaybackPositionTicks": 0,
+				"PlayCount": 0,
+				"IsFavorite": false,
+				"Played": false,
+				"Key": "397934001012",
+				"ItemId": "00000000000000000000000000000000"
+			},
+			"SeriesName": "Chainsaw Man",
+			"SeriesId": "d530a8428e87018e832e3d65b04775c5",
+			"SeasonId": "b7f6b36a38d8864f7b0e704c1108823a",
+			"PrimaryImageAspectRatio": 1.7777777777777777,
+			"SeriesPrimaryImageTag": "a88eeb71365d9ef18a68e1eeaa2d845e",
+			"SeasonName": "Season 1",
+			"VideoType": "VideoFile",
+			"ImageTags": {
+				"Primary": "78cd6a026a5f42626707061a781d2b47"
+			},
+			"BackdropImageTags": [],
+			"ParentLogoImageTag": "8ca9220e416270ca60ef644f1ea1094d",
+			"ImageBlurHashes": {
+				"Primary": {
+					"78cd6a026a5f42626707061a781d2b47": "WRM%GvxB0fD*o}%LD*D*SeInx]Rl4ooeofNGkDM{_2sli{e.tRog",
+					"a88eeb71365d9ef18a68e1eeaa2d845e": "dvIEU3nm-7xs}ni}wKn%-Ps,WCk8-js.bHsCxUX5jIo2"
+				},
+				"Logo": {
+					"8ca9220e416270ca60ef644f1ea1094d": "HJO:@Sxut74nofWB4n-;%M~qWBxuM{WBt7Rjt7t7"
+				},
+				"Thumb": {
+					"a2b37e353fdddbb88d64308edbec3f4e": "NPFr-X9ZMwjZbIV@~q9Fxts.jts:bbRPW;jZV@bF"
+				},
+				"Backdrop": {
+					"450e93012eb5f84dd187e51e9ccc00b0": "WLFr^t4nwHoz%N%2_401aKRiRjj@tRoLofxtWAtQ-=My9Fofx]xu"
+				}
+			},
+			"ParentThumbItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentThumbImageTag": "a2b37e353fdddbb88d64308edbec3f4e",
+			"LocationType": "FileSystem",
+			"MediaType": "Video"
+		}
+	],
+	"TotalRecordCount": 12,
+	"StartIndex": 0
+}

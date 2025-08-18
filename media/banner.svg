@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg id="banner-logo-jellyswarrm" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2560 512" version="1.1">
+  <defs>
+    <!-- Official Jellyfin gradient -->
+    <linearGradient id="jfGradient" x1="126.15" y1="219.32" x2="457.68" y2="410.73" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#aa5cc3"/>
+      <stop offset="100%" stop-color="#00a4dc"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Solid dark background -->
+  <rect width="2560" height="512" fill="#000b25" />
+
+  <!-- Centered JellySwarrm icon -->
+  <g transform="translate(1280,256) scale(0.85) translate(-256,-256)">
+    <!-- Swarm hexagon -->
+    <g stroke="url(#jfGradient)" stroke-width="8" fill="none">
+      <polygon points="
+        256,72
+        400,156
+        400,356
+        256,440
+        112,356
+        112,156
+      " />
+      <circle cx="256" cy="72" r="20" fill="url(#jfGradient)"/>
+      <circle cx="400" cy="156" r="20" fill="url(#jfGradient)"/>
+      <circle cx="400" cy="356" r="20" fill="url(#jfGradient)"/>
+      <circle cx="256" cy="440" r="20" fill="url(#jfGradient)"/>
+      <circle cx="112" cy="356" r="20" fill="url(#jfGradient)"/>
+      <circle cx="112" cy="156" r="20" fill="url(#jfGradient)"/>
+    </g>
+
+    <!-- Jellyfin logo inside swarm -->
+    <g transform="translate(256,240) scale(0.55) translate(-256,-256)">
+      <path d="M58.75 417.03c25.97 52.15 368.86 51.55 394.55 0S308.93 56.08 256.03 56.08c-52.92 0-223.25 308.8-197.28 360.95zm68.04-45.25c-17.02-34.17 94.6-236.5 129.26-236.5 34.67 0 146.1 202.7 129.26 236.5-16.83 33.8-241.5 34.17-258.52 0z"
+            fill="url(#jfGradient)"/>
+      <path d="M190.56 329.07c8.63 17.3 122.4 17.12 130.93 0 8.52-17.1-47.9-119.78-65.46-119.8-17.57 0-74.1 102.5-65.47 119.8z"
+            fill="url(#jfGradient)"/>
+    </g>
+  </g>
+</svg>

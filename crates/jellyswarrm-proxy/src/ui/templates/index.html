@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Jellyswarrm{% endblock %}
+
+{% block body %}
+    <!-- Navigation -->
+    <header class="container">
+        <nav>
+            <ul>
+                <li>
+                    <a href="/ui" style="display: flex; align-items: center; text-decoration: none;">
+                        <img src="/resources/icon.svg" alt="Jellyswarrm Logo" style="width: 120px; height: 120px; margin-right: 0.25rem;">
+                        <strong>Jellyswarrm</strong>
+                    </a>
+                </li>
+            </ul>
+            <ul>
+                <li>
+                    <a href="#" hx-get="/ui/servers" hx-target="#main-content" class="nav-link">
+                        <i class="fas fa-server" style="margin-right: 0.25rem;"></i>
+                        Servers
+                    </a>
+                </li>
+                <li>
+                    <a href="#" hx-get="/ui/users" hx-target="#main-content" class="nav-link">
+                        <i class="fas fa-users" style="margin-right: 0.25rem;"></i>
+                        Users
+                    </a>
+                </li>
+                <li>
+                    <a href="#" hx-get="/ui/settings" hx-target="#main-content" class="nav-link">
+                        <i class="fas fa-cog" style="margin-right: 0.25rem;"></i>
+                        Settings
+                    </a>
+                </li>
+                <li>
+                    <a href="/" target="_blank">
+                        <i class="fas fa-film" style="margin-right: 0.25rem;"></i>
+                        Web UI
+                    </a>
+                </li>
+                <li>
+                    <button onclick="location.href='/ui/logout';" class="outline" style="background-color: var(--pico-del-color); color: white; border: 1px solid var(--pico-del-color); outline-color: var(--pico-del-color); outline-style: solid; outline-width: 2px; padding: 0.25rem;">
+                        <i class="fas fa-sign-out-alt"></i>
+                    </button>
+                </li>
+                <li>
+                    <button onclick="toggleTheme()" aria-label="Toggle theme" class="secondary" style="padding: 0.25rem;">
+                        <i class="fas fa-adjust"></i>
+                    </button>
+                </li>
+            </ul>
+        </nav>
+    </header>
+
+    <!-- Main content -->
+    <main class="container">
+        <!-- Flash messages -->
+        <div id="messages" style="margin-bottom: 1rem;">
+            <!-- Messages will be dynamically loaded here via HTMX -->
+        </div>
+
+        <!-- Main content area -->
+        <section>
+            <div id="main-content" hx-get="/ui/servers" hx-trigger="load">
+                <div style="text-align: center; padding: 2rem;">
+                    <i class="fas fa-spinner fa-spin" style="font-size: 1.5rem; color: var(--pico-muted-color);"></i>
+                    <p style="margin-top: 1rem; color: var(--pico-muted-color);">Loading dashboard...</p>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="container" style="margin-top: 3rem;">
+        <hr>
+        <div style="text-align: center; padding: 1rem 0;">
+            <p style="margin: 0; color: var(--pico-muted-color); font-size: 0.85rem;">
+                <i class="fas fa-server" style="margin-right: 0.5rem;"></i>
+                <a href="https://github.com/LLukas22/Jellyswarrm">Jellyswarrm Proxy Server
+                {% match version %}{% when Some with (v) %} v{{ v }}{% when None %}{% endmatch %}
+                </a>
+            </p>
+            <p style="margin: 0.5rem 0 0 0; color: var(--pico-muted-color); font-size: 0.75rem;">
+                <i class="fas fa-heart" style="margin-right: 0.25rem; color: var(--pico-del-color);"></i>
+                Built with Rust & HTMX
+            </p>
+        </div>
+    </footer>
+{% endblock %}

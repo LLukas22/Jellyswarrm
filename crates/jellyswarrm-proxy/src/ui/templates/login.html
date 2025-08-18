@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+
+{% block title %}Login - Jellyswarrm{% endblock %}
+
+{% block body %}
+    <main class="container">
+        <!-- Header with logo and branding -->
+        <header style="text-align: center; padding: 2rem 0;">
+            <img src="/resources/icon.svg" alt="Jellyswarrm Logo" style="width: 200px; height: 200px; margin-bottom: 1rem;">
+            <h1 style="margin-top: 0;">Jellyswarrm</h1>
+            <h1 style="margin-top: 0; color: var(--pico-muted-color);">Admin Interface</h1>
+        </header>
+
+        <!-- Login card -->
+        <div style="max-width: 400px; margin: 0 auto;">
+            <!-- Flash messages -->
+            {% if !messages.is_empty() %}
+            <div style="margin-bottom: 1rem;">
+                {% for message in messages %}
+                <article style="background-color: var(--pico-del-background-color); border-left: 4px solid var(--pico-del-color); margin-bottom: 0.5rem;">
+                    <p style="margin: 0; padding: 0.75rem 1rem;">
+                        <i class="fas fa-exclamation-triangle" style="margin-right: 0.5rem;"></i>
+                        {{ message }}
+                    </p>
+                </article>
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            <!-- Login form -->
+            <article>
+                <header>
+                    <h3 style="margin-bottom: 0.5rem;">
+                        <i class="fas fa-sign-in-alt" style="margin-right: 0.5rem;"></i>
+                        Sign In
+                    </h3>
+                    <p style="margin: 0; color: var(--pico-muted-color); font-size: 0.9rem;">
+                        Please enter your credentials to access the admin interface.
+                    </p>
+                </header>
+
+                <form method="post">
+                    <div style="margin-bottom: 1rem;">
+                        <label for="username">
+                            <i class="fas fa-user" style="margin-right: 0.5rem;"></i>
+                            Username
+                        </label>
+                        <input 
+                            name="username" 
+                            id="username" 
+                            type="text"
+                            placeholder="Enter your username"
+                            autocomplete="username"
+                            required
+                        />
+                    </div>
+
+                    <div style="margin-bottom: 1.5rem;">
+                        <label for="password">
+                            <i class="fas fa-lock" style="margin-right: 0.5rem;"></i>
+                            Password
+                        </label>
+                        <div style="position: relative;">
+                            <input
+                                name="password"
+                                id="password"
+                                type="password"
+                                placeholder="Enter your password"
+                                autocomplete="current-password"
+                                required
+                                style="padding-right: 3rem;"
+                            />
+                            <button
+                                type="button"
+                                onclick="togglePassword()"
+                                style="position: absolute; right: 0.5rem; top: 0; bottom: 0; background: none; border: none; cursor: pointer; color: var(--pico-muted-color); padding: 0; width: 1.5rem; display: flex; align-items: center; justify-content: center;"
+                                aria-label="Toggle password visibility"
+                            >
+                                <i id="password-toggle-icon" class="fas fa-eye"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <button type="submit" style="width: 100%;">
+                        <i class="fas fa-sign-in-alt" style="margin-right: 0.5rem;"></i>
+                        Sign In
+                    </button>
+
+                    {% if let Some(next) = next %}
+                    <input type="hidden" name="next" value="{{next}}" />
+                    {% endif %}
+                </form>
+            </article>
+        </div>
+
+        <!-- Theme toggle -->
+        <div style="text-align: center; margin-top: 2rem;">
+            <button onclick="toggleTheme()" aria-label="Toggle theme" class="secondary outline">
+                <i class="fas fa-adjust" style="margin-right: 0.5rem;"></i>
+                Toggle Theme
+            </button>
+        </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="container" style="margin-top: 3rem;">
+        <hr>
+        <p style="text-align: center; color: var(--pico-muted-color); font-size: 0.85rem;">
+            <i class="fas fa-server" style="margin-right: 0.5rem;"></i>
+            Jellyswarrm Proxy Server
+        </p>
+    </footer>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    function togglePassword() {
+        const passwordInput = document.getElementById('password');
+        const toggleIcon = document.getElementById('password-toggle-icon');
+        
+        if (passwordInput.type === 'password') {
+            passwordInput.type = 'text';
+            toggleIcon.className = 'fas fa-eye-slash';
+        } else {
+            passwordInput.type = 'password';
+            toggleIcon.className = 'fas fa-eye';
+        }
+    }
+</script>
+{% endblock %}

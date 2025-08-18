@@ -1,0 +1,112 @@
+{
+	"Items": [
+		{
+			"Name": "Filme",
+			"ServerId": "0555e8a91bfc4189a2585ede39a52dc8",
+			"Id": "7a2175bccb1f1a94152cbd2b2bae8f6d",
+			"Etag": "a2ceddc6670c8cf6a77c215d1e20feff",
+			"DateCreated": "2024-03-07T15:54:15.1376334Z",
+			"CanDelete": false,
+			"CanDownload": false,
+			"SortName": "filme",
+			"ExternalUrls": [],
+			"Path": "/config/root/default/Filme",
+			"EnableMediaSourceDisplay": true,
+			"ChannelId": null,
+			"Taglines": [],
+			"Genres": [],
+			"PlayAccess": "Full",
+			"RemoteTrailers": [],
+			"ProviderIds": {},
+			"IsFolder": true,
+			"ParentId": "e9d5075a555c1cbc394eec4cef295274",
+			"Type": "CollectionFolder",
+			"People": [],
+			"Studios": [],
+			"GenreItems": [],
+			"LocalTrailerCount": 0,
+			"UserData": {
+				"PlaybackPositionTicks": 0,
+				"PlayCount": 0,
+				"IsFavorite": false,
+				"Played": false,
+				"Key": "7a2175bc-cb1f-1a94-152c-bd2b2bae8f6d",
+				"ItemId": "00000000000000000000000000000000"
+			},
+			"ChildCount": 6,
+			"SpecialFeatureCount": 0,
+			"DisplayPreferencesId": "7a2175bccb1f1a94152cbd2b2bae8f6d",
+			"Tags": [],
+			"PrimaryImageAspectRatio": 1.7777777777777777,
+			"CollectionType": "movies",
+			"ImageTags": {
+				"Primary": "cf88773a4957287197ed1460c299248f"
+			},
+			"BackdropImageTags": [],
+			"ImageBlurHashes": {
+				"Primary": {
+					"cf88773a4957287197ed1460c299248f": "WC6uO.kCDiaexvo#aee.WCa}V@ae4Tj[-;kCM{axbcWBoLoLkDWq"
+				}
+			},
+			"LocationType": "FileSystem",
+			"MediaType": "Unknown",
+			"LockedFields": [],
+			"LockData": false
+		},
+		{
+			"Name": "Serien",
+			"ServerId": "0555e8a91bfc4189a2585ede39a52dc8",
+			"Id": "43cfe12fe7d9d8d21251e0964e0232e2",
+			"Etag": "d83015cb967c50942003e5472e934788",
+			"DateCreated": "2024-03-07T16:01:14.3788766Z",
+			"CanDelete": false,
+			"CanDownload": false,
+			"SortName": "serien",
+			"ExternalUrls": [],
+			"Path": "/config/root/default/Serien",
+			"EnableMediaSourceDisplay": true,
+			"ChannelId": null,
+			"Taglines": [],
+			"Genres": [],
+			"PlayAccess": "Full",
+			"RemoteTrailers": [],
+			"ProviderIds": {},
+			"IsFolder": true,
+			"ParentId": "e9d5075a555c1cbc394eec4cef295274",
+			"Type": "CollectionFolder",
+			"People": [],
+			"Studios": [],
+			"GenreItems": [],
+			"LocalTrailerCount": 0,
+			"UserData": {
+				"PlaybackPositionTicks": 0,
+				"PlayCount": 0,
+				"IsFavorite": false,
+				"Played": false,
+				"Key": "43cfe12f-e7d9-d8d2-1251-e0964e0232e2",
+				"ItemId": "00000000000000000000000000000000"
+			},
+			"ChildCount": 4,
+			"SpecialFeatureCount": 0,
+			"DisplayPreferencesId": "43cfe12fe7d9d8d21251e0964e0232e2",
+			"Tags": [],
+			"PrimaryImageAspectRatio": 1.7777777777777777,
+			"CollectionType": "tvshows",
+			"ImageTags": {
+				"Primary": "98562456587cfd6d6eed5bf72068c414"
+			},
+			"BackdropImageTags": [],
+			"ImageBlurHashes": {
+				"Primary": {
+					"98562456587cfd6d6eed5bf72068c414": "W87K*jV?01axozW;x]V@bbkBV[WB00WB_3jbRPofW:WBoLogaejs"
+				}
+			},
+			"LocationType": "FileSystem",
+			"MediaType": "Unknown",
+			"LockedFields": [],
+			"LockData": false
+		}
+	],
+	"TotalRecordCount": 2,
+	"StartIndex": 0
+}

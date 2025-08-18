@@ -1,0 +1,68 @@
+{
+	"Items": [
+		{
+			"Name": "DOG & CHAINSAW",
+			"ServerId": "0555e8a91bfc4189a2585ede39a52dc8",
+			"Id": "4d03fa91f6365b7d6f21da42070b506c",
+			"HasSubtitles": true,
+			"Container": "mkv,webm",
+			"PremiereDate": "2022-10-12T00:00:00.0000000Z",
+			"OfficialRating": "TV-MA",
+			"ChannelId": null,
+			"CommunityRating": 7.25,
+			"RunTimeTicks": 15270250496,
+			"ProductionYear": 2022,
+			"IndexNumber": 1,
+			"ParentIndexNumber": 1,
+			"IsFolder": false,
+			"Type": "Episode",
+			"ParentLogoItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentBackdropItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentBackdropImageTags": [
+				"450e93012eb5f84dd187e51e9ccc00b0"
+			],
+			"UserData": {
+				"PlayedPercentage": 23.749760424362325,
+				"PlaybackPositionTicks": 3626647909,
+				"PlayCount": 2,
+				"IsFavorite": false,
+				"LastPlayedDate": "2024-10-15T14:29:10.287164Z",
+				"Played": false,
+				"Key": "397934001001",
+				"ItemId": "00000000000000000000000000000000"
+			},
+			"SeriesName": "Chainsaw Man",
+			"SeriesId": "d530a8428e87018e832e3d65b04775c5",
+			"SeasonId": "b7f6b36a38d8864f7b0e704c1108823a",
+			"SeriesPrimaryImageTag": "a88eeb71365d9ef18a68e1eeaa2d845e",
+			"SeasonName": "Season 1",
+			"VideoType": "VideoFile",
+			"ImageTags": {
+				"Primary": "b756a1325f06d0631203f79c9dfdb269"
+			},
+			"BackdropImageTags": [],
+			"ParentLogoImageTag": "8ca9220e416270ca60ef644f1ea1094d",
+			"ImageBlurHashes": {
+				"Primary": {
+					"b756a1325f06d0631203f79c9dfdb269": "W~K^+@xvM{bFX9og~ptRayoIj]of%Mozs:e-oLofxus.j[bIofay",
+					"a88eeb71365d9ef18a68e1eeaa2d845e": "dvIEU3nm-7xs}ni}wKn%-Ps,WCk8-js.bHsCxUX5jIo2"
+				},
+				"Logo": {
+					"8ca9220e416270ca60ef644f1ea1094d": "HJO:@Sxut74nofWB4n-;%M~qWBxuM{WBt7Rjt7t7"
+				},
+				"Thumb": {
+					"a2b37e353fdddbb88d64308edbec3f4e": "NPFr-X9ZMwjZbIV@~q9Fxts.jts:bbRPW;jZV@bF"
+				},
+				"Backdrop": {
+					"450e93012eb5f84dd187e51e9ccc00b0": "WLFr^t4nwHoz%N%2_401aKRiRjj@tRoLofxtWAtQ-=My9Fofx]xu"
+				}
+			},
+			"ParentThumbItemId": "d530a8428e87018e832e3d65b04775c5",
+			"ParentThumbImageTag": "a2b37e353fdddbb88d64308edbec3f4e",
+			"LocationType": "FileSystem",
+			"MediaType": "Video"
+		}
+	],
+	"TotalRecordCount": 1,
+	"StartIndex": 0
+}

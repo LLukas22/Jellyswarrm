@@ -1,0 +1,293 @@
+{
+	"Items": [
+		{
+			"Name": "Andor",
+			"ServerId": "0555e8a91bfc4189a2585ede39a52dc8",
+			"Id": "27839354c2bcbec5c0b34ea921fc00ec",
+			"PremiereDate": "2022-09-21T00:00:00.0000000Z",
+			"OfficialRating": "TV-14",
+			"ChannelId": null,
+			"CommunityRating": 8.258,
+			"RunTimeTicks": 0,
+			"ProductionYear": 2022,
+			"IsFolder": true,
+			"Type": "Series",
+			"UserData": {
+				"UnplayedItemCount": 24,
+				"PlaybackPositionTicks": 0,
+				"PlayCount": 0,
+				"IsFavorite": false,
+				"Played": false,
+				"Key": "393189",
+				"ItemId": "00000000000000000000000000000000"
+			},
+			"Status": "Ended",
+			"AirDays": [],
+			"PrimaryImageAspectRatio": 0.6666666666666666,
+			"ImageTags": {
+				"Primary": "29ef63192293b8b7248d88165691a290",
+				"Thumb": "b89cda1c2521a1e426bb217e8e0ccd9e"
+			},
+			"BackdropImageTags": [
+				"e71e70b8a902614acee4213f3f8640b6"
+			],
+			"ImageBlurHashes": {
+				"Backdrop": {
+					"e71e70b8a902614acee4213f3f8640b6": "WJBy$}V?E1xuM{t60gWXkAWVt7WBDhxuogM{xuf6~pWUR*ofM|of"
+				},
+				"Primary": {
+					"29ef63192293b8b7248d88165691a290": "dMDc2Nn~t6s.0fR,R*j]Q,xujtxt_Moet6a}9aRjWBM{"
+				},
+				"Thumb": {
+					"b89cda1c2521a1e426bb217e8e0ccd9e": "WVD*Ik=v-T-oou-U}s$%xYxZoexZMya$afM|W=R+M|WERkM|R-Rk"
+				}
+			},
+			"LocationType": "FileSystem",
+			"MediaType": "Unknown",
+			"EndDate": "2025-05-13T00:00:00.0000000Z"
+		},
+		{
+			"Name": "Arcane",
+			"ServerId": "0555e8a91bfc4189a2585ede39a52dc8",
+			"Id": "c841b6657e2ea916338f1b962ced667b",
+			"PremiereDate": "2021-11-06T00:00:00.0000000Z",
+			"OfficialRating": "TV-14",
+			"ChannelId": null,
+			"CommunityRating": 8.75,
+			"RunTimeTicks": 0,
+			"ProductionYear": 2021,
+			"IsFolder": true,
+			"Type": "Series",
+			"UserData": {
+				"UnplayedItemCount": 16,
+				"PlaybackPositionTicks": 0,
+				"PlayCount": 0,
+				"IsFavorite": false,
+				"Played": false,
+				"Key": "371028",
+				"ItemId": "00000000000000000000000000000000"
+			},
+			"Status": "Continuing",
+			"AirDays": [],
+			"PrimaryImageAspectRatio": 0.6666666666666666,
+			"ImageTags": {
+				"Primary": "65ec880bff491dd4c2ec162373c57c78",
+				"Thumb": "c798766f3e8baa3464d97576d7e49a5b"
+			},
+			"BackdropImageTags": [
+				"3bb169ad4dd9d04affec448033723f22"
+			],
+			"ImageBlurHashes": {
+				"Backdrop": {
+					"3bb169ad4dd9d04affec448033723f22": "WuKdoL-V~qtSNd%g?aIU%MbcR+x[t7ozofaeRjWBxtoLogofofkB"
+				},
+				"Primary": {
+					"65ec880bff491dd4c2ec162373c57c78": "d*KB2Z~q^+x]VsRPofozi^ofRkRioLs:kCofjbj?ofof"
+				},
+				"Thumb": {
+					"c798766f3e8baa3464d97576d7e49a5b": "WB8Dz@$+0KEL.6x@^*of9ZRj-:%2t2SdM|nS-WxbR*jZxZbaR-WB"
+				}
+			},
+			"LocationType": "FileSystem",
+			"MediaType": "Unknown",
+			"EndDate": "2021-11-20T00:00:00.0000000Z"
+		},
+		{
+			"Name": "Call of the Night",
+			"ServerId": "0555e8a91bfc4189a2585ede39a52dc8",
+			"Id": "62482a7cfdc7aa0af64e459b0d335a68",
+			"PremiereDate": "2022-07-08T00:00:00.0000000Z",
+			"OfficialRating": "TV-14",
+			"ChannelId": null,
+			"CommunityRating": 7.6,
+			"RunTimeTicks": 13800000000,
+			"ProductionYear": 2022,
+			"IsFolder": true,
+			"Type": "Series",
+			"UserData": {
+				"UnplayedItemCount": 3,
+				"PlaybackPositionTicks": 0,
+				"PlayCount": 0,
+				"IsFavorite": false,
+				"Played": false,
+				"Key": "412374",
+				"ItemId": "00000000000000000000000000000000"
+			},
+			"Status": "Continuing",
+			"AirTime": "23:30",
+			"AirDays": [
+				"Friday"
+			],
+			"PrimaryImageAspectRatio": 0.68,
+			"ImageTags": {
+				"Primary": "dc705370d676bdd1ae52c811b2d0fe2a",
+				"Banner": "a242fe99cc434c450667354f0042a9d9",
+				"Thumb": "a30b79e1f6711fa688fb7aedb18120c6"
+			},
+			"BackdropImageTags": [
+				"6b4639e932885e2aeaf4ffff193fb53c"
+			],
+			"ImageBlurHashes": {
+				"Backdrop": {
+					"6b4639e932885e2aeaf4ffff193fb53c": "WM9%^%jZ00kC-;RjxubHM|oJt7R*M{WBxut7RjRjs:WBRjt7xuR*"
+				},
+				"Primary": {
+					"dc705370d676bdd1ae52c811b2d0fe2a": "daFqky$+M_-X5MRpogkTRrNYW,WBxpxuaeRjRin,s;bZ"
+				},
+				"Banner": {
+					"a242fe99cc434c450667354f0042a9d9": "HOGkqxx#0LD,fdIWRPxtW-S5xaxsRoInWVWSNKt5"
+				},
+				"Thumb": {
+					"a30b79e1f6711fa688fb7aedb18120c6": "NKF5RU^nRi?IWH?I.8SvRk-pR+butQR}EKt8Roog"
+				}
+			},
+			"LocationType": "FileSystem",
+			"MediaType": "Unknown",
+			"EndDate": "2022-09-30T00:00:00.0000000Z"
+		},
+		{
+			"Name": "Chainsaw Man",
+			"ServerId": "0555e8a91bfc4189a2585ede39a52dc8",
+			"Id": "d530a8428e87018e832e3d65b04775c5",
+			"PremiereDate": "2022-10-12T00:00:00.0000000Z",
+			"OfficialRating": "TV-MA",
+			"ChannelId": null,
+			"CommunityRating": 8.6,
+			"RunTimeTicks": 14400000000,
+			"ProductionYear": 2022,
+			"IsFolder": true,
+			"Type": "Series",
+			"UserData": {
+				"UnplayedItemCount": 12,
+				"PlaybackPositionTicks": 0,
+				"PlayCount": 0,
+				"IsFavorite": false,
+				"Played": false,
+				"Key": "397934",
+				"ItemId": "00000000000000000000000000000000"
+			},
+			"Status": "Ended",
+			"AirDays": [],
+			"PrimaryImageAspectRatio": 0.68,
+			"ImageTags": {
+				"Primary": "a88eeb71365d9ef18a68e1eeaa2d845e",
+				"Banner": "a3b7ddf86cce5eaa73cfe327f3a07396",
+				"Thumb": "a2b37e353fdddbb88d64308edbec3f4e"
+			},
+			"BackdropImageTags": [
+				"450e93012eb5f84dd187e51e9ccc00b0"
+			],
+			"ImageBlurHashes": {
+				"Backdrop": {
+					"450e93012eb5f84dd187e51e9ccc00b0": "WLFr^t4nwHoz%N%2_401aKRiRjj@tRoLofxtWAtQ-=My9Fofx]xu"
+				},
+				"Primary": {
+					"a88eeb71365d9ef18a68e1eeaa2d845e": "dvIEU3nm-7xs}ni}wKn%-Ps,WCk8-js.bHsCxUX5jIo2"
+				},
+				"Banner": {
+					"a3b7ddf86cce5eaa73cfe327f3a07396": "HTF}K8*_XTK7Vr$%s:NHkC}@,nR*bvNGxZWCX8R*"
+				},
+				"Thumb": {
+					"a2b37e353fdddbb88d64308edbec3f4e": "NPFr-X9ZMwjZbIV@~q9Fxts.jts:bbRPW;jZV@bF"
+				}
+			},
+			"LocationType": "FileSystem",
+			"MediaType": "Unknown",
+			"EndDate": "2022-12-28T00:00:00.0000000Z"
+		},
+		{
+			"Name": "Chernobyl",
+			"ServerId": "0555e8a91bfc4189a2585ede39a52dc8",
+			"Id": "6c1a5d2cc4796a60ede9a973d4f20f68",
+			"PremiereDate": "2019-05-06T00:00:00.0000000Z",
+			"OfficialRating": "TV-MA",
+			"ChannelId": null,
+			"CommunityRating": 8.688,
+			"RunTimeTicks": 0,
+			"ProductionYear": 2019,
+			"IsFolder": true,
+			"Type": "Series",
+			"UserData": {
+				"UnplayedItemCount": 5,
+				"PlaybackPositionTicks": 0,
+				"PlayCount": 0,
+				"IsFavorite": false,
+				"Played": false,
+				"Key": "360893",
+				"ItemId": "00000000000000000000000000000000"
+			},
+			"Status": "Ended",
+			"AirDays": [],
+			"PrimaryImageAspectRatio": 0.6666666666666666,
+			"ImageTags": {
+				"Primary": "12dd999cebff9dc3024c69c1fb2564a6",
+				"Thumb": "e0f7854945b9241498198c6cae099ba0"
+			},
+			"BackdropImageTags": [
+				"f547cd50f1fec9200600ccd27938719a"
+			],
+			"ImageBlurHashes": {
+				"Backdrop": {
+					"f547cd50f1fec9200600ccd27938719a": "WSGT7,-;x[%fIUS2~qxuWBkCWpWpxuoLWBWBt6of.7t7bHayaeof"
+				},
+				"Primary": {
+					"12dd999cebff9dc3024c69c1fb2564a6": "dYJIRr_3oz%f~q%MM{WBM{R%ayWBbaWBoftQRjj[afoL"
+				},
+				"Thumb": {
+					"e0f7854945b9241498198c6cae099ba0": "WUG]y|.RNZM|-;t7~qj[RjWCs:xuR*M{kCt7afs:x[W.WVt7j[j["
+				}
+			},
+			"LocationType": "FileSystem",
+			"MediaType": "Unknown",
+			"EndDate": "2019-06-03T00:00:00.0000000Z"
+		},
+		{
+			"Name": "Dan Da Dan",
+			"ServerId": "0555e8a91bfc4189a2585ede39a52dc8",
+			"Id": "df5efad5776d4668d76462f1bb978895",
+			"PremiereDate": "2024-10-04T00:00:00.0000000Z",
+			"OfficialRating": "TV-MA",
+			"ChannelId": null,
+			"CommunityRating": 8.8,
+			"RunTimeTicks": 14400000000,
+			"ProductionYear": 2024,
+			"IsFolder": true,
+			"Type": "Series",
+			"UserData": {
+				"UnplayedItemCount": 15,
+				"PlaybackPositionTicks": 0,
+				"PlayCount": 0,
+				"IsFavorite": false,
+				"Played": false,
+				"Key": "432832",
+				"ItemId": "00000000000000000000000000000000"
+			},
+			"Status": "Continuing",
+			"AirDays": [],
+			"PrimaryImageAspectRatio": 0.6666666666666666,
+			"ImageTags": {
+				"Primary": "987fc0444005cbc8116b34ea8d4962e5",
+				"Thumb": "9647eeb194c44297beb8715db4944972"
+			},
+			"BackdropImageTags": [
+				"ffb9811514a46ab535c36ffb1a3ad059"
+			],
+			"ImageBlurHashes": {
+				"Backdrop": {
+					"ffb9811514a46ab535c36ffb1a3ad059": "WDD[;I~WJ:6*4oq^}V-pyDyEENNf+GM_x@NGo~%M?H$%r=InD%kB"
+				},
+				"Primary": {
+					"987fc0444005cbc8116b34ea8d4962e5": "dJA]y}s:0%V~YQkWRpVyIht5o|I]aBf8s;tREmNL#s%1"
+				},
+				"Thumb": {
+					"9647eeb194c44297beb8715db4944972": "WC9ih^~B-p=eI:Io}@={t7WCIpELTE-Ss+ACM|RjOlxVw]EgI;r?"
+				}
+			},
+			"LocationType": "FileSystem",
+			"MediaType": "Unknown",
+			"EndDate": "2024-12-20T00:00:00.0000000Z"
+		}
+	],
+	"TotalRecordCount": 30,
+	"StartIndex": 0
+}

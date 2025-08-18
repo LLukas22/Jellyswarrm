@@ -1,0 +1,63 @@
+[package]
+name = "jellyswarrm-proxy"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "A high-performance reverse proxy for combining multiple Jellyfin instances"
+
+[[bin]]
+name = "jellyswarrm-proxy"
+path = "src/main.rs"
+
+[dependencies]
+axum.workspace = true
+tokio.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
+tracing.workspace = true
+askama = { version = "0.12", features = ["with-axum"] }
+askama_axum = "0.4"
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+url.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+sqlx.workspace = true
+sha2.workspace = true
+hex.workspace = true
+chrono.workspace = true
+csv.workspace = true
+rand.workspace = true
+dashmap = "6.1.0"
+uuid = { version = "1.0", features = ["v4"] }
+anyhow = "1.0.98"
+serde_urlencoded = "0.7.1"
+indexmap = "2.10.0"
+regex = "1.11.1"
+rust-embed = "8"
+mime_guess = "2"
+percent-encoding = "2.3.1"
+config = "0.14"
+toml = "0.8"
+once_cell = "1.19"
+serde_default = "0.2.0"
+axum-login = "0.18.0"
+password-auth = "1.0.0"
+thiserror.workspace = true
+axum-messages = "0.8.0"
+tower-sessions = { version = "0.14.0", features = ["signed"] }
+tower-sessions-sqlx-store = { version = "0.15.0", features = ["sqlite"] }
+time = "0.3.41"
+base64 = "0.22.1"
+
+[dev-dependencies]
+tokio-test = "0.4.4"
+tempfile = "3.14.0"
+mockall = "0.13.1"
+
+[build-dependencies]
+fs_extra = "1.2"
