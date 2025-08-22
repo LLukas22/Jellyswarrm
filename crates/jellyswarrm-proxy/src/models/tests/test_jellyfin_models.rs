@@ -161,9 +161,7 @@ mod tests {
     #[test]
     fn test_media_items() {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
-        let file_path = format!(
-            "{manifest_dir}/src/models/tests/files/special_features.json"
-        );
+        let file_path = format!("{manifest_dir}/src/models/tests/files/special_features.json");
 
         let json_content =
             fs::read_to_string(file_path).expect("Failed to read special_features.json file");
