@@ -21,7 +21,7 @@
                         title="Sessions">{{ scount }}</span></strong>
 
                 <i class="fas fa-trash danger" style="margin-left:auto;" aria-label="Delete mapping"
-                    hx-delete="/ui/users/{{ uwm.user.id }}/mappings/{{ mapping.id }}" hx-target="#user-{{ uwm.user.id }}" hx-swap="outerHTML"
+                    hx-delete="/ui/users/{{ uwm.user.id }}/mappings/{{ mapping.id }}" hx-target="#user-{{ uwm.user.id }}" hx-swap="outerHTML settle:300ms"
                     hx-confirm="Delete mapping '{{ server.name }}' for user '{{ uwm.user.original_username }}'?"></i>
             </div>
             <span>Mapped User: <strong>{{ mapping.mapped_username }}</strong></span>
@@ -35,7 +35,7 @@
     {% if !uwm.available_servers.is_empty() %}
     <hr />
     <h4>Add server mapping:</h4>
-    <form hx-post="/ui/users/mappings" hx-target="#user-{{ uwm.user.id }}" hx-swap="outerHTML" hx-disabled-elt="this">
+    <form hx-post="/ui/users/mappings" hx-target="#user-{{ uwm.user.id }}" hx-swap="outerHTML settle:300ms" hx-disabled-elt="this">
         <input type="hidden" name="user_id" value="{{ uwm.user.id }}">
         <label class="visually-hidden" for="server-{{ uwm.user.id }}">Server</label>
         <select id="server-{{ uwm.user.id }}" name="server_url" required>
@@ -55,7 +55,7 @@
 
     <footer>
         <div aria-label="Reset sessions" class="danger" hx-delete="/ui/users/{{ uwm.user.id }}/sessions"
-            hx-target="#user-{{ uwm.user.id }}" hx-swap="outerHTML"
+            hx-target="#user-{{ uwm.user.id }}" hx-swap="outerHTML settle:300ms"
             hx-confirm="Reset all sessions for user '{{ uwm.user.original_username }}'?"><i class="fas fa-recycle"
                 style="margin-right: 0.25rem;"></i>Reset Sessions</div>
     </footer>
