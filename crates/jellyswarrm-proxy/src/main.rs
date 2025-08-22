@@ -360,14 +360,15 @@ async fn index_handler(
         }
     }
 }
+
 async fn proxy_handler(
     State(state): State<AppState>,
     req: Request,
 ) -> Result<Response<Body>, StatusCode> {
     // check if a resource was requested
     let path = req.uri().path();
-    let path = if path.starts_with('/') {
-        &path[1..] // remove leading slash
+    let path = if let Some(path) = path.strip_prefix('/') {
+        path
     } else {
         path
     };

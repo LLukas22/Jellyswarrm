@@ -35,6 +35,29 @@
             const savedTheme = localStorage.getItem('theme');
             if (savedTheme) {
                 document.documentElement.setAttribute('data-theme', savedTheme);
+            } else {
+                // Use system preference if no theme saved
+                const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+                document.documentElement.setAttribute('data-theme', prefersDark ? 'dark' : 'light');
+
+                // Listen for system theme changes only while user hasn't chosen explicitly
+                if (window.matchMedia) {
+                    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+                    // Modern browsers: addEventListener
+                    if (mq.addEventListener) {
+                        mq.addEventListener('change', e => {
+                            if (!localStorage.getItem('theme')) {
+                                document.documentElement.setAttribute('data-theme', e.matches ? 'dark' : 'light');
+                            }
+                        });
+                    } else if (mq.addListener) { // Fallback
+                        mq.addListener(e => {
+                            if (!localStorage.getItem('theme')) {
+                                document.documentElement.setAttribute('data-theme', e.matches ? 'dark' : 'light');
+                            }
+                        });
+                    }
+                }
             }
         });
     </script>

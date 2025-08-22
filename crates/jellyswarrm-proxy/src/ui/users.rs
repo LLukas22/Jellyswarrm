@@ -24,12 +24,19 @@ pub struct UserWithMappings {
     pub mappings: Vec<(ServerMapping, Server, i64)>, // per mapping session count
     pub available_servers: Vec<Server>,              // servers not yet mapped
     pub total_sessions: i64,
+    pub open_mappings: bool, // controls <details open> in template
 }
 
 #[derive(Template)]
 #[template(path = "user_list.html")]
 pub struct UserListTemplate {
     pub users: Vec<UserWithMappings>,
+}
+
+#[derive(Template)]
+#[template(path = "user_item.html")]
+pub struct UserItememplate {
+    pub uwm: UserWithMappings,
 }
 
 #[derive(Deserialize)]
@@ -46,6 +53,69 @@ pub struct AddMappingForm {
     pub mapped_password: String,
 }
 
+pub async fn create_user_with_mappings(
+    state: &AppState,
+    user: User,
+    servers: &[Server],
+    open_mappings: bool,
+) -> UserWithMappings {
+    // session counts per server_url (normalized)
+    let mut session_counts: HashMap<String, i64> = HashMap::new();
+    if let Ok(rows) = state
+        .user_authorization
+        .session_counts_by_server(&user.id)
+        .await
+    {
+        for (url, cnt) in rows {
+            session_counts.insert(url, cnt);
+        }
+    }
+
+    let mappings_fetch = state
+        .user_authorization
+        .list_server_mappings(&user.id)
+        .await;
+    let mut mappings_vec: Vec<(ServerMapping, Server, i64)> = Vec::new();
+    let mut mapped_urls: Vec<String> = Vec::new();
+    match mappings_fetch {
+        Ok(mappings) => {
+            for mapping in mappings {
+                if let Some(server) = servers.iter().find(|srv| {
+                    srv.url.as_str().trim_end_matches('/')
+                        == mapping.server_url.trim_end_matches('/')
+                }) {
+                    let count = session_counts
+                        .get(mapping.server_url.trim_end_matches('/'))
+                        .cloned()
+                        .unwrap_or(0);
+                    mappings_vec.push((mapping, server.clone(), count));
+                    mapped_urls.push(server.url.as_str().trim_end_matches('/').to_string());
+                }
+            }
+        }
+        Err(e) => {
+            error!("Failed to list mappings: {}", e);
+        }
+    }
+    let available_servers: Vec<Server> = servers
+        .iter()
+        .filter(|srv| {
+            !mapped_urls
+                .iter()
+                .any(|u| u == srv.url.as_str().trim_end_matches('/'))
+        })
+        .cloned()
+        .collect();
+    let user_total_sessions: i64 = mappings_vec.iter().map(|(_, _, c)| *c).sum();
+    UserWithMappings {
+        user,
+        mappings: mappings_vec,
+        available_servers,
+        total_sessions: user_total_sessions,
+        open_mappings,
+    }
+}
+
 /// Main users page
 pub async fn users_page() -> impl IntoResponse {
     let template = UsersPageTemplate {};
@@ -53,6 +123,46 @@ pub async fn users_page() -> impl IntoResponse {
         Ok(html) => Html(html).into_response(),
         Err(e) => {
             error!("Failed to render users template: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Template error").into_response()
+        }
+    }
+}
+
+pub async fn get_user_item(
+    state: &AppState,
+    user_id: &str,
+    open_mappings: bool,
+) -> impl IntoResponse {
+    let servers = match state.server_storage.list_servers().await {
+        Ok(s) => s,
+        Err(e) => {
+            error!("Failed to list servers: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
+        }
+    };
+
+    let user = match state.user_authorization.get_user_by_id(user_id).await {
+        Ok(Some(u)) => u,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Html("<div class=\"alert alert-error\">User not found</div>"),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            error!("Failed to fetch user by id {}: {}", user_id, e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
+        }
+    };
+
+    // Build UserWithMappings and render single item template
+    let uwm = create_user_with_mappings(state, user, &servers, open_mappings).await;
+    let template = UserItememplate { uwm };
+    match template.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => {
+            error!("Render error: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, "Template error").into_response()
         }
     }
@@ -73,61 +183,7 @@ pub async fn get_user_list(State(state): State<AppState>) -> impl IntoResponse {
         Ok(users) => {
             let mut result = Vec::new();
             for user in users {
-                // session counts per server_url (normalized)
-                let mut session_counts: HashMap<String, i64> = HashMap::new();
-                if let Ok(rows) = state
-                    .user_authorization
-                    .session_counts_by_server(&user.id)
-                    .await
-                {
-                    for (url, cnt) in rows {
-                        session_counts.insert(url, cnt);
-                    }
-                }
-
-                let mappings_fetch = state
-                    .user_authorization
-                    .list_server_mappings(&user.id)
-                    .await;
-                let mut mappings_vec: Vec<(ServerMapping, Server, i64)> = Vec::new();
-                let mut mapped_urls: Vec<String> = Vec::new();
-                match mappings_fetch {
-                    Ok(mappings) => {
-                        for mapping in mappings {
-                            if let Some(server) = servers.iter().find(|srv| {
-                                srv.url.as_str().trim_end_matches('/')
-                                    == mapping.server_url.trim_end_matches('/')
-                            }) {
-                                let count = session_counts
-                                    .get(mapping.server_url.trim_end_matches('/'))
-                                    .cloned()
-                                    .unwrap_or(0);
-                                mappings_vec.push((mapping, server.clone(), count));
-                                mapped_urls
-                                    .push(server.url.as_str().trim_end_matches('/').to_string());
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        error!("Failed to list mappings: {}", e);
-                    }
-                }
-                let available_servers: Vec<Server> = servers
-                    .iter()
-                    .filter(|srv| {
-                        !mapped_urls
-                            .iter()
-                            .any(|u| u == srv.url.as_str().trim_end_matches('/'))
-                    })
-                    .cloned()
-                    .collect();
-                let user_total_sessions: i64 = mappings_vec.iter().map(|(_, _, c)| *c).sum();
-                result.push(UserWithMappings {
-                    user,
-                    mappings: mappings_vec,
-                    available_servers,
-                    total_sessions: user_total_sessions,
-                });
+                result.push(create_user_with_mappings(&state, user, &servers, false).await);
             }
 
             let template = UserListTemplate { users: result };
@@ -226,7 +282,9 @@ pub async fn add_mapping(
                 Ok(_) => info!("Deleted all sessions for user {}", form.user_id),
                 Err(e) => error!("Failed to delete sessions for user {}: {}", form.user_id, e),
             }
-            get_user_list(State(state)).await.into_response()
+            get_user_item(&state, &form.user_id, true)
+                .await
+                .into_response()
         }
         Err(e) => {
             error!("Add mapping error: {}", e);
@@ -242,14 +300,14 @@ pub async fn add_mapping(
 /// Delete mapping
 pub async fn delete_mapping(
     State(state): State<AppState>,
-    Path(mapping_id): Path<i64>,
+    Path((user_id, mapping_id)): Path<(String, i64)>,
 ) -> Response {
     match state
         .user_authorization
         .delete_server_mapping(mapping_id)
         .await
     {
-        Ok(true) => get_user_list(State(state)).await.into_response(),
+        Ok(true) => get_user_item(&state, &user_id, true).await.into_response(),
         Ok(false) => (
             StatusCode::NOT_FOUND,
             Html("<div class=\"alert alert-error\">Mapping not found</div>"),
@@ -276,12 +334,12 @@ pub async fn delete_sessions(
         .delete_all_sessions_for_user(&user_id)
         .await
     {
-        Ok(_) => get_user_list(State(state)).await.into_response(),
+        Ok(_) => get_user_item(&state, &user_id, false).await.into_response(),
         Err(e) => {
             error!("Delete user error: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Html("<div class=\"alert alert-error\">Failed to delete user</div>"),
+                Html("<div class=\"alert alert-error\">Failed to delete usersessions</div>"),
             )
                 .into_response()
         }

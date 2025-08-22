@@ -264,6 +264,22 @@ impl UserAuthorizationService {
         Ok(user)
     }
 
+    /// Get user by virtual key
+    pub async fn get_user_by_id(&self, id: &str) -> Result<Option<User>, sqlx::Error> {
+        let user = sqlx::query_as::<_, User>(
+            r#"
+            SELECT id, virtual_key, original_username, original_password_hash, created_at, updated_at
+            FROM users 
+            WHERE id = ?
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(user)
+    }
+
     /// Get user by credentials
     pub async fn get_user_by_credentials(
         &self,

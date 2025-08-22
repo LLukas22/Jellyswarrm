@@ -41,6 +41,30 @@
     border-radius: .6rem;
     text-align: center;
   }
+
+  /* Softer animations */
+  .htmx-added {
+    animation: fadeInSoft 160ms ease-out, highlightSoft 900ms ease-out;
+  }
+  .htmx-swapping {
+    animation: fadeOutSoft 140ms ease-in forwards;
+    pointer-events:none;
+  }
+  @keyframes fadeInSoft {
+    from { opacity:0; transform:translateY(2px); }
+    to   { opacity:1; transform:translateY(0); }
+  }
+  @keyframes fadeOutSoft {
+    from { opacity:1; transform:translateY(0); }
+    to   { opacity:0; transform:translateY(-2px); }
+  }
+  @keyframes highlightSoft {
+    0% { background:#fff8d9; }
+    100% { background:transparent; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .htmx-added, .htmx-swapping { animation:none; }
+  }
 </style>
 
 <div class="filter-bar">
@@ -54,67 +78,7 @@
 {% else %}
 <section class="user-list" aria-label="Users">
   {% for uwm in users %}
-  <article data-username="{{ uwm.user.original_username }}">
-    <header>
-      <div style="display:flex; align-items:center; gap:.5rem;">
-        <h3 style="margin:0;">{{ uwm.user.original_username }} <span class="badge" title="Total sessions">{{
-            uwm.total_sessions }}</span></h3>
-        <i class="fas fa-trash danger" style="margin-left:auto;" aria-label="Delete user"
-          hx-delete="/ui/users/{{ uwm.user.id }}" hx-target="#user-list" hx-swap="innerHTML"
-          hx-confirm="Delete user '{{ uwm.user.original_username }}' and all mappings?"></i>
-      </div>
-      <p class="user-key" title="Virtual key">{{ uwm.user.virtual_key }}</p>
-
-    </header>
-
-    <section>
-      {% if !uwm.mappings.is_empty() %}
-      <details>
-        <summary role="button" class="outline secondary">Server mappings ({{ uwm.mappings.len() }})</summary>
-
-          {% for (mapping, server, scount) in uwm.mappings %}
-            <div style="display:flex; align-items:center; gap:.5rem;">
-              <strong style="margin:0;" title="{{ server.url }}">{{ server.name }} <span class="badge" title="Sessions">{{ scount }}</span></strong>
-              
-              <i class="fas fa-trash danger" style="margin-left:auto;" aria-label="Delete mapping" hx-delete="/ui/users/mappings/{{ mapping.id }}"
-                hx-target="#user-list" hx-swap="innerHTML" hx-confirm="Delete mapping '{{ server.name }}' for user '{{ uwm.user.original_username }}'?"></i>
-            </div>
-            <span>Mapped User: <strong>{{ mapping.mapped_username }}</strong></span>
-            <hr />
-          {% endfor %}
-      </details>
-      {% endif %}
-    </section>
-
-
-    {% if !uwm.available_servers.is_empty() %}
-      <hr />
-      <h4>Add server mapping:</h4>
-      <form hx-post="/ui/users/mappings" hx-target="#user-list" hx-swap="innerHTML" hx-disabled-elt="this">
-        <input type="hidden" name="user_id" value="{{ uwm.user.id }}">
-        <label class="visually-hidden" for="server-{{ uwm.user.id }}">Server</label>
-        <select id="server-{{ uwm.user.id }}" name="server_url" required>
-          <option value="" disabled selected>Select server</option>
-          {% for server in uwm.available_servers %}
-          <option value="{{ server.url }}">{{ server.name }}</option>
-          {% endfor %}
-        </select>
-        <label class="visually-hidden" for="mu-{{ uwm.user.id }}">Mapped username</label>
-        <input id="mu-{{ uwm.user.id }}" type="text" name="mapped_username" placeholder="Username" required>
-        <label class="visually-hidden" for="mp-{{ uwm.user.id }}">Mapped password</label>
-        <input id="mp-{{ uwm.user.id }}" type="password" name="mapped_password" placeholder="Password" required
-          autocomplete="new-password">
-        <button type="submit">Add</button>
-      </form>
-    {% endif %}
-
-    <footer>
-      <div aria-label="Reset sessions" class="danger"
-          hx-delete="/ui/users/sessions/{{ uwm.user.id }}" hx-target="#user-list" hx-swap="innerHTML"
-          hx-confirm="Reset all sessions for user '{{ uwm.user.original_username }}'?"><i class="fas fa-recycle" style="margin-right: 0.25rem;"></i>Reset Sessions</div>
-    </footer>
-    
-  </article>
+  {% include "user_item.html" %}
   {% endfor %}
 </section>
 {% endif %}
