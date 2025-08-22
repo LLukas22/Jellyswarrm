@@ -44,11 +44,11 @@ pub fn ui_routes() -> axum::Router<AppState> {
         .route("/users/{id}", axum::routing::delete(users::delete_user))
         .route("/users/mappings", post(users::add_mapping))
         .route(
-            "/users/mappings/{id}",
+            "/users/{user_id}/mappings/{mapping_id}",
             axum::routing::delete(users::delete_mapping),
         )
         .route(
-            "/users/sessions/{id}",
+            "/users/{user_id}/sessions",
             axum::routing::delete(users::delete_sessions),
         )
         .route("/servers", get(servers::servers_page))
