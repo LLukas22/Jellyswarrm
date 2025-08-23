@@ -22,15 +22,36 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
 
-    - name: Cache cargo registry
+    - name: Cache Rust toolchain
       uses: actions/cache@v4
       with:
         path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: ${{ runner.os }}-cargo-
+          ~/.rustup/toolchains
+          ~/.rustup/update-hashes
+          ~/.rustup/settings.toml
+        key: ${{ runner.os }}-rustup-${{ hashFiles('rust-toolchain.toml') }}
+        restore-keys: |
+          ${{ runner.os }}-rustup-
+
+    - name: Cache cargo registry and index
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-registry-
+
+    - name: Cache target directory
+      uses: actions/cache@v4
+      with:
+        path: target
+        key: ${{ runner.os }}-target-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('**/*.rs') }}
+        restore-keys: |
+          ${{ runner.os }}-target-${{ hashFiles('**/Cargo.lock') }}-
+          ${{ runner.os }}-target-
 
     - name: Setup Node.js (LTS)
       uses: actions/setup-node@v4
@@ -38,6 +59,28 @@ jobs:
           node-version: 20
           cache: npm
           cache-dependency-path: ui/package-lock.json
+
+    - name: Cache Node.js modules
+      uses: actions/cache@v4
+      with:
+        path: |
+          ui/node_modules
+          ~/.npm
+        key: ${{ runner.os }}-node-${{ hashFiles('ui/package-lock.json') }}
+        restore-keys: |
+          ${{ runner.os }}-node-
+
+    - name: Cache Rust build artifacts
+      uses: actions/cache@v4
+      with:
+        path: |
+          target/debug/deps
+          target/debug/build
+          target/debug/.fingerprint
+        key: ${{ runner.os }}-rust-build-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('**/*.rs') }}
+        restore-keys: |
+          ${{ runner.os }}-rust-build-${{ hashFiles('**/Cargo.lock') }}-
+          ${{ runner.os }}-rust-build-
 
     - name: Install UI deps
       working-directory: ui
