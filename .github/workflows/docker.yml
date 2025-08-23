@@ -12,63 +12,8 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
-  cache-deps:
-    runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request'
-    permissions:
-      contents: read
-      packages: write
-    
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-
-    - name: Log in to Container Registry
-      uses: docker/login-action@v3
-      with:
-        registry: ${{ env.REGISTRY }}
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Convert repository name to lowercase
-      id: repo
-      run: echo "name=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
-
-    - name: Build and cache UI dependencies
-      uses: docker/build-push-action@v5
-      with:
-        context: .
-        target: ui-build
-        platforms: linux/amd64
-        push: true
-        tags: ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:ui-cache
-        cache-from: |
-          type=gha,scope=ui
-          type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:ui-cache
-        cache-to: |
-          type=gha,scope=ui,mode=max
-
-    - name: Build and cache Rust dependencies
-      uses: docker/build-push-action@v5
-      with:
-        context: .
-        target: rust-deps
-        platforms: linux/amd64
-        push: true
-        tags: ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:rust-deps-cache
-        cache-from: |
-          type=gha,scope=rust-deps
-          type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:rust-deps-cache
-        cache-to: |
-          type=gha,scope=rust-deps,mode=max
-
   build-and-push:
     runs-on: ubuntu-latest
-    needs: [cache-deps]
-    if: always()
     permissions:
       contents: read
       packages: write
