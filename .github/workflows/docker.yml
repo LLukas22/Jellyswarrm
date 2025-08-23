@@ -13,8 +13,61 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  cache-deps:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Build and cache UI dependencies
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        target: ui-build
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:ui-cache
+        cache-from: |
+          type=gha,scope=ui
+          type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:ui-cache
+        cache-to: |
+          type=gha,scope=ui,mode=max
+          type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:ui-cache,mode=max
+
+    - name: Build and cache Rust dependencies
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        target: rust-deps
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:rust-deps-cache
+        cache-from: |
+          type=gha,scope=rust-deps
+          type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:rust-deps-cache
+        cache-to: |
+          type=gha,scope=rust-deps,mode=max
+          type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:rust-deps-cache,mode=max
+
   build-and-push:
     runs-on: ubuntu-latest
+    needs: [cache-deps]
+    if: always()
     permissions:
       contents: read
       packages: write
@@ -58,5 +111,13 @@ jobs:
         push: ${{ github.event_name != 'pull_request' }}
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
+        cache-from: |
+          type=gha
+          type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
+          type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:ui-cache
+          type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:rust-deps-cache
+        cache-to: |
+          type=gha,mode=max
+          type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
+        build-args: |
+          BUILDKIT_INLINE_CACHE=1

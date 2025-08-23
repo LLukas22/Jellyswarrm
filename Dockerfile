@@ -9,7 +9,8 @@ WORKDIR /app/ui
 COPY ui/package.json ui/package-lock.json* ./
 
 # Install all dependencies (including dev deps needed for build)
-RUN npm ci --ignore-scripts
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --ignore-scripts
 
 # Copy UI source code
 COPY ui/ ./
@@ -41,7 +42,10 @@ RUN mkdir -p crates/jellyswarrm-proxy/src \
 	&& echo "" > crates/jellyswarrm-proxy/src/lib.rs
 
 # Build dependencies only (will be cached)
-RUN cargo build --release --bin jellyswarrm-proxy \
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo build --release --bin jellyswarrm-proxy \
 	&& rm -rf crates/jellyswarrm-proxy/src
 
 #################################
@@ -60,7 +64,10 @@ COPY crates/jellyswarrm-proxy/askama.toml crates/jellyswarrm-proxy/askama.toml
 COPY crates/jellyswarrm-proxy/src crates/jellyswarrm-proxy/src
 
 # Build only the application code (dependencies already cached)
-RUN cargo build --release --bin jellyswarrm-proxy
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo build --release --bin jellyswarrm-proxy
 
 #################################
 # Stage 4: Runtime Image (Alpine)
