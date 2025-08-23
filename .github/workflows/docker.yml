@@ -50,7 +50,6 @@ jobs:
           type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:ui-cache
         cache-to: |
           type=gha,scope=ui,mode=max
-          type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:ui-cache,mode=max
 
     - name: Build and cache Rust dependencies
       uses: docker/build-push-action@v5
@@ -65,7 +64,6 @@ jobs:
           type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:rust-deps-cache
         cache-to: |
           type=gha,scope=rust-deps,mode=max
-          type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:rust-deps-cache,mode=max
 
   build-and-push:
     runs-on: ubuntu-latest
@@ -119,12 +117,10 @@ jobs:
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: |
-          type=gha
-          type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:buildcache
+          type=gha,scope=main
           type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:ui-cache
           type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:rust-deps-cache
         cache-to: |
-          type=gha,mode=max
-          type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:buildcache,mode=max
+          type=gha,scope=main,mode=max
         build-args: |
           BUILDKIT_INLINE_CACHE=1
