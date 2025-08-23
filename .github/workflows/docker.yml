@@ -33,6 +33,10 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
+    - name: Convert repository name to lowercase
+      id: repo
+      run: echo "name=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
     - name: Build and cache UI dependencies
       uses: docker/build-push-action@v5
       with:
@@ -40,13 +44,13 @@ jobs:
         target: ui-build
         platforms: linux/amd64,linux/arm64
         push: true
-        tags: ${{ env.REGISTRY }}/${{ github.repository_owner }}/jellyswarrm:ui-cache
+        tags: ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:ui-cache
         cache-from: |
           type=gha,scope=ui
-          type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/jellyswarrm:ui-cache
+          type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:ui-cache
         cache-to: |
           type=gha,scope=ui,mode=max
-          type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/jellyswarrm:ui-cache,mode=max
+          type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:ui-cache,mode=max
 
     - name: Build and cache Rust dependencies
       uses: docker/build-push-action@v5
@@ -55,13 +59,13 @@ jobs:
         target: rust-deps
         platforms: linux/amd64,linux/arm64
         push: true
-        tags: ${{ env.REGISTRY }}/${{ github.repository_owner }}/jellyswarrm:rust-deps-cache
+        tags: ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:rust-deps-cache
         cache-from: |
           type=gha,scope=rust-deps
-          type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/jellyswarrm:rust-deps-cache
+          type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:rust-deps-cache
         cache-to: |
           type=gha,scope=rust-deps,mode=max
-          type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/jellyswarrm:rust-deps-cache,mode=max
+          type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:rust-deps-cache,mode=max
 
   build-and-push:
     runs-on: ubuntu-latest
@@ -89,11 +93,15 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
+    - name: Convert repository name to lowercase
+      id: repo
+      run: echo "name=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
     - name: Extract metadata
       id: meta
       uses: docker/metadata-action@v5
       with:
-        images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/jellyswarrm
+        images: ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}
         tags: |
           type=ref,event=branch
           type=ref,event=pr
@@ -112,11 +120,11 @@ jobs:
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: |
           type=gha
-          type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/jellyswarrm:buildcache
-          type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/jellyswarrm:ui-cache
-          type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/jellyswarrm:rust-deps-cache
+          type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:buildcache
+          type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:ui-cache
+          type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:rust-deps-cache
         cache-to: |
           type=gha,mode=max
-          type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/jellyswarrm:buildcache,mode=max
+          type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:buildcache,mode=max
         build-args: |
           BUILDKIT_INLINE_CACHE=1
