@@ -10,7 +10,6 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   cache-deps:
@@ -41,13 +40,13 @@ jobs:
         target: ui-build
         platforms: linux/amd64,linux/arm64
         push: true
-        tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:ui-cache
+        tags: ${{ env.REGISTRY }}/${{ github.repository_owner }}/jellyswarrm:ui-cache
         cache-from: |
           type=gha,scope=ui
-          type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:ui-cache
+          type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/jellyswarrm:ui-cache
         cache-to: |
           type=gha,scope=ui,mode=max
-          type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:ui-cache,mode=max
+          type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/jellyswarrm:ui-cache,mode=max
 
     - name: Build and cache Rust dependencies
       uses: docker/build-push-action@v5
@@ -56,13 +55,13 @@ jobs:
         target: rust-deps
         platforms: linux/amd64,linux/arm64
         push: true
-        tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:rust-deps-cache
+        tags: ${{ env.REGISTRY }}/${{ github.repository_owner }}/jellyswarrm:rust-deps-cache
         cache-from: |
           type=gha,scope=rust-deps
-          type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:rust-deps-cache
+          type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/jellyswarrm:rust-deps-cache
         cache-to: |
           type=gha,scope=rust-deps,mode=max
-          type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:rust-deps-cache,mode=max
+          type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/jellyswarrm:rust-deps-cache,mode=max
 
   build-and-push:
     runs-on: ubuntu-latest
@@ -94,7 +93,7 @@ jobs:
       id: meta
       uses: docker/metadata-action@v5
       with:
-        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/jellyswarrm
         tags: |
           type=ref,event=branch
           type=ref,event=pr
@@ -113,11 +112,11 @@ jobs:
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: |
           type=gha
-          type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
-          type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:ui-cache
-          type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:rust-deps-cache
+          type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/jellyswarrm:buildcache
+          type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/jellyswarrm:ui-cache
+          type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/jellyswarrm:rust-deps-cache
         cache-to: |
           type=gha,mode=max
-          type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
+          type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/jellyswarrm:buildcache,mode=max
         build-args: |
           BUILDKIT_INLINE_CACHE=1
