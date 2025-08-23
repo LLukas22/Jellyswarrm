@@ -44,8 +44,9 @@ RUN mkdir -p crates/jellyswarrm-proxy/src \
 # Build dependencies only (will be cached)
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/app/target \
-    cargo build --release --bin jellyswarrm-proxy \
+    --mount=type=cache,target=/tmp/target,sharing=locked \
+    CARGO_TARGET_DIR=/tmp/target cargo build --release --bin jellyswarrm-proxy \
+	&& cp /tmp/target/release/jellyswarrm-proxy /app/jellyswarrm-proxy-deps \
 	&& rm -rf crates/jellyswarrm-proxy/src
 
 #################################
@@ -66,8 +67,9 @@ COPY crates/jellyswarrm-proxy/src crates/jellyswarrm-proxy/src
 # Build only the application code (dependencies already cached)
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/app/target \
-    cargo build --release --bin jellyswarrm-proxy
+    --mount=type=cache,target=/tmp/target,sharing=locked \
+    CARGO_TARGET_DIR=/tmp/target cargo build --release --bin jellyswarrm-proxy \
+    && cp /tmp/target/release/jellyswarrm-proxy /app/jellyswarrm-proxy
 
 #################################
 # Stage 4: Runtime Image (Alpine)
@@ -85,7 +87,7 @@ RUN apk add --no-cache \
 	&& update-ca-certificates
 
 # Copy the compiled binary
-COPY --from=rust-build /app/target/release/jellyswarrm-proxy /app/jellyswarrm-proxy
+COPY --from=rust-build /app/jellyswarrm-proxy /app/jellyswarrm-proxy
 
 EXPOSE 3000
 
