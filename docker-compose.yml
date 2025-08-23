@@ -11,4 +11,4 @@ services:
       - ./data:/app/data
     environment:
       - JELLYSWARRM_USERNAME=admin
-      - JELLYSWARRM_PASSWORD=jellyswarrm
+      - JELLYSWARRM_PASSWORD=jellyswarrm # Change this in production!

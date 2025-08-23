@@ -3,10 +3,12 @@
 
 # Node modules (reinstalled inside image)
 /ui/node_modules
+/ui/dist
 
 # Git
 .git
 .gitignore
+.gitattributes
 
 # Local data & logs
 /logs
@@ -18,3 +20,18 @@
 .DS_Store
 .vscode
 .idea
+
+# Documentation
+*.md
+!README.md
+
+# Docker files
+docker-compose.yml
+Dockerfile.alpine
+
+# Static assets (will be rebuilt)
+/crates/jellyswarrm-proxy/static
+
+# Development files
+/.cargo
+/scripts
