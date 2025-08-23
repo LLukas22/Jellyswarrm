@@ -10,7 +10,7 @@
 <img alt="MIT License" src="https://img.shields.io/github/license/LLukas22/Jellyswarrm.svg"/>
 </a>
 <a href="https://github.com/LLukas22/Jellyswarrm/releases">
-<img alt="Current Release" src="https://img.shields.io/github/release/LLukas22/Jellyswarrm/.svg"/>
+<img alt="Current Release" src="https://img.shields.io/github/release/LLukas22/Jellyswarrm.svg"/>
 </a>
 </p>
 
