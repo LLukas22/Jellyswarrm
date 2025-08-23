@@ -6,8 +6,8 @@
 <img alt="Logo Banner" src="./media/banner.svg"/>
 <br/>
 <br/>
-<a href="https://github.com/LLukas22/Jellyswarrm">
-<img alt="MIT License" src="https://img.shields.io/github/license/LLukas22/Jellyswarrm.svg"/>
+<a href="https://opensource.org/licenses/MIT">
+<img alt="MIT License" src="https://img.shields.io/badge/License-MIT-yellow.svg"/>
 </a>
 <a href="https://github.com/LLukas22/Jellyswarrm/releases">
 <img alt="Current Release" src="https://img.shields.io/github/release/LLukas22/Jellyswarrm.svg"/>
@@ -147,4 +147,4 @@ The build process is streamlined thanks to the included [`build.rs`](./crates/je
    Most likely! Jellyswarrm presents itself as a standard Jellyfin server, so most clients should work out of the box. That said, not every Jellyfin client has been tested, so a few may have issues.  
 
 3. **Why use Jellyswarrm instead of mounting a remote library via e.g. SMB?**  
-   Jellyswarrm is built to **connect your servers with your friends’ servers** across different networks. Setting up SMB or IPFS in these cases can be complicated, and performance is often worse. With Jellyswarrm, content is streamed directly from the original server, so all the heavy lifting (like transcoding) happens where the media actually lives.  
+   Jellyswarrm is built to **connect your servers with your friends’ servers** across different networks. Setting up SMB in these cases can be complicated, and performance is often worse. With Jellyswarrm, content is streamed directly from the original server, so all the heavy lifting (like transcoding) happens where the media actually lives.  
