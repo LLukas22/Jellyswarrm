@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(untagged)]
@@ -42,6 +42,20 @@ pub struct PlaybackResponse {
     pub play_session_id: String,
 }
 
+fn serialize_playback_rate<S>(value: &f64, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    //For some reason Jellyfin expects playbackrates without decimal point to be integers
+    if value.fract() == 0.0 {
+        // Serialize as integer if no fractional part
+        serializer.serialize_i64(*value as i64)
+    } else {
+        // Serialize as float if there's a fractional part
+        serializer.serialize_f64(*value)
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProgressRequest {
     #[serde(rename = "AudioStreamIndex", skip_serializing_if = "Option::is_none")]
@@ -64,8 +78,8 @@ pub struct ProgressRequest {
     pub media_source_id: String,
     #[serde(rename = "NowPlayingQueue", skip_serializing_if = "Option::is_none")]
     pub now_playing_queue: Option<Vec<NowPlayingQueueItem>>,
-    #[serde(rename = "PlaybackRate")]
-    pub playback_rate: i32,
+    #[serde(rename = "PlaybackRate", serialize_with = "serialize_playback_rate")]
+    pub playback_rate: f64,
     #[serde(rename = "PlaybackStartTimeTicks")]
     pub playback_start_time_ticks: i64,
     #[serde(rename = "PlaylistItemId")]
