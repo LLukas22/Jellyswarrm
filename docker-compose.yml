@@ -12,3 +12,4 @@ services:
     environment:
       - JELLYSWARRM_USERNAME=admin
       - JELLYSWARRM_PASSWORD=jellyswarrm # Change this in production!
+      - RUST_LOG=jellyswarrm_proxy=debug 

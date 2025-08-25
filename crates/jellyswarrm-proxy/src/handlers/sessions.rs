@@ -54,7 +54,10 @@ pub async fn post_playing(
         let server_url = server.url.as_str().trim_end_matches('/');
         request_url == server_url
     }) {
-        debug!("Found server in request: {}", server.url);
+        debug!(
+            "Reporting Progress to server: {} ({})",
+            server.name, server.url
+        );
         Some(session.clone())
     } else {
         error!("No user session found for server: {}", session_server.url);

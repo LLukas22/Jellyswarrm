@@ -25,9 +25,9 @@ where
         Ok(val) => Ok(val),
         Err(e) => {
             if let Ok(body_str) = std::str::from_utf8(bytes) {
-                eprintln!("Failed to parse JSON body: {e}\nBody: {body_str}");
+                error!("Failed to parse JSON body: {e}\nBody: {body_str}");
             } else {
-                eprintln!("Failed to parse JSON body: {e}\nBody (non-UTF8)");
+                error!("Failed to parse JSON body: {e}\nBody (non-UTF8)");
             }
             Err(StatusCode::BAD_REQUEST)
         }

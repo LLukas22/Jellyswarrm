@@ -18,7 +18,7 @@ use tower::ServiceBuilder;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tower_sessions::cookie::Key;
 use tower_sessions_sqlx_store::SqliteStore;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use axum_login::{
@@ -71,8 +71,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let file_appender = tracing_appender::rolling::daily(DATA_DIR.join("logs"), "jellyswarm.log");
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
-    // Create an environment filter to only show logs from our application
-    let env_filter = EnvFilter::new("jellyswarrm_proxy=info");
+    // Create an environment filter with configurable log level
+    // Defaults to "jellyswarrm_proxy=info" but can be overridden with RUST_LOG env var
+    // Examples:
+    //   RUST_LOG=debug                           - Enable debug for all modules
+    //   RUST_LOG=jellyswarrm_proxy=debug         - Enable debug for this app only
+    //   RUST_LOG=jellyswarrm_proxy=trace,tower=info - Debug this app, info for tower
+    let default_filter = "jellyswarrm_proxy=info";
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
 
     tracing_subscriber::registry()
         .with(env_filter)
@@ -130,7 +137,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match server_storage.list_servers().await {
         Ok(servers) => {
             if servers.is_empty() {
-                warn!("No servers found, configur them via the UI.");
+                warn!("No servers found, configure them via the UI.");
             } else {
                 info!("Found {} configured servers", servers.len());
                 for server in &servers {
@@ -367,6 +374,7 @@ async fn proxy_handler(
 ) -> Result<Response<Body>, StatusCode> {
     // check if a resource was requested
     let path = req.uri().path();
+    debug!("Using generic processing for path: {}", path);
     let path = if let Some(path) = path.strip_prefix('/') {
         path
     } else {
@@ -387,7 +395,12 @@ async fn proxy_handler(
         StatusCode::BAD_REQUEST
     })?;
 
-    //info!("Proxying request: {:?}", preprocessed);
+    debug!(
+        "Proxy request details:\n  Original: {:?}\n  Target URL: {}\n  Transformed: {:?}",
+        preprocessed.original_request,
+        preprocessed.request.url(),
+        preprocessed.request
+    );
 
     let response = state
         .reqwest_client

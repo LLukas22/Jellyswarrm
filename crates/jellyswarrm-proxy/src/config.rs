@@ -23,9 +23,7 @@ pub static DATA_DIR: Lazy<PathBuf> = Lazy::new(|| {
 });
 
 fn default_server_id() -> String {
-    let raw = Uuid::new_v4().simple().to_string(); // 32 hex chars
-    let trimmed = &raw[..20]; // first 20 to allow for "jellyswarrm" in front
-    format!("jellyswarrm{trimmed}")
+    Uuid::new_v4().simple().to_string()
 }
 
 fn default_public_address() -> String {
