@@ -606,8 +606,8 @@ pub struct MediaItem {
     pub genre_items: Option<Vec<GenreItem>>,
     #[serde(rename = "LocalTrailerCount", skip_serializing_if = "Option::is_none")]
     pub local_trailer_count: Option<i32>,
-    #[serde(rename = "UserData")]
-    pub user_data: UserData,
+    #[serde(rename = "UserData", skip_serializing_if = "Option::is_none")]
+    pub user_data: Option<UserData>,
     #[serde(rename = "ChildCount", skip_serializing_if = "Option::is_none")]
     pub child_count: Option<i32>,
     #[serde(
