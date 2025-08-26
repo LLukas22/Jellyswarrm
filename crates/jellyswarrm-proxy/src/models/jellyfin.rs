@@ -1,4 +1,7 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize, Serializer};
+use serde_json::Value;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(untagged)]
@@ -32,6 +35,9 @@ pub struct PlaybackRequest {
     pub subtitle_stream_index: Option<StreamIndex>,
     #[serde(rename = "UserId")]
     pub user_id: String,
+
+    #[serde(flatten)]
+    extra: HashMap<String, Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -793,6 +799,9 @@ pub struct MediaSource {
     pub default_subtitle_stream_index: Option<i32>,
     #[serde(rename = "HasSegments", skip_serializing_if = "Option::is_none")]
     pub has_segments: Option<bool>,
+
+    #[serde(flatten)]
+    extra: HashMap<String, Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -884,8 +893,8 @@ pub struct MediaStream {
     pub supports_external_stream: Option<bool>,
     #[serde(rename = "PixelFormat", skip_serializing_if = "Option::is_none")]
     pub pixel_format: Option<String>,
-    #[serde(rename = "Level")]
-    pub level: i32,
+    #[serde(rename = "Level", skip_serializing_if = "Option::is_none")]
+    pub level: Option<i32>,
     #[serde(rename = "IsAnamorphic", skip_serializing_if = "Option::is_none")]
     pub is_anamorphic: Option<bool>,
     #[serde(rename = "Language", skip_serializing_if = "Option::is_none")]

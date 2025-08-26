@@ -3,7 +3,7 @@ use std::fs;
 
 #[cfg(test)]
 mod tests {
-    use crate::models::ItemsResponse;
+    use crate::models::{ItemsResponse, PlaybackRequest, PlaybackResponse};
 
     use super::*;
 
@@ -214,6 +214,42 @@ mod tests {
         let json_content = fs::read_to_string(file_path).expect("Failed to read person.json file");
 
         let _person: MediaItem = serde_json::from_str(&json_content)
+            .map_err(|e| {
+                eprintln!("Deserialization error: {e}");
+                eprintln!("JSON content: {json_content}");
+                e
+            })
+            .expect("Failed to deserialize JSON into ItemsResponse");
+    }
+
+    #[test]
+    fn test_livetv_playback_request() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let file_path =
+            format!("{manifest_dir}/src/models/tests/files/livetv_playback_request.json");
+
+        let json_content = fs::read_to_string(file_path)
+            .expect("Failed to read livetv_playback_request.json file");
+
+        let _person: PlaybackRequest = serde_json::from_str(&json_content)
+            .map_err(|e| {
+                eprintln!("Deserialization error: {e}");
+                eprintln!("JSON content: {json_content}");
+                e
+            })
+            .expect("Failed to deserialize JSON into ItemsResponse");
+    }
+
+    #[test]
+    fn test_livetv_playback_response() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let file_path =
+            format!("{manifest_dir}/src/models/tests/files/livetv_playback_response.json");
+
+        let json_content = fs::read_to_string(file_path)
+            .expect("Failed to read livetv_playback_response.json file");
+
+        let _person: PlaybackResponse = serde_json::from_str(&json_content)
             .map_err(|e| {
                 eprintln!("Deserialization error: {e}");
                 eprintln!("JSON content: {json_content}");
