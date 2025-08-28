@@ -204,6 +204,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "/authenticatebyname",
                     post(handlers::users::handle_authenticate_by_name),
                 )
+                .route(
+                    "/AuthenticateByName",
+                    post(handlers::users::handle_authenticate_by_name),
+                )
                 .route("/{user_id}", get(handlers::users::handle_get_user_by_id))
                 .route("/{user_id}/Items", get(handlers::items::get_items))
                 .route(
