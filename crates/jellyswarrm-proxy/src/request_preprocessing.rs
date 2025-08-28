@@ -12,7 +12,14 @@ use crate::user_authorization_service::{AuthorizationSession, Device, User};
 use crate::AppState;
 
 // Static configuration for server resolution
-static MEDIA_ID_PATH_TAGS: &[&str] = &["Items", "Shows", "Videos", "PlayedItems", "FavoriteItems"];
+static MEDIA_ID_PATH_TAGS: &[&str] = &[
+    "Items",
+    "Shows",
+    "Videos",
+    "PlayedItems",
+    "FavoriteItems",
+    "MediaSegments",
+];
 
 static MEDIA_ID_QUERY_TAGS: &[&str] = &["ParentId", "SeriesId", "MediaSourceId", "Tag", "SeasonId"];
 

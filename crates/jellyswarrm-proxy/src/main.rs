@@ -244,6 +244,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     post(handlers::items::post_playback_info),
                 ),
         )
+        .route("/MediaSegments/{item_id}", get(handlers::items::get_items))
         // Show-specific routes
         .nest(
             "/Shows",
@@ -260,6 +261,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nest(
             "/Videos",
             Router::new()
+                .route("/{stream_id}/Trickplay/{*path}", get(proxy_handler))
                 .route("/{item_id}/stream.mkv", get(handlers::videos::get_mkv))
                 .route("/{item_id}/stream.mp4", get(handlers::videos::get_mkv))
                 .route(

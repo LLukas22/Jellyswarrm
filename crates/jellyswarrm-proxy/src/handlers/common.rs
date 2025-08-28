@@ -99,7 +99,9 @@ pub async fn process_media_item(
     let mut item = item;
 
     if change_name {
-        item.name = format!("{} [{}]", item.name, server.name);
+        if let Some(name) = &item.name {
+            item.name = Some(format!("{} [{}]", name, server.name));
+        }
 
         if let Some(series_name) = &item.series_name {
             item.series_name = Some(format!("{} [{}]", series_name, server.name));
@@ -109,6 +111,10 @@ pub async fn process_media_item(
     item.id = get_virtual_id(&item.id, media_storage, server).await?;
     if let Some(parent_id) = &item.parent_id {
         item.parent_id = Some(get_virtual_id(parent_id, media_storage, server).await?);
+    }
+
+    if let Some(original_id) = &item.item_id {
+        item.item_id = Some(get_virtual_id(original_id, media_storage, server).await?);
     }
 
     if let Some(etag) = &item.etag {
@@ -220,7 +226,18 @@ pub async fn process_media_item(
         }
     }
 
-    item.server_id = server_id.to_string();
+    if let Some(trickplay) = &mut item.trickplay {
+        let mut updated_hash_map = HashMap::new();
+        for (id, v) in trickplay.iter() {
+            let virtual_id = get_virtual_id(id, media_storage, server).await?;
+            updated_hash_map.insert(virtual_id, v.clone());
+        }
+        *trickplay = updated_hash_map;
+    }
+
+    if item.server_id.is_some() {
+        item.server_id = Some(server_id.to_string());
+    }
 
     Ok(item)
 }
