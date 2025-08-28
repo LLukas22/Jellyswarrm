@@ -113,6 +113,12 @@ pub async fn extract_request_infos(
     let request = axum_to_reqwest(req).await?;
 
     let auth = JellyfinAuthorization::from_request(&request);
+    
+    if let Some(auth) = &auth {
+        debug!("Extracted authorization: {:?}", auth);
+    } else {
+        debug!("No authorization found in request");
+    }
 
     let device = if let Some(auth) = &auth {
         auth.get_device()
@@ -188,11 +194,12 @@ pub async fn apply_new_target_uri(
 
     // Get the original path and query
     let mut orig_url = request.url().clone();
-
+    debug!("Original request URL: {}", orig_url);
     // Handle user ID replacement in the path if session is available
     if let Some(session) = session {
         for &path_segment in USER_ID_PATH_TAGS {
             if let Some(user_id) = contains_id(&orig_url, path_segment) {
+                debug!("Replacing user ID in path: {} -> {}", user_id, session.original_user_id);
                 orig_url = replace_id(orig_url, &user_id, &session.original_user_id);
             }
         }

@@ -1,5 +1,6 @@
 use sqlx::{FromRow, Row, SqlitePool};
 use tracing::{debug, info};
+use uuid::Uuid;
 
 use crate::models::generate_token;
 use crate::server_storage::Server;
@@ -65,9 +66,12 @@ impl MediaStorageService {
         original_media_id: &str,
         server_url: &str,
     ) -> Result<MediaMapping, sqlx::Error> {
+
+        let original_media_id = Self::normalize_uuid(original_media_id);
+
         // Try to find existing mapping
         if let Some(mapping) = self
-            .get_media_mapping_by_original(original_media_id, server_url)
+            .get_media_mapping_by_original(&original_media_id, server_url)
             .await?
         {
             return Ok(mapping);
@@ -86,7 +90,7 @@ impl MediaStorageService {
             "#,
         )
         .bind(&virtual_media_id)
-        .bind(original_media_id)
+        .bind(&original_media_id)
         .bind(server_url)
         .bind(now)
         .fetch_optional(&self.pool)
@@ -95,14 +99,14 @@ impl MediaStorageService {
         if let Some(row) = inserted {
             debug!(
                 "Created new media mapping: {} -> {} ({})",
-                original_media_id, row.virtual_media_id, server_url
+                &original_media_id, row.virtual_media_id, server_url
             );
             return Ok(row);
         }
 
         // Conflict path: fetch existing row. Happens if another process created it concurrently
         if let Some(existing) = self
-            .get_media_mapping_by_original(original_media_id, server_url)
+            .get_media_mapping_by_original(&original_media_id, server_url)
             .await?
         {
             return Ok(existing);
@@ -112,11 +116,22 @@ impl MediaStorageService {
         Err(sqlx::Error::RowNotFound)
     }
 
+
+    pub fn normalize_uuid(s: &str) -> String {
+        match Uuid::parse_str(s) {
+            Ok(uuid) => uuid.simple().to_string(),
+            Err(_) => s.to_string(),
+        }
+    }
+
     /// Get media mapping by virtual media ID
     pub async fn get_media_mapping_by_virtual(
         &self,
         virtual_media_id: &str,
     ) -> Result<Option<MediaMapping>, sqlx::Error> {
+
+        let virtual_media_id = Self::normalize_uuid(virtual_media_id);
+
         let mapping = sqlx::query_as::<_, MediaMapping>(
             r#"
             SELECT id, virtual_media_id, original_media_id, server_url, created_at
@@ -137,6 +152,9 @@ impl MediaStorageService {
         original_media_id: &str,
         server_url: &str,
     ) -> Result<Option<MediaMapping>, sqlx::Error> {
+
+        let original_media_id = Self::normalize_uuid(original_media_id);
+
         let mapping = sqlx::query_as::<_, MediaMapping>(
             r#"
             SELECT id, virtual_media_id, original_media_id, server_url, created_at
@@ -157,6 +175,9 @@ impl MediaStorageService {
         &self,
         virtual_media_id: &str,
     ) -> Result<Option<(MediaMapping, Server)>, sqlx::Error> {
+
+        let virtual_media_id = Self::normalize_uuid(virtual_media_id);
+        
         let row = sqlx::query(
             r#"
             SELECT 
