@@ -244,6 +244,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     post(handlers::items::post_playback_info),
                 ),
         )
+        .route("/MediaSegments/{item_id}", get(handlers::items::get_items))
         // Show-specific routes
         .nest(
             "/Shows",

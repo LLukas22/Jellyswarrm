@@ -21,8 +21,11 @@ mod tests {
             serde_json::from_str(&json_content).expect("Failed to deserialize JSON into MediaItem");
 
         // Verify basic fields are correct
-        assert_eq!(media_item.name, "The Batman");
-        assert_eq!(media_item.server_id, "0555e8a91bfc4189a2585ede39a52dc8");
+        assert_eq!(media_item.name.as_ref().unwrap(), "The Batman");
+        assert_eq!(
+            media_item.server_id.unwrap(),
+            "0555e8a91bfc4189a2585ede39a52dc8"
+        );
         assert_eq!(media_item.id, "165a66aa5bd2e62c0df0f8da332ae47d");
 
         // Test optional fields
@@ -62,7 +65,11 @@ mod tests {
         assert_eq!(first_source.size.unwrap(), 94045682646);
 
         println!("✅ Successfully deserialized MediaItem from JSON!");
-        println!("Media Item: {} ({})", media_item.name, media_item.item_type);
+        println!(
+            "Media Item: {} ({})",
+            media_item.name.as_ref().unwrap(),
+            media_item.item_type
+        );
     }
 
     #[test]
@@ -144,8 +151,8 @@ mod tests {
         let media_item: MediaItem = serde_json::from_str(minimal_json)
             .expect("Failed to deserialize minimal MediaItem JSON");
 
-        assert_eq!(media_item.name, "Test Movie");
-        assert_eq!(media_item.server_id, "test-server-id");
+        assert_eq!(media_item.name.unwrap(), "Test Movie");
+        assert_eq!(media_item.server_id.unwrap(), "test-server-id");
         assert_eq!(media_item.id, "test-id");
         assert_eq!(media_item.is_folder, Some(false));
         assert_eq!(media_item.item_type, "Movie");

@@ -528,12 +528,14 @@ pub struct ItemsResponse {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MediaItem {
-    #[serde(rename = "Name")]
-    pub name: String,
-    #[serde(rename = "ServerId")]
-    pub server_id: String,
+    #[serde(rename = "Name", skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "ServerId", skip_serializing_if = "Option::is_none")]
+    pub server_id: Option<String>,
     #[serde(rename = "Id")]
     pub id: String,
+    #[serde(rename = "ItemId")]
+    pub item_id: Option<String>,
     #[serde(rename = "SeriesId", skip_serializing_if = "Option::is_none")]
     pub series_id: Option<String>,
     #[serde(rename = "SeriesName", skip_serializing_if = "Option::is_none")]
@@ -606,8 +608,8 @@ pub struct MediaItem {
     pub genre_items: Option<Vec<GenreItem>>,
     #[serde(rename = "LocalTrailerCount", skip_serializing_if = "Option::is_none")]
     pub local_trailer_count: Option<i32>,
-    #[serde(rename = "UserData")]
-    pub user_data: UserData,
+    #[serde(rename = "UserData", skip_serializing_if = "Option::is_none")]
+    pub user_data: Option<UserData>,
     #[serde(rename = "ChildCount", skip_serializing_if = "Option::is_none")]
     pub child_count: Option<i32>,
     #[serde(
