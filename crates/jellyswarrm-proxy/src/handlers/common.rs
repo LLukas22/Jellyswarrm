@@ -220,6 +220,15 @@ pub async fn process_media_item(
         }
     }
 
+    if let Some(trickplay) = &mut item.trickplay {
+        let mut updated_hash_map = HashMap::new();
+        for (id, v) in trickplay.iter() {
+            let virtual_id = get_virtual_id(id, media_storage, server).await?;
+            updated_hash_map.insert(virtual_id, v.clone());
+        }
+        *trickplay = updated_hash_map;
+    }
+
     item.server_id = server_id.to_string();
 
     Ok(item)

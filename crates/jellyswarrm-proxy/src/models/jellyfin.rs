@@ -689,7 +689,7 @@ pub struct MediaItem {
     #[serde(rename = "Chapters", skip_serializing_if = "Option::is_none")]
     pub chapters: Option<Vec<Chapter>>,
     #[serde(rename = "Trickplay", skip_serializing_if = "Option::is_none")]
-    pub trickplay: Option<serde_json::Value>,
+    pub trickplay: Option<std::collections::HashMap<String, serde_json::Value>>,
     #[serde(flatten)]
     pub extra: std::collections::HashMap<String, serde_json::Value>,
 }

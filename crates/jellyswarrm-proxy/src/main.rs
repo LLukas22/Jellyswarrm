@@ -260,6 +260,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nest(
             "/Videos",
             Router::new()
+                .route("/{stream_id}/Trickplay/{*path}", get(proxy_handler))
                 .route("/{item_id}/stream.mkv", get(handlers::videos::get_mkv))
                 .route("/{item_id}/stream.mp4", get(handlers::videos::get_mkv))
                 .route(
