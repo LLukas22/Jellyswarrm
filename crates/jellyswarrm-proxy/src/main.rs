@@ -208,6 +208,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "/AuthenticateByName",
                     post(handlers::users::handle_authenticate_by_name),
                 )
+                .route("/Me", get(handlers::users::handle_get_me))
                 .route("/{user_id}", get(handlers::users::handle_get_user_by_id))
                 .route("/{user_id}/Items", get(handlers::items::get_items))
                 .route(
@@ -270,8 +271,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/Videos",
             Router::new()
                 .route("/{stream_id}/Trickplay/{*path}", get(proxy_handler))
-                .route("/{item_id}/stream.mkv", get(handlers::videos::get_mkv))
-                .route("/{item_id}/stream.mp4", get(handlers::videos::get_mkv))
+                .route("/{item_id}/stream", get(handlers::videos::get_stream))
+                .route("/{item_id}/stream.mkv", get(handlers::videos::get_stream))
+                .route("/{item_id}/stream.mp4", get(handlers::videos::get_stream))
                 .route(
                     "/{stream_id}/{item_id}/{*path}",
                     get(handlers::videos::get_video_resource),

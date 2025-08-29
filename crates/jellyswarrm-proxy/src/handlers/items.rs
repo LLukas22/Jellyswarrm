@@ -3,6 +3,7 @@ use axum::{
     Json,
 };
 use hyper::StatusCode;
+use reqwest::header::{HeaderValue, CONTENT_LENGTH, TRANSFER_ENCODING};
 use reqwest::Body;
 use tracing::{debug, error};
 
@@ -155,10 +156,21 @@ pub async fn post_playback_info(
         }
     }
 
+    debug!("Forwarding PlaybackRequest JSON: {:?}", &payload);
+
     let json = serde_json::to_vec(&payload).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
+    // Set body as a full buffer and provide Content-Length so upstream servers
+    // don't wait for chunked data (which can trigger MinRequestBodyDataRate errors).
+    let len = json.len();
     let mut request = preprocessed.request;
     *request.body_mut() = Some(Body::from(json));
+    // Ensure Content-Length is set and remove Transfer-Encoding if present.
+    request.headers_mut().insert(
+        CONTENT_LENGTH,
+        HeaderValue::from_str(&len.to_string()).unwrap(),
+    );
+    request.headers_mut().remove(TRANSFER_ENCODING);
 
     match execute_json_request::<PlaybackResponse>(&state.reqwest_client, request).await {
         Ok(mut response) => {

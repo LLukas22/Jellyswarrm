@@ -21,7 +21,14 @@ static MEDIA_ID_PATH_TAGS: &[&str] = &[
     "MediaSegments",
 ];
 
-static MEDIA_ID_QUERY_TAGS: &[&str] = &["ParentId", "SeriesId", "MediaSourceId", "Tag", "SeasonId"];
+static MEDIA_ID_QUERY_TAGS: &[&str] = &[
+    "ParentId",
+    "SeriesId",
+    "MediaSourceId",
+    "Tag",
+    "SeasonId",
+    "startItemId",
+];
 
 static USER_ID_PATH_TAGS: &[&str] = &["Users"];
 

@@ -18,8 +18,6 @@ pub struct PlaybackRequest {
     pub audio_stream_index: Option<StreamIndex>,
     #[serde(rename = "AutoOpenLiveStream", skip_serializing_if = "Option::is_none")]
     pub auto_open_live_stream: Option<bool>,
-    #[serde(rename = "DeviceProfile")]
-    pub device_profile: serde_json::Value,
     #[serde(rename = "IsPlayback", skip_serializing_if = "Option::is_none")]
     pub is_playback: Option<bool>,
     #[serde(
@@ -29,8 +27,8 @@ pub struct PlaybackRequest {
     pub max_streaming_bitrate: Option<i64>,
     #[serde(rename = "MediaSourceId", skip_serializing_if = "Option::is_none")]
     pub media_source_id: Option<String>,
-    #[serde(rename = "StartTimeTicks")]
-    pub start_time_ticks: i64,
+    #[serde(rename = "StartTimeTicks", skip_serializing_if = "Option::is_none")]
+    pub start_time_ticks: Option<i64>,
     #[serde(
         rename = "SubtitleStreamIndex",
         skip_serializing_if = "Option::is_none"
@@ -38,6 +36,9 @@ pub struct PlaybackRequest {
     pub subtitle_stream_index: Option<StreamIndex>,
     #[serde(rename = "UserId")]
     pub user_id: String,
+
+    #[serde(flatten)]
+    pub extra: std::collections::HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -306,6 +307,8 @@ pub struct User {
     pub configuration: UserConfiguration,
     #[serde(rename = "Policy")]
     pub policy: UserPolicy,
+    #[serde(flatten)]
+    pub extra: std::collections::HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
