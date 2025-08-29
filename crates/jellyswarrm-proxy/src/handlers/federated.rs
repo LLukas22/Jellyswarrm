@@ -4,7 +4,7 @@ use axum::{
 };
 use hyper::StatusCode;
 use tokio::task::JoinSet;
-use tracing::{debug, error};
+use tracing::{debug, error, trace};
 
 use crate::{
     handlers::{
@@ -167,6 +167,11 @@ pub async fn get_items_from_all_servers(
         "Returning {} interleaved items from {} servers",
         count,
         server_items.len()
+    );
+
+    trace!(
+        "Items: {}",
+        serde_json::to_string(&interleaved_items).unwrap_or_default()
     );
 
     Ok(Json(crate::models::ItemsResponse {

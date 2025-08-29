@@ -9,18 +9,24 @@ pub enum StreamIndex {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PlaybackRequest {
-    #[serde(rename = "AlwaysBurnInSubtitleWhenTranscoding")]
-    pub always_burn_in_subtitle_when_transcoding: bool,
+    #[serde(
+        rename = "AlwaysBurnInSubtitleWhenTranscoding",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub always_burn_in_subtitle_when_transcoding: Option<bool>,
     #[serde(rename = "AudioStreamIndex", skip_serializing_if = "Option::is_none")]
     pub audio_stream_index: Option<StreamIndex>,
-    #[serde(rename = "AutoOpenLiveStream")]
-    pub auto_open_live_stream: bool,
+    #[serde(rename = "AutoOpenLiveStream", skip_serializing_if = "Option::is_none")]
+    pub auto_open_live_stream: Option<bool>,
     #[serde(rename = "DeviceProfile")]
     pub device_profile: serde_json::Value,
-    #[serde(rename = "IsPlayback")]
-    pub is_playback: bool,
-    #[serde(rename = "MaxStreamingBitrate")]
-    pub max_streaming_bitrate: i64,
+    #[serde(rename = "IsPlayback", skip_serializing_if = "Option::is_none")]
+    pub is_playback: Option<bool>,
+    #[serde(
+        rename = "MaxStreamingBitrate",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_streaming_bitrate: Option<i64>,
     #[serde(rename = "MediaSourceId", skip_serializing_if = "Option::is_none")]
     pub media_source_id: Option<String>,
     #[serde(rename = "StartTimeTicks")]
@@ -60,8 +66,8 @@ where
 pub struct ProgressRequest {
     #[serde(rename = "AudioStreamIndex", skip_serializing_if = "Option::is_none")]
     pub audio_stream_index: Option<StreamIndex>,
-    #[serde(rename = "BufferedRanges")]
-    pub buffered_ranges: serde_json::Value,
+    #[serde(rename = "BufferedRanges", skip_serializing_if = "Option::is_none")]
+    pub buffered_ranges: Option<serde_json::Value>,
     #[serde(rename = "CanSeek")]
     pub can_seek: bool,
     #[serde(rename = "EventName", skip_serializing_if = "Option::is_none")]
@@ -72,8 +78,11 @@ pub struct ProgressRequest {
     pub is_paused: bool,
     #[serde(rename = "ItemId")]
     pub item_id: String,
-    #[serde(rename = "MaxStreamingBitrate")]
-    pub max_streaming_bitrate: i64,
+    #[serde(
+        rename = "MaxStreamingBitrate",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_streaming_bitrate: Option<i64>,
     #[serde(rename = "MediaSourceId")]
     pub media_source_id: String,
     #[serde(rename = "NowPlayingQueue", skip_serializing_if = "Option::is_none")]
@@ -534,7 +543,7 @@ pub struct MediaItem {
     pub server_id: Option<String>,
     #[serde(rename = "Id")]
     pub id: String,
-    #[serde(rename = "ItemId")]
+    #[serde(rename = "ItemId", skip_serializing_if = "Option::is_none")]
     pub item_id: Option<String>,
     #[serde(rename = "SeriesId", skip_serializing_if = "Option::is_none")]
     pub series_id: Option<String>,
