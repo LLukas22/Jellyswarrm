@@ -244,6 +244,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .route("/{item_id}", get(handlers::items::get_item))
                 .route("/{item_id}/Similar", get(handlers::items::get_items))
                 .route(
+                    "/Latest",
+                    get(handlers::federated::get_items_from_all_servers),
+                )
+                .route(
                     "/{item_id}/PlaybackInfo",
                     post(handlers::items::post_playback_info),
                 ),

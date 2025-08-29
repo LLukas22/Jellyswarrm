@@ -526,13 +526,46 @@ impl Default for BrandingConfig {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ItemsResponse {
+pub struct ItemsResponseWithCount {
     #[serde(rename = "Items")]
     pub items: Vec<MediaItem>,
     #[serde(rename = "TotalRecordCount")]
     pub total_record_count: i32,
     #[serde(rename = "StartIndex")]
     pub start_index: i32,
+}
+
+/// Accept either the wrapped response with count or a bare array of `MediaItem`.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(untagged)]
+pub enum ItemsResponseVariants {
+    WithCount(ItemsResponseWithCount),
+    Bare(Vec<MediaItem>),
+}
+
+impl ItemsResponseVariants {
+    pub fn iter_mut_items(&mut self) -> std::slice::IterMut<'_, MediaItem> {
+        match self {
+            ItemsResponseVariants::WithCount(w) => w.items.iter_mut(),
+            ItemsResponseVariants::Bare(v) => v.iter_mut(),
+        }
+    }
+
+    /// Return number of items contained in either variant.
+    pub fn len(&self) -> usize {
+        match self {
+            ItemsResponseVariants::WithCount(w) => w.items.len(),
+            ItemsResponseVariants::Bare(v) => v.len(),
+        }
+    }
+
+    /// Return item at `index` if present.
+    pub fn get(&self, index: usize) -> Option<&MediaItem> {
+        match self {
+            ItemsResponseVariants::WithCount(w) => w.items.get(index),
+            ItemsResponseVariants::Bare(v) => v.get(index),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

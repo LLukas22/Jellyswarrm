@@ -11,7 +11,7 @@ use crate::{
         execute_json_request, payload_from_request, process_media_item, process_media_source,
         track_play_session,
     },
-    models::{ItemsResponse, MediaItem, PlaybackRequest, PlaybackResponse},
+    models::{MediaItem, PlaybackRequest, PlaybackResponse},
     request_preprocessing::preprocess_request,
     AppState,
 };
@@ -49,7 +49,7 @@ pub async fn get_item(
 pub async fn get_items(
     State(state): State<AppState>,
     req: Request,
-) -> Result<Json<ItemsResponse>, StatusCode> {
+) -> Result<Json<crate::models::ItemsResponseVariants>, StatusCode> {
     let preprocessed = preprocess_request(req, &state).await.map_err(|e| {
         error!("Failed to preprocess request: {}", e);
         StatusCode::BAD_REQUEST
@@ -57,10 +57,15 @@ pub async fn get_items(
 
     let server = preprocessed.server;
 
-    match execute_json_request::<ItemsResponse>(&state.reqwest_client, preprocessed.request).await {
+    match execute_json_request::<crate::models::ItemsResponseVariants>(
+        &state.reqwest_client,
+        preprocessed.request,
+    )
+    .await
+    {
         Ok(mut response) => {
             let server_id = { state.config.read().await.server_id.clone() };
-            for item in &mut response.items {
+            for item in &mut response.iter_mut_items() {
                 *item = process_media_item(
                     item.clone(),
                     &state.media_storage,
