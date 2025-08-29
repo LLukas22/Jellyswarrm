@@ -23,7 +23,7 @@ pub async fn get_items_from_all_servers_if_not_restricted(
 
     if let Some(query) = req.uri().query() {
         // Check if the request is for a specific series
-        if query.contains("SeriesId") {
+        if query.contains("SeriesId") || query.contains("parentId") {
             return get_items(State(state), req).await;
         }
     }

@@ -241,7 +241,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nest(
             "/Items",
             Router::new()
-                .route("/", get(handlers::federated::get_items_from_all_servers))
+                .route(
+                    "/",
+                    get(handlers::federated::get_items_from_all_servers_if_not_restricted),
+                )
                 .route("/{item_id}", get(handlers::items::get_item))
                 .route("/{item_id}/Similar", get(handlers::items::get_items))
                 .route(
