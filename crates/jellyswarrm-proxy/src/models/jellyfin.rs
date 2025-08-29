@@ -49,17 +49,21 @@ pub struct PlaybackResponse {
     pub play_session_id: String,
 }
 
-fn serialize_playback_rate<S>(value: &f64, serializer: S) -> Result<S::Ok, S::Error>
+fn serialize_playback_rate<S>(value: &Option<f64>, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
     //For some reason Jellyfin expects playbackrates without decimal point to be integers
-    if value.fract() == 0.0 {
-        // Serialize as integer if no fractional part
-        serializer.serialize_i64(*value as i64)
+    if let Some(value) = value {
+        if value.fract() == 0.0 {
+            // Serialize as integer if no fractional part
+            serializer.serialize_i64(*value as i64)
+        } else {
+            // Serialize as float if there's a fractional part
+            serializer.serialize_f64(*value)
+        }
     } else {
-        // Serialize as float if there's a fractional part
-        serializer.serialize_f64(*value)
+        serializer.serialize_none()
     }
 }
 
@@ -69,8 +73,8 @@ pub struct ProgressRequest {
     pub audio_stream_index: Option<StreamIndex>,
     #[serde(rename = "BufferedRanges", skip_serializing_if = "Option::is_none")]
     pub buffered_ranges: Option<serde_json::Value>,
-    #[serde(rename = "CanSeek")]
-    pub can_seek: bool,
+    #[serde(rename = "CanSeek", skip_serializing_if = "Option::is_none")]
+    pub can_seek: Option<bool>,
     #[serde(rename = "EventName", skip_serializing_if = "Option::is_none")]
     pub event_name: Option<String>,
     #[serde(rename = "IsMuted")]
@@ -88,12 +92,19 @@ pub struct ProgressRequest {
     pub media_source_id: String,
     #[serde(rename = "NowPlayingQueue", skip_serializing_if = "Option::is_none")]
     pub now_playing_queue: Option<Vec<NowPlayingQueueItem>>,
-    #[serde(rename = "PlaybackRate", serialize_with = "serialize_playback_rate")]
-    pub playback_rate: f64,
-    #[serde(rename = "PlaybackStartTimeTicks")]
-    pub playback_start_time_ticks: i64,
-    #[serde(rename = "PlaylistItemId")]
-    pub playlist_item_id: String,
+    #[serde(
+        rename = "PlaybackRate",
+        serialize_with = "serialize_playback_rate",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub playback_rate: Option<f64>,
+    #[serde(
+        rename = "PlaybackStartTimeTicks",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub playback_start_time_ticks: Option<i64>,
+    #[serde(rename = "PlaylistItemId", skip_serializing_if = "Option::is_none")]
+    pub playlist_item_id: Option<String>,
     #[serde(rename = "PlayMethod")]
     pub play_method: String,
     #[serde(rename = "PlaySessionId")]
@@ -107,15 +118,18 @@ pub struct ProgressRequest {
         skip_serializing_if = "Option::is_none"
     )]
     pub secondary_subtitle_stream_index: Option<StreamIndex>,
-    #[serde(rename = "ShuffleMode")]
-    pub shuffle_mode: String,
+    #[serde(rename = "ShuffleMode", skip_serializing_if = "Option::is_none")]
+    pub shuffle_mode: Option<String>,
     #[serde(
         rename = "SubtitleStreamIndex",
         skip_serializing_if = "Option::is_none"
     )]
     pub subtitle_stream_index: Option<StreamIndex>,
-    #[serde(rename = "VolumeLevel")]
-    pub volume_level: i32,
+    #[serde(rename = "VolumeLevel", skip_serializing_if = "Option::is_none")]
+    pub volume_level: Option<i32>,
+
+    #[serde(flatten)]
+    pub extra: std::collections::HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

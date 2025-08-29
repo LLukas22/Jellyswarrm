@@ -323,24 +323,25 @@ pub async fn remap_authorization(
         return Ok(None);
     };
 
-    if let Some(session) = session {
+    let remapped_session = if let Some(session) = session {
         match auth {
-            JellyfinAuthorization::Authorization(_) => {
-                return Ok(Some(JellyfinAuthorization::Authorization(
-                    session.to_authorization(),
-                )));
-            }
+            JellyfinAuthorization::Authorization(_) => Some(JellyfinAuthorization::Authorization(
+                session.to_authorization(),
+            )),
             JellyfinAuthorization::XMediaBrowser(_) => {
                 let token = session.jellyfin_token.clone();
-                return Ok(Some(JellyfinAuthorization::XMediaBrowser(token)));
+                Some(JellyfinAuthorization::XMediaBrowser(token))
             }
             JellyfinAuthorization::ApiKey(_) => {
                 let token = session.jellyfin_token.clone();
-                return Ok(Some(JellyfinAuthorization::ApiKey(token)));
+                Some(JellyfinAuthorization::ApiKey(token))
             }
         }
-    }
-    Ok(None)
+    } else {
+        None
+    };
+    debug!("Remapped authorization to: {:?}", remapped_session);
+    Ok(remapped_session)
 }
 pub async fn resolve_server(
     sessions: &Option<Vec<(AuthorizationSession, Server)>>,

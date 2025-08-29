@@ -3,7 +3,7 @@ use axum::{
     Json,
 };
 use hyper::{HeaderMap, StatusCode};
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::{
     handlers::common::execute_json_request,
@@ -225,7 +225,7 @@ async fn authenticate_on_server(
     server_mapping: Option<crate::user_authorization_service::ServerMapping>,
 ) -> Result<AuthenticateResponse, AuthError> {
     let server_url = server.url.as_str().trim_end_matches('/');
-    let auth_url = format!("{server_url}/Users/authenticatebyname");
+    let auth_url = format!("{server_url}/Users/AuthenticateByName");
 
     info!(
         "Authenticating user '{}' at server '{}' ({})",
@@ -257,6 +257,7 @@ async fn authenticate_on_server(
         version: "10.10.7".to_string(),
         token: None,
     });
+    debug!("Using authorization header: {}", auth_header);
 
     // Make authentication request
     let response = state
