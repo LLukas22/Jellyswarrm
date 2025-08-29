@@ -66,7 +66,6 @@ impl MediaStorageService {
         original_media_id: &str,
         server_url: &str,
     ) -> Result<MediaMapping, sqlx::Error> {
-
         let original_media_id = Self::normalize_uuid(original_media_id);
 
         // Try to find existing mapping
@@ -116,7 +115,6 @@ impl MediaStorageService {
         Err(sqlx::Error::RowNotFound)
     }
 
-
     pub fn normalize_uuid(s: &str) -> String {
         match Uuid::parse_str(s) {
             Ok(uuid) => uuid.simple().to_string(),
@@ -129,7 +127,6 @@ impl MediaStorageService {
         &self,
         virtual_media_id: &str,
     ) -> Result<Option<MediaMapping>, sqlx::Error> {
-
         let virtual_media_id = Self::normalize_uuid(virtual_media_id);
 
         let mapping = sqlx::query_as::<_, MediaMapping>(
@@ -152,7 +149,6 @@ impl MediaStorageService {
         original_media_id: &str,
         server_url: &str,
     ) -> Result<Option<MediaMapping>, sqlx::Error> {
-
         let original_media_id = Self::normalize_uuid(original_media_id);
 
         let mapping = sqlx::query_as::<_, MediaMapping>(
@@ -175,9 +171,8 @@ impl MediaStorageService {
         &self,
         virtual_media_id: &str,
     ) -> Result<Option<(MediaMapping, Server)>, sqlx::Error> {
-
         let virtual_media_id = Self::normalize_uuid(virtual_media_id);
-        
+
         let row = sqlx::query(
             r#"
             SELECT 

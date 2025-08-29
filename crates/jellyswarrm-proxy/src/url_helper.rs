@@ -44,7 +44,6 @@ mod tests {
         assert!(is_id_like("c3256b7a-96f3-4772-b7d5-cacb090bbb02")); // with dashes
         assert!(!is_id_like("0123456789abcdef0123456789abcde")); // 31 chars
         assert!(!is_id_like("g123456789abcdef0123456789abcdef")); // non-hex
-       
     }
 
     #[test]

@@ -113,7 +113,7 @@ pub async fn extract_request_infos(
     let request = axum_to_reqwest(req).await?;
 
     let auth = JellyfinAuthorization::from_request(&request);
-    
+
     if let Some(auth) = &auth {
         debug!("Extracted authorization: {:?}", auth);
     } else {
@@ -199,7 +199,10 @@ pub async fn apply_new_target_uri(
     if let Some(session) = session {
         for &path_segment in USER_ID_PATH_TAGS {
             if let Some(user_id) = contains_id(&orig_url, path_segment) {
-                debug!("Replacing user ID in path: {} -> {}", user_id, session.original_user_id);
+                debug!(
+                    "Replacing user ID in path: {} -> {}",
+                    user_id, session.original_user_id
+                );
                 orig_url = replace_id(orig_url, &user_id, &session.original_user_id);
             }
         }
@@ -214,11 +217,7 @@ pub async fn apply_new_target_uri(
                 .await
                 .unwrap_or_default()
             {
-                orig_url = replace_id(
-                    orig_url,
-                    &media_mapping.virtual_media_id,
-                    &media_mapping.original_media_id,
-                );
+                orig_url = replace_id(orig_url, &media_id, &media_mapping.original_media_id);
             }
         }
     }
