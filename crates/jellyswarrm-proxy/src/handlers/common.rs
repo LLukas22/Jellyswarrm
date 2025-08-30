@@ -123,11 +123,7 @@ where
                         let mut snippet = String::new();
                         let context_before = 3;
                         let context_after = 3;
-                        let start_idx = if line_idx >= context_before {
-                            line_idx - context_before
-                        } else {
-                            0
-                        };
+                        let start_idx = line_idx.saturating_sub(context_before);
                         let end_idx = std::cmp::min(lines.len(), line_idx + context_after + 1);
 
                         for i in start_idx..end_idx {
@@ -137,19 +133,18 @@ where
                             if i == line_idx {
                                 // Error line
                                 snippet
-                                    .push_str(&format!(">>> {:>4} | {}\n", line_num, line_content));
+                                    .push_str(&format!(">>> {line_num:>4} | {line_content}\n"));
                                 // Show caret pointing to error column
                                 let visible_col =
                                     std::cmp::min(col_idx, line_content.chars().count());
                                 let spaces = " ".repeat(visible_col);
                                 snippet.push_str(&format!(
-                                    "         | {}^ (column {})\n",
-                                    spaces, col
+                                    "         | {spaces}^ (column {col})\n"
                                 ));
                             } else {
                                 // Context line
                                 snippet
-                                    .push_str(&format!("    {:>4} | {}\n", line_num, line_content));
+                                    .push_str(&format!("    {line_num:>4} | {line_content}\n"));
                             }
                         }
 

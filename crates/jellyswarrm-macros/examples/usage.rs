@@ -37,10 +37,10 @@ fn main() {
     let request1: PlaybackRequest = serde_json::from_str(json_pascal).unwrap();
     let request2: PlaybackRequest = serde_json::from_str(json_camel).unwrap();
 
-    println!("Pascal case JSON parsed: {:?}", request1);
-    println!("Camel case JSON parsed: {:?}", request2);
+    println!("Pascal case JSON parsed: {request1:?}");
+    println!("Camel case JSON parsed: {request2:?}");
 
     // Serialization will use the primary format (first case - pascal in this example)
     let serialized = serde_json::to_string_pretty(&request1).unwrap();
-    println!("Serialized (PascalCase):\n{}", serialized);
+    println!("Serialized (PascalCase):\n{serialized}");
 }
