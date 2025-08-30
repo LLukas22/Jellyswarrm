@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::fs;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use hyper::StatusCode;
 use regex::Regex;
@@ -60,13 +62,102 @@ where
         StatusCode::BAD_GATEWAY
     })?;
 
-    serde_json::from_str(&response_text).map_err(|e| {
-        error!(
-            "Failed to parse response JSON: {}. Response body: {}",
-            e, response_text
-        );
-        StatusCode::BAD_GATEWAY
-    })
+    match serde_json::from_str::<T>(&response_text) {
+        Ok(val) => Ok(val),
+        Err(_original_error) => {
+            // First, try to parse as generic JSON to get a pretty-printed version
+            let pretty_json = match serde_json::from_str::<serde_json::Value>(&response_text) {
+                Ok(val) => {
+                    // JSON is structurally valid, pretty-print it
+                    match serde_json::to_string_pretty(&val) {
+                        Ok(pretty) => pretty,
+                        Err(_) => response_text.clone(),
+                    }
+                }
+                Err(_) => {
+                    // JSON is completely invalid, use original
+                    response_text.clone()
+                }
+            };
+
+            // Now try to parse the pretty JSON as our target type to get better error info
+            let parse_error = match serde_json::from_str::<T>(&pretty_json) {
+                Ok(_) => _original_error, // Shouldn't happen, but use original error
+                Err(e) => e,
+            };
+
+            // Optional file dump in debug builds
+            if cfg!(debug_assertions) {
+                let dump_dir = crate::config::DATA_DIR.join("json_dumps");
+                if fs::create_dir_all(&dump_dir).is_ok() {
+                    let ts = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|d| d.as_millis())
+                        .unwrap_or(0);
+                    let filename = format!(
+                        "json_parse_error_{}_{}.json",
+                        ts,
+                        std::any::type_name::<T>().replace("::", "_")
+                    );
+                    let path = dump_dir.join(filename);
+                    if fs::write(&path, &pretty_json).is_ok() {
+                        info!("Debug: JSON dump saved to {:?}", path);
+                    }
+                }
+            }
+
+            // Extract line/column info and show snippet
+            let err_str = parse_error.to_string();
+            let re = Regex::new(r"line\s*(\d+)\s*column\s*(\d+)").unwrap();
+            if let Some(caps) = re.captures(&err_str) {
+                if let (Some(line_m), Some(col_m)) = (caps.get(1), caps.get(2)) {
+                    if let (Ok(line), Ok(col)) = (
+                        line_m.as_str().parse::<usize>(),
+                        col_m.as_str().parse::<usize>(),
+                    ) {
+                        // Show error with context snippet
+                        let lines: Vec<&str> = pretty_json.lines().collect();
+                        let line_idx = line.saturating_sub(1); // Convert to 0-based
+                        let col_idx = col.saturating_sub(1); // Convert to 0-based
+
+                        let mut snippet = String::new();
+                        let context_before = 3;
+                        let context_after = 3;
+                        let start_idx = line_idx.saturating_sub(context_before);
+                        let end_idx = std::cmp::min(lines.len(), line_idx + context_after + 1);
+
+                        for i in start_idx..end_idx {
+                            let line_num = i + 1;
+                            let line_content = lines.get(i).unwrap_or(&"");
+
+                            if i == line_idx {
+                                // Error line
+                                snippet.push_str(&format!(">>> {line_num:>4} | {line_content}\n"));
+                                // Show caret pointing to error column
+                                let visible_col =
+                                    std::cmp::min(col_idx, line_content.chars().count());
+                                let spaces = " ".repeat(visible_col);
+                                snippet.push_str(&format!("         | {spaces}^ (column {col})\n"));
+                            } else {
+                                // Context line
+                                snippet.push_str(&format!("    {line_num:>4} | {line_content}\n"));
+                            }
+                        }
+
+                        error!(
+                            "JSON parsing failed: {}\nAt line {}, column {}:\n{}",
+                            parse_error, line, col, snippet
+                        );
+                        return Err(StatusCode::BAD_GATEWAY);
+                    }
+                }
+            }
+
+            // Fallback if no line/column info
+            error!("JSON parsing failed: {}", parse_error);
+            Err(StatusCode::BAD_GATEWAY)
+        }
+    }
 }
 
 pub async fn get_virtual_id(
@@ -109,6 +200,7 @@ pub async fn process_media_item(
     }
 
     item.id = get_virtual_id(&item.id, media_storage, server).await?;
+
     if let Some(parent_id) = &item.parent_id {
         item.parent_id = Some(get_virtual_id(parent_id, media_storage, server).await?);
     }

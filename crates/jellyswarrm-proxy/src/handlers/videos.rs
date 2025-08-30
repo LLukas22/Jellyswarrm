@@ -102,7 +102,7 @@ pub async fn get_video_resource(
     Ok(axum::response::Redirect::temporary(new_url.as_ref()))
 }
 
-pub async fn get_mkv(
+pub async fn get_stream(
     State(state): State<AppState>,
     req: Request,
 ) -> Result<axum::response::Redirect, StatusCode> {

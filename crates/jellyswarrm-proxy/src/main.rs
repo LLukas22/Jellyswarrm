@@ -204,6 +204,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "/authenticatebyname",
                     post(handlers::users::handle_authenticate_by_name),
                 )
+                .route(
+                    "/AuthenticateByName",
+                    post(handlers::users::handle_authenticate_by_name),
+                )
+                .route("/Me", get(handlers::users::handle_get_me))
                 .route("/{user_id}", get(handlers::users::handle_get_user_by_id))
                 .route("/{user_id}/Items", get(handlers::items::get_items))
                 .route(
@@ -236,7 +241,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nest(
             "/Items",
             Router::new()
-                .route("/", get(handlers::federated::get_items_from_all_servers))
+                .route(
+                    "/",
+                    get(handlers::federated::get_items_from_all_servers_if_not_restricted),
+                )
+                .route(
+                    "/Suggestions",
+                    get(handlers::federated::get_items_from_all_servers_if_not_restricted),
+                )
+                .route(
+                    "/Latest",
+                    get(handlers::federated::get_items_from_all_servers_if_not_restricted),
+                )
                 .route("/{item_id}", get(handlers::items::get_item))
                 .route("/{item_id}/Similar", get(handlers::items::get_items))
                 .route(
@@ -262,8 +278,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/Videos",
             Router::new()
                 .route("/{stream_id}/Trickplay/{*path}", get(proxy_handler))
-                .route("/{item_id}/stream.mkv", get(handlers::videos::get_mkv))
-                .route("/{item_id}/stream.mp4", get(handlers::videos::get_mkv))
+                .route("/{item_id}/stream", get(handlers::videos::get_stream))
+                .route("/{item_id}/stream.mkv", get(handlers::videos::get_stream))
+                .route("/{item_id}/stream.mp4", get(handlers::videos::get_stream))
                 .route(
                     "/{stream_id}/{item_id}/{*path}",
                     get(handlers::videos::get_video_resource),
@@ -397,6 +414,7 @@ async fn proxy_handler(
         StatusCode::BAD_REQUEST
     })?;
 
+    let request_url = preprocessed.request.url().clone();
     debug!(
         "Proxy request details:\n  Original: {:?}\n  Target URL: {}\n  Transformed: {:?}",
         preprocessed.original_request,
@@ -414,6 +432,12 @@ async fn proxy_handler(
         })?;
 
     let status = response.status();
+    if !status.is_success() {
+        warn!(
+            "Upstream server returned error status: {} for Request to: {}",
+            status, request_url
+        );
+    }
     let headers = response.headers().clone();
     let body_bytes = response.bytes().await.map_err(|e| {
         error!("Failed to read response body: {}", e);

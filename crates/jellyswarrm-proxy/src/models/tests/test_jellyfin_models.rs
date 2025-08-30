@@ -3,7 +3,7 @@ use std::fs;
 
 #[cfg(test)]
 mod tests {
-    use crate::models::ItemsResponse;
+    use crate::models::ItemsResponseWithCount;
 
     use super::*;
 
@@ -82,7 +82,7 @@ mod tests {
         let json_content = fs::read_to_string(file_path).expect("Failed to read items.json file");
 
         // Deserialize the JSON into a MediaItem
-        let _: ItemsResponse = serde_json::from_str(&json_content)
+        let _: ItemsResponseWithCount = serde_json::from_str(&json_content)
             .expect("Failed to deserialize JSON into ItemsResponse");
     }
 
@@ -97,7 +97,7 @@ mod tests {
             fs::read_to_string(file_path).expect("Failed to read userviews.json file");
 
         // Deserialize the JSON into a MediaItem
-        let _: ItemsResponse = serde_json::from_str(&json_content)
+        let _: ItemsResponseWithCount = serde_json::from_str(&json_content)
             .expect("Failed to deserialize JSON into ItemsResponse");
     }
 
@@ -187,7 +187,7 @@ mod tests {
         let json_content =
             fs::read_to_string(file_path).expect("Failed to read series_nextup.json file");
 
-        let media_items: ItemsResponse = serde_json::from_str(&json_content)
+        let media_items: ItemsResponseWithCount = serde_json::from_str(&json_content)
             .expect("Failed to deserialize JSON into ItemsResponse");
 
         assert!(
@@ -204,7 +204,7 @@ mod tests {
         let json_content =
             fs::read_to_string(file_path).expect("Failed to read episodes.json file");
 
-        let media_items: ItemsResponse = serde_json::from_str(&json_content)
+        let media_items: ItemsResponseWithCount = serde_json::from_str(&json_content)
             .expect("Failed to deserialize JSON into ItemsResponse");
 
         assert!(

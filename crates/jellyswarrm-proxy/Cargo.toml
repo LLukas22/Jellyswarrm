@@ -12,6 +12,7 @@ name = "jellyswarrm-proxy"
 path = "src/main.rs"
 
 [dependencies]
+jellyswarrm-macros.workspace = true
 axum.workspace = true
 tokio.workspace = true
 tower.workspace = true
@@ -55,6 +56,8 @@ tower-sessions = { version = "0.14.0", features = ["signed"] }
 tower-sessions-sqlx-store = { version = "0.15.0", features = ["sqlite"] }
 time = "0.3.41"
 base64 = "0.22.1"
+serde-aux = "4.7.0"
+serde_with.workspace = true
 
 [dev-dependencies]
 tokio-test = "0.4.4"

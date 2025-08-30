@@ -3,8 +3,10 @@ use axum::{
     Json,
 };
 use hyper::StatusCode;
+use once_cell::sync::Lazy;
+use regex::Regex;
 use tokio::task::JoinSet;
-use tracing::{debug, error};
+use tracing::{debug, error, trace};
 
 use crate::{
     handlers::{
@@ -15,15 +17,18 @@ use crate::{
     AppState,
 };
 
+static SERIES_OR_PARENT_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new("(?i)(seriesid|parentid)").unwrap());
+
 pub async fn get_items_from_all_servers_if_not_restricted(
     State(state): State<AppState>,
     req: Request,
-) -> Result<Json<crate::models::ItemsResponse>, StatusCode> {
+) -> Result<Json<crate::models::ItemsResponseVariants>, StatusCode> {
     // Extract request information and sessions
 
     if let Some(query) = req.uri().query() {
-        // Check if the request is for a specific series
-        if query.contains("SeriesId") {
+        // Check if the request is for a specific series or folder
+        if SERIES_OR_PARENT_RE.is_match(query) {
             return get_items(State(state), req).await;
         }
     }
@@ -34,7 +39,7 @@ pub async fn get_items_from_all_servers_if_not_restricted(
 pub async fn get_items_from_all_servers(
     State(state): State<AppState>,
     req: Request,
-) -> Result<Json<crate::models::ItemsResponse>, StatusCode> {
+) -> Result<Json<crate::models::ItemsResponseVariants>, StatusCode> {
     let (original_request, _, _, sessions) =
         extract_request_infos(req, &state).await.map_err(|e| {
             error!("Failed to preprocess request: {}", e);
@@ -75,19 +80,17 @@ pub async fn get_items_from_all_servers(
             )
             .await;
 
-            let result = match execute_json_request::<crate::models::ItemsResponse>(
+            let result = match execute_json_request::<crate::models::ItemsResponseVariants>(
                 &state_clone.reqwest_client,
                 request,
             )
             .await
             {
-                Ok(items_response) => {
-                    let mut processed_items = Vec::new();
-
+                Ok(mut items_response) => {
                     let server_id = { state_clone.config.read().await.server_id.clone() };
-                    for item in items_response.items {
+                    for item in items_response.iter_mut_items() {
                         match process_media_item(
-                            item,
+                            item.clone(),
                             &state_clone.media_storage,
                             &server_clone,
                             true, // Change name to include server name
@@ -95,7 +98,7 @@ pub async fn get_items_from_all_servers(
                         )
                         .await
                         {
-                            Ok(processed_item) => processed_items.push(processed_item),
+                            Ok(processed_item) => *item = processed_item,
                             Err(e) => {
                                 error!(
                                     "Failed to process media item from server '{}': {:?}",
@@ -106,12 +109,17 @@ pub async fn get_items_from_all_servers(
                         }
                     }
 
-                    let item_count = processed_items.len();
+                    let item_count = items_response.len();
                     debug!(
                         "Successfully retrieved {} items from server: {}",
                         item_count, server_clone.name
                     );
-                    Some(processed_items)
+                    trace!(
+                        "Items from server '{}': {}",
+                        server_clone.name,
+                        serde_json::to_string(&items_response).unwrap_or_default()
+                    );
+                    Some(items_response)
                 }
                 Err(e) => {
                     error!(
@@ -127,7 +135,8 @@ pub async fn get_items_from_all_servers(
     }
 
     // Wait for all tasks to complete and collect results with their original indices
-    let mut indexed_results: Vec<(usize, Option<Vec<crate::models::MediaItem>>)> = Vec::new();
+    let mut indexed_results: Vec<(usize, Option<crate::models::ItemsResponseVariants>)> =
+        Vec::new();
     while let Some(result) = join_set.join_next().await {
         match result {
             Ok((index, items)) => indexed_results.push((index, items)),
@@ -139,7 +148,7 @@ pub async fn get_items_from_all_servers(
     indexed_results.sort_by_key(|(index, _)| *index);
 
     // Extract items in original server order
-    let mut server_items: Vec<Vec<crate::models::MediaItem>> = Vec::new();
+    let mut server_items: Vec<crate::models::ItemsResponseVariants> = Vec::new();
     for (_, items) in indexed_results {
         if let Some(items) = items {
             server_items.push(items);
@@ -169,9 +178,25 @@ pub async fn get_items_from_all_servers(
         server_items.len()
     );
 
-    Ok(Json(crate::models::ItemsResponse {
-        items: interleaved_items,
-        total_record_count: count as i32,
-        start_index: 0,
-    }))
+    trace!(
+        "Items: {}",
+        serde_json::to_string(&interleaved_items).unwrap_or_default()
+    );
+
+    if server_items
+        .iter()
+        .any(|items| matches!(items, crate::models::ItemsResponseVariants::WithCount(_)))
+    {
+        Ok(Json(crate::models::ItemsResponseVariants::WithCount(
+            crate::models::ItemsResponseWithCount {
+                items: interleaved_items,
+                total_record_count: count as i32,
+                start_index: 0,
+            },
+        )))
+    } else {
+        Ok(Json(crate::models::ItemsResponseVariants::Bare(
+            interleaved_items,
+        )))
+    }
 }

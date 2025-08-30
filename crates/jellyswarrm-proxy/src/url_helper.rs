@@ -1,7 +1,8 @@
 use url::Url;
+use uuid::Uuid;
 
 pub fn is_id_like(segment: &str) -> bool {
-    segment.len() == 32 && segment.chars().all(|c| c.is_ascii_hexdigit())
+    Uuid::parse_str(segment).is_ok()
 }
 
 pub fn contains_id(url: &Url, name: &str) -> Option<String> {
@@ -40,6 +41,7 @@ mod tests {
     #[test]
     fn test_is_id_like() {
         assert!(is_id_like("0123456789abcdef0123456789abcdef"));
+        assert!(is_id_like("c3256b7a-96f3-4772-b7d5-cacb090bbb02")); // with dashes
         assert!(!is_id_like("0123456789abcdef0123456789abcde")); // 31 chars
         assert!(!is_id_like("g123456789abcdef0123456789abcdef")); // non-hex
     }
