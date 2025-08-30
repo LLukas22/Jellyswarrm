@@ -36,7 +36,7 @@ pub async fn post_playing(
         if payload.media_source_id.is_some() {
             payload.media_source_id = Some(media_mapping.original_media_id.clone());
         }
-        
+
         payload.item_id = media_mapping.original_media_id.clone();
 
         if let Some(now_playing_queue) = payload.now_playing_queue.as_mut() {

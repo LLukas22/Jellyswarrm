@@ -43,6 +43,7 @@ Jellyswarrm is a reverse proxy that lets you combine multiple Jellyfin servers i
 
 ### ⚠️ In Progress
 
+- **QuickConnect** – This feature isn’t available yet. Please log in using your **username & password** for now.
 * **Websocket Support** – Needed for real-time features like SyncPlay (not fully reliable yet).
 * **Audio Streaming** – May not function correctly (still untested in many cases).
 * **Automatic Bitrate Adjustment** – Stream quality based on network conditions isn’t supported yet.
