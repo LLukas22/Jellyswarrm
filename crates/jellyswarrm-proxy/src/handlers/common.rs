@@ -132,19 +132,15 @@ where
 
                             if i == line_idx {
                                 // Error line
-                                snippet
-                                    .push_str(&format!(">>> {line_num:>4} | {line_content}\n"));
+                                snippet.push_str(&format!(">>> {line_num:>4} | {line_content}\n"));
                                 // Show caret pointing to error column
                                 let visible_col =
                                     std::cmp::min(col_idx, line_content.chars().count());
                                 let spaces = " ".repeat(visible_col);
-                                snippet.push_str(&format!(
-                                    "         | {spaces}^ (column {col})\n"
-                                ));
+                                snippet.push_str(&format!("         | {spaces}^ (column {col})\n"));
                             } else {
                                 // Context line
-                                snippet
-                                    .push_str(&format!("    {line_num:>4} | {line_content}\n"));
+                                snippet.push_str(&format!("    {line_num:>4} | {line_content}\n"));
                             }
                         }
 
