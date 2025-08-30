@@ -54,6 +54,7 @@ tower-sessions-sqlx-store = { version = "0.15.0", features = ["sqlite"] }
 time = "0.3.41"
 base64 = "0.22.1"
 serde-aux = "4.7.0"
+serde_with.workspace = true
 
 [dev-dependencies]
 tokio-test = "0.4.4"
