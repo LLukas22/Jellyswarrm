@@ -12,9 +12,24 @@ use crate::user_authorization_service::{AuthorizationSession, Device, User};
 use crate::AppState;
 
 // Static configuration for server resolution
-static MEDIA_ID_PATH_TAGS: &[&str] = &["Items", "Shows", "Videos", "PlayedItems", "FavoriteItems"];
+static MEDIA_ID_PATH_TAGS: &[&str] = &[
+    "Items",
+    "Shows",
+    "Videos",
+    "PlayedItems",
+    "FavoriteItems",
+    "MediaSegments",
+    "PlayingItems",
+];
 
-static MEDIA_ID_QUERY_TAGS: &[&str] = &["ParentId", "SeriesId", "MediaSourceId", "Tag", "SeasonId"];
+static MEDIA_ID_QUERY_TAGS: &[&str] = &[
+    "ParentId",
+    "SeriesId",
+    "MediaSourceId",
+    "Tag",
+    "SeasonId",
+    "startItemId",
+];
 
 static USER_ID_PATH_TAGS: &[&str] = &["Users"];
 
@@ -107,6 +122,12 @@ pub async fn extract_request_infos(
 
     let auth = JellyfinAuthorization::from_request(&request);
 
+    if let Some(auth) = &auth {
+        debug!("Extracted authorization: {:?}", auth);
+    } else {
+        debug!("No authorization found in request");
+    }
+
     let device = if let Some(auth) = &auth {
         auth.get_device()
     } else {
@@ -181,11 +202,15 @@ pub async fn apply_new_target_uri(
 
     // Get the original path and query
     let mut orig_url = request.url().clone();
-
+    debug!("Original request URL: {}", orig_url);
     // Handle user ID replacement in the path if session is available
     if let Some(session) = session {
         for &path_segment in USER_ID_PATH_TAGS {
             if let Some(user_id) = contains_id(&orig_url, path_segment) {
+                debug!(
+                    "Replacing user ID in path: {} -> {}",
+                    user_id, session.original_user_id
+                );
                 orig_url = replace_id(orig_url, &user_id, &session.original_user_id);
             }
         }
@@ -200,11 +225,11 @@ pub async fn apply_new_target_uri(
                 .await
                 .unwrap_or_default()
             {
-                orig_url = replace_id(
-                    orig_url,
-                    &media_mapping.virtual_media_id,
-                    &media_mapping.original_media_id,
+                debug!(
+                    "Replacing media ID in path: {} -> {}",
+                    media_id, media_mapping.original_media_id
                 );
+                orig_url = replace_id(orig_url, &media_id, &media_mapping.original_media_id);
             }
         }
     }
@@ -249,6 +274,10 @@ pub async fn apply_new_target_uri(
                 .await
                 .unwrap_or_default()
             {
+                debug!(
+                    "Replacing media ID in query: {} -> {}",
+                    param_value, media_mapping.original_media_id
+                );
                 pairs[idx].1 = media_mapping.original_media_id;
             }
         }
@@ -302,24 +331,25 @@ pub async fn remap_authorization(
         return Ok(None);
     };
 
-    if let Some(session) = session {
+    let remapped_session = if let Some(session) = session {
         match auth {
-            JellyfinAuthorization::Authorization(_) => {
-                return Ok(Some(JellyfinAuthorization::Authorization(
-                    session.to_authorization(),
-                )));
-            }
+            JellyfinAuthorization::Authorization(_) => Some(JellyfinAuthorization::Authorization(
+                session.to_authorization(),
+            )),
             JellyfinAuthorization::XMediaBrowser(_) => {
                 let token = session.jellyfin_token.clone();
-                return Ok(Some(JellyfinAuthorization::XMediaBrowser(token)));
+                Some(JellyfinAuthorization::XMediaBrowser(token))
             }
             JellyfinAuthorization::ApiKey(_) => {
                 let token = session.jellyfin_token.clone();
-                return Ok(Some(JellyfinAuthorization::ApiKey(token)));
+                Some(JellyfinAuthorization::ApiKey(token))
             }
         }
-    }
-    Ok(None)
+    } else {
+        None
+    };
+    debug!("Remapped authorization to: {:?}", remapped_session);
+    Ok(remapped_session)
 }
 pub async fn resolve_server(
     sessions: &Option<Vec<(AuthorizationSession, Server)>>,
@@ -355,7 +385,7 @@ pub async fn resolve_server(
             if let Some(param_value) = request
                 .url()
                 .query_pairs()
-                .find(|(k, _)| k == param_name)
+                .find(|(k, _)| k.eq_ignore_ascii_case(param_name))
                 .map(|(_, v)| v.to_string())
             {
                 debug!("Found {} in query: {}", param_name, param_value);

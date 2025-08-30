@@ -1,17 +1,18 @@
 [workspace]
 members = [
     "crates/jellyswarrm-proxy",
+    "crates/jellyswarrm-macros",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.3"
 edition = "2021"
-authors = ["Your Name <your.email@example.com>"]
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/yourusername/jellyswarrm"
+authors = ["lukaskreussel@gmail.com"]
+repository = "https://github.com/LLukas22/Jellyswarrm"
 
 [workspace.dependencies]
+jellyswarrm-macros = { path = "crates/jellyswarrm-macros" }
 # HTTP and Web Framework
 axum = { version = "0.8", features = ["macros"] }
 tower = "0.4"
@@ -45,6 +46,7 @@ sha2 = "0.10"
 hex = "0.4"
 csv = "1.3"
 rand = "0.8"
+serde_with = "3.14.0"
 
 # Development dependencies
 tokio-test = "0.4"

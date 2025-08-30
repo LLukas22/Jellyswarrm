@@ -3,7 +3,7 @@ use axum::{
     Json,
 };
 use hyper::{HeaderMap, StatusCode};
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::{
     handlers::common::execute_json_request,
@@ -11,6 +11,49 @@ use crate::{
     request_preprocessing::preprocess_request,
     AppState,
 };
+
+use anyhow::Result;
+
+async fn process_user(
+    server_user: crate::models::User,
+    user: &crate::user_authorization_service::User,
+    state: &AppState,
+) -> Result<crate::models::User> {
+    let mut server_user = server_user;
+
+    server_user.id = user.id.clone();
+    server_user.name = user.original_username.clone();
+    server_user.policy.is_administrator = false;
+
+    server_user.server_id = state.config.read().await.server_id.clone();
+
+    Ok(server_user)
+}
+
+pub async fn handle_get_me(
+    State(state): State<AppState>,
+    req: Request,
+) -> Result<Json<crate::models::User>, StatusCode> {
+    let preprocessed = preprocess_request(req, &state).await.map_err(|e| {
+        error!("Failed to preprocess request: {}", e);
+        StatusCode::BAD_REQUEST
+    })?;
+
+    let user = preprocessed.user.ok_or(StatusCode::UNAUTHORIZED)?;
+
+    // Execute request and parse JSON response
+    let server_user: crate::models::User =
+        execute_json_request(&state.reqwest_client, preprocessed.request).await?;
+
+    let server_user = process_user(server_user, &user, &state)
+        .await
+        .map_err(|e| {
+            error!("Failed to process user: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(server_user))
+}
 
 pub async fn handle_get_user_by_id(
     State(state): State<AppState>,
@@ -24,7 +67,8 @@ pub async fn handle_get_user_by_id(
     })?;
 
     let session = preprocessed.session.ok_or(StatusCode::UNAUTHORIZED)?;
-    let user = preprocessed.user.ok_or(StatusCode::UNAUTHORIZED)?;
+    let user: crate::user_authorization_service::User =
+        preprocessed.user.ok_or(StatusCode::UNAUTHORIZED)?;
 
     // Build request URL
     let server_url = preprocessed.server.url.as_str().trim_end_matches('/');
@@ -34,15 +78,15 @@ pub async fn handle_get_user_by_id(
     *request.url_mut() = reqwest::Url::parse(&user_url).map_err(|_| StatusCode::BAD_REQUEST)?;
 
     // Execute request and parse JSON response
-    let mut server_user: crate::models::User =
+    let server_user: crate::models::User =
         execute_json_request(&state.reqwest_client, request).await?;
 
-    // Override response fields with proxy values
-    server_user.id = user.id;
-    server_user.name = user.original_username.clone();
-    server_user.policy.is_administrator = false;
-
-    server_user.server_id = state.config.read().await.server_id.clone();
+    let server_user = process_user(server_user, &user, &state)
+        .await
+        .map_err(|e| {
+            error!("Failed to process user: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     Ok(Json(server_user))
 }
@@ -181,7 +225,7 @@ async fn authenticate_on_server(
     server_mapping: Option<crate::user_authorization_service::ServerMapping>,
 ) -> Result<AuthenticateResponse, AuthError> {
     let server_url = server.url.as_str().trim_end_matches('/');
-    let auth_url = format!("{server_url}/Users/authenticatebyname");
+    let auth_url = format!("{server_url}/Users/AuthenticateByName");
 
     info!(
         "Authenticating user '{}' at server '{}' ({})",
@@ -213,6 +257,7 @@ async fn authenticate_on_server(
         version: "10.10.7".to_string(),
         token: None,
     });
+    debug!("Using authorization header: {}", auth_header);
 
     // Make authentication request
     let response = state

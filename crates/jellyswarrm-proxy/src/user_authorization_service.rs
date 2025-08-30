@@ -473,49 +473,73 @@ impl UserAuthorizationService {
         user_id: &str,
         device: Option<Device>,
     ) -> Result<Vec<(AuthorizationSession, Server)>, sqlx::Error> {
-        let mut query = String::from(
+        let base_select = String::from(
             r#"
-            SELECT 
-                auth.id as auth_id,
-                auth.user_id as auth_user_id,
-                auth.mapping_id as auth_mapping_id,
-                auth.server_url as auth_server_url,
-                auth.client,
-                auth.device,
-                auth.device_id,
-                auth.version,
-                auth.jellyfin_token,
-                auth.original_user_id,
-                auth.expires_at,
-                auth.created_at as auth_created_at,
-                auth.updated_at as auth_updated_at,
-                
-                s.id as server_id,
-                s.name as server_name,
-                s.url as server_url_full,
-                s.priority,
-                s.created_at as server_created_at,
-                s.updated_at as server_updated_at
-            FROM authorization_sessions auth
-            JOIN servers s ON RTRIM(auth.server_url, '/') = RTRIM(s.url, '/')
-            WHERE auth.user_id = ?
-            AND (auth.expires_at IS NULL OR auth.expires_at > ?)
-        "#,
+    SELECT 
+        auth.id as auth_id,
+        auth.user_id as auth_user_id,
+        auth.mapping_id as auth_mapping_id,
+        auth.server_url as auth_server_url,
+        auth.client,
+        auth.device,
+        auth.device_id,
+        auth.version,
+        auth.jellyfin_token,
+        auth.original_user_id,
+        auth.expires_at,
+        auth.created_at as auth_created_at,
+        auth.updated_at as auth_updated_at,
+        
+        s.id as server_id,
+        s.name as server_name,
+        s.url as server_url_full,
+        s.priority,
+        s.created_at as server_created_at,
+        s.updated_at as server_updated_at
+    FROM authorization_sessions auth
+    JOIN servers s ON RTRIM(auth.server_url, '/') = RTRIM(s.url, '/')
+    WHERE auth.user_id = ?
+    AND (auth.expires_at IS NULL OR auth.expires_at > ?)
+"#,
         );
-        if device.is_some() {
-            query.push_str(" AND auth.device_id = ? ");
-            query.push_str(" AND auth.client = ? ");
-        }
-        query.push_str(" ORDER BY s.priority DESC, s.name ASC ");
 
-        let mut sql_query = sqlx::query(&query).bind(user_id).bind(chrono::Utc::now());
+        let order_by = " ORDER BY s.priority DESC, s.name ASC ";
 
-        if let Some(device) = device {
-            sql_query = sql_query.bind(device.device_id);
-            sql_query = sql_query.bind(device.client);
-        }
+        let rows = if let Some(device) = device {
+            // 1) Try device_id + client
+            let query1 =
+                format!("{base_select} AND auth.device_id = ? AND auth.client = ? {order_by}");
+            let rows1 = sqlx::query(&query1)
+                .bind(user_id)
+                .bind(chrono::Utc::now())
+                .bind(&device.device_id)
+                .bind(&device.client)
+                .fetch_all(&self.pool)
+                .await?;
 
-        let rows = sql_query.fetch_all(&self.pool).await?;
+            if !rows1.is_empty() {
+                rows1
+            } else {
+                // 2) Fallback: device (name) + client
+                let query2 =
+                    format!("{base_select} AND auth.device = ? AND auth.client = ? {order_by}");
+                sqlx::query(&query2)
+                    .bind(user_id)
+                    .bind(chrono::Utc::now())
+                    .bind(&device.device)
+                    .bind(&device.client)
+                    .fetch_all(&self.pool)
+                    .await?
+            }
+        } else {
+            // No device provided -> just run the base with ORDER BY
+            let query = format!("{base_select}{order_by}");
+            sqlx::query(&query)
+                .bind(user_id)
+                .bind(chrono::Utc::now())
+                .fetch_all(&self.pool)
+                .await?
+        };
 
         let sessions = rows
             .into_iter()

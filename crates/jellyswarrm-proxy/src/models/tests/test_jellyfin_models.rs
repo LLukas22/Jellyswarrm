@@ -3,7 +3,7 @@ use std::fs;
 
 #[cfg(test)]
 mod tests {
-    use crate::models::{ItemsResponse, PlaybackRequest, PlaybackResponse};
+    use crate::models::ItemsResponseWithCount;
 
     use super::*;
 
@@ -21,8 +21,11 @@ mod tests {
             serde_json::from_str(&json_content).expect("Failed to deserialize JSON into MediaItem");
 
         // Verify basic fields are correct
-        assert_eq!(media_item.name, "The Batman");
-        assert_eq!(media_item.server_id, "0555e8a91bfc4189a2585ede39a52dc8");
+        assert_eq!(media_item.name.as_ref().unwrap(), "The Batman");
+        assert_eq!(
+            media_item.server_id.unwrap(),
+            "0555e8a91bfc4189a2585ede39a52dc8"
+        );
         assert_eq!(media_item.id, "165a66aa5bd2e62c0df0f8da332ae47d");
 
         // Test optional fields
@@ -62,7 +65,11 @@ mod tests {
         assert_eq!(first_source.size.unwrap(), 94045682646);
 
         println!("✅ Successfully deserialized MediaItem from JSON!");
-        println!("Media Item: {} ({})", media_item.name, media_item.item_type);
+        println!(
+            "Media Item: {} ({})",
+            media_item.name.as_ref().unwrap(),
+            media_item.item_type
+        );
     }
 
     #[test]
@@ -75,7 +82,7 @@ mod tests {
         let json_content = fs::read_to_string(file_path).expect("Failed to read items.json file");
 
         // Deserialize the JSON into a MediaItem
-        let _: ItemsResponse = serde_json::from_str(&json_content)
+        let _: ItemsResponseWithCount = serde_json::from_str(&json_content)
             .expect("Failed to deserialize JSON into ItemsResponse");
     }
 
@@ -90,7 +97,7 @@ mod tests {
             fs::read_to_string(file_path).expect("Failed to read userviews.json file");
 
         // Deserialize the JSON into a MediaItem
-        let _: ItemsResponse = serde_json::from_str(&json_content)
+        let _: ItemsResponseWithCount = serde_json::from_str(&json_content)
             .expect("Failed to deserialize JSON into ItemsResponse");
     }
 
@@ -144,8 +151,8 @@ mod tests {
         let media_item: MediaItem = serde_json::from_str(minimal_json)
             .expect("Failed to deserialize minimal MediaItem JSON");
 
-        assert_eq!(media_item.name, "Test Movie");
-        assert_eq!(media_item.server_id, "test-server-id");
+        assert_eq!(media_item.name.unwrap(), "Test Movie");
+        assert_eq!(media_item.server_id.unwrap(), "test-server-id");
         assert_eq!(media_item.id, "test-id");
         assert_eq!(media_item.is_folder, Some(false));
         assert_eq!(media_item.item_type, "Movie");
@@ -180,7 +187,7 @@ mod tests {
         let json_content =
             fs::read_to_string(file_path).expect("Failed to read series_nextup.json file");
 
-        let media_items: ItemsResponse = serde_json::from_str(&json_content)
+        let media_items: ItemsResponseWithCount = serde_json::from_str(&json_content)
             .expect("Failed to deserialize JSON into ItemsResponse");
 
         assert!(
@@ -197,7 +204,7 @@ mod tests {
         let json_content =
             fs::read_to_string(file_path).expect("Failed to read episodes.json file");
 
-        let media_items: ItemsResponse = serde_json::from_str(&json_content)
+        let media_items: ItemsResponseWithCount = serde_json::from_str(&json_content)
             .expect("Failed to deserialize JSON into ItemsResponse");
 
         assert!(

@@ -3,6 +3,7 @@ use axum::{
     Json,
 };
 use hyper::StatusCode;
+use reqwest::header::{HeaderValue, CONTENT_LENGTH, TRANSFER_ENCODING};
 use reqwest::Body;
 use tracing::{debug, error};
 
@@ -11,7 +12,7 @@ use crate::{
         execute_json_request, payload_from_request, process_media_item, process_media_source,
         track_play_session,
     },
-    models::{ItemsResponse, MediaItem, PlaybackRequest, PlaybackResponse},
+    models::{MediaItem, PlaybackRequest, PlaybackResponse},
     request_preprocessing::preprocess_request,
     AppState,
 };
@@ -49,7 +50,7 @@ pub async fn get_item(
 pub async fn get_items(
     State(state): State<AppState>,
     req: Request,
-) -> Result<Json<ItemsResponse>, StatusCode> {
+) -> Result<Json<crate::models::ItemsResponseVariants>, StatusCode> {
     let preprocessed = preprocess_request(req, &state).await.map_err(|e| {
         error!("Failed to preprocess request: {}", e);
         StatusCode::BAD_REQUEST
@@ -57,10 +58,15 @@ pub async fn get_items(
 
     let server = preprocessed.server;
 
-    match execute_json_request::<ItemsResponse>(&state.reqwest_client, preprocessed.request).await {
+    match execute_json_request::<crate::models::ItemsResponseVariants>(
+        &state.reqwest_client,
+        preprocessed.request,
+    )
+    .await
+    {
         Ok(mut response) => {
             let server_id = { state.config.read().await.server_id.clone() };
-            for item in &mut response.items {
+            for item in &mut response.iter_mut_items() {
                 *item = process_media_item(
                     item.clone(),
                     &state.media_storage,
@@ -150,10 +156,21 @@ pub async fn post_playback_info(
         }
     }
 
+    debug!("Forwarding PlaybackRequest JSON: {:?}", &payload);
+
     let json = serde_json::to_vec(&payload).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
+    // Set body as a full buffer and provide Content-Length so upstream servers
+    // don't wait for chunked data (which can trigger MinRequestBodyDataRate errors).
+    let len = json.len();
     let mut request = preprocessed.request;
     *request.body_mut() = Some(Body::from(json));
+    // Ensure Content-Length is set and remove Transfer-Encoding if present.
+    request.headers_mut().insert(
+        CONTENT_LENGTH,
+        HeaderValue::from_str(&len.to_string()).unwrap(),
+    );
+    request.headers_mut().remove(TRANSFER_ENCODING);
 
     match execute_json_request::<PlaybackResponse>(&state.reqwest_client, request).await {
         Ok(mut response) => {
