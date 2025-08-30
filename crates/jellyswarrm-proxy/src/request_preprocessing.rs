@@ -225,6 +225,10 @@ pub async fn apply_new_target_uri(
                 .await
                 .unwrap_or_default()
             {
+                debug!(
+                    "Replacing media ID in path: {} -> {}",
+                    media_id, media_mapping.original_media_id
+                );
                 orig_url = replace_id(orig_url, &media_id, &media_mapping.original_media_id);
             }
         }
@@ -270,6 +274,10 @@ pub async fn apply_new_target_uri(
                 .await
                 .unwrap_or_default()
             {
+                debug!(
+                    "Replacing media ID in query: {} -> {}",
+                    param_value, media_mapping.original_media_id
+                );
                 pairs[idx].1 = media_mapping.original_media_id;
             }
         }
@@ -377,7 +385,7 @@ pub async fn resolve_server(
             if let Some(param_value) = request
                 .url()
                 .query_pairs()
-                .find(|(k, _)| k == param_name)
+                .find(|(k, _)| k.eq_ignore_ascii_case(param_name))
                 .map(|(_, v)| v.to_string())
             {
                 debug!("Found {} in query: {}", param_name, param_value);

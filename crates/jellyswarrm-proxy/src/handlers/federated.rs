@@ -22,7 +22,7 @@ pub async fn get_items_from_all_servers_if_not_restricted(
     // Extract request information and sessions
 
     if let Some(query) = req.uri().query() {
-        // Check if the request is for a specific series
+        // Check if the request is for a specific series or folder
         if query.contains("SeriesId") || query.contains("parentId") {
             return get_items(State(state), req).await;
         }
@@ -108,6 +108,11 @@ pub async fn get_items_from_all_servers(
                     debug!(
                         "Successfully retrieved {} items from server: {}",
                         item_count, server_clone.name
+                    );
+                    trace!(
+                        "Items from server '{}': {}",
+                        server_clone.name,
+                        serde_json::to_string(&items_response).unwrap_or_default()
                     );
                     Some(items_response)
                 }
