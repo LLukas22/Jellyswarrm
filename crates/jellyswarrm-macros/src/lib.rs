@@ -34,7 +34,7 @@ pub fn multi_case_struct(args: TokenStream, input: TokenStream) -> TokenStream {
 
     // Parse the case types from arguments
     let case_types = if args.is_empty() {
-        vec![CaseType::PascalCase]
+        vec![CaseType::Pascal]
     } else {
         parse_case_types_from_tokens(args)
     };
@@ -122,11 +122,11 @@ pub fn multi_case_struct(args: TokenStream, input: TokenStream) -> TokenStream {
 
 #[derive(Debug, Clone)]
 enum CaseType {
-    PascalCase,
-    CamelCase,
-    SnakeCase,
-    KebabCase,
-    ScreamingSnakeCase,
+    Pascal,
+    Camel,
+    Snake,
+    Kebab,
+    ScreamingSnake,
 }
 
 fn parse_case_types_from_tokens(args: TokenStream) -> Vec<CaseType> {
@@ -142,7 +142,7 @@ fn parse_case_types_from_tokens(args: TokenStream) -> Vec<CaseType> {
     }
 
     if case_types.is_empty() {
-        vec![CaseType::PascalCase]
+        vec![CaseType::Pascal]
     } else {
         case_types
     }
@@ -150,22 +150,22 @@ fn parse_case_types_from_tokens(args: TokenStream) -> Vec<CaseType> {
 
 fn str_to_case_type(s: &str) -> Option<CaseType> {
     match s {
-        "pascal" | "PascalCase" => Some(CaseType::PascalCase),
-        "camel" | "camelCase" => Some(CaseType::CamelCase),
-        "snake" | "snake_case" => Some(CaseType::SnakeCase),
-        "kebab" | "kebab-case" => Some(CaseType::KebabCase),
-        "screaming" | "SCREAMING_SNAKE_CASE" => Some(CaseType::ScreamingSnakeCase),
+        "pascal" | "PascalCase" => Some(CaseType::Pascal),
+        "camel" | "camelCase" => Some(CaseType::Camel),
+        "snake" | "snake_case" => Some(CaseType::Snake),
+        "kebab" | "kebab-case" => Some(CaseType::Kebab),
+        "screaming" | "SCREAMING_SNAKE_CASE" => Some(CaseType::ScreamingSnake),
         _ => None,
     }
 }
 
 fn convert_case(input: &str, case_type: &CaseType) -> String {
     match case_type {
-        CaseType::PascalCase => snake_to_pascal_case(input),
-        CaseType::CamelCase => snake_to_camel_case(input),
-        CaseType::SnakeCase => input.to_string(),
-        CaseType::KebabCase => snake_to_kebab_case(input),
-        CaseType::ScreamingSnakeCase => input.to_uppercase(),
+        CaseType::Pascal => snake_to_pascal_case(input),
+        CaseType::Camel => snake_to_camel_case(input),
+        CaseType::Snake => input.to_string(),
+        CaseType::Kebab => snake_to_kebab_case(input),
+        CaseType::ScreamingSnake => input.to_uppercase(),
     }
 }
 

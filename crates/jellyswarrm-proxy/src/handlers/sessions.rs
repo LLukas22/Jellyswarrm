@@ -26,13 +26,17 @@ pub async fn post_playing(
 
     let mut payload: ProgressRequest = payload_from_request(&request)?;
 
+    let id = payload.media_source_id.as_ref().unwrap_or(&payload.item_id);
     let session_server = if let Some((media_mapping, server)) = state
         .media_storage
-        .get_media_mapping_with_server(&payload.media_source_id)
+        .get_media_mapping_with_server(id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     {
-        payload.media_source_id = media_mapping.original_media_id.clone();
+        if payload.media_source_id.is_some() {
+            payload.media_source_id = Some(media_mapping.original_media_id.clone());
+        }
+        
         payload.item_id = media_mapping.original_media_id.clone();
 
         if let Some(now_playing_queue) = payload.now_playing_queue.as_mut() {
@@ -42,10 +46,7 @@ pub async fn post_playing(
         }
         server
     } else {
-        error!(
-            "No server found for media source: {}",
-            payload.media_source_id
-        );
+        error!("No server found for media source: {}", id);
         return Err(StatusCode::NOT_FOUND);
     };
 
