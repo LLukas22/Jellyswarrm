@@ -3,7 +3,9 @@ name = "jellyswarrm-proxy"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+repository.workspace = true
 description = "A high-performance reverse proxy for combining multiple Jellyfin instances"
+license = "MIT OR Apache-2.0"
 
 [[bin]]
 name = "jellyswarrm-proxy"
