@@ -1,3 +1,4 @@
+use jellyswarrm_macros::multi_case_struct;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_with::skip_serializing_none;
 
@@ -9,6 +10,7 @@ pub enum StreamIndex {
 }
 
 #[skip_serializing_none]
+#[multi_case_struct(pascal, camel)]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PlaybackRequest {
     #[serde(rename = "AlwaysBurnInSubtitleWhenTranscoding")]

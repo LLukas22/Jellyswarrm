@@ -1473,6 +1473,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4a5f13b858c8d314ee3e8f639011f7ccefe71f97f96e50151fb991f267928e2c"
 
 [[package]]
+name = "jellyswarrm-macros"
+version = "0.1.2"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "syn",
+]
+
+[[package]]
 name = "jellyswarrm-proxy"
 version = "0.1.2"
 dependencies = [
@@ -1493,11 +1505,14 @@ dependencies = [
  "hyper",
  "hyper-util",
  "indexmap 2.10.0",
+ "jellyswarrm-macros",
  "mime_guess",
  "mockall",
  "once_cell",
  "password-auth",
  "percent-encoding",
+ "proc-macro2",
+ "quote",
  "rand 0.8.5",
  "regex",
  "reqwest",
@@ -1510,6 +1525,7 @@ dependencies = [
  "serde_with",
  "sha2",
  "sqlx",
+ "syn",
  "tempfile",
  "thiserror 1.0.69",
  "time",
@@ -2041,9 +2057,9 @@ dependencies = [
 
 [[package]]
 name = "proc-macro2"
-version = "1.0.95"
+version = "1.0.101"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02b3e5e68a3a1a02aad3ec490a98007cbc13c37cbe84a3cd7b8e406d76e7f778"
+checksum = "89ae43fd86e4158d6db51ad8e2b80f313af9cc74f5c0e03ccb87de09998732de"
 dependencies = [
  "unicode-ident",
 ]

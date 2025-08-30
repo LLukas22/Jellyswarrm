@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/jellyswarrm-proxy",
+    "crates/jellyswarrm-macros",
 ]
 resolver = "2"
 
@@ -12,6 +13,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/yourusername/jellyswarrm"
 
 [workspace.dependencies]
+jellyswarrm-macros = { path = "crates/jellyswarrm-macros" }
 # HTTP and Web Framework
 axum = { version = "0.8", features = ["macros"] }
 tower = "0.4"

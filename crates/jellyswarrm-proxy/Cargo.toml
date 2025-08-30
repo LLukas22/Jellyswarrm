@@ -10,6 +10,7 @@ name = "jellyswarrm-proxy"
 path = "src/main.rs"
 
 [dependencies]
+jellyswarrm-macros.workspace = true
 axum.workspace = true
 tokio.workspace = true
 tower.workspace = true
@@ -55,6 +56,9 @@ time = "0.3.41"
 base64 = "0.22.1"
 serde-aux = "4.7.0"
 serde_with.workspace = true
+proc-macro2 = "1.0.101"
+quote = "1.0.40"
+syn = { version = "2.0", features = ["full", "extra-traits"] }
 
 [dev-dependencies]
 tokio-test = "0.4.4"
