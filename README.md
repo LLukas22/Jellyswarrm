@@ -6,8 +6,8 @@
 <img alt="Logo Banner" src="./media/banner.svg"/>
 <br/>
 <br/>
-<a href="https://opensource.org/licenses/MIT">
-<img alt="MIT License" src="https://img.shields.io/badge/License-MIT-yellow.svg"/>
+<a href="https://www.gnu.org/licenses/old-licenses/gpl-2.0.html">
+<img alt="MIT License" src="https://img.shields.io/badge/License-GPL_v2-blue.svg"/>
 </a>
 <a href="https://github.com/LLukas22/Jellyswarrm/releases">
 <img alt="Current Release" src="https://img.shields.io/github/release/LLukas22/Jellyswarrm.svg"/>
