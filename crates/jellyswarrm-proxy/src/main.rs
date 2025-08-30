@@ -410,6 +410,7 @@ async fn proxy_handler(
         StatusCode::BAD_REQUEST
     })?;
 
+    let request_url = preprocessed.request.url().clone();
     debug!(
         "Proxy request details:\n  Original: {:?}\n  Target URL: {}\n  Transformed: {:?}",
         preprocessed.original_request,
@@ -427,6 +428,12 @@ async fn proxy_handler(
         })?;
 
     let status = response.status();
+    if !status.is_success() {
+        warn!(
+            "Upstream server returned error status: {} for Request to: {}",
+            status, request_url
+        );
+    }
     let headers = response.headers().clone();
     let body_bytes = response.bytes().await.map_err(|e| {
         error!("Failed to read response body: {}", e);

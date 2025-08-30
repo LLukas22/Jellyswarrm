@@ -3,6 +3,8 @@ use axum::{
     Json,
 };
 use hyper::StatusCode;
+use once_cell::sync::Lazy;
+use regex::Regex;
 use tokio::task::JoinSet;
 use tracing::{debug, error, trace};
 
@@ -15,6 +17,9 @@ use crate::{
     AppState,
 };
 
+static SERIES_OR_PARENT_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new("(?i)(seriesid|parentid)").unwrap());
+
 pub async fn get_items_from_all_servers_if_not_restricted(
     State(state): State<AppState>,
     req: Request,
@@ -23,7 +28,7 @@ pub async fn get_items_from_all_servers_if_not_restricted(
 
     if let Some(query) = req.uri().query() {
         // Check if the request is for a specific series or folder
-        if query.contains("SeriesId") || query.contains("parentId") {
+        if SERIES_OR_PARENT_RE.is_match(query) {
             return get_items(State(state), req).await;
         }
     }
