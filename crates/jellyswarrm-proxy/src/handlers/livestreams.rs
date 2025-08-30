@@ -17,6 +17,7 @@ use crate::{
 
 //http://localhost:3000/LiveStreams/Open?UserId=b88ec8ff27774f26a992ce60e3190b46&StartTimeTicks=0&ItemId=31204dde7d38420f8b166d02b26f8c75&PlaySessionId=b33ff036839b4e0992fb374ddcd24e7d&MaxStreamingBitrate=2147483647
 #[axum::debug_handler]
+#[allow(dead_code)]
 pub async fn post_livestream_open(
     State(state): State<AppState>,
     req: Request,

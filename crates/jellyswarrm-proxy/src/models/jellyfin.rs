@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use jellyswarrm_macros::multi_case_struct;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_with::skip_serializing_none;
@@ -486,7 +488,7 @@ pub struct MediaSource {
     pub has_segments: Option<bool>,
 
     #[serde(flatten)]
-    extra: HashMap<String, Value>,
+    extra: HashMap<String, serde_json::Value>,
 }
 
 #[skip_serializing_none]
@@ -533,7 +535,7 @@ pub struct MediaStream {
     pub is_text_subtitle_stream: Option<bool>,
     pub supports_external_stream: Option<bool>,
     pub pixel_format: Option<String>,
-    pub level: i32,
+    pub level: Option<i32>,
     pub is_anamorphic: Option<bool>,
     pub language: Option<String>,
     pub title: Option<String>,

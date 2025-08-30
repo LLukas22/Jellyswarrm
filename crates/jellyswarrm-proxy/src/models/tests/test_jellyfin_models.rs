@@ -3,7 +3,7 @@ use std::fs;
 
 #[cfg(test)]
 mod tests {
-    use crate::models::ItemsResponseWithCount;
+    use crate::models::{ItemsResponseWithCount, PlaybackRequest, PlaybackResponse};
 
     use super::*;
 
