@@ -2,6 +2,7 @@ pub(crate) mod branding;
 pub(crate) mod common;
 pub(crate) mod federated;
 pub(crate) mod items;
+pub(crate) mod livestreams;
 pub(crate) mod quick_connect;
 pub(crate) mod sessions;
 pub(crate) mod system;

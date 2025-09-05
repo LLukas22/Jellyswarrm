@@ -272,7 +272,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     get(handlers::federated::get_items_from_all_servers_if_not_restricted),
                 ),
         )
-        .route("/LiveTv/Programs", get(handlers::items::get_items))
+        .nest(
+            "/LiveTv",
+            Router::new()
+                .route(
+                    "/Channels",
+                    get(handlers::federated::get_items_from_all_servers),
+                )
+                .route("/Channels/{item_id}", get(handlers::items::get_item))
+                .route(
+                    "/Programs",
+                    get(handlers::federated::get_items_from_all_servers),
+                )
+                .route(
+                    "/Programs/Recommended",
+                    get(handlers::federated::get_items_from_all_servers),
+                )
+                .route("/Programs/{item_id}", get(handlers::items::get_item))
+                .route(
+                    "/Recordings",
+                    get(handlers::federated::get_items_from_all_servers),
+                )
+                .route(
+                    "/Recordings/Folders",
+                    get(handlers::federated::get_items_from_all_servers),
+                )
+                .route("/Recordings/{item_id}", get(handlers::items::get_item))
+                .route(
+                    "/LiveRecordings/{recordingId}/stream",
+                    get(handlers::videos::get_stream),
+                )
+                .route(
+                    "/LiveStreamFiles/{streamId}/stream.{container}",
+                    get(handlers::videos::get_stream),
+                ),
+        )
         // Video streaming routes
         .nest(
             "/Videos",

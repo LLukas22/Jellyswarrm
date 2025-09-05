@@ -20,6 +20,11 @@ static MEDIA_ID_PATH_TAGS: &[&str] = &[
     "FavoriteItems",
     "MediaSegments",
     "PlayingItems",
+    "Recordings",
+    "Channels",
+    "Programs",
+    "SeriesTimers",
+    "Timers",
 ];
 
 static MEDIA_ID_QUERY_TAGS: &[&str] = &[
