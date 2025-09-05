@@ -41,6 +41,20 @@ pub struct PlaybackResponse {
     pub play_session_id: String,
 }
 
+#[skip_serializing_none]
+#[multi_case_struct(pascal, camel)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GetProgramsRequest {
+    pub channel_ids: Option<Vec<String>>,
+    pub user_id: Option<String>,
+    pub genre_ids: Option<Vec<String>>,
+    pub series_timer_id: Option<String>,
+    pub library_series_id: Option<String>,
+
+    #[serde(flatten)]
+    pub extra: std::collections::HashMap<String, serde_json::Value>,
+}
+
 fn serialize_playback_rate<S>(value: &Option<f64>, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
