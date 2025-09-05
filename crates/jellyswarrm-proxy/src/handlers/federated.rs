@@ -13,6 +13,7 @@ use crate::{
         common::{execute_json_request, process_media_item},
         items::get_items,
     },
+    models::enums::{BaseItemKind, CollectionType},
     request_preprocessing::{apply_to_request, extract_request_infos, JellyfinAuthorization},
     AppState,
 };
@@ -155,8 +156,9 @@ pub async fn get_items_from_all_servers(
         }
     }
 
-    // Interleave items from all servers
+    // Interleave items from all servers with Live TV filtering
     let mut interleaved_items = Vec::new();
+    let mut live_tv_count = 0;
     let max_items = server_items
         .iter()
         .map(|items| items.len())
@@ -166,6 +168,17 @@ pub async fn get_items_from_all_servers(
     for i in 0..max_items {
         for server_item_list in &server_items {
             if let Some(item) = server_item_list.get(i) {
+                // Skip additional Live TV items
+                if let Some(collectiontype) = &item.collection_type {
+                    if *collectiontype == CollectionType::LiveTv
+                        && item.item_type == BaseItemKind::UserView
+                    {
+                        live_tv_count += 1;
+                        if live_tv_count > 1 {
+                            continue;
+                        }
+                    }
+                }
                 interleaved_items.push(item.clone());
             }
         }

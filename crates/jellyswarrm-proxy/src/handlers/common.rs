@@ -6,6 +6,7 @@ use hyper::StatusCode;
 use regex::Regex;
 use tracing::{error, info};
 
+use crate::models::enums::CollectionType;
 use crate::{
     media_storage_service::MediaStorageService,
     models::{MediaItem, MediaSource},
@@ -189,7 +190,13 @@ pub async fn process_media_item(
 ) -> Result<MediaItem, StatusCode> {
     let mut item = item;
 
-    if change_name {
+    let can_change_name = if let Some(ref collection_type) = item.collection_type {
+        !matches!(collection_type, CollectionType::LiveTv)
+    } else {
+        true
+    };
+
+    if can_change_name && change_name {
         if let Some(name) = &item.name {
             item.name = Some(format!("{} [{}]", name, server.name));
         }

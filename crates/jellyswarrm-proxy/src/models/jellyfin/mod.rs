@@ -1,8 +1,12 @@
+pub mod enums;
+
 use std::collections::HashMap;
 
 use jellyswarrm_macros::multi_case_struct;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_with::skip_serializing_none;
+
+use crate::models::{enums::CollectionType, jellyfin::enums::BaseItemKind};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(untagged)]
@@ -401,7 +405,8 @@ pub struct MediaItem {
     pub parent_thumb_item_id: Option<String>,
     pub parent_thumb_image_tag: Option<String>,
     #[serde(rename = "Type")]
-    pub item_type: String,
+    pub item_type: BaseItemKind,
+    pub collection_type: Option<CollectionType>,
     pub people: Option<Vec<Person>>,
     pub studios: Option<Vec<Studio>>,
     pub genre_items: Option<Vec<GenreItem>>,
@@ -413,7 +418,6 @@ pub struct MediaItem {
     pub tags: Option<Vec<String>>,
     pub primary_image_aspect_ratio: Option<f64>,
     pub series_primary_image_tag: Option<String>,
-    pub collection_type: Option<String>,
     pub image_tags: Option<ImageTags>,
     pub backdrop_image_tags: Option<Vec<String>>,
     pub image_blur_hashes: Option<ImageBlurHashes>,

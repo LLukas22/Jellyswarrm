@@ -1,11 +1,9 @@
-use crate::models::MediaItem;
-use std::fs;
-
 #[cfg(test)]
 mod tests {
+    use crate::models::jellyfin::enums::BaseItemKind;
+    use crate::models::jellyfin::MediaItem;
     use crate::models::{ItemsResponseWithCount, PlaybackRequest, PlaybackResponse};
-
-    use super::*;
+    use std::fs;
 
     #[test]
     fn test_deserialize_item_from_json() {
@@ -66,7 +64,7 @@ mod tests {
 
         println!("✅ Successfully deserialized MediaItem from JSON!");
         println!(
-            "Media Item: {} ({})",
+            "Media Item: {} ({:?})",
             media_item.name.as_ref().unwrap(),
             media_item.item_type
         );
@@ -155,7 +153,7 @@ mod tests {
         assert_eq!(media_item.server_id.unwrap(), "test-server-id");
         assert_eq!(media_item.id, "test-id");
         assert_eq!(media_item.is_folder, Some(false));
-        assert_eq!(media_item.item_type, "Movie");
+        assert_eq!(media_item.item_type, BaseItemKind::Movie);
 
         // Verify optional fields are None when not provided
         assert!(media_item.etag.is_none());
