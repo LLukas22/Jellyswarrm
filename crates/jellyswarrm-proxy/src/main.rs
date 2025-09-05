@@ -30,13 +30,13 @@ mod config;
 mod handlers;
 mod media_storage_service;
 mod models;
+mod processors;
 mod request_preprocessing;
 mod server_storage;
 mod session_storage;
 mod ui;
 mod url_helper;
 mod user_authorization_service;
-mod payload_processor;
 
 use media_storage_service::MediaStorageService;
 use server_storage::ServerStorageService;
@@ -44,6 +44,7 @@ use user_authorization_service::UserAuthorizationService;
 
 use crate::{
     config::AppConfig,
+    processors::request_processor::{RequestProcessingContext, RequestProcessor},
     ui::{resource_handler, Backend},
 };
 use crate::{
@@ -422,6 +423,7 @@ async fn index_handler(
     }
 }
 
+#[axum::debug_handler]
 async fn proxy_handler(
     State(state): State<AppState>,
     req: Request,
@@ -457,14 +459,59 @@ async fn proxy_handler(
         preprocessed.request
     );
 
-    let response = state
-        .reqwest_client
-        .execute(preprocessed.request)
-        .await
-        .map_err(|e| {
-            error!("Failed to execute proxy request: {}", e);
-            StatusCode::BAD_GATEWAY
-        })?;
+    let payload_processing_context = RequestProcessingContext::new(&preprocessed);
+    let mut request = preprocessed.request;
+
+    let preprocessor = RequestProcessor::new(state.clone());
+    if let Some(content_type) = request
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+    {
+        if content_type.contains("application/json") {
+            if let Some(body) = request.body() {
+                // Clone the body bytes since we need to read them
+                let body_bytes = body.as_bytes().unwrap_or(&[]);
+                if !body_bytes.is_empty() {
+                    let mut json_value: serde_json::Value = serde_json::from_slice(body_bytes)
+                        .map_err(|e| {
+                            error!("Failed to parse JSON body: {}", e);
+                            StatusCode::BAD_REQUEST
+                        })?;
+
+                    let response = processors::process_json_async(
+                        &mut json_value,
+                        &preprocessor,
+                        &payload_processing_context,
+                    )
+                    .await
+                    .map_err(|e| {
+                        error!("Failed to process JSON body: {}", e);
+                        StatusCode::BAD_REQUEST
+                    })?;
+                    if response.was_modified {
+                        info!("Modified JSON body for request to {}", request_url);
+                        let new_body = serde_json::to_vec(&response.data).map_err(|e| {
+                            error!("Failed to serialize processed JSON body: {}", e);
+                            StatusCode::INTERNAL_SERVER_ERROR
+                        })?;
+                        *request.body_mut() = Some(reqwest::Body::from(new_body.clone()));
+                        // Update Content-Length header
+                        request.headers_mut().insert(
+                            reqwest::header::CONTENT_LENGTH,
+                            reqwest::header::HeaderValue::from_str(&new_body.len().to_string())
+                                .unwrap(),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    let response = state.reqwest_client.execute(request).await.map_err(|e| {
+        error!("Failed to execute proxy request: {}", e);
+        StatusCode::BAD_GATEWAY
+    })?;
 
     let status = response.status();
     if !status.is_success() {

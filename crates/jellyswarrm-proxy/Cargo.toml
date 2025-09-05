@@ -58,6 +58,8 @@ time = "0.3.41"
 base64 = "0.22.1"
 serde-aux = "4.7.0"
 serde_with.workspace = true
+async-trait = "0.1.89"
+async-recursion = "1.1.1"
 
 [dev-dependencies]
 tokio-test = "0.4.4"
