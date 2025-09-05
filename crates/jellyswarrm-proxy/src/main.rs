@@ -36,6 +36,7 @@ mod session_storage;
 mod ui;
 mod url_helper;
 mod user_authorization_service;
+mod payload_processor;
 
 use media_storage_service::MediaStorageService;
 use server_storage::ServerStorageService;
