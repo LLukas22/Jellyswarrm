@@ -98,7 +98,7 @@ pub trait JsonAnalyzer<C, A>: Send + Sync {
 }
 
 #[async_recursion]
-async fn _process_json<'a, P: JsonProcessor<C>, C: Send + Sync>(
+async fn _process_json<'a, P, C>(
     value: &'a mut Value,
     processor: &'a P,
     context: &'a C,
@@ -106,7 +106,11 @@ async fn _process_json<'a, P: JsonProcessor<C>, C: Send + Sync>(
     depth: usize,
     parent_object: Option<&'a Map<String, Value>>,
     errors: &'a mut Vec<String>,
-) -> Result<(Map<String, Value>, bool)> {
+) -> Result<(Map<String, Value>, bool)>
+where
+    P: JsonProcessor<C> + Send + Sync,
+    C: Send + Sync,
+{
     let mut new_map = Map::new();
     let mut was_modified = false;
 
@@ -137,7 +141,7 @@ async fn _process_json<'a, P: JsonProcessor<C>, C: Send + Sync>(
                     let (nested_result, nested_modified) = _process_json(
                         val,
                         processor,
-                        &context,
+                        context,
                         &current_path,
                         depth + 1,
                         Some(&map_clone),
@@ -156,7 +160,7 @@ async fn _process_json<'a, P: JsonProcessor<C>, C: Send + Sync>(
                             let (nested_result, nested_modified) = _process_json(
                                 item,
                                 processor,
-                                &context,
+                                context,
                                 &array_path,
                                 depth + 1,
                                 Some(&map_clone),
@@ -212,11 +216,15 @@ async fn _process_json<'a, P: JsonProcessor<C>, C: Send + Sync>(
 }
 
 /// Process a JSON Value using the provided JsonProcessor and context.
-pub async fn process_json<P: JsonProcessor<C>, C: Send + Sync>(
+pub async fn process_json<P, C>(
     data: &mut Value,
     processor: &P,
     context: &C,
-) -> Result<ProcessingResponse> {
+) -> Result<ProcessingResponse>
+where
+    P: JsonProcessor<C> + Send + Sync,
+    C: Send + Sync,
+{
     let mut errors = Vec::new();
 
     let was_modified = if let Value::Object(_) = data {
@@ -244,8 +252,9 @@ pub async fn process_json<P: JsonProcessor<C>, C: Send + Sync>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 #[async_recursion]
-async fn _analyze_json<'a, A: JsonAnalyzer<C, Acc>, C: Send + Sync, Acc: Send + Sync>(
+async fn _analyze_json<'a, A, C, Acc>(
     value: &'a Value,
     analyzer: &'a A,
     context: &'a C,
@@ -254,7 +263,12 @@ async fn _analyze_json<'a, A: JsonAnalyzer<C, Acc>, C: Send + Sync, Acc: Send + 
     depth: usize,
     parent_object: Option<&'a Map<String, Value>>,
     errors: &'a mut Vec<String>,
-) -> Result<()> {
+) -> Result<()>
+where
+    A: JsonAnalyzer<C, Acc> + Send + Sync,
+    C: Send + Sync,
+    Acc: Send + Sync,
+{
     if let Value::Object(map) = value {
         for (key, val) in map.iter() {
             let current_path = if parent_path.is_empty() {
@@ -358,12 +372,17 @@ async fn _analyze_json<'a, A: JsonAnalyzer<C, Acc>, C: Send + Sync, Acc: Send + 
 }
 
 /// Analyze a JSON Value using the provided JsonAnalyzer and context, accumulates the results into the provided accumulator.
-pub async fn analyze_json<A: JsonAnalyzer<C, Acc>, C: Send + Sync, Acc: Send + Sync>(
+pub async fn analyze_json<A, C, Acc>(
     data: &Value,
     analyzer: &A,
     context: &C,
     mut accumulator: Acc,
-) -> Result<Acc> {
+) -> Result<Acc>
+where
+    A: JsonAnalyzer<C, Acc> + Send + Sync,
+    C: Send + Sync,
+    Acc: Send + Sync,
+{
     let mut errors = Vec::new();
 
     if let Value::Object(_) = data {

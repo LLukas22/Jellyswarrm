@@ -17,9 +17,7 @@ pub struct RequestProcessor {
 
 impl RequestProcessor {
     pub fn new(data_context: DataContext) -> Self {
-        Self {
-            data_context: data_context,
-        }
+        Self { data_context }
     }
 }
 
