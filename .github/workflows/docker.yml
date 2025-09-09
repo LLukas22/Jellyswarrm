@@ -47,13 +47,17 @@ jobs:
       id: repo
       run: echo "name=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
+    - name: Create platform suffix
+      id: platform
+      run: echo "suffix=$(echo '${{ matrix.platform }}' | tr '/' '-')" >> $GITHUB_OUTPUT
+
     - name: Extract metadata
       id: meta
       uses: docker/metadata-action@v5
       with:
         images: ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}
         flavor: |
-          suffix=-${{ matrix.platform }},onlatest=true
+          suffix=-${{ steps.platform.outputs.suffix }}
         tags: |
           type=semver,pattern={{version}}
           type=semver,pattern={{major}}.{{minor}}
@@ -70,11 +74,11 @@ jobs:
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: |
-          type=gha,scope=${{ matrix.platform }}
-          type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:ui-cache-${{ matrix.platform }}
-          type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:rust-deps-cache-${{ matrix.platform }}
+          type=gha,scope=${{ steps.platform.outputs.suffix }}
+          type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:ui-cache-${{ steps.platform.outputs.suffix }}
+          type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:rust-deps-cache-${{ steps.platform.outputs.suffix }}
         cache-to: |
-          type=gha,scope=${{ matrix.platform }},mode=max
+          type=gha,scope=${{ steps.platform.outputs.suffix }},mode=max
         build-args: |
           BUILDKIT_INLINE_CACHE=1
 
