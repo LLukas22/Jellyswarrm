@@ -33,5 +33,4 @@ Dockerfile.alpine
 /crates/jellyswarrm-proxy/static
 
 # Development files
-/.cargo
 /scripts
