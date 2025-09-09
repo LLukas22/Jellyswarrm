@@ -1,71 +1,29 @@
 use async_trait::async_trait;
 use serde_json::Value;
-use std::collections::HashSet;
-use std::sync::LazyLock;
 use tracing::info;
 
+use crate::processors::field_matcher::{ID_FIELDS, SESSION_FIELDS, USER_FIELDS};
 use crate::processors::json_processor::{
-    AsyncJsonProcessor, JsonProcessingContext, JsonProcessingResult,
+    JsonProcessingContext, JsonProcessingResult, JsonProcessor,
 };
 use crate::request_preprocessing::{JellyfinAuthorization, PreprocessedRequest};
 use crate::server_storage::Server;
 use crate::user_authorization_service::{AuthorizationSession, User};
-use crate::AppState;
-
-/// A struct for case-insensitive field name matching
-pub struct FieldMatcher {
-    fields: HashSet<String>,
-}
-
-impl FieldMatcher {
-    /// Create a new FieldMatcher with the given field names
-    pub fn new(fields: &[&str]) -> Self {
-        Self {
-            fields: fields.iter().map(|s| s.to_string()).collect(),
-        }
-    }
-
-    /// Check if a field name matches any of the stored fields (case-insensitive)
-    pub fn contains(&self, field_name: &str) -> bool {
-        self.fields
-            .iter()
-            .any(|field| field.eq_ignore_ascii_case(field_name))
-    }
-
-    /// Add a new field to the matcher
-    pub fn add_field(&mut self, field_name: &str) {
-        self.fields.insert(field_name.to_string());
-    }
-}
-
-// Static field matchers for different field types
-static ID_FIELDS: LazyLock<FieldMatcher> = LazyLock::new(|| {
-    FieldMatcher::new(&[
-        "Id",
-        "ItemId",
-        "ParentId",
-        "SeriesId",
-        "SeasonId",
-        "MediaSourceId",
-        "PlaylistItemId",
-    ])
-});
-
-static SESSION_FIELDS: LazyLock<FieldMatcher> =
-    LazyLock::new(|| FieldMatcher::new(&["SessionId", "PlaySessionId"]));
-
-static USER_FIELDS: LazyLock<FieldMatcher> = LazyLock::new(|| FieldMatcher::new(&["UserId"]));
+use crate::DataContext;
 
 pub struct RequestProcessor {
-    pub state: AppState,
+    pub data_context: DataContext,
 }
 
 impl RequestProcessor {
-    pub fn new(state: AppState) -> Self {
-        Self { state }
+    pub fn new(data_context: DataContext) -> Self {
+        Self {
+            data_context: data_context,
+        }
     }
 }
 
+#[allow(dead_code)]
 pub struct RequestProcessingContext {
     pub user: Option<User>,
     pub server: Server,
@@ -89,7 +47,7 @@ impl RequestProcessingContext {
 }
 
 #[async_trait]
-impl AsyncJsonProcessor<RequestProcessingContext> for RequestProcessor {
+impl JsonProcessor<RequestProcessingContext> for RequestProcessor {
     async fn process(
         &self,
         json_context: &JsonProcessingContext,
@@ -101,7 +59,7 @@ impl AsyncJsonProcessor<RequestProcessingContext> for RequestProcessor {
         if ID_FIELDS.contains(&json_context.key) {
             if let Value::String(ref virtual_id) = value {
                 if let Some(media_mapping) = self
-                    .state
+                    .data_context
                     .media_storage
                     .get_media_mapping_by_virtual(virtual_id)
                     .await

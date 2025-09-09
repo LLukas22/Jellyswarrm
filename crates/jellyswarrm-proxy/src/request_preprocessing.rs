@@ -3,9 +3,11 @@ use axum::extract::{OriginalUri, Request};
 use anyhow::Result;
 use axum::http;
 use http_body_util::BodyExt;
-use tracing::debug;
+use tracing::{debug, error, info};
 
 use crate::models::Authorization;
+use crate::processors::analyze_json;
+use crate::processors::request_analyzer::{RequestAnalysisContext, RequestAnalysisResult};
 use crate::server_storage::Server;
 use crate::url_helper::{contains_id, replace_id};
 use crate::user_authorization_service::{AuthorizationSession, Device, User};
@@ -140,6 +142,22 @@ pub async fn extract_request_infos(
     };
 
     let user = get_user_from_request(&request, &auth, state).await?;
+
+    // look into the body for information
+    if let Some(json) = body_to_json(&request) {
+        let accumulator = RequestAnalysisResult::default();
+        let context = RequestAnalysisContext;
+        let analysis_result = analyze_json(
+            &json,
+            &state.processors.request_analyzer,
+            &context,
+            accumulator,
+        )
+        .await?;
+        info!("Request body analysis result: {:?}", analysis_result);
+    } else {
+        debug!("No JSON body found in request");
+    }
 
     let sessions = if let Some(user) = &user {
         let sessions = state
@@ -497,5 +515,38 @@ fn remove_hop_by_hop_headers(headers: &mut reqwest::header::HeaderMap) {
     ];
     for h in hop_by_hop_headers.iter() {
         headers.remove(*h);
+    }
+}
+
+/// Try to parse the body of a reqwest::Request into serde_json::Value
+pub fn body_to_json(request: &reqwest::Request) -> Option<serde_json::Value> {
+    if let Some(content_type) = request
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+    {
+        if content_type.contains("application/json") {
+            if let Some(body) = request.body() {
+                // Clone the body bytes since we need to read them
+                let body_bytes = body.as_bytes().unwrap_or(&[]);
+                if !body_bytes.is_empty() {
+                    match serde_json::from_slice(body_bytes) {
+                        Ok(json_value) => return Some(json_value),
+                        Err(e) => {
+                            error!("Failed to parse JSON body: {}", e);
+                            return None;
+                        }
+                    }
+                } else {
+                    debug!("Request body is empty");
+                    return None;
+                }
+            }
+            None
+        } else {
+            None
+        }
+    } else {
+        None
     }
 }
