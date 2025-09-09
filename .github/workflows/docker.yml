@@ -34,6 +34,8 @@ jobs:
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
+      with:
+        driver: docker
 
     - name: Log in to Container Registry
       if: github.event_name != 'pull_request'
@@ -69,9 +71,12 @@ jobs:
       uses: docker/build-push-action@v5
       with:
         context: .
+        platforms: ${{ matrix.platform }}
         push: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
+        provenance: false
+        sbom: false
         cache-from: |
           type=gha,scope=${{ steps.platform.outputs.suffix }}
           type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:ui-cache-${{ steps.platform.outputs.suffix }}
