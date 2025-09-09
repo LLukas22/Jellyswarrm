@@ -33,6 +33,7 @@ RUN apk add --no-cache \
 	openssl-dev
 
 # Copy Cargo manifests for dependency caching
+COPY .cargo .cargo
 COPY Cargo.toml Cargo.lock ./
 COPY crates/jellyswarrm-proxy/Cargo.toml crates/jellyswarrm-proxy/Cargo.toml
 COPY crates/jellyswarrm-macros/Cargo.toml crates/jellyswarrm-macros/Cargo.toml
