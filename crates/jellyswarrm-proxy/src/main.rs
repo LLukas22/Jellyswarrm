@@ -18,7 +18,7 @@ use tower::ServiceBuilder;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tower_sessions::cookie::Key;
 use tower_sessions_sqlx_store::SqliteStore;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use axum_login::{
@@ -370,14 +370,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/videos/{stream_id}/{*path}",
             get(handlers::videos::get_stream_part),
         )
-        // Session management routes
-        .nest(
-            "/Sessions/Playing",
-            Router::new()
-                .route("/", post(handlers::sessions::post_playing))
-                .route("/Progress", post(handlers::sessions::post_playing))
-                .route("/Stopped", post(handlers::sessions::post_playing)),
-        )
         // Persons
         .nest(
             "/Persons",
@@ -496,7 +488,7 @@ async fn proxy_handler(
     })?;
 
     let request_url = preprocessed.request.url().clone();
-    debug!(
+    trace!(
         "Proxy request details:\n  Original: {:?}\n  Target URL: {}\n  Transformed: {:?}",
         preprocessed.original_request,
         preprocessed.request.url(),
@@ -516,7 +508,7 @@ async fn proxy_handler(
                     StatusCode::BAD_REQUEST
                 })?;
         if response.was_modified {
-            info!("Modified JSON body for request to {}", request_url);
+            debug!("Modified JSON body for request to {}", request_url);
             let new_body = serde_json::to_vec(&response.data).map_err(|e| {
                 error!("Failed to serialize processed JSON body: {}", e);
                 StatusCode::INTERNAL_SERVER_ERROR

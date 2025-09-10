@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use serde_json::Value;
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::processors::field_matcher::{ID_FIELDS, SESSION_FIELDS, USER_FIELDS};
 use crate::processors::json_processor::{
@@ -63,7 +63,7 @@ impl JsonProcessor<RequestProcessingContext> for RequestProcessor {
                     .await
                     .unwrap_or_default()
                 {
-                    info!(
+                    debug!(
                         "Replacing virtual id  {} -> {} for field: {} in payload",
                         virtual_id, &media_mapping.original_media_id, &json_context.key
                     );

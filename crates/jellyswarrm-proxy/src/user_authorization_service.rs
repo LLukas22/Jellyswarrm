@@ -5,7 +5,7 @@ use tracing::info;
 use crate::models::{generate_token, Authorization};
 use crate::server_storage::Server;
 
-#[derive(Debug, Clone, FromRow)]
+#[derive(Debug, Clone, FromRow, Eq, PartialEq, Hash)]
 pub struct User {
     pub id: String,
     pub virtual_key: String,
