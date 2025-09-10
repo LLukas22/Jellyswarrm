@@ -3,9 +3,11 @@ use axum::extract::{OriginalUri, Request};
 use anyhow::Result;
 use axum::http;
 use http_body_util::BodyExt;
-use tracing::debug;
+use tracing::{debug, error};
 
 use crate::models::Authorization;
+use crate::processors::analyze_json;
+use crate::processors::request_analyzer::{RequestAnalysisContext, RequestBodyAnalysisResult};
 use crate::server_storage::Server;
 use crate::url_helper::{contains_id, replace_id};
 use crate::user_authorization_service::{AuthorizationSession, Device, User};
@@ -122,6 +124,7 @@ pub async fn extract_request_infos(
     Option<JellyfinAuthorization>,
     Option<User>,
     Option<Vec<(AuthorizationSession, Server)>>,
+    Option<RequestBodyAnalysisResult>,
 )> {
     let request = axum_to_reqwest(req).await?;
 
@@ -139,7 +142,34 @@ pub async fn extract_request_infos(
         None
     };
 
-    let user = get_user_from_request(&request, &auth, state).await?;
+    let mut user = get_user_from_request(&request, &auth, state).await?;
+
+    // look into the body for information
+    let request_body_result = if let Some(json) = body_to_json(&request) {
+        let accumulator = RequestBodyAnalysisResult::default();
+        let context = RequestAnalysisContext;
+        let analysis_result = analyze_json(
+            &json,
+            &state.processors.request_analyzer,
+            &context,
+            accumulator,
+        )
+        .await?;
+        if let Some(found_user) = analysis_result.get_user() {
+            debug!("Found user in request body: {:?}", found_user);
+            if user.is_none() {
+                user = Some(found_user);
+            }
+        }
+
+        if let Some(found_server) = analysis_result.get_server() {
+            debug!("Found server in request body: {}", &found_server.name);
+        }
+        Some(analysis_result)
+    } else {
+        debug!("No JSON body found in request");
+        None
+    };
 
     let sessions = if let Some(user) = &user {
         let sessions = state
@@ -155,15 +185,17 @@ pub async fn extract_request_infos(
         None
     };
 
-    Ok((request, auth, user, sessions))
+    Ok((request, auth, user, sessions, request_body_result))
 }
 
 pub async fn preprocess_request(req: Request, state: &AppState) -> Result<PreprocessedRequest> {
     debug!("Preprocessing request: {:?}", req.uri());
-    let (mut request, auth, user, sessions) = extract_request_infos(req, state).await?;
+    let (mut request, auth, user, sessions, request_body_result) =
+        extract_request_infos(req, state).await?;
     let original_request = request.try_clone();
 
-    let (server, session) = resolve_server(&sessions, state, &request).await?;
+    let (server, session) =
+        resolve_server(&sessions, &request_body_result, state, &request).await?;
 
     let new_auth = remap_authorization(&auth, &session).await?;
 
@@ -358,6 +390,7 @@ pub async fn remap_authorization(
 }
 pub async fn resolve_server(
     sessions: &Option<Vec<(AuthorizationSession, Server)>>,
+    request_body_result: &Option<RequestBodyAnalysisResult>,
     state: &AppState,
     request: &reqwest::Request,
 ) -> Result<(Server, Option<AuthorizationSession>)> {
@@ -408,6 +441,18 @@ pub async fn resolve_server(
                 } else {
                     debug!("No server found for {} : {}", param_name, param_value);
                 }
+            }
+        }
+    }
+
+    if request_server.is_none() {
+        if let Some(request_body_result) = request_body_result {
+            if let Some(found_server) = request_body_result.get_server() {
+                debug!(
+                    "Using server found in request body analysis: {} ({})",
+                    found_server.name, found_server.url
+                );
+                request_server = Some(found_server);
             }
         }
     }
@@ -497,5 +542,38 @@ fn remove_hop_by_hop_headers(headers: &mut reqwest::header::HeaderMap) {
     ];
     for h in hop_by_hop_headers.iter() {
         headers.remove(*h);
+    }
+}
+
+/// Try to parse the body of a reqwest::Request into serde_json::Value
+pub fn body_to_json(request: &reqwest::Request) -> Option<serde_json::Value> {
+    if let Some(content_type) = request
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+    {
+        if content_type.contains("application/json") {
+            if let Some(body) = request.body() {
+                // Clone the body bytes since we need to read them
+                let body_bytes = body.as_bytes().unwrap_or(&[]);
+                if !body_bytes.is_empty() {
+                    match serde_json::from_slice(body_bytes) {
+                        Ok(json_value) => return Some(json_value),
+                        Err(e) => {
+                            error!("Failed to parse JSON body: {}", e);
+                            return None;
+                        }
+                    }
+                } else {
+                    debug!("Request body is empty");
+                    return None;
+                }
+            }
+            None
+        } else {
+            None
+        }
+    } else {
+        None
     }
 }

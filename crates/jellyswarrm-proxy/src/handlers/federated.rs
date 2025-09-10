@@ -41,7 +41,7 @@ pub async fn get_items_from_all_servers(
     State(state): State<AppState>,
     req: Request,
 ) -> Result<Json<crate::models::ItemsResponseVariants>, StatusCode> {
-    let (original_request, _, _, sessions) =
+    let (original_request, _, _, sessions, _) =
         extract_request_infos(req, &state).await.map_err(|e| {
             error!("Failed to preprocess request: {}", e);
             StatusCode::BAD_REQUEST

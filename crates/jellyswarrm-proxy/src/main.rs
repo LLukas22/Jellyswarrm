@@ -18,7 +18,7 @@ use tower::ServiceBuilder;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tower_sessions::cookie::Key;
 use tower_sessions_sqlx_store::SqliteStore;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use axum_login::{
@@ -30,6 +30,7 @@ mod config;
 mod handlers;
 mod media_storage_service;
 mod models;
+mod processors;
 mod request_preprocessing;
 mod server_storage;
 mod session_storage;
@@ -43,6 +44,11 @@ use user_authorization_service::UserAuthorizationService;
 
 use crate::{
     config::AppConfig,
+    processors::{
+        request_analyzer::RequestAnalyzer,
+        request_processor::{RequestProcessingContext, RequestProcessor},
+    },
+    request_preprocessing::body_to_json,
     ui::{resource_handler, Backend},
 };
 use crate::{
@@ -58,6 +64,40 @@ pub struct AppState {
     pub media_storage: Arc<MediaStorageService>,
     pub play_sessions: Arc<SessionStorage>,
     pub config: Arc<tokio::sync::RwLock<AppConfig>>,
+    pub processors: Arc<JsonProcessors>,
+}
+
+impl AppState {
+    pub fn new(
+        reqwest_client: reqwest::Client,
+        data_context: DataContext,
+        json_processors: JsonProcessors,
+    ) -> Self {
+        Self {
+            reqwest_client,
+            user_authorization: data_context.user_authorization,
+            server_storage: data_context.server_storage,
+            media_storage: data_context.media_storage,
+            play_sessions: data_context.play_sessions,
+            config: data_context.config,
+            processors: Arc::new(json_processors),
+        }
+    }
+}
+
+#[derive(Clone)]
+/// Struct holding shared services and configuration
+pub struct DataContext {
+    pub user_authorization: Arc<UserAuthorizationService>,
+    pub server_storage: Arc<ServerStorageService>,
+    pub media_storage: Arc<MediaStorageService>,
+    pub play_sessions: Arc<SessionStorage>,
+    pub config: Arc<tokio::sync::RwLock<AppConfig>>,
+}
+
+pub struct JsonProcessors {
+    pub request_processor: RequestProcessor,
+    pub request_analyzer: RequestAnalyzer,
 }
 
 #[derive(RustEmbed)]
@@ -153,14 +193,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let app_state = AppState {
-        reqwest_client,
-        user_authorization: Arc::new(user_authorization),
-        server_storage: Arc::new(server_storage),
-        media_storage: Arc::new(media_storage),
+    let data_context = DataContext {
+        user_authorization: Arc::new(user_authorization.clone()),
+        server_storage: Arc::new(server_storage.clone()),
+        media_storage: Arc::new(media_storage.clone()),
         play_sessions: Arc::new(SessionStorage::new()),
         config: Arc::new(tokio::sync::RwLock::new(loaded_config.clone())),
     };
+
+    let json_processors = JsonProcessors {
+        request_processor: RequestProcessor::new(data_context.clone()),
+        request_analyzer: RequestAnalyzer::new(data_context.clone()),
+    };
+
+    let app_state = AppState::new(reqwest_client, data_context, json_processors);
 
     let session_store = SqliteStore::new(pool);
     session_store.migrate().await?;
@@ -324,14 +370,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/videos/{stream_id}/{*path}",
             get(handlers::videos::get_stream_part),
         )
-        // Session management routes
-        .nest(
-            "/Sessions/Playing",
-            Router::new()
-                .route("/", post(handlers::sessions::post_playing))
-                .route("/Progress", post(handlers::sessions::post_playing))
-                .route("/Stopped", post(handlers::sessions::post_playing)),
-        )
         // Persons
         .nest(
             "/Persons",
@@ -421,6 +459,7 @@ async fn index_handler(
     }
 }
 
+#[axum::debug_handler]
 async fn proxy_handler(
     State(state): State<AppState>,
     req: Request,
@@ -449,21 +488,43 @@ async fn proxy_handler(
     })?;
 
     let request_url = preprocessed.request.url().clone();
-    debug!(
+    trace!(
         "Proxy request details:\n  Original: {:?}\n  Target URL: {}\n  Transformed: {:?}",
         preprocessed.original_request,
         preprocessed.request.url(),
         preprocessed.request
     );
 
-    let response = state
-        .reqwest_client
-        .execute(preprocessed.request)
-        .await
-        .map_err(|e| {
-            error!("Failed to execute proxy request: {}", e);
-            StatusCode::BAD_GATEWAY
-        })?;
+    let payload_processing_context = RequestProcessingContext::new(&preprocessed);
+    let mut request = preprocessed.request;
+
+    let preprocessor = &state.processors.request_processor;
+    if let Some(mut json_value) = body_to_json(&request) {
+        let response =
+            processors::process_json(&mut json_value, preprocessor, &payload_processing_context)
+                .await
+                .map_err(|e| {
+                    error!("Failed to process JSON body: {}", e);
+                    StatusCode::BAD_REQUEST
+                })?;
+        if response.was_modified {
+            debug!("Modified JSON body for request to {}", request_url);
+            let new_body = serde_json::to_vec(&response.data).map_err(|e| {
+                error!("Failed to serialize processed JSON body: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+            *request.body_mut() = Some(reqwest::Body::from(new_body.clone()));
+            // Update Content-Length header
+            request.headers_mut().insert(
+                reqwest::header::CONTENT_LENGTH,
+                reqwest::header::HeaderValue::from_str(&new_body.len().to_string()).unwrap(),
+            );
+        }
+    }
+    let response = state.reqwest_client.execute(request).await.map_err(|e| {
+        error!("Failed to execute proxy request: {}", e);
+        StatusCode::BAD_GATEWAY
+    })?;
 
     let status = response.status();
     if !status.is_success() {

@@ -3,7 +3,7 @@ use sqlx::{Row, SqlitePool};
 use tracing::info;
 use url::Url;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub struct Server {
     pub id: i64,
     pub name: String,
