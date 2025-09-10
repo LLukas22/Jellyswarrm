@@ -13,7 +13,14 @@ env:
 
 jobs:
   build-and-push:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
@@ -40,32 +47,98 @@ jobs:
       id: repo
       run: echo "name=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
+    - name: Create platform suffix
+      id: platform
+      run: echo "suffix=$(echo '${{ matrix.platform }}' | tr '/' '-')" >> $GITHUB_OUTPUT
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}
+        flavor: |
+          suffix=-${{ steps.platform.outputs.suffix }}
+        tags: |
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+          type=raw,value=main,enable={{is_default_branch}}
+          type=sha,enable=${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
+
+    - name: Build and push Docker image
+      if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        platforms: ${{ matrix.platform }}
+        outputs: type=registry
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        provenance: false
+        sbom: false
+        cache-from: |
+          type=gha,scope=${{ steps.platform.outputs.suffix }}
+          type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:cache-${{ steps.platform.outputs.suffix }}
+        cache-to: |
+          type=gha,scope=${{ steps.platform.outputs.suffix }},mode=max
+        build-args: |
+          BUILDKIT_INLINE_CACHE=1
+
+    - name: Build Docker image (PR)
+      if: github.event_name == 'pull_request'
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        platforms: ${{ matrix.platform }}
+        outputs: type=docker
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        provenance: false
+        sbom: false
+        cache-from: |
+          type=gha,scope=${{ steps.platform.outputs.suffix }}
+          type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:cache-${{ steps.platform.outputs.suffix }}
+        build-args: |
+          BUILDKIT_INLINE_CACHE=1
+
+  create-manifest:
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Convert repository name to lowercase
+      id: repo
+      run: echo "name=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
     - name: Extract metadata
       id: meta
       uses: docker/metadata-action@v5
       with:
         images: ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}
         tags: |
-          type=ref,event=branch
-          type=ref,event=pr
           type=semver,pattern={{version}}
           type=semver,pattern={{major}}.{{minor}}
-          type=raw,value=latest,enable={{is_default_branch}}
-          type=sha
+          type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+          type=raw,value=main,enable={{is_default_branch}}
+          type=sha,enable=${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
 
-    - name: Build and push Docker image
-      uses: docker/build-push-action@v5
-      with:
-        context: .
-        platforms: linux/amd64
-        push: ${{ github.event_name != 'pull_request' }}
-        tags: ${{ steps.meta.outputs.tags }}
-        labels: ${{ steps.meta.outputs.labels }}
-        cache-from: |
-          type=gha,scope=main
-          type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:ui-cache
-          type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:rust-deps-cache
-        cache-to: |
-          type=gha,scope=main,mode=max
-        build-args: |
-          BUILDKIT_INLINE_CACHE=1
+    - name: Create and push multi-platform manifest
+      run: |
+        TAGS="${{ steps.meta.outputs.tags }}"
+        for TAG in $TAGS; do
+          docker manifest create $TAG \
+            --amend ${TAG}-linux-amd64 \
+            --amend ${TAG}-linux-arm64
+          docker manifest push $TAG
+        done
