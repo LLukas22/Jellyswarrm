@@ -27,7 +27,7 @@ pub struct PlaybackRequest {
     pub media_source_id: Option<String>,
     pub start_time_ticks: Option<i64>,
     pub subtitle_stream_index: Option<StreamIndex>,
-    pub user_id: String,
+    pub user_id: Option<String>,
 
     #[serde(flatten)]
     pub extra: std::collections::HashMap<String, serde_json::Value>,

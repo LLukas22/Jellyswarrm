@@ -29,6 +29,7 @@ static MEDIA_ID_PATH_TAGS: &[&str] = &[
     "Timers",
     "UserFavoriteItems",
     "UserItems",
+    "UserPlayedItems",
 ];
 
 static MEDIA_ID_QUERY_TAGS: &[&str] = &[
@@ -38,6 +39,7 @@ static MEDIA_ID_QUERY_TAGS: &[&str] = &[
     "Tag",
     "SeasonId",
     "startItemId",
+    "IDs",
 ];
 
 static USER_ID_PATH_TAGS: &[&str] = &["Users"];

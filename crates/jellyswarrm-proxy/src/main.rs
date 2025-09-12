@@ -301,6 +301,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .route("/{item_id}", get(handlers::items::get_item))
                 .route("/{item_id}/Similar", get(handlers::items::get_items))
+                .route("/{item_id}/LocalTrailers", get(handlers::items::get_items))
+                .route(
+                    "/{item_id}/SpecialFeatures",
+                    get(handlers::items::get_items),
+                )
                 .route(
                     "/{item_id}/PlaybackInfo",
                     post(handlers::items::post_playback_info),
