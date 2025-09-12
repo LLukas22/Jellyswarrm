@@ -8,7 +8,7 @@ use axum::{
 use serde::Deserialize;
 use tracing::{error, info};
 
-use crate::{server_storage::Server, AppState};
+use crate::{server_storage::Server, url_helper::join_server_url, AppState};
 
 #[derive(Template)]
 #[template(path = "servers.html")]
@@ -217,12 +217,9 @@ pub async fn check_server_status(
                 .build()
                 .unwrap();
 
-            let status_url = format!(
-                "{}/system/info/public",
-                server.url.to_string().trim_end_matches('/')
-            );
+            let status_url = join_server_url(&server.url, "/system/info/public");
 
-            match client.get(&status_url).send().await {
+            match client.get(status_url.as_str()).send().await {
                 Ok(response) if response.status().is_success() => {
                     let template = ServerStatusTemplate {
                         error_message: None,
