@@ -73,6 +73,89 @@ pub struct Device {
     pub version: String,
 }
 
+impl Device {
+    pub fn from_useragent(user_agent: &str) -> Self {
+        let (client, version, device) = Self::parse_user_agent(user_agent);
+
+        Device {
+            client,
+            device,
+            device_id: "unknown-device-id".to_string(),
+            version,
+        }
+    }
+
+    /// Parse user agent string to extract client, version, and device information
+    /// Examples:
+    /// - "Switchfin/0.7.4 (Linux)" -> ("Switchfin", "0.7.4", "Linux")
+    /// - "Jellyfin Web/10.8.13" -> ("Jellyfin Web", "10.8.13", "Unknown")
+    /// - "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" -> ("Mozilla", "5.0", "Windows")
+    fn parse_user_agent(user_agent: &str) -> (String, String, String) {
+        let user_agent = user_agent.trim();
+
+        // Pattern 1: "Client/Version (Device)" - e.g., "Switchfin/0.7.4 (Linux)"
+        if let Some(captures) = regex::Regex::new(r"^([^/]+)/([^\s\(]+)\s*\(([^)]+)\)")
+            .ok()
+            .and_then(|re| re.captures(user_agent))
+        {
+            let device_info = captures.get(3).map_or("Unknown".to_string(), |m| {
+                let device_str = m.as_str();
+                // Clean up common OS patterns from device info
+                if device_str.contains("Windows") {
+                    "Windows".to_string()
+                } else if device_str.contains("Mac") || device_str.contains("Darwin") {
+                    "macOS".to_string()
+                } else if device_str.contains("Linux") && !device_str.contains("Android") {
+                    "Linux".to_string()
+                } else if device_str.contains("Android") {
+                    "Android".to_string()
+                } else if device_str.contains("iPhone")
+                    || device_str.contains("iPad")
+                    || device_str.contains("iOS")
+                {
+                    "iOS".to_string()
+                } else {
+                    // For simple cases like "(Linux)" just return as-is
+                    device_str.to_string()
+                }
+            });
+
+            return (
+                captures
+                    .get(1)
+                    .map_or("Unknown".to_string(), |m| m.as_str().to_string()),
+                captures
+                    .get(2)
+                    .map_or("0.0.0".to_string(), |m| m.as_str().to_string()),
+                device_info,
+            );
+        }
+
+        // Pattern 2: "Client/Version" - e.g., "Jellyfin Web/10.8.13"
+        if let Some(captures) = regex::Regex::new(r"^([^/]+)/([^\s]+)")
+            .ok()
+            .and_then(|re| re.captures(user_agent))
+        {
+            return (
+                captures
+                    .get(1)
+                    .map_or("Unknown".to_string(), |m| m.as_str().to_string()),
+                captures
+                    .get(2)
+                    .map_or("0.0.0".to_string(), |m| m.as_str().to_string()),
+                "Unknown".to_string(),
+            );
+        }
+
+        // Fallback: use the entire user agent as client
+        (
+            user_agent.to_string(),
+            "0.0.0".to_string(),
+            "Unknown".to_string(),
+        )
+    }
+}
+
 impl AuthorizationSession {
     /// Create an Authorization struct from this session
     pub fn to_authorization(&self) -> Authorization {
@@ -523,13 +606,29 @@ impl UserAuthorizationService {
                 // 2) Fallback: device (name) + client
                 let query2 =
                     format!("{base_select} AND auth.device = ? AND auth.client = ? {order_by}");
-                sqlx::query(&query2)
+                let rows2 = sqlx::query(&query2)
                     .bind(user_id)
                     .bind(chrono::Utc::now())
                     .bind(&device.device)
                     .bind(&device.client)
                     .fetch_all(&self.pool)
-                    .await?
+                    .await?;
+
+                if !rows2.is_empty() {
+                    rows2
+                } else {
+                    // 3) Final fallback: client + version only
+                    let query3 = format!(
+                        "{base_select} AND auth.client = ? AND auth.version = ? {order_by}"
+                    );
+                    sqlx::query(&query3)
+                        .bind(user_id)
+                        .bind(chrono::Utc::now())
+                        .bind(&device.client)
+                        .bind(&device.version)
+                        .fetch_all(&self.pool)
+                        .await?
+                }
             }
         } else {
             // No device provided -> just run the base with ORDER BY
@@ -666,6 +765,196 @@ impl UserAuthorizationService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_device_from_useragent_parsing() {
+        // Test Switchfin format
+        let device = Device::from_useragent("Switchfin/0.7.4 (Linux)");
+        assert_eq!(device.client, "Switchfin");
+        assert_eq!(device.version, "0.7.4");
+        assert_eq!(device.device, "Linux");
+
+        // Test Jellyfin Web format
+        let device = Device::from_useragent("Jellyfin Web/10.8.13");
+        assert_eq!(device.client, "Jellyfin Web");
+        assert_eq!(device.version, "10.8.13");
+        assert_eq!(device.device, "Unknown");
+
+        // Test browser format
+        let device =
+            Device::from_useragent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+        assert_eq!(device.client, "Mozilla");
+        assert_eq!(device.version, "5.0");
+        assert_eq!(device.device, "Windows");
+
+        // Test mobile format
+        let device = Device::from_useragent("Jellyfin Mobile/1.0.0 (iOS)");
+        assert_eq!(device.client, "Jellyfin Mobile");
+        assert_eq!(device.version, "1.0.0");
+        assert_eq!(device.device, "iOS");
+
+        // Test macOS Safari
+        let device = Device::from_useragent(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15",
+        );
+        assert_eq!(device.client, "Mozilla");
+        assert_eq!(device.version, "5.0");
+        assert_eq!(device.device, "macOS");
+
+        // Test Android Chrome
+        let device =
+            Device::from_useragent("Mozilla/5.0 (Linux; Android 11; SM-G991B) AppleWebKit/537.36");
+        assert_eq!(device.client, "Mozilla");
+        assert_eq!(device.version, "5.0");
+        assert_eq!(device.device, "Android");
+
+        // Test fallback for unknown format
+        let device = Device::from_useragent("SomeUnknownClient");
+        assert_eq!(device.client, "SomeUnknownClient");
+        assert_eq!(device.version, "0.0.0");
+        assert_eq!(device.device, "Unknown");
+    }
+
+    #[tokio::test]
+    async fn test_device_session_fallback_matching() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let service = UserAuthorizationService::new(pool.clone()).await.unwrap();
+
+        // Create servers table
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS servers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                url TEXT NOT NULL,
+                priority INTEGER NOT NULL DEFAULT 100,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Insert server
+        sqlx::query(
+            r#"
+            INSERT INTO servers (name, url, priority, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind("Test Server")
+        .bind("http://localhost:8096")
+        .bind(100)
+        .bind(chrono::Utc::now())
+        .bind(chrono::Utc::now())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Create user
+        let user = service
+            .get_or_create_user("testuser", "testpass")
+            .await
+            .unwrap();
+
+        // Add server mapping
+        service
+            .add_server_mapping(
+                &user.id,
+                "http://localhost:8096",
+                "mappeduser",
+                "mappedpass",
+            )
+            .await
+            .unwrap();
+
+        // Store a session with specific device info
+        let auth = Authorization {
+            client: "Switchfin".to_string(),
+            device: "Linux".to_string(),
+            device_id: "device-123".to_string(),
+            version: "0.7.4".to_string(),
+            token: None,
+        };
+
+        service
+            .store_authorization_session(
+                &user.id,
+                "http://localhost:8096",
+                &auth,
+                "jellyfin-token".to_string(),
+                "original-jellyfin-user-id".to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Test 1: Exact match (device_id + client)
+        let query_device1 = Device {
+            client: "Switchfin".to_string(),
+            device: "Linux".to_string(),
+            device_id: "device-123".to_string(),
+            version: "0.7.4".to_string(),
+        };
+        let sessions1 = service
+            .get_user_sessions(&user.id, Some(query_device1))
+            .await
+            .unwrap();
+        assert_eq!(sessions1.len(), 1, "Should find exact match");
+
+        // Test 2: Fallback to device name + client
+        let query_device2 = Device {
+            client: "Switchfin".to_string(),
+            device: "Linux".to_string(),
+            device_id: "different-device-id".to_string(),
+            version: "0.7.4".to_string(),
+        };
+        let sessions2 = service
+            .get_user_sessions(&user.id, Some(query_device2))
+            .await
+            .unwrap();
+        assert_eq!(
+            sessions2.len(),
+            1,
+            "Should find fallback match by device name + client"
+        );
+
+        // Test 3: Final fallback to client + version
+        let query_device3 = Device {
+            client: "Switchfin".to_string(),
+            device: "Windows".to_string(), // Different device name
+            device_id: "different-device-id".to_string(),
+            version: "0.7.4".to_string(),
+        };
+        let sessions3 = service
+            .get_user_sessions(&user.id, Some(query_device3))
+            .await
+            .unwrap();
+        assert_eq!(
+            sessions3.len(),
+            1,
+            "Should find final fallback match by client + version"
+        );
+
+        // Test 4: No match when client and version are different
+        let query_device4 = Device {
+            client: "DifferentClient".to_string(),
+            device: "Linux".to_string(),
+            device_id: "device-123".to_string(),
+            version: "1.0.0".to_string(),
+        };
+        let sessions4 = service
+            .get_user_sessions(&user.id, Some(query_device4))
+            .await
+            .unwrap();
+        assert_eq!(
+            sessions4.len(),
+            0,
+            "Should not find any match when client and version differ"
+        );
+    }
 
     #[tokio::test]
     async fn test_user_authorization_service() {

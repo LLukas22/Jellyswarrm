@@ -53,6 +53,8 @@ pub enum JellyfinAuthorization {
     Authorization(Authorization),
     XMediaBrowser(String),
     ApiKey(String),
+    XEmbyToken(String),
+    XEmbyAuthorization(Authorization),
 }
 
 impl JellyfinAuthorization {
@@ -61,10 +63,12 @@ impl JellyfinAuthorization {
             JellyfinAuthorization::Authorization(auth) => auth.token.clone(),
             JellyfinAuthorization::XMediaBrowser(token) => Some(token.clone()),
             JellyfinAuthorization::ApiKey(token) => Some(token.clone()),
+            JellyfinAuthorization::XEmbyToken(token) => Some(token.clone()),
+            JellyfinAuthorization::XEmbyAuthorization(auth) => auth.token.clone(),
         }
     }
 
-    pub fn get_device(&self) -> Option<Device> {
+    pub fn get_device(&self, headers: &http::HeaderMap) -> Option<Device> {
         match self {
             JellyfinAuthorization::Authorization(auth) => Some(Device {
                 client: auth.client.clone(),
@@ -72,8 +76,30 @@ impl JellyfinAuthorization {
                 device_id: auth.device_id.clone(),
                 version: auth.version.clone(),
             }),
+            JellyfinAuthorization::XEmbyAuthorization(auth) => Some(Device {
+                client: auth.client.clone(),
+                device: auth.device.clone(),
+                device_id: auth.device_id.clone(),
+                version: auth.version.clone(),
+            }),
             JellyfinAuthorization::XMediaBrowser(_) => None,
             JellyfinAuthorization::ApiKey(_) => None,
+            JellyfinAuthorization::XEmbyToken(_) => {
+                // Try to get device info from User-Agent header
+                if let Some(user_agent) = headers.get("user-agent") {
+                    if let Ok(ua_str) = user_agent.to_str() {
+                        let device =
+                            crate::user_authorization_service::Device::from_useragent(ua_str);
+                        return Some(Device {
+                            client: device.client,
+                            device: device.device,
+                            device_id: device.device_id,
+                            version: device.version,
+                        });
+                    }
+                }
+                None
+            }
         }
     }
 
@@ -87,9 +113,23 @@ impl JellyfinAuthorization {
             }
         }
 
+        if let Some(auth_header) = headers.get("x-emby-authorization") {
+            if let Ok(auth_str) = auth_header.to_str() {
+                if let Ok(auth) = Authorization::parse(auth_str) {
+                    return Some(JellyfinAuthorization::XEmbyAuthorization(auth));
+                }
+            }
+        }
+
         if let Some(token_header) = headers.get("X-MediaBrowser-Token") {
             if let Ok(token_str) = token_header.to_str() {
                 return Some(JellyfinAuthorization::XMediaBrowser(token_str.to_string()));
+            }
+        }
+
+        if let Some(token_header) = headers.get("x-emby-token") {
+            if let Ok(token_str) = token_header.to_str() {
+                return Some(JellyfinAuthorization::XEmbyToken(token_str.to_string()));
             }
         }
 
@@ -137,11 +177,14 @@ pub async fn extract_request_infos(
     if let Some(auth) = &auth {
         debug!("Extracted authorization: {:?}", auth);
     } else {
-        debug!("No authorization found in request");
+        debug!(
+            "No authorization found in request! Headers: {:?}",
+            request.headers()
+        );
     }
 
     let device = if let Some(auth) = &auth {
-        auth.get_device()
+        auth.get_device(request.headers())
     } else {
         None
     };
@@ -344,9 +387,22 @@ pub fn apply_authorization_header(
                     reqwest::header::HeaderValue::from_str(&auth.to_header_value()).unwrap(),
                 );
             }
+            // Map XEmbyAuthorization to Authorization header
+            JellyfinAuthorization::XEmbyAuthorization(auth) => {
+                request.headers_mut().insert(
+                    reqwest::header::AUTHORIZATION,
+                    reqwest::header::HeaderValue::from_str(&auth.to_header_value()).unwrap(),
+                );
+            }
             JellyfinAuthorization::XMediaBrowser(token) => {
                 request.headers_mut().insert(
                     "X-MediaBrowser-Token",
+                    reqwest::header::HeaderValue::from_str(token).unwrap(),
+                );
+            }
+            JellyfinAuthorization::XEmbyToken(token) => {
+                request.headers_mut().insert(
+                    "X-Emby-Token",
                     reqwest::header::HeaderValue::from_str(token).unwrap(),
                 );
             }
@@ -385,6 +441,12 @@ pub async fn remap_authorization(
                 let token = session.jellyfin_token.clone();
                 Some(JellyfinAuthorization::ApiKey(token))
             }
+            JellyfinAuthorization::XEmbyToken(_) => Some(JellyfinAuthorization::Authorization(
+                session.to_authorization(),
+            )),
+            JellyfinAuthorization::XEmbyAuthorization(_) => Some(
+                JellyfinAuthorization::Authorization(session.to_authorization()),
+            ),
         }
     } else {
         None
