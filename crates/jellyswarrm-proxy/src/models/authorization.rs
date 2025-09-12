@@ -224,4 +224,17 @@ mod tests {
         assert_eq!(auth.version, "1.3.1");
         assert_eq!(auth.token, None);
     }
+
+    #[test]
+    fn test_parse_emby_authorization() {
+        let header = r#"MediaBrowser Client="Switchfin", Device="System Product Name", DeviceId="725a281e0b7b4ce38a19b5f8b38122d9", Version="0.7.4"#;
+
+        let auth = Authorization::parse(header).unwrap();
+
+        assert_eq!(auth.client, "Switchfin");
+        assert_eq!(auth.device, "System Product Name");
+        assert_eq!(auth.device_id, "725a281e0b7b4ce38a19b5f8b38122d9");
+        assert_eq!(auth.version, "0.7.4");
+        assert_eq!(auth.token, None);
+    }
 }

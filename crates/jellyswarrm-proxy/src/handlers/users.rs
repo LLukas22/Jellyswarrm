@@ -3,7 +3,7 @@ use axum::{
     Json,
 };
 use hyper::{HeaderMap, StatusCode};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::{
     handlers::common::execute_json_request,
@@ -383,12 +383,36 @@ async fn authenticate_on_server(
 
 /// Extracts authorization header or provides default
 fn extract_auth_header(headers: &HeaderMap) -> String {
-    headers
+    if let Some(raw_auth) = headers
         .get("authorization")
         .and_then(|value| value.to_str().ok())
-        .and_then(|auth_str| Authorization::parse(auth_str).ok())
-        .map(|auth| auth.to_header_value())
-        .unwrap_or(r#"MediaBrowser Client="Jellyfin Web", Device="JellyswarmProxy", DeviceId="jellyswarrm-proxy-001", Version="10.10.7""#.to_string())
+    {
+        if let Ok(auth) = Authorization::parse(raw_auth) {
+            debug!("Extracted 'Authorization' header: {}", raw_auth);
+            auth.to_header_value()
+        } else {
+            warn!("Invalid 'Authorization' header format: {}", raw_auth);
+            r#"MediaBrowser Client="Dummy Jellyfin Web", Device="JellyswarmProxy", DeviceId="jellyswarrm-proxy-001", Version="10.10.7""#.to_string()
+        }
+    } else if let Some(raw_auth) = headers
+        .get("x-emby-authorization")
+        .and_then(|value| value.to_str().ok())
+    {
+        if let Ok(auth) = Authorization::parse(raw_auth) {
+            debug!("Extracted 'X-Emby-Authorization' header: {}", raw_auth);
+            auth.to_header_value()
+        } else {
+            warn!("Invalid 'Authorization' header format: {}", raw_auth);
+            r#"MediaBrowser Client="Dummy Jellyfin Web", Device="JellyswarmProxy", DeviceId="jellyswarrm-proxy-001", Version="10.10.7""#.to_string()
+        }
+    } else {
+        warn!(
+            "No 'Authorization' header found, using dummy header! Headers: {:?}",
+            headers
+        );
+
+        r#"MediaBrowser Client="Dummy Jellyfin Web", Device="JellyswarmProxy", DeviceId="jellyswarrm-proxy-001", Version="10.10.7""#.to_string()
+    }
 }
 
 /// Custom error type for authentication operations
