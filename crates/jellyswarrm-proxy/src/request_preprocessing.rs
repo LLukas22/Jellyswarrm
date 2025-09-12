@@ -9,7 +9,7 @@ use crate::models::Authorization;
 use crate::processors::analyze_json;
 use crate::processors::request_analyzer::{RequestAnalysisContext, RequestBodyAnalysisResult};
 use crate::server_storage::Server;
-use crate::url_helper::{contains_id, replace_id};
+use crate::url_helper::{contains_id, join_server_url, replace_id};
 use crate::user_authorization_service::{AuthorizationSession, Device, User};
 use crate::AppState;
 
@@ -282,8 +282,6 @@ pub async fn apply_new_target_uri(
     session: &Option<AuthorizationSession>,
     state: &AppState,
 ) {
-    let mut new_url = server.url.clone();
-
     // Get the original path and query
     let mut orig_url = request.url().clone();
     debug!("Original request URL: {}", orig_url);
@@ -367,9 +365,9 @@ pub async fn apply_new_target_uri(
         }
     }
 
+    let mut new_url = join_server_url(&server.url, orig_url.path());
     // Clear and set new query
     new_url.query_pairs_mut().clear().extend_pairs(pairs);
-    new_url.set_path(orig_url.path());
 
     // Set the new URL on the request
     *request.url_mut() = new_url;

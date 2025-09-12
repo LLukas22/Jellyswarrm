@@ -5,6 +5,29 @@ pub fn is_id_like(segment: &str) -> bool {
     Uuid::parse_str(segment).is_ok()
 }
 
+/// Joins a server URL with a request path, preserving any subdirectories in the server URL
+///
+/// # Examples
+///
+/// ```
+/// use url::Url;
+/// let server_url = Url::parse("http://server.com/jellyfin").unwrap();
+/// let request_path = "/Users/123";
+/// let result = join_server_url(&server_url, request_path);
+/// assert_eq!(result.as_str(), "http://server.com/jellyfin/Users/123");
+/// ```
+pub fn join_server_url(server_url: &Url, request_path: &str) -> Url {
+    let mut new_url = server_url.clone();
+    let server_path = new_url.path().trim_end_matches('/');
+    let combined_path = if server_path.is_empty() {
+        request_path.to_string()
+    } else {
+        format!("{}{}", server_path, request_path)
+    };
+    new_url.set_path(&combined_path);
+    new_url
+}
+
 pub fn contains_id(url: &Url, name: &str) -> Option<String> {
     let segments: Vec<&str> = match url.path_segments() {
         Some(segments) => segments.collect(),
@@ -37,6 +60,24 @@ pub fn replace_id(url: Url, original: &str, replacement: &str) -> Url {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_join_server_url() {
+        // Test with server having subdirectory
+        let server_url = Url::parse("http://server.com/jellyfin").unwrap();
+        let result = join_server_url(&server_url, "/Users/123");
+        assert_eq!(result.as_str(), "http://server.com/jellyfin/Users/123");
+
+        // Test with server at root
+        let server_url = Url::parse("http://server.com").unwrap();
+        let result = join_server_url(&server_url, "/Users/123");
+        assert_eq!(result.as_str(), "http://server.com/Users/123");
+
+        // Test with server having trailing slash
+        let server_url = Url::parse("http://server.com/jellyfin/").unwrap();
+        let result = join_server_url(&server_url, "/Users/123");
+        assert_eq!(result.as_str(), "http://server.com/jellyfin/Users/123");
+    }
 
     #[test]
     fn test_is_id_like() {

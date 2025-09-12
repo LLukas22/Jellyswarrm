@@ -9,6 +9,7 @@ use crate::{
     handlers::common::execute_json_request,
     models::{AuthenticateRequest, AuthenticateResponse, Authorization},
     request_preprocessing::preprocess_request,
+    url_helper::join_server_url,
     AppState,
 };
 
@@ -70,12 +71,12 @@ pub async fn handle_get_user_by_id(
     let user: crate::user_authorization_service::User =
         preprocessed.user.ok_or(StatusCode::UNAUTHORIZED)?;
 
-    // Build request URL
-    let server_url = preprocessed.server.url.as_str().trim_end_matches('/');
-    let user_url = format!("{}/Users/{}", server_url, session.original_user_id);
+    // Build request URL using helper function to preserve subdirectories
+    let user_path = format!("/Users/{}", session.original_user_id);
+    let user_url = join_server_url(&preprocessed.server.url, &user_path);
 
     let mut request = preprocessed.request;
-    *request.url_mut() = reqwest::Url::parse(&user_url).map_err(|_| StatusCode::BAD_REQUEST)?;
+    *request.url_mut() = user_url;
 
     // Execute request and parse JSON response
     let server_user: crate::models::User =
@@ -224,8 +225,7 @@ async fn authenticate_on_server(
     server: crate::server_storage::Server,
     server_mapping: Option<crate::user_authorization_service::ServerMapping>,
 ) -> Result<AuthenticateResponse, AuthError> {
-    let server_url = server.url.as_str().trim_end_matches('/');
-    let auth_url = format!("{server_url}/Users/AuthenticateByName");
+    let auth_url = join_server_url(&server.url, "/Users/AuthenticateByName");
 
     info!(
         "Authenticating user '{}' at server '{}' ({})",
@@ -262,7 +262,7 @@ async fn authenticate_on_server(
     // Make authentication request
     let response = state
         .reqwest_client
-        .post(&auth_url)
+        .post(auth_url.as_str())
         .header("Authorization", &auth_header)
         .header("Accept", "application/json")
         .header("Content-Type", "application/json")

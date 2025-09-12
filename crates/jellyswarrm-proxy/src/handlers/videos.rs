@@ -3,7 +3,7 @@ use hyper::StatusCode;
 use regex::Regex;
 use tracing::{error, info};
 
-use crate::{request_preprocessing::preprocess_request, AppState};
+use crate::{request_preprocessing::preprocess_request, url_helper::join_server_url, AppState};
 
 //http://localhost:3000/videos/71bda5a4-267a-1a6c-49ce-8536d36628d8/master.m3u8?DeviceId=TW96aWxsYS81LjAgKFgxMTsgTGludXggeDg2XzY0OyBydjoxNDEuMCkgR2Vja28vMjAxMDAxMDEgRmlyZWZveC8xNDEuMHwxNzUzNTM1MDA0NDk4&MediaSourceId=4984199da7b84d1d8ca640cafe041e20&VideoCodec=av1%2Ch264%2Cvp9&AudioCodec=aac%2Copus%2Cflac&AudioStreamIndex=1&VideoBitrate=2147099647&AudioBitrate=384000&MaxFramerate=24&PlaySessionId=f6f93680f3f345e1a90c8d73d8c56698&api_key=2fac9237707a4bfb8a6a601ba0c6b4a0&SubtitleMethod=Encode&TranscodingMaxAudioChannels=2&RequireAvc=false&EnableAudioVbrEncoding=true&Tag=dcfdf6b92443006121a95aaa46804a0a&SegmentContainer=mp4&MinSegments=1&BreakOnNonKeyFrames=True&h264-level=40&h264-videobitdepth=8&h264-profile=high&av1-profile=main&av1-rangetype=SDR&av1-level=19&vp9-rangetype=SDR&h264-rangetype=SDR&h264-deinterlace=true&TranscodeReasons=ContainerNotSupported%2C+AudioCodecNotSupported
 pub async fn get_stream_part(
@@ -21,7 +21,7 @@ pub async fn get_stream_part(
 
     let re = Regex::new(r"/videos/([^/]+)/").unwrap();
 
-    let id = re
+    let id: String = re
         .captures(original_request.url().path())
         .and_then(|cap| cap.get(1))
         .map(|m| m.as_str())
@@ -39,13 +39,10 @@ pub async fn get_stream_part(
         return Err(StatusCode::NOT_FOUND);
     };
 
-    let mut new_url = server.url.clone();
-
     // Get the original path and query
     let orig_url = original_request.url().clone();
 
-    new_url.set_path(orig_url.path());
-
+    let mut new_url = join_server_url(&server.url, orig_url.path());
     new_url.set_query(orig_url.query());
 
     info!("Redirecting to: {}", new_url);
@@ -88,13 +85,9 @@ pub async fn get_video_resource(
         return Err(StatusCode::NOT_FOUND);
     };
 
-    let mut new_url = server.url.clone();
-
     // Get the original path and query
     let orig_url = original_request.url().clone();
-
-    new_url.set_path(orig_url.path());
-
+    let mut new_url = join_server_url(&server.url, orig_url.path());
     new_url.set_query(orig_url.query());
 
     info!("Redirecting HLS stream to: {}", new_url);
