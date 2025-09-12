@@ -143,7 +143,7 @@ pub async fn post_playback_info(
     let session = preprocessed.session.ok_or(StatusCode::UNAUTHORIZED)?;
 
     let mut payload = payload;
-    if let Some(_) = payload.user_id {
+    if payload.user_id.is_some() {
         payload.user_id = Some(session.original_user_id.clone());
     }
 
