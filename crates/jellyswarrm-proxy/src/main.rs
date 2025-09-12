@@ -256,8 +256,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .route("/Me", get(handlers::users::handle_get_me))
                 .route("/{user_id}", get(handlers::users::handle_get_user_by_id))
-                .route("/{user_id}/Views", get(handlers::federated::get_items_from_all_servers))
-                .route("/{user_id}/Items", get(handlers::federated::get_items_from_all_servers_if_not_restricted))
+                .route(
+                    "/{user_id}/Views",
+                    get(handlers::federated::get_items_from_all_servers),
+                )
+                .route(
+                    "/{user_id}/Items",
+                    get(handlers::federated::get_items_from_all_servers_if_not_restricted),
+                )
                 .route(
                     "/{user_id}/Items/Resume",
                     get(handlers::federated::get_items_from_all_servers),
