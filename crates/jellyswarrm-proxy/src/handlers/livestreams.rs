@@ -37,7 +37,9 @@ pub async fn post_livestream_open(
     let session = preprocessed.session.ok_or(StatusCode::UNAUTHORIZED)?;
 
     let mut payload = payload;
-    payload.user_id = session.original_user_id.clone();
+    if payload.user_id.is_some() {
+        payload.user_id = Some(session.original_user_id.clone());
+    }
 
     if let Some(media_source_id) = &payload.media_source_id {
         if let Some(media_mapping) = state

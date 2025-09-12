@@ -35,7 +35,13 @@ impl Authorization {
                 "Device" => device = percent_decode_str(&value).decode_utf8_lossy().to_string(),
                 "DeviceId" => device_id = value,
                 "Version" => version = value,
-                "Token" => token = Some(value),
+                "Token" => {
+                    if value.is_empty() {
+                        token = None;
+                    } else {
+                        token = Some(value);
+                    }
+                }
                 _ => {} // Ignore unknown parameters
             }
         }
@@ -127,26 +133,37 @@ fn parse_quoted_params(content: &str) -> Result<Vec<(String, String)>, String> {
             return Err("Empty parameter key".to_string());
         }
 
-        // Parse value (quoted)
-        if chars.peek() != Some(&'"') {
-            return Err("Expected quoted value".to_string());
-        }
-        chars.next(); // consume opening quote
-
+        // Parse value (quoted or unquoted)
         let mut value = String::new();
-        let mut escaped = false;
 
-        for ch in chars.by_ref() {
-            if escaped {
-                value.push(ch);
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == '"' {
-                break; // end of quoted value
-            } else {
-                value.push(ch);
+        if chars.peek() == Some(&'"') {
+            // Quoted value
+            chars.next(); // consume opening quote
+            let mut escaped = false;
+
+            for ch in chars.by_ref() {
+                if escaped {
+                    value.push(ch);
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    break; // end of quoted value
+                } else {
+                    value.push(ch);
+                }
             }
+        } else {
+            // Unquoted value - read until comma or end
+            while let Some(&ch) = chars.peek() {
+                if ch == ',' {
+                    break;
+                } else {
+                    value.push(chars.next().unwrap());
+                }
+            }
+            // Trim trailing whitespace from unquoted values
+            value = value.trim_end().to_string();
         }
 
         params.push((key, value));
@@ -190,5 +207,21 @@ mod tests {
             auth.token,
             Some("6fbe3193155f45b3bc3f229469db1568".to_string())
         );
+    }
+
+    #[test]
+    fn test_parse_ios_authorization() {
+        let header = r#"MediaBrowser Device=iPad, Version=1.3.1, DeviceId=iPadOS_20C7AC61-1C80-4621-B2C3-2B043490A254, Token=, Client=Swiftfin iPadOS"#;
+
+        let auth = Authorization::parse(header).unwrap();
+
+        assert_eq!(auth.client, "Swiftfin iPadOS");
+        assert_eq!(auth.device, "iPad");
+        assert_eq!(
+            auth.device_id,
+            "iPadOS_20C7AC61-1C80-4621-B2C3-2B043490A254"
+        );
+        assert_eq!(auth.version, "1.3.1");
+        assert_eq!(auth.token, None);
     }
 }

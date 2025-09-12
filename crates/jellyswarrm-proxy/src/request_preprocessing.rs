@@ -29,6 +29,7 @@ static MEDIA_ID_PATH_TAGS: &[&str] = &[
     "Timers",
     "UserFavoriteItems",
     "UserItems",
+    "UserPlayedItems",
 ];
 
 static MEDIA_ID_QUERY_TAGS: &[&str] = &[
@@ -38,6 +39,7 @@ static MEDIA_ID_QUERY_TAGS: &[&str] = &[
     "Tag",
     "SeasonId",
     "startItemId",
+    "IDs",
 ];
 
 static USER_ID_PATH_TAGS: &[&str] = &["Users"];
@@ -486,12 +488,36 @@ pub async fn resolve_server(
 }
 
 pub async fn get_user_from_request(
-    _req: &reqwest::Request,
+    request: &reqwest::Request,
     auth: &Option<JellyfinAuthorization>,
     state: &AppState,
 ) -> Result<Option<User>> {
     let Some(auth) = auth else {
-        // todo: handle user ids in request params
+        // No auth, check for user ID in path
+        for &path_segment in USER_ID_PATH_TAGS {
+            if let Some(user_id) = contains_id(request.url(), path_segment) {
+                debug!("Found {} ID in request: {}", path_segment, user_id);
+                let user = state.user_authorization.get_user_by_id(&user_id).await?;
+                return Ok(user);
+            }
+        }
+
+        // If that fails, check query parameters
+        for &param_name in USER_ID_QUERY_TAGS {
+            if let Some(param_value) = request
+                .url()
+                .query_pairs()
+                .find(|(k, _)| k.eq_ignore_ascii_case(param_name))
+                .map(|(_, v)| v.to_string())
+            {
+                debug!("Found {} in query: {}", param_name, param_value);
+                let user = state
+                    .user_authorization
+                    .get_user_by_id(&param_value)
+                    .await?;
+                return Ok(user);
+            }
+        }
         return Ok(None);
     };
 
