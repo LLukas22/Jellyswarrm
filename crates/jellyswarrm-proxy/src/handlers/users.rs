@@ -98,6 +98,17 @@ pub async fn handle_authenticate_by_name(
     headers: HeaderMap,
     Json(payload): Json<AuthenticateRequest>,
 ) -> Result<Json<AuthenticateResponse>, StatusCode> {
+    let auth_headers = extract_auth_header(&headers);
+    let authorization = Authorization::parse(&auth_headers).map_err(|e| {
+        tracing::error!("Failed to parse authorization header: {}", e);
+        StatusCode::BAD_REQUEST
+    })?;
+
+    info!(
+        "Received authentication request for user: {} on device: {:?}",
+        payload.username, authorization
+    );
+
     let mut servers = state
         .server_storage
         .list_servers()
@@ -142,13 +153,15 @@ pub async fn handle_authenticate_by_name(
                     );
                     {
                         let state = state.clone();
-                        let headers = headers.clone();
-                        let payload = payload.clone();
+                        let authorization = authorization.clone();
+                        let username = payload.username.clone();
+                        let password = payload.password.clone();
                         auth_tasks.push(tokio::spawn(async move {
                             authenticate_on_server(
                                 state.clone(),
-                                headers.clone(),
-                                payload.clone(),
+                                authorization,
+                                username.clone(),
+                                password.clone(),
                                 server,
                                 Some(server_mapping),
                             )
@@ -165,15 +178,16 @@ pub async fn handle_authenticate_by_name(
         .into_iter()
         .map(|server| {
             let state = state.clone();
-            let headers = headers.clone();
-            let payload = payload.clone();
+            let authorization = authorization.clone();
+            let username = payload.username.clone();
+            let password = payload.password.clone();
             info!(
                 "No server mapping found for user '{}' on server '{}'",
                 payload.username, server.name
             );
 
             tokio::spawn(async move {
-                authenticate_on_server(state, headers, payload, server, None).await
+                authenticate_on_server(state, authorization, username, password, server, None).await
             })
         })
         .collect();
@@ -218,10 +232,11 @@ pub async fn handle_authenticate_by_name(
 }
 
 /// Authenticates a user on a specific server
-async fn authenticate_on_server(
+pub async fn authenticate_on_server(
     state: AppState,
-    headers: HeaderMap,
-    payload: AuthenticateRequest,
+    authorization_header: Authorization,
+    username: String,
+    password: String,
     server: crate::server_storage::Server,
     server_mapping: Option<crate::user_authorization_service::ServerMapping>,
 ) -> Result<AuthenticateResponse, AuthError> {
@@ -229,44 +244,41 @@ async fn authenticate_on_server(
 
     info!(
         "Authenticating user '{}' at server '{}' ({})",
-        payload.username, server.name, auth_url
+        username, server.name, auth_url
     );
 
     // Get user mapping for this server
-    let (final_username, final_password) = if let Some(mapping) = &server_mapping {
+    let (username, password) = if let Some(mapping) = &server_mapping {
         (
             mapping.mapped_username.clone(),
             mapping.mapped_password.clone(),
         )
     } else {
-        (payload.username.clone(), payload.password.clone())
-    };
-
-    // Create authentication payload
-    let auth_payload = AuthenticateRequest {
-        username: final_username.clone(),
-        password: final_password.clone(),
+        (username.clone(), password.clone())
     };
 
     // Extract authorization header or use default
-    let auth_header = extract_auth_header(&headers);
-    let authorization = Authorization::parse(&auth_header).unwrap_or_else(|_| Authorization {
-        client: "Jellyfin Web".to_string(),
-        device: "JellyswarmProxy".to_string(),
-        device_id: "jellyswarrm-proxy-001".to_string(),
-        version: "10.10.7".to_string(),
-        token: None,
-    });
-    debug!("Using authorization header: {}", auth_header);
+    // let auth_header = extract_auth_header(&headers);
+    // let authorization = Authorization::parse(&auth_header).unwrap_or_else(|_| Authorization {
+    //     client: "Jellyfin Web".to_string(),
+    //     device: "JellyswarmProxy".to_string(),
+    //     device_id: "jellyswarrm-proxy-001".to_string(),
+    //     version: "10.10.7".to_string(),
+    //     token: None,
+    // });
+    debug!("Using authorization header: {}", authorization_header);
 
     // Make authentication request
     let response = state
         .reqwest_client
         .post(auth_url.as_str())
-        .header("Authorization", &auth_header)
+        .header("Authorization", &authorization_header.to_header_value())
         .header("Accept", "application/json")
         .header("Content-Type", "application/json")
-        .json(&auth_payload)
+        .json(&AuthenticateRequest {
+            username: username.clone(),
+            password: password.clone(),
+        })
         .send()
         .await
         .map_err(|e| {
@@ -301,7 +313,7 @@ async fn authenticate_on_server(
     // We authenticated sucessfully, now we need to get the user or create it
     let user = state
         .user_authorization
-        .get_or_create_user(&payload.username, &payload.password)
+        .get_or_create_user(&username, &password)
         .await
         .map_err(|e| {
             tracing::error!("Error getting user: {}", e);
@@ -312,16 +324,11 @@ async fn authenticate_on_server(
     if server_mapping.is_none() {
         info!(
             "Creating server mapping for user '{}' on server '{}'",
-            payload.username, server.name
+            &username, server.name
         );
         state
             .user_authorization
-            .add_server_mapping(
-                &user.id,
-                server.url.as_str(),
-                &payload.username,
-                &payload.password,
-            )
+            .add_server_mapping(&user.id, server.url.as_str(), &username, &password)
             .await
             .map_err(|e| {
                 tracing::error!("Error creating server mapping: {}", e);
@@ -341,8 +348,8 @@ async fn authenticate_on_server(
     auth_response.session_info.user_id = user.id.clone();
 
     // Restore original username in response
-    auth_response.user.name = payload.username.clone();
-    auth_response.session_info.user_name = payload.username.clone();
+    auth_response.user.name = username.clone();
+    auth_response.session_info.user_name = username.clone();
 
     // Modify admin status (security measure)
     auth_response.user.policy.is_administrator = false;
@@ -354,7 +361,7 @@ async fn authenticate_on_server(
     auth_response.user.id = user.id.clone();
 
     // Store authorization data with the new access token
-    let mut auth_to_store = authorization.clone();
+    let mut auth_to_store = authorization_header.clone();
     auth_to_store.token = Some(auth_token.clone());
 
     // Store authorization session
@@ -376,7 +383,7 @@ async fn authenticate_on_server(
 
     info!(
         "Successfully authenticated user '{}' on server '{}' and stored authorization data with token: {}",
-        payload.username, server.name, auth_token
+        &username, server.name, auth_token
     );
     Ok(auth_response)
 }
@@ -418,7 +425,7 @@ fn extract_auth_header(headers: &HeaderMap) -> String {
 /// Custom error type for authentication operations
 #[derive(Debug)]
 #[allow(dead_code)]
-enum AuthError {
+pub enum AuthError {
     NetworkError(String),
     InvalidCredentials,
     ParseError(String),
