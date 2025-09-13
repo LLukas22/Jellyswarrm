@@ -347,7 +347,7 @@ impl UserAuthorizationService {
         Ok(user)
     }
 
-    /// Get user by virtual key
+    /// Get user by virtual id
     pub async fn get_user_by_id(&self, id: &str) -> Result<Option<User>, sqlx::Error> {
         let user = sqlx::query_as::<_, User>(
             r#"

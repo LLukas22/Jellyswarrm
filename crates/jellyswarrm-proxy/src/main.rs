@@ -44,6 +44,7 @@ use user_authorization_service::UserAuthorizationService;
 
 use crate::{
     config::AppConfig,
+    handlers::quick_connect::{self, QuickConnectStorage},
     processors::{
         request_analyzer::RequestAnalyzer,
         request_processor::{RequestProcessingContext, RequestProcessor},
@@ -65,6 +66,7 @@ pub struct AppState {
     pub play_sessions: Arc<SessionStorage>,
     pub config: Arc<tokio::sync::RwLock<AppConfig>>,
     pub processors: Arc<JsonProcessors>,
+    pub quick_connect: QuickConnectStorage,
 }
 
 impl AppState {
@@ -72,6 +74,7 @@ impl AppState {
         reqwest_client: reqwest::Client,
         data_context: DataContext,
         json_processors: JsonProcessors,
+        quick_connect: QuickConnectStorage,
     ) -> Self {
         Self {
             reqwest_client,
@@ -81,6 +84,7 @@ impl AppState {
             play_sessions: data_context.play_sessions,
             config: data_context.config,
             processors: Arc::new(json_processors),
+            quick_connect,
         }
     }
 }
@@ -206,7 +210,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         request_analyzer: RequestAnalyzer::new(data_context.clone()),
     };
 
-    let app_state = AppState::new(reqwest_client, data_context, json_processors);
+    let app_state = AppState::new(
+        reqwest_client,
+        data_context,
+        json_processors,
+        quick_connect::QuickConnectStorage::new(),
+    );
 
     let session_store = SqliteStore::new(pool);
     session_store.migrate().await?;
@@ -234,9 +243,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nest(ui_route, ui_routes())
         .route("/", get(index_handler))
         .route("/resources/{*path}", get(resource_handler))
-        .route(
-            "/QuickConnect/Enabled",
-            get(handlers::quick_connect::handle_quick_connect),
+        .nest(
+            "/QuickConnect",
+            Router::new()
+                .route(
+                    "/Enabled",
+                    get(handlers::quick_connect::handle_quick_connect_enabled),
+                )
+                .route(
+                    "/Connect",
+                    get(handlers::quick_connect::handle_quick_connect_connect),
+                )
+                .route(
+                    "/Initiate",
+                    post(handlers::quick_connect::handle_quick_connect_initiate),
+                )
+                .route(
+                    "/Authorize",
+                    post(handlers::quick_connect::handle_quick_connect_authorize),
+                ),
         )
         .route(
             "/Branding/Configuration",
@@ -253,6 +278,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .route(
                     "/AuthenticateByName",
                     post(handlers::users::handle_authenticate_by_name),
+                )
+                .route(
+                    "/AuthenticateWithQuickConnect",
+                    post(handlers::quick_connect::handle_authenticate_with_quick_connect),
                 )
                 .route("/Me", get(handlers::users::handle_get_me))
                 .route("/{user_id}", get(handlers::users::handle_get_user_by_id))
