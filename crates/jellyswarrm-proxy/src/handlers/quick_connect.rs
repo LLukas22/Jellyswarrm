@@ -89,6 +89,12 @@ pub struct QuickConnectStorage {
     sessions: Arc<Mutex<HashMap<String, QuickConnectSession>>>,
 }
 
+impl Default for QuickConnectStorage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl QuickConnectStorage {
     pub fn new() -> Self {
         Self {
@@ -429,7 +435,7 @@ pub async fn handle_authenticate_with_quick_connect(
                         "All authentication attempts failed for user: {}",
                         user.original_username
                     );
-                    return Err(StatusCode::UNAUTHORIZED);
+                    Err(StatusCode::UNAUTHORIZED)
                 } else {
                     info!(
                     "User '{}' successfully authenticated on {} out of {} servers and stored in authorization storage",
@@ -438,11 +444,11 @@ pub async fn handle_authenticate_with_quick_connect(
                     total_servers
                 );
                     // Return the first successful authentication (you could also implement priority logic here)
-                    return Ok(Json(successful_auths[0].clone()));
+                    Ok(Json(successful_auths[0].clone()))
                 }
             } else {
                 warn!("User ID from Quick Connect session not found: {}", user_id);
-                return Err(StatusCode::UNAUTHORIZED);
+                Err(StatusCode::UNAUTHORIZED)
             }
         } else {
             Err(StatusCode::UNAUTHORIZED)
