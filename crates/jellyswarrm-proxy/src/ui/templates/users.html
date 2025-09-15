@@ -8,7 +8,7 @@
 
 <section id="add-user" aria-labelledby="add-user-heading">
     <h2 id="add-user-heading" style="margin-bottom:.5rem;">Add User</h2>
-    <form hx-post="/ui/users" hx-target="#user-list" hx-swap="innerHTML" hx-disabled-elt="this", hx-on::after-request="if(event.detail.successful) this.reset()">
+    <form hx-post="/{{ ui_route }}/users" hx-target="#user-list" hx-swap="innerHTML" hx-disabled-elt="this", hx-on::after-request="if(event.detail.successful) this.reset()">
         <div class="grid" style="--pico-grid-gap:1rem;">
             <label>Username
                 <input type="text" name="username" placeholder="e.g. alice" autocomplete="off" required>
@@ -26,6 +26,6 @@
 <hr />
 
 <h2 id="users-heading" style="margin-bottom:.5rem;">Users</h2>
-<section id="user-list" hx-get="/ui/users/list" hx-trigger="load">
+<section id="user-list" hx-get="/{{ ui_route }}/users/list" hx-trigger="load">
     <p>Loading users...</p>
 </section>

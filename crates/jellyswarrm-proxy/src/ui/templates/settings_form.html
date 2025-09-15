@@ -1,5 +1,5 @@
 <div id="settings-messages"></div>
-<form hx-post="/ui/settings/save" hx-target="#settings-form" hx-swap="outerHTML" hx-disabled-elt="this">
+<form hx-post="/{{ ui_route }}/settings/save" hx-target="#settings-form" hx-swap="outerHTML" hx-disabled-elt="this">
   <fieldset>
     <label>Server ID
       <input type="text" name="server_id" value="{{ server_id }}" disabled>
@@ -16,8 +16,8 @@
   </fieldset>
   <div style="display:flex; gap:.5rem;">
     <button type="submit">Save</button>
-    <button type="button" hx-get="/ui/settings/form" hx-target="#settings-form" class="secondary">Reset</button>
-    <button type="button" hx-post="/ui/settings/reload" hx-target="#settings-messages" class="secondary">Reload From Disk</button>
+    <button type="button" hx-get="/{{ ui_route }}/settings/form" hx-target="#settings-form" class="secondary">Reset</button>
+    <button type="button" hx-post="/{{ ui_route }}/settings/reload" hx-target="#settings-messages" class="secondary">Reload From Disk</button>
   </div>
   <p style="font-size:.75rem; opacity:.7; margin-top:.5rem;">Edits persist to TOML.</p>
 </form>

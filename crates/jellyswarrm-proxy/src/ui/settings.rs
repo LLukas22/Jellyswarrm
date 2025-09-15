@@ -12,7 +12,9 @@ use crate::{config::save_config, AppState};
 
 #[derive(Template)]
 #[template(path = "settings.html")]
-pub struct SettingsPageTemplate {}
+pub struct SettingsPageTemplate {
+    pub ui_route: String,
+}
 
 #[derive(Template)]
 #[template(path = "settings_form.html")]
@@ -21,10 +23,13 @@ pub struct SettingsFormTemplate {
     pub public_address: String,
     pub server_name: String,
     pub include_server_name_in_media: bool,
+    pub ui_route: String,
 }
 
-pub async fn settings_page() -> impl IntoResponse {
-    let template = SettingsPageTemplate {};
+pub async fn settings_page(State(state): State<AppState>) -> impl IntoResponse {
+    let template = SettingsPageTemplate {
+        ui_route: state.get_ui_route().await,
+    };
     match template.render() {
         Ok(html) => Html(html).into_response(),
         Err(e) => {
@@ -41,6 +46,7 @@ pub async fn settings_form(State(state): State<AppState>) -> impl IntoResponse {
         public_address: cfg.public_address,
         server_name: cfg.server_name,
         include_server_name_in_media: cfg.include_server_name_in_media,
+        ui_route: state.get_ui_route().await,
     };
     match form.render() {
         Ok(html) => Html(html).into_response(),

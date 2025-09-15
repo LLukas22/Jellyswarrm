@@ -29,7 +29,7 @@
             <td><a href="{{ server.url }}" target="_blank" rel="noopener noreferrer">{{ server.url }}</a></td>
             <td>
           <input type="number" value="{{ server.priority }}" min="1" max="999"
-              hx-patch="/ui/servers/{{ server.id }}/priority"
+              hx-patch="/{{ ui_route }}/servers/{{ server.id }}/priority"
               hx-trigger="change delay:200ms"
               hx-include="closest tr"
               name="priority"
@@ -37,7 +37,7 @@
               style="width: 130px; min-width: 130px;">
             </td>
             <td>
-                <span hx-get="/ui/servers/{{ server.id }}/status" 
+                <span hx-get="/{{ ui_route }}/servers/{{ server.id }}/status" 
                       hx-trigger="load, every 5s" 
                       hx-swap="outerHTML"
                       style="min-width: 80px; display: inline-block;">
@@ -46,7 +46,7 @@
             </td>
             <td style="text-align: center;">
                                 <button type="button" class="icon-btn danger"
-                        hx-delete="/ui/servers/{{ server.id }}"
+                        hx-delete="/{{ ui_route }}/servers/{{ server.id }}"
                         hx-confirm="Delete server '{{ server.name }}'?"
                         hx-target="#server-list" hx-swap="innerHTML"
                         title="Delete server">

@@ -365,7 +365,8 @@ pub async fn apply_new_target_uri(
         }
     }
 
-    let mut new_url = join_server_url(&server.url, orig_url.path());
+    let path = state.remove_prefix_from_path(orig_url.path()).await;
+    let mut new_url = join_server_url(&server.url, path);
     // Clear and set new query
     new_url.query_pairs_mut().clear().extend_pairs(pairs);
 

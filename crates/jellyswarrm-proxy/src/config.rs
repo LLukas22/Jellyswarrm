@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_default::DefaultFromSerde;
+use std::fmt;
 use std::fs;
+use std::ops::Deref;
 use std::path::PathBuf;
 use tower_sessions::cookie::Key;
 use uuid::Uuid;
@@ -62,6 +64,10 @@ fn default_timeout() -> u64 {
     20
 }
 
+fn default_ui_route() -> UrlSegment {
+    UrlSegment("ui".to_string())
+}
+
 mod base64_serde {
     use super::*;
     use serde::de::Error as DeError;
@@ -109,6 +115,12 @@ pub struct AppConfig {
 
     #[serde(default = "default_timeout")]
     pub timeout: u64, // in seconds
+
+    #[serde(default = "default_ui_route")]
+    pub ui_route: UrlSegment,
+
+    #[serde(default)]
+    pub url_prefix: Option<UrlSegment>,
 }
 
 pub const DEFAULT_CONFIG_FILENAME: &str = "jellyswarrm.toml";
@@ -146,4 +158,83 @@ pub fn load_config() -> AppConfig {
 pub fn save_config(cfg: &AppConfig) -> std::io::Result<()> {
     let toml_str = toml::to_string_pretty(cfg).expect("serialize config");
     fs::write(config_path(), toml_str)
+}
+
+// A normalized URL path segment (no leading/trailing slashes, non-empty).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct UrlSegment(String);
+
+impl UrlSegment {
+    pub fn new<S: Into<String>>(s: S) -> Result<Self, &'static str> {
+        let t = s
+            .into()
+            .trim_start_matches('/')
+            .trim_end_matches('/')
+            .to_string();
+        if t.is_empty() {
+            Err("empty UrlSegment")
+        } else {
+            Ok(UrlSegment(t))
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Deref for UrlSegment {
+    type Target = str;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl AsRef<str> for UrlSegment {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for UrlSegment {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl From<String> for UrlSegment {
+    fn from(s: String) -> Self {
+        // best-effort: create without returning error (used for programmatic conversions)
+        UrlSegment(s.trim_start_matches('/').trim_end_matches('/').to_string())
+    }
+}
+
+impl From<&str> for UrlSegment {
+    fn from(s: &str) -> Self {
+        UrlSegment::from(s.to_string())
+    }
+}
+
+impl serde::Serialize for UrlSegment {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for UrlSegment {
+    fn deserialize<D>(deserializer: D) -> Result<UrlSegment, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        let t = s.trim_start_matches('/').trim_end_matches('/').to_string();
+        if t.is_empty() {
+            Err(serde::de::Error::custom("url segment must not be empty"))
+        } else {
+            Ok(UrlSegment(t))
+        }
+    }
 }

@@ -12,12 +12,15 @@ use crate::{server_storage::Server, url_helper::join_server_url, AppState};
 
 #[derive(Template)]
 #[template(path = "servers.html")]
-pub struct ServersPageTemplate {}
+pub struct ServersPageTemplate {
+    pub ui_route: String,
+}
 
 #[derive(Template)]
 #[template(path = "server_list.html")]
 pub struct ServerListTemplate {
     pub servers: Vec<Server>,
+    pub ui_route: String,
 }
 
 #[derive(Template)]
@@ -39,8 +42,10 @@ pub struct UpdatePriorityForm {
 }
 
 /// Main servers management page
-pub async fn servers_page() -> impl IntoResponse {
-    let template = ServersPageTemplate {};
+pub async fn servers_page(State(state): State<AppState>) -> impl IntoResponse {
+    let template = ServersPageTemplate {
+        ui_route: state.get_ui_route().await,
+    };
 
     match template.render() {
         Ok(html) => Html(html).into_response(),
@@ -55,7 +60,10 @@ pub async fn servers_page() -> impl IntoResponse {
 pub async fn get_server_list(State(state): State<AppState>) -> impl IntoResponse {
     match state.server_storage.list_servers().await {
         Ok(servers) => {
-            let template = ServerListTemplate { servers };
+            let template = ServerListTemplate {
+                servers,
+                ui_route: state.get_ui_route().await,
+            };
 
             match template.render() {
                 Ok(html) => Html(html).into_response(),
