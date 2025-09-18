@@ -1,0 +1,111 @@
+services:
+  content-downloader:
+    image: alpine:latest
+    container  jellyfin-tvshows-init:
+    image: ghcr.io/astral-sh/uv:python3.11-alpine
+    container_name: jellyfin-tvshows-init
+    volumes:
+      - ./scripts/init-tvshows-server.py:/scripts/init-tvshows-server.py:ro
+    working_dir: /scripts
+    command: ["uv", "run", "--with", "jellyfin-apiclient-python", "/scripts/init-tvshows-server.py"]
+    networks:
+      - jellyfin-dev-net
+    depends_on:
+      jellyfin-tvshows:
+        condition: service_started
+    profiles:
+      - initn-content-downloader
+    volumes:
+      - ./data/media:/downloads
+      - ./scripts/download-content.sh:/scripts/download-content.sh:ro
+    working_dir: /downloads
+    command: sh -c "apk add --no-cache wget curl bash && sh /scripts/download-content.sh"
+    networks:
+      - jellyfin-dev-net
+    tty: true
+
+  jellyfin-movies:
+    image: jellyfin/jellyfin:latest
+    container_name: jellyfin-movies
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+      - JELLYFIN_PublishedServerUrl=http://localhost:8096
+    volumes:
+      - jellyfin-movies-config:/config
+      - jellyfin-movies-cache:/cache
+      - ./data/media:/media:ro
+    ports:
+      - "8096:8096"
+    restart: unless-stopped
+    networks:
+      - jellyfin-dev-net
+    depends_on:
+      content-downloader:
+        condition: service_completed_successfully
+
+  jellyfin-movies-init:
+    image: ghcr.io/astral-sh/uv:python3.11-alpine
+    container_name: jellyfin-movies-init
+    volumes:
+      - ./scripts/init-movies-server.py:/scripts/init-movies-server.py:ro
+    working_dir: /scripts
+    command: ["uv", "run", "--with", "jellyfin-apiclient-python", "/scripts/init-movies-server.py"]
+    networks:
+      - jellyfin-dev-net
+    depends_on:
+      jellyfin-movies:
+        condition: service_started
+    profiles:
+      - init
+
+  jellyfin-tvshows:
+    image: jellyfin/jellyfin:latest
+    container_name: jellyfin-tvshows
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+      - JELLYFIN_PublishedServerUrl=http://localhost:8097
+    volumes:
+      - jellyfin-tvshows-config:/config
+      - jellyfin-tvshows-cache:/cache
+      - ./data/media:/media:ro
+    ports:
+      - "8097:8096"
+    restart: unless-stopped
+    networks:
+      - jellyfin-dev-net
+    depends_on:
+      content-downloader:
+        condition: service_completed_successfully
+
+  jellyfin-tvshows-init:
+    image: python:3.11-alpine
+    container_name: jellyfin-tvshows-init
+    volumes:
+      - ./scripts/init-tvshows-server.py:/scripts/init-tvshows-server.py:ro
+    working_dir: /scripts
+    command: sh -c "pip install uv && uvx --with jellyfin-apiclient-python python /scripts/init-tvshows-server.py"
+    networks:
+      - jellyfin-dev-net
+    depends_on:
+      jellyfin-tvshows:
+        condition: service_started
+    profiles:
+      - init
+
+networks:
+  jellyfin-dev-net:
+    driver: bridge
+
+volumes:
+  jellyfin-movies-config:
+    driver: local
+  jellyfin-movies-cache:
+    driver: local
+  jellyfin-tvshows-config:
+    driver: local
+  jellyfin-tvshows-cache:
+    driver: local
