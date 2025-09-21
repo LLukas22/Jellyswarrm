@@ -1,6 +1,6 @@
 # Jellyfin Development Environment
 
-A complete Docker Compose setup for testing Jellyswarrm with two preconfigured Jellyfin server instances and legally downloadable content.
+A complete Docker Compose setup for testing Jellyswarrm with three preconfigured Jellyfin servers (Movies, TV Shows, Music) and legally downloadable content.
 
 ## 🚀 Quick Start
 
@@ -9,238 +9,159 @@ cd dev
 docker-compose up -d
 ```
 
-That's it! Docker Compose will:
-1. Download legal content automatically
-2. Start two preconfigured Jellyfin servers
-3. Set up libraries automatically
+What happens:
+- Downloads legal sample content automatically
+- Starts three Jellyfin servers (movies, tv, music)
+- Initializes each server (skips wizard, creates library, ready to browse)
 
 Then access:
-- **Movies Server**: http://localhost:8096 (movies only)
-- **TV Shows Server**: http://localhost:8097 (TV series only)
+- Movies: http://localhost:8096
+- TV Shows: http://localhost:8097
+- Music: http://localhost:8098
 
-## 👥 Preconfigured Users
+## 👥 Users and libraries
 
-Perfect! I've successfully created a development environment with preconfigured users and different passwords for each server:
+- Each server creates an admin user automatically:
+   - Admin: `admin` / `password`
+- Libraries are created via API and point to:
+   - Movies → `/media/movies`
+   - TV Shows → `/media/tv-shows`
+   - Music → `/media/music`
 
-## ✅ What You Get
+Note: Additional non-admin users are not created by default in this setup.
 
-**🎬 Movies Server (localhost:8096)** - Dedicated movie library
-- **Admin**: `admin` / `password` 
-- **User**: `user` / `movies`
+## 🧩 Services
 
-**📺 TV Shows Server (localhost:8097)** - Dedicated TV series library  
-- **Admin**: `admin` / `password`
-- **User**: `user` / `shows`
+From `docker-compose.yml`:
 
-## 🚀 How to Use
+- content-downloader
+   - Image: ghcr.io/astral-sh/uv:python3.11-alpine
+   - Runs `scripts/download-content.py` and writes into `./data/media` mounted as `/downloads`
 
-The environment is completely automated:
+- jellyfin-movies (http://localhost:8096)
+   - Image: jellyfin/jellyfin:latest
+   - Mounts `./data/media` → `/media` (read-only)
+   - Persists config in `./data/jellyfin-movies/{config,cache}`
 
-1. **Start with progress visible**: `docker-compose up` (without -d to see download progress)
-2. **Or start in background**: `docker-compose up -d` (then use `docker-compose logs -f content-downloader` to see progress)
-3. **Wait for download**: Content downloads automatically (takes a few minutes)
-4. **Initialize servers**: `docker-compose --profile init up` (sets up users and libraries)
-5. **Access servers**: Both servers start with users already configured
-6. **Log in**: Use the credentials above - no setup wizard needed!
+- jellyfin-movies-init
+   - Image: ghcr.io/astral-sh/uv:python3.11-alpine
+   - Runs `scripts/init-jellyfin.py` with:
+      - URL=http://jellyfin-movies:8096
+      - COLLECTION_NAME=Movies
+      - COLLECTION_PATH=/media/movies
+      - COLLECTION_TYPE=movies
 
-The content downloader will download several legally free movies and organize them into appropriate libraries automatically. Both Jellyfin servers are preconfigured to skip the setup wizard and have their libraries ready to go.
+- jellyfin-tvshows (http://localhost:8097)
+   - Image: jellyfin/jellyfin:latest
+   - Mounts `./data/media` → `/media` (read-only)
+   - Persists config in `./data/jellyfin-tvshows/{config,cache}`
 
-## 📁 What's Included
+- jellyfin-tvshows-init
+   - Image: ghcr.io/astral-sh/uv:python3.11-alpine
+   - Runs `scripts/init-jellyfin.py` with:
+      - URL=http://jellyfin-tvshows:8096
+      - COLLECTION_NAME=Shows
+      - COLLECTION_PATH=/media/tv-shows
+      - COLLECTION_TYPE=tvshows
 
-### Content Sources
-All content is legally downloadable from:
-- **Internet Archive**: Public domain movies and shows
-- **Blender Foundation**: Creative Commons licensed films
-- **Google Sample Videos**: Test content
+- jellyfin-music (http://localhost:8098)
+   - Image: jellyfin/jellyfin:latest
+   - Mounts `./data/media` → `/media` (read-only)
+   - Persists config in `./data/jellyfin-music/{config,cache}`
 
-### Movies (Public Domain & Creative Commons)
-- Night of the Living Dead (1968) - Classic horror, public domain
-- Plan 9 from Outer Space (1959) - Sci-fi B-movie, public domain
-- The Cabinet of Dr. Caligari (1920) - German expressionist film, public domain
-- Big Buck Bunny (2008) - Blender Foundation, CC license
-- Sintel (2010) - Blender Foundation, CC license
-- Tears of Steel (2012) - Blender Foundation, CC license
-- Elephant's Dream (2006) - Blender Foundation, CC license
+- jellyfin-music-init
+   - Image: ghcr.io/astral-sh/uv:python3.11-alpine
+   - Runs `scripts/init-jellyfin.py` with:
+      - URL=http://jellyfin-music:8096
+      - COLLECTION_NAME=Music
+      - COLLECTION_PATH=/media/music
+      - COLLECTION_TYPE=music
 
-### TV Shows
-- Blender Open Movies - Collection organized as TV series episodes
+## 📁 Downloaded content
 
-## 🛠️ Manual Commands
+All content is legally downloadable. Current script includes:
 
-### Start the environment with visible progress
-```bash
-docker-compose up
+- Movies
+   - Night of the Living Dead (1968) — Internet Archive (Public Domain)
+   - Plan 9 from Outer Space (1959) — Internet Archive (Public Domain)
+   - Big Buck Bunny (2008) — Blender Foundation (CC)
+
+- TV Shows
+   - The Cisco Kid (1950) — S01E01, S01E02 — Internet Archive (Public Domain)
+
+- Music
+   - Kimiko Ishizaka — The Open Goldberg Variations (2012) — OGG — Internet Archive (CC0/PD)
+   - Kevin MacLeod — Royalty Free (2017) — MP3 — Internet Archive (CC-BY 3.0; attribution required)
+   - Josh Woodward — Breadcrumbs (Instrumental Version) — OGG — Internet Archive Jamendo mirror (CC)
+
+Content is placed under `./data/media/` on the host:
+
+```
+data/media/
+├── movies/
+├── tv-shows/
+└── music/
 ```
 
-### Start the environment in background
-```bash
-docker-compose up -d
-```
+## 🛠️ Useful commands
 
-### Initialize servers (after first startup)
-```bash
-docker-compose --profile init up
-```
+- Start with visible logs
+   ```bash
+   docker-compose up
+   ```
 
-### View download progress (if running in background)
-```bash
-docker-compose logs -f content-downloader
-```
-
-### View initialization progress
-```bash
-docker-compose --profile init logs -f
-```
-
-### Stop the environment
-```bash
-docker-compose down
-```
-
-### View logs
-```bash
-docker-compose logs -f
-```
-
-### Restart services
-```bash
-docker-compose restart
-```
-
-### Clean restart (removes volumes)
-```bash
-docker-compose down -v
-docker-compose up -d
-```
-
-## 📋 Setup Instructions
-
-1. **Start everything**:
+- Start in background
    ```bash
    docker-compose up -d
    ```
 
-2. **Access the servers**:
-   - **Movies**: http://localhost:8096 (preconfigured with movie library)
-   - **TV Shows**: http://localhost:8097 (preconfigured with TV series library)
-
-3. **Initialize the servers**:
+- Watch content download logs
    ```bash
-   docker-compose --profile init up
+   docker-compose logs -f content-downloader
    ```
 
-4. **Both servers are fully configured**:
-   - Setup wizard is skipped
-   - Libraries are automatically created via API
-   - Content is downloaded and ready to browse
-   - Users are created automatically
+- Stop everything
+   ```bash
+   docker-compose down
+   ```
 
-No manual configuration needed!
+- Restart services
+   ```bash
+   docker-compose restart
+   ```
 
-## 🏗️ Architecture
+- Clean restart (removes data in named directories)
+   ```bash
+   docker-compose down -v
+   docker-compose up -d
+   ```
+
+## 🏗️ Layout
 
 ```
 dev/
-├── docker-compose.yml          # Main compose file with all services
+├── docker-compose.yml
 ├── scripts/
-│   ├── download-content.sh     # Content download script
-│   ├── init-movies-server.sh   # Movies server API initialization
-│   └── init-tvshows-server.sh  # TV shows server API initialization
+│   ├── download-content.py
+│   └── init-jellyfin.py
 ├── data/
-│   └── media/                  # Downloaded media files (local folder)
+│   └── media/
 │       ├── movies/
 │       ├── tv-shows/
-│       └── CONTENT_SUMMARY.txt
-└── README.md                   # This file
-
-Docker Volumes:
-├── jellyfin-movies-config      # Movie server configuration
-├── jellyfin-movies-cache       # Movie server cache
-├── jellyfin-tvshows-config     # TV server configuration  
-└── jellyfin-tvshows-cache      # TV server cache
+│       └── music/
+└── README.md
 ```
 
-## 🔧 Configuration
+## � Permissions and environment
 
-### Servers
-- **Movies Server** (port 8096): Preconfigured with movie library pointing to `/media/movies`
-- **TV Shows Server** (port 8097): Preconfigured with TV series library pointing to `/media/tv-shows`
+- Containers run with `PUID=1000`, `PGID=1000`, `TZ=UTC` for predictable file ownership and timestamps.
+- Media is mounted read-only to Jellyfin servers to avoid accidental writes by the apps.
 
-### Users
-Each server has two preconfigured users:
-- **admin/password**: Administrator with full access
-- **user/movies** (movies server) or **user/shows** (TV server): Regular user access
+## 📜 Licenses and attribution
 
-### Volumes
-- Jellyfin configurations and caches are stored in Docker volumes
-- **Media content is stored in `./data/media/`** (local folder on host)
-- Content is automatically downloaded on first startup and accessible from host system
-- Configuration is done via Jellyfin's REST API (no static config files needed)
-
-### Environment Variables
-- `PUID=1000` - User ID for file permissions
-- `PGID=1000` - Group ID for file permissions  
-- `TZ=UTC` - Timezone
-
-## 🧪 Testing Jellyswarrm
-
-This environment is perfect for testing Jellyswarrm features:
-
-1. **Multiple Server Support**: Two independent Jellyfin instances with different content types
-2. **Real Content**: Actual video files with metadata
-3. **Specialized Libraries**: One server for movies, one for TV shows
-4. **Isolated Environment**: Fully contained in Docker with automatic setup
-5. **No Manual Configuration**: Everything is preconfigured and ready to use
-
-## 🐛 Troubleshooting
-
-### Services won't start
-```bash
-# Check Docker is running
-docker info
-
-# Check logs
-docker-compose logs
-```
-
-### Content download fails
-```bash
-# Check content downloader logs
-docker-compose logs content-downloader
-
-# Retry content download
-docker-compose up content-downloader --force-recreate
-
-# Check available space
-df -h
-```
-
-### Permission issues
-```bash
-# Check Docker volume permissions
-docker-compose exec jellyfin-movies ls -la /config
-docker-compose exec jellyfin-tvshows ls -la /config
-```
-
-### Port conflicts
-If ports 8096 or 8097 are in use, edit `docker-compose.yml`:
-```yaml
-ports:
-  - "8098:8096"  # Change to available port
-```
-
-## 📜 Legal Notice
-
-All included content is either:
-- **Public Domain**: No copyright restrictions
-- **Creative Commons**: Freely redistributable under CC licenses
-- **Open Source**: Blender Foundation open movie projects
+- Public domain items can be used freely.
+- CC-BY items (e.g., Kevin MacLeod) require attribution if used or redistributed publicly. Keep attribution in your app/docs if you publish content beyond local testing.
 
 Sources:
-- [Internet Archive](https://archive.org/)
-- [Blender Foundation](https://www.blender.org/about/projects/)
-- [Google Sample Videos](https://goo.gl/A3JoZX)
-
-## 🤝 Contributing
-
-Feel free to add more legal content sources or improve the setup scripts!
+- Internet Archive — https://archive.org/
+- Blender Foundation — https://www.blender.org/about/projects/
