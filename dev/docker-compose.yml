@@ -1,0 +1,136 @@
+services:
+  content-downloader:
+    image: ghcr.io/astral-sh/uv:python3.11-alpine
+    volumes:
+      - ./data/media:/downloads
+      - ./scripts/download-content.py:/scripts/download-content.py:ro
+    command: ["uv", "run", "/scripts/download-content.py"]
+    tty: true
+
+  jellyfin-movies:
+    image: jellyfin/jellyfin:latest
+    container_name: jellyfin-movies
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+      - JELLYFIN_PublishedServerUrl=http://localhost:8096
+    volumes:
+      - ./data/jellyfin-movies/config:/config
+      - ./data/jellyfin-movies/cache:/cache
+      - ./data/media:/media:ro
+    ports:
+      - "8096:8096"
+    restart: unless-stopped
+    networks:
+      - jellyfin-dev-net
+    depends_on:
+      content-downloader:
+        condition: service_completed_successfully
+
+  jellyfin-movies-init:
+    image: ghcr.io/astral-sh/uv:python3.11-alpine
+    container_name: jellyfin-movies-init
+    volumes:
+      - ./scripts/init-jellyfin.py:/scripts/init-jellyfin.py:ro
+    working_dir: /scripts
+    command: ["uv", "run", "/scripts/init-jellyfin.py"]
+    environment:
+      - URL=http://jellyfin-movies:8096
+      - USERNAME=user
+      - PASSWORD=movies
+      - COLLECTION_NAME=Movies
+      - COLLECTION_PATH=/media/movies
+      - COLLECTION_TYPE=movies
+
+    networks:
+      - jellyfin-dev-net
+    depends_on:
+      jellyfin-movies:
+        condition: service_started
+
+  jellyfin-tvshows:
+    image: jellyfin/jellyfin:latest
+    container_name: jellyfin-tvshows
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+      - JELLYFIN_PublishedServerUrl=http://localhost:8097
+    volumes:
+      - ./data/jellyfin-tvshows/config:/config
+      - ./data/jellyfin-tvshows/cache:/cache
+      - ./data/media:/media:ro
+    ports:
+      - "8097:8096"
+    restart: unless-stopped
+    networks:
+      - jellyfin-dev-net
+    depends_on:
+      content-downloader:
+        condition: service_completed_successfully
+
+  jellyfin-tvshows-init:
+    image: ghcr.io/astral-sh/uv:python3.11-alpine
+    container_name: jellyfin-tvshows-init
+    volumes:
+      - ./scripts/init-jellyfin.py:/scripts/init-jellyfin.py:ro
+    working_dir: /scripts
+    command: ["uv", "run", "/scripts/init-jellyfin.py"]
+    environment:
+      - URL=http://jellyfin-tvshows:8096
+      - USERNAME=user
+      - PASSWORD=shows
+      - COLLECTION_NAME=Shows
+      - COLLECTION_PATH=/media/tv-shows
+      - COLLECTION_TYPE=tvshows
+    networks:
+      - jellyfin-dev-net
+    depends_on:
+      jellyfin-tvshows:
+        condition: service_started
+
+  jellyfin-music:
+    image: jellyfin/jellyfin:latest
+    container_name: jellyfin-music
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+      - JELLYFIN_PublishedServerUrl=http://localhost:8098
+    volumes:
+      - ./data/jellyfin-music/config:/config
+      - ./data/jellyfin-music/cache:/cache
+      - ./data/media:/media:ro
+    ports:
+      - "8098:8096"
+    restart: unless-stopped
+    networks:
+      - jellyfin-dev-net
+    depends_on:
+      content-downloader:
+        condition: service_completed_successfully
+
+  jellyfin-music-init:
+    image: ghcr.io/astral-sh/uv:python3.11-alpine
+    container_name: jellyfin-music-init
+    volumes:
+      - ./scripts/init-jellyfin.py:/scripts/init-jellyfin.py:ro
+    working_dir: /scripts
+    command: ["uv", "run", "/scripts/init-jellyfin.py"]
+    environment:
+      - URL=http://jellyfin-music:8096
+      - USERNAME=user
+      - PASSWORD=music
+      - COLLECTION_NAME=Music
+      - COLLECTION_PATH=/media/music
+      - COLLECTION_TYPE=music
+    networks:
+      - jellyfin-dev-net
+    depends_on:
+      jellyfin-music:
+        condition: service_started
+
+networks:
+  jellyfin-dev-net:
+    driver: bridge
