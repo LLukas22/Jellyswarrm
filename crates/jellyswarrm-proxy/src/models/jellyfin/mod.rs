@@ -41,6 +41,7 @@ pub struct PlaybackResponse {
     pub play_session_id: String,
 }
 
+#[allow(dead_code)]
 fn serialize_playback_rate<S>(value: &Option<f64>, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
