@@ -128,7 +128,7 @@ fn config_path() -> PathBuf {
     DATA_DIR.join(DEFAULT_CONFIG_FILENAME)
 }
 
-#[cfg(debug_assertions)]
+#[allow(dead_code)]
 fn dev_config_path() -> PathBuf {
     const DEV_CONFIG_FILENAME: &str = "jellyswarrm.dev.toml";
     DATA_DIR.join(DEV_CONFIG_FILENAME)
