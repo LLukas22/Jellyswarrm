@@ -42,7 +42,9 @@ pub async fn get_stream_part(
     // Get the original path and query
     let orig_url = original_request.url().clone();
 
-    let mut new_url = join_server_url(&server.url, orig_url.path());
+    let path = state.remove_prefix_from_path(orig_url.path()).await;
+
+    let mut new_url = join_server_url(&server.url, path);
     new_url.set_query(orig_url.query());
 
     info!("Redirecting to: {}", new_url);
@@ -87,7 +89,8 @@ pub async fn get_video_resource(
 
     // Get the original path and query
     let orig_url = original_request.url().clone();
-    let mut new_url = join_server_url(&server.url, orig_url.path());
+    let path = state.remove_prefix_from_path(orig_url.path()).await;
+    let mut new_url = join_server_url(&server.url, path);
     new_url.set_query(orig_url.query());
 
     info!("Redirecting HLS stream to: {}", new_url);

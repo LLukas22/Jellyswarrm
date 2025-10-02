@@ -2,7 +2,7 @@ use axum::{
     body::Body,
     extract::{Request, State},
     http::{HeaderName, StatusCode},
-    response::Response,
+    response::{IntoResponse, Response},
     routing::{any, get, post},
     Router,
 };
@@ -49,7 +49,7 @@ use crate::{
         request_processor::{RequestProcessingContext, RequestProcessor},
     },
     request_preprocessing::body_to_json,
-    ui::{resource_handler, Backend},
+    ui::Backend,
 };
 use crate::{
     config::DATA_DIR, request_preprocessing::preprocess_request, session_storage::SessionStorage,
@@ -81,6 +81,29 @@ impl AppState {
             play_sessions: data_context.play_sessions,
             config: data_context.config,
             processors: Arc::new(json_processors),
+        }
+    }
+
+    pub async fn get_ui_route(&self) -> String {
+        let config = self.config.read().await;
+        if let Some(prefix) = &config.url_prefix {
+            format!("{}/{}", prefix, config.ui_route)
+        } else {
+            config.ui_route.to_string()
+        }
+    }
+
+    pub async fn get_url_prefix(&self) -> Option<String> {
+        let config = self.config.read().await;
+        config.url_prefix.as_ref().map(|prefix| prefix.to_string())
+    }
+
+    pub async fn remove_prefix_from_path<'a>(&self, path: &'a str) -> &'a str {
+        let config = self.config.read().await;
+        if let Some(prefix) = &config.url_prefix {
+            path.trim_start_matches(&format!("/{}", prefix))
+        } else {
+            path
         }
     }
 }
@@ -253,13 +276,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backend = Backend::new(app_state.config.clone());
     let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
 
-    let ui_route = "/ui";
+    let ui_route = loaded_config.ui_route.to_string();
 
     let app = Router::new()
         // UI Management routes
-        .nest(ui_route, ui_routes())
+        .nest(&format!("/{ui_route}"), ui_routes())
         .route("/", get(index_handler))
-        .route("/resources/{*path}", get(resource_handler))
         .route(
             "/QuickConnect/Enabled",
             get(handlers::quick_connect::handle_quick_connect),
@@ -442,12 +464,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    info!("Starting reverse proxy on http://{}", addr);
-    info!(
-        "UI Management routes available at: http://{}/{}",
-        addr,
-        ui_route.trim_start_matches('/')
-    );
+    let app = if let Some(url_prefix) = loaded_config.url_prefix {
+        let url_prefix = url_prefix.to_string();
+        info!("Using URL prefix: {}", url_prefix);
+
+        info!("Starting reverse proxy on http://{}/{}", addr, url_prefix);
+        info!(
+            "UI Management routes available at: http://{}/{}/{}",
+            addr,
+            url_prefix,
+            ui_route.trim_start_matches('/')
+        );
+
+        Router::new()
+            .nest(&format!("/{}", url_prefix), app)
+            .fallback(
+                // Redirect any request outside the prefixed subtree into the prefixed route,
+                // preserving the original path. e.g. /foo/bar -> /{url_prefix}/foo/bar
+                // capture url_prefix by value
+                {
+                    let prefix = url_prefix.clone();
+                    move |req: Request| {
+                        let prefix = prefix.clone();
+                        async move {
+                            let orig = req.uri().path().trim_end_matches("/");
+                            let prefix_slash = format!("/{}", prefix);
+                            let target = if orig.starts_with(&prefix_slash) {
+                                // already has prefix - avoid double-appending
+                                orig
+                            } else {
+                                &format!("{prefix_slash}{orig}")
+                            };
+                            axum::response::Redirect::temporary(target).into_response()
+                        }
+                    }
+                },
+            )
+    } else {
+        info!("No URL prefix configured, using root path");
+        info!("Starting reverse proxy on http://{}", addr);
+        info!(
+            "UI Management routes available at: http://{}/{}",
+            addr, ui_route
+        );
+        app
+    };
 
     // Start the server
     let listener = match tokio::net::TcpListener::bind(addr).await {

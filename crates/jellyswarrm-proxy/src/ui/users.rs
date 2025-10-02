@@ -17,7 +17,9 @@ use crate::{
 
 #[derive(Template)]
 #[template(path = "users.html")]
-pub struct UsersPageTemplate {}
+pub struct UsersPageTemplate {
+    pub ui_route: String,
+}
 
 pub struct UserWithMappings {
     pub user: User,
@@ -31,12 +33,14 @@ pub struct UserWithMappings {
 #[template(path = "user_list.html")]
 pub struct UserListTemplate {
     pub users: Vec<UserWithMappings>,
+    pub ui_route: String,
 }
 
 #[derive(Template)]
 #[template(path = "user_item.html")]
 pub struct UserItememplate {
     pub uwm: UserWithMappings,
+    pub ui_route: String,
 }
 
 #[derive(Deserialize)]
@@ -117,8 +121,10 @@ pub async fn create_user_with_mappings(
 }
 
 /// Main users page
-pub async fn users_page() -> impl IntoResponse {
-    let template = UsersPageTemplate {};
+pub async fn users_page(State(state): State<AppState>) -> impl IntoResponse {
+    let template = UsersPageTemplate {
+        ui_route: state.get_ui_route().await,
+    };
     match template.render() {
         Ok(html) => Html(html).into_response(),
         Err(e) => {
@@ -158,7 +164,10 @@ pub async fn get_user_item(
 
     // Build UserWithMappings and render single item template
     let uwm = create_user_with_mappings(state, user, &servers, open_mappings).await;
-    let template = UserItememplate { uwm };
+    let template = UserItememplate {
+        uwm,
+        ui_route: state.get_ui_route().await,
+    };
     match template.render() {
         Ok(html) => Html(html).into_response(),
         Err(e) => {
@@ -186,7 +195,10 @@ pub async fn get_user_list(State(state): State<AppState>) -> impl IntoResponse {
                 result.push(create_user_with_mappings(&state, user, &servers, false).await);
             }
 
-            let template = UserListTemplate { users: result };
+            let template = UserListTemplate {
+                users: result,
+                ui_route: state.get_ui_route().await,
+            };
             match template.render() {
                 Ok(html) => Html(html).into_response(),
                 Err(e) => {

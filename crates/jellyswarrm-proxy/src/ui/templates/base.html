@@ -6,13 +6,13 @@
     <title>{% block title %}Jellyswarrm{% endblock %}</title>
     
     <!-- Pico CSS -->
-    <link rel="stylesheet" href="/resources/pico.min.css">
+    <link rel="stylesheet" href="/{{ ui_route }}/resources/pico.min.css">
     
     <!-- Font Awesome -->
-    <link rel="stylesheet" href="/resources/fontawesome/css/all.min.css">
+    <link rel="stylesheet" href="/{{ ui_route }}/resources/fontawesome/css/all.min.css">
     
     <!-- HTMX -->
-    <script src="/resources/htmx.min.js"></script>
+    <script src="/{{ ui_route }}/resources/htmx.min.js"></script>
     
     {% block head %}{% endblock %}
 </head>

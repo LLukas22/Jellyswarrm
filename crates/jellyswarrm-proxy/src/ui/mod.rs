@@ -22,7 +22,7 @@ pub use auth::Backend;
 #[folder = "src/ui/resources/"]
 struct Resources;
 
-pub async fn resource_handler(Path(path): Path<String>) -> impl IntoResponse {
+async fn resource_handler(Path(path): Path<String>) -> impl IntoResponse {
     if let Some(file) = Resources::get(&path) {
         let mime = mime_guess::from_path(path).first_or_octet_stream();
         Ok(Response::builder()
@@ -36,6 +36,7 @@ pub async fn resource_handler(Path(path): Path<String>) -> impl IntoResponse {
 
 pub fn ui_routes() -> axum::Router<AppState> {
     Router::new()
+        // Root
         .route("/", get(root::index))
         // Users
         .route("/users", get(users::users_page))
@@ -69,5 +70,6 @@ pub fn ui_routes() -> axum::Router<AppState> {
         .route("/settings/save", post(settings::save_settings))
         .route("/settings/reload", post(settings::reload_config))
         .route_layer(login_required!(Backend, login_url = "/ui/login"))
+        .route("/resources/{*path}", get(resource_handler))
         .merge(auth::router())
 }
