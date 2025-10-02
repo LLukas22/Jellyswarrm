@@ -5,6 +5,7 @@ use std::fs;
 use std::ops::Deref;
 use std::path::PathBuf;
 use tower_sessions::cookie::Key;
+use tracing::info;
 use uuid::Uuid;
 
 use once_cell::sync::Lazy;
@@ -90,6 +91,13 @@ mod base64_serde {
     }
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PreconfiguredServer {
+    pub url: String,
+    pub name: String,
+    pub priority: i32,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, DefaultFromSerde)]
 pub struct AppConfig {
     #[serde(default = "default_server_id")]
@@ -110,6 +118,9 @@ pub struct AppConfig {
     #[serde(default = "default_password")]
     pub password: String,
 
+    #[serde(default)]
+    pub preconfigured_servers: Vec<PreconfiguredServer>,
+
     #[serde(default = "default_session_key", with = "base64_serde")]
     pub session_key: Vec<u8>,
 
@@ -129,12 +140,33 @@ fn config_path() -> PathBuf {
     DATA_DIR.join(DEFAULT_CONFIG_FILENAME)
 }
 
+#[allow(dead_code)]
+fn dev_config_path() -> PathBuf {
+    const DEV_CONFIG_FILENAME: &str = "jellyswarrm.dev.toml";
+    DATA_DIR.join(DEV_CONFIG_FILENAME)
+}
+
 /// Load configuration from known files and environment. Falls back to defaults.
 pub fn load_config() -> AppConfig {
     let path = config_path();
-    let builder = config::Config::builder()
-        .add_source(config::File::with_name(path.to_string_lossy().as_ref()).required(false))
-        .add_source(config::Environment::with_prefix("JELLYSWARRM").separator("_"));
+    let builder = if cfg!(debug_assertions) {
+        // In debug mode, also load a dev-specific config file if it exists.
+        info!(
+            "Loading config from {path:?} and dev config from {dev_config_path:?}",
+            dev_config_path = dev_config_path()
+        );
+        config::Config::builder()
+            .add_source(config::File::with_name(path.to_string_lossy().as_ref()).required(false))
+            .add_source(
+                config::File::with_name(dev_config_path().to_string_lossy().as_ref())
+                    .required(false),
+            )
+            .add_source(config::Environment::with_prefix("JELLYSWARRM").separator("_"))
+    } else {
+        config::Config::builder()
+            .add_source(config::File::with_name(path.to_string_lossy().as_ref()).required(false))
+            .add_source(config::Environment::with_prefix("JELLYSWARRM").separator("_"))
+    };
 
     let config = match builder.build() {
         Ok(c) => c.try_deserialize().unwrap_or_default(),

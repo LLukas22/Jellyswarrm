@@ -197,6 +197,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         });
 
+    if !loaded_config.preconfigured_servers.is_empty() {
+        info!(
+            "Adding {} preconfigured servers from config",
+            loaded_config.preconfigured_servers.len()
+        );
+        for server in &loaded_config.preconfigured_servers {
+            match server_storage
+                .add_server(&server.name, &server.url, server.priority)
+                .await
+            {
+                Ok(_) => {
+                    info!(
+                        "  Added preconfigured server: {} ({}) with priority {}",
+                        server.name, server.url, server.priority
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        "  Failed to add preconfigured server {} ({}): {}",
+                        server.name, server.url, e
+                    );
+                }
+            }
+        }
+    }
+
     match server_storage.list_servers().await {
         Ok(servers) => {
             if servers.is_empty() {

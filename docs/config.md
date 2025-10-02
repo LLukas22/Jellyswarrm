@@ -33,6 +33,5 @@ The table below lists all available configuration options:
 
 ---
 
-### Notes  
-- The `server_id` is automatically generated with a UUID, prefixed by `"jellyswarrm"`.  
+### Notes
 - The `session_key` is generated as a secure 64-byte key if not specified, and is stored in the config file for reuse.  

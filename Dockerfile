@@ -34,7 +34,7 @@ RUN apk add --no-cache \
 
 # Copy Cargo manifests for dependency caching
 COPY .cargo .cargo
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates/jellyswarrm-proxy/Cargo.toml crates/jellyswarrm-proxy/Cargo.toml
 COPY crates/jellyswarrm-macros/Cargo.toml crates/jellyswarrm-macros/Cargo.toml
 
