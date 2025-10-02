@@ -95,14 +95,14 @@ def main():
         print("    ✅ Cisco Kid S01E01 already exists, skipping download")
     
     # Episode 2
-    ep2_file = cisco_dir / "The Cisco Kid - S01E02 - Boomerang.mp4"
+    ep2_file = cisco_dir / "The Cisco Kid - S01E03 - Rustling.mp4"
     if not ep2_file.exists():
         download_with_progress(
-            "https://archive.org/download/TheCiscoKidpublicdomain/The_Cisco_Kid_s01e02.mp4",
+            "https://ia801409.us.archive.org/19/items/TheCiscoKidpublicdomain/The_Cisco_Kid_s01e03.mp4",
             ep2_file
         )
     else:
-        print("    ✅ Cisco Kid S01E02 already exists, skipping download")
+        print("    ✅ Cisco Kid S01E03 already exists, skipping download")
     
     print("🎵 Downloading royalty-free and freely-copiable music albums...")
 
@@ -127,44 +127,6 @@ def main():
             )
         else:
             print(f"    ✅ {display_name} already exists, skipping")
-
-    # Album 2: Kevin MacLeod — Royalty Free (2017) (CC-BY 3.0 — attribution required)
-    # Source: https://archive.org/details/Kevin-MacLeod_Royalty-Free_2017_FullAlbum
-    print("  🎼 Downloading 'Kevin MacLeod: Royalty Free (2017)'...")
-    kml_dir = music_dir / "Kevin MacLeod" / "Royalty Free (2017)"
-    ensure_directory(kml_dir)
-
-    # Filenames on IA are simple track names under VBR MP3; no "Kevin MacLeod - 00 -" prefix
-    kml_tracks = [
-        ("01 - Achaidh Cheide.mp3", "Achaidh%20Cheide.mp3"),
-        ("02 - Achilles.mp3", "Achilles.mp3"),
-    ]
-    for display_name, src_name in kml_tracks:
-        target = kml_dir / display_name
-        if not target.exists():
-            download_with_progress(
-                f"https://archive.org/download/Kevin-MacLeod_Royalty-Free_2017_FullAlbum/{src_name}",
-                target
-            )
-        else:
-            print(f"    ✅ {display_name} already exists, skipping")
-
-    # Album 3: Josh Woodward — Breadcrumbs (Instrumental Version) (CC — Jamendo archive)
-    # Source: https://archive.org/details/jamendo-089689
-    print("  🎵 Downloading 'Josh Woodward: Breadcrumbs (Instrumental Version)'...")
-    jw_dir = music_dir / "Josh Woodward" / "Breadcrumbs (Instrumental Version)"
-    ensure_directory(jw_dir)
-
-    # We'll fetch first three tracks to keep it small
-    for idx in [1, 2, 3]:
-        src = f"https://archive.org/download/jamendo-089689/{idx:02}.ogg"
-        target = jw_dir / f"{idx:02}.ogg"
-        if not target.exists():
-            download_with_progress(src, target)
-        else:
-            print(f"    ✅ Track {idx:02}.ogg already exists, skipping")
-
-    print("🎉 Content download completed!")
 
 if __name__ == "__main__":
     main()

@@ -23,12 +23,12 @@ Then access:
 
 - Each server creates an admin user automatically:
    - Admin: `admin` / `password`
+   - User: `user` / `[shows|movies|music]` (depending on server)
 - Libraries are created via API and point to:
    - Movies → `/media/movies`
    - TV Shows → `/media/tv-shows`
    - Music → `/media/music`
 
-Note: Additional non-admin users are not created by default in this setup.
 
 
 ## 📁 Downloaded content
@@ -41,12 +41,10 @@ All content is legally downloadable. Current script includes:
    - Big Buck Bunny (2008) — Blender Foundation (CC)
 
 - TV Shows
-   - The Cisco Kid (1950) — S01E01, S01E02 — Internet Archive (Public Domain)
+   - The Cisco Kid (1950) — S01E01, S01E03 — Internet Archive (Public Domain)
 
 - Music
    - Kimiko Ishizaka — The Open Goldberg Variations (2012) — OGG — Internet Archive (CC0/PD)
-   - Kevin MacLeod — Royalty Free (2017) — MP3 — Internet Archive (CC-BY 3.0; attribution required)
-   - Josh Woodward — Breadcrumbs (Instrumental Version) — OGG — Internet Archive Jamendo mirror (CC)
 
 Content is placed under `./data/media/` on the host:
 
@@ -56,11 +54,6 @@ data/media/
 ├── tv-shows/
 └── music/
 ```
-
-## � Permissions and environment
-
-- Containers run with `PUID=1000`, `PGID=1000`, `TZ=UTC` for predictable file ownership and timestamps.
-- Media is mounted read-only to Jellyfin servers to avoid accidental writes by the apps.
 
 ## 📜 Licenses and attribution
 

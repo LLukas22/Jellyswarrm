@@ -37,7 +37,7 @@ services:
     command: ["uv", "run", "/scripts/init-jellyfin.py"]
     environment:
       - URL=http://jellyfin-movies:8096
-      - USERNAME=admin
+      - USERNAME=user
       - PASSWORD=movies
       - COLLECTION_NAME=Movies
       - COLLECTION_PATH=/media/movies
@@ -79,7 +79,7 @@ services:
     command: ["uv", "run", "/scripts/init-jellyfin.py"]
     environment:
       - URL=http://jellyfin-tvshows:8096
-      - USERNAME=admin
+      - USERNAME=user
       - PASSWORD=shows
       - COLLECTION_NAME=Shows
       - COLLECTION_PATH=/media/tv-shows
@@ -120,7 +120,7 @@ services:
     command: ["uv", "run", "/scripts/init-jellyfin.py"]
     environment:
       - URL=http://jellyfin-music:8096
-      - USERNAME=admin
+      - USERNAME=user
       - PASSWORD=music
       - COLLECTION_NAME=Music
       - COLLECTION_PATH=/media/music
