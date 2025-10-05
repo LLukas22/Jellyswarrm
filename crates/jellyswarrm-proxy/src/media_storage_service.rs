@@ -20,16 +20,21 @@ pub struct MediaMapping {
 #[derive(Debug, Clone)]
 pub struct MediaStorageService {
     pool: SqlitePool,
-    cache: Cache<String, MediaMapping>,
+    original_mapping_cache: Cache<String, MediaMapping>,
+    mapping_with_server_cache: Cache<String, (MediaMapping, Server)>,
 }
 
 impl MediaStorageService {
     pub fn new(pool: SqlitePool) -> Self {
         Self {
             pool,
-            cache: Cache::builder()
+            original_mapping_cache: Cache::builder()
                 .time_to_live(Duration::from_secs(60 * 30))
                 .max_capacity(100_000)
+                .build(),
+            mapping_with_server_cache: Cache::builder()
+                .time_to_live(Duration::from_secs(60 * 30))
+                .max_capacity(10_000)
                 .build(),
         }
     }
@@ -41,14 +46,16 @@ impl MediaStorageService {
         server_url: &str,
     ) -> Result<MediaMapping, sqlx::Error> {
         let key = format!("{}|{}", original_media_id, server_url);
-        if let Some(cached) = self.cache.get(&key).await {
+        if let Some(cached) = self.original_mapping_cache.get(&key).await {
             trace!("Cache hit for media mapping: {}", key);
             return Ok(cached);
         }
         let mapping = self
             ._get_or_create_media_mapping(original_media_id, server_url)
             .await?;
-        self.cache.insert(key, mapping.clone()).await;
+        self.original_mapping_cache
+            .insert(key, mapping.clone())
+            .await;
         Ok(mapping)
     }
 
@@ -164,6 +171,14 @@ impl MediaStorageService {
     ) -> Result<Option<(MediaMapping, Server)>, sqlx::Error> {
         let virtual_media_id = Self::normalize_uuid(virtual_media_id);
 
+        if let Some(cached) = self.mapping_with_server_cache.get(&virtual_media_id).await {
+            trace!(
+                "Cache hit for media mapping with server: {}",
+                virtual_media_id
+            );
+            return Ok(Some(cached));
+        }
+
         let row = sqlx::query(
             r#"
             SELECT 
@@ -184,7 +199,7 @@ impl MediaStorageService {
             WHERE m.virtual_media_id = ?
             "#,
         )
-        .bind(virtual_media_id)
+        .bind(&virtual_media_id)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -206,6 +221,9 @@ impl MediaStorageService {
                 updated_at: row.get("server_updated_at"),
             };
 
+            self.mapping_with_server_cache
+                .insert(virtual_media_id, (mapping.clone(), server.clone()))
+                .await;
             Ok(Some((mapping, server)))
         } else {
             Ok(None)
@@ -226,13 +244,20 @@ impl MediaStorageService {
         if result.rows_affected() > 0 {
             {
                 let id_to_invalidate = virtual_media_id.to_string();
-                if let Err(e) = self.cache.invalidate_entries_if(move |_, value| {
-                    value.virtual_media_id == id_to_invalidate
-                }) {
+                if let Err(e) =
+                    self.original_mapping_cache
+                        .invalidate_entries_if(move |_, value| {
+                            value.virtual_media_id == id_to_invalidate
+                        })
+                {
                     error!("Failed to invalidate cache entry: {}", e);
-                    self.cache.invalidate_all();
+                    self.original_mapping_cache.invalidate_all();
                 }
             }
+            // Also invalidate the mapping_with_server_cache
+            self.mapping_with_server_cache
+                .invalidate(virtual_media_id)
+                .await;
             info!("Deleted media mapping: {}", virtual_media_id);
             Ok(true)
         } else {
@@ -261,7 +286,8 @@ impl MediaStorageService {
                 deleted_count, server_url
             );
         }
-        self.cache.invalidate_all();
+        self.original_mapping_cache.invalidate_all();
+        self.mapping_with_server_cache.invalidate_all();
         Ok(deleted_count)
     }
 }
