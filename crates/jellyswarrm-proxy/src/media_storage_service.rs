@@ -20,44 +20,8 @@ pub struct MediaStorageService {
 }
 
 impl MediaStorageService {
-    pub async fn new(pool: SqlitePool) -> Result<Self, sqlx::Error> {
-        // Create media_mappings table
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS media_mappings (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                virtual_media_id TEXT NOT NULL UNIQUE,
-                original_media_id TEXT NOT NULL,
-                server_url TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(original_media_id, server_url)
-            )
-            "#,
-        )
-        .execute(&pool)
-        .await?;
-
-        // Create indexes for better performance
-        sqlx::query(
-            r#"
-            CREATE INDEX IF NOT EXISTS idx_media_mappings_virtual_id 
-            ON media_mappings(virtual_media_id)
-            "#,
-        )
-        .execute(&pool)
-        .await?;
-
-        sqlx::query(
-            r#"
-            CREATE INDEX IF NOT EXISTS idx_media_mappings_original_server 
-            ON media_mappings(original_media_id, server_url)
-            "#,
-        )
-        .execute(&pool)
-        .await?;
-
-        info!("Media storage service database initialized");
-        Ok(Self { pool })
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
     }
 
     /// Create or get a media mapping
@@ -267,12 +231,15 @@ impl MediaStorageService {
 
 #[cfg(test)]
 mod tests {
+    use crate::config::MIGRATOR;
+
     use super::*;
 
     #[tokio::test]
     async fn test_media_storage_service() {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-        let service = MediaStorageService::new(pool.clone()).await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = MediaStorageService::new(pool.clone());
 
         // Create media mapping
         let mapping = service
@@ -297,7 +264,8 @@ mod tests {
     #[tokio::test]
     async fn test_get_media_mapping_with_server() {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-        let service = MediaStorageService::new(pool.clone()).await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = MediaStorageService::new(pool.clone());
 
         // Create the servers table (normally done by ServerStorageService)
         sqlx::query(
@@ -357,7 +325,8 @@ mod tests {
     #[tokio::test]
     async fn test_delete_operations() {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-        let service = MediaStorageService::new(pool.clone()).await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = MediaStorageService::new(pool.clone());
 
         // Create media mapping
         let mapping = service

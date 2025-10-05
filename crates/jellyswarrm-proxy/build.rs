@@ -1,6 +1,8 @@
 use std::{env, fs, io::Write, path::PathBuf, process::Command};
 
 fn main() {
+    println!("cargo:rerun-if-changed=migrations");
+
     if std::env::var("JELLYSWARRM_SKIP_UI").ok().as_deref() == Some("1") {
         println!("cargo:warning=Skipping internal UI build (JELLYSWARRM_SKIP_UI=1)");
         return;

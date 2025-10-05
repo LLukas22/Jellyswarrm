@@ -19,26 +19,8 @@ pub struct ServerStorageService {
 }
 
 impl ServerStorageService {
-    pub async fn new(pool: SqlitePool) -> Result<Self, sqlx::Error> {
-        // Create the servers table if it doesn't exist
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS servers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                url TEXT NOT NULL,
-                priority INTEGER NOT NULL DEFAULT 100,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            "#,
-        )
-        .execute(&pool)
-        .await?;
-
-        info!("Server storage database initialized");
-
-        Ok(Self { pool })
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
     }
 
     pub async fn add_server(
@@ -207,12 +189,16 @@ impl ServerStorageService {
 
 #[cfg(test)]
 mod tests {
+    use crate::config::MIGRATOR;
+
     use super::*;
 
     #[tokio::test]
     async fn test_server_storage_service() {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-        let service = ServerStorageService::new(pool).await.unwrap();
+
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = ServerStorageService::new(pool);
 
         // Test adding a server
         let server_id = service

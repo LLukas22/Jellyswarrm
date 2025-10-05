@@ -175,112 +175,8 @@ pub struct UserAuthorizationService {
 }
 
 impl UserAuthorizationService {
-    pub async fn new(pool: SqlitePool) -> Result<Self, sqlx::Error> {
-        // Ensure foreign key constraints are enforced (required for ON DELETE CASCADE in SQLite)
-        sqlx::query("PRAGMA foreign_keys = ON;")
-            .execute(&pool)
-            .await?;
-        // Create users table
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS users (
-                id TEXT PRIMARY KEY,
-                virtual_key TEXT NOT NULL UNIQUE,
-                original_username TEXT NOT NULL,
-                original_password_hash TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(original_username, original_password_hash)
-            )
-            "#,
-        )
-        .execute(&pool)
-        .await?;
-
-        // Create server mappings table
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS server_mappings (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id TEXT NOT NULL,
-                server_url TEXT NOT NULL,
-                mapped_username TEXT NOT NULL,
-                mapped_password TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
-                UNIQUE(user_id, server_url)
-            )
-            "#,
-        )
-        .execute(&pool)
-        .await?;
-
-        // Create authorization sessions table
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS authorization_sessions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id TEXT NOT NULL,
-                mapping_id INTEGER NOT NULL,
-                server_url TEXT NOT NULL,
-                client TEXT NOT NULL,
-                device TEXT NOT NULL,
-                device_id TEXT NOT NULL,
-                version TEXT NOT NULL,
-                jellyfin_token TEXT,
-                original_user_id TEXT NOT NULL,
-                expires_at TIMESTAMP,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
-                FOREIGN KEY (mapping_id) REFERENCES server_mappings (id) ON DELETE CASCADE,
-                UNIQUE(user_id, mapping_id, device_id)
-            )
-            "#,
-        )
-        .execute(&pool)
-        .await?;
-        // Extra index for direct mapping lookups
-        sqlx::query(
-            r#"
-            CREATE INDEX IF NOT EXISTS idx_authorization_sessions_mapping 
-            ON authorization_sessions(mapping_id)
-            "#,
-        )
-        .execute(&pool)
-        .await?;
-
-        // Create indexes for better performance
-        sqlx::query(
-            r#"
-            CREATE INDEX IF NOT EXISTS idx_users_virtual_key 
-            ON users(virtual_key)
-            "#,
-        )
-        .execute(&pool)
-        .await?;
-
-        sqlx::query(
-            r#"
-            CREATE INDEX IF NOT EXISTS idx_server_mappings_user_server 
-            ON server_mappings(user_id, server_url)
-            "#,
-        )
-        .execute(&pool)
-        .await?;
-
-        sqlx::query(
-            r#"
-            CREATE INDEX IF NOT EXISTS idx_authorization_sessions_user_server 
-            ON authorization_sessions(user_id, server_url)
-            "#,
-        )
-        .execute(&pool)
-        .await?;
-
-        info!("User authorization service database initialized");
-        Ok(Self { pool })
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
     }
 
     /// Create or get a user based on credentials
@@ -764,6 +660,8 @@ impl UserAuthorizationService {
 
 #[cfg(test)]
 mod tests {
+    use crate::config::MIGRATOR;
+
     use super::*;
 
     #[test]
@@ -818,7 +716,8 @@ mod tests {
     #[tokio::test]
     async fn test_device_session_fallback_matching() {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-        let service = UserAuthorizationService::new(pool.clone()).await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = UserAuthorizationService::new(pool.clone());
 
         // Create servers table
         sqlx::query(
@@ -959,7 +858,8 @@ mod tests {
     #[tokio::test]
     async fn test_user_authorization_service() {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-        let service = UserAuthorizationService::new(pool.clone()).await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = UserAuthorizationService::new(pool.clone());
 
         // Create the servers table (normally done by ServerStorageService)
         sqlx::query(
@@ -1051,7 +951,8 @@ mod tests {
     #[tokio::test]
     async fn test_get_user_sessions_by_virtual_token() {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-        let service = UserAuthorizationService::new(pool.clone()).await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = UserAuthorizationService::new(pool.clone());
 
         // Create the servers table (normally done by ServerStorageService)
         sqlx::query(
@@ -1149,7 +1050,8 @@ mod tests {
     #[tokio::test]
     async fn test_multiple_servers_with_priority() {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-        let service = UserAuthorizationService::new(pool.clone()).await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = UserAuthorizationService::new(pool.clone());
 
         // Create the servers table
         sqlx::query(
@@ -1287,7 +1189,8 @@ mod tests {
     #[tokio::test]
     async fn test_cascade_delete_sessions_on_mapping_delete() {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-        let service = UserAuthorizationService::new(pool.clone()).await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = UserAuthorizationService::new(pool.clone());
 
         // Create servers table
         sqlx::query(
@@ -1390,7 +1293,8 @@ mod tests {
     #[tokio::test]
     async fn test_delete_all_sessions_for_user() {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-        let service = UserAuthorizationService::new(pool.clone()).await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = UserAuthorizationService::new(pool.clone());
 
         // Create servers table
         sqlx::query(

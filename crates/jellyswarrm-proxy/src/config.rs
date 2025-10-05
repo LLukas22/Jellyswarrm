@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_default::DefaultFromSerde;
+use sqlx::migrate::Migrator;
 use std::fmt;
 use std::fs;
 use std::ops::Deref;
@@ -11,6 +12,8 @@ use uuid::Uuid;
 use once_cell::sync::Lazy;
 
 use base64::prelude::*;
+
+pub static MIGRATOR: Migrator = sqlx::migrate!();
 
 // Lazily-resolved data directory shared across the application.
 // Priority: env var JELLYSWARRM_DATA_DIR, else "./data" relative to current working dir.
