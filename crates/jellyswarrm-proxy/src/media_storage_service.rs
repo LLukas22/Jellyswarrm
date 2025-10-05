@@ -1,9 +1,12 @@
+use std::time::Duration;
+
 use sqlx::{FromRow, Row, SqlitePool};
-use tracing::{debug, info};
+use tracing::{debug, error, info, trace};
 use uuid::Uuid;
 
 use crate::models::generate_token;
 use crate::server_storage::Server;
+use moka::future::Cache;
 
 #[derive(Debug, Clone, FromRow)]
 pub struct MediaMapping {
@@ -17,15 +20,39 @@ pub struct MediaMapping {
 #[derive(Debug, Clone)]
 pub struct MediaStorageService {
     pool: SqlitePool,
+    cache: Cache<String, MediaMapping>,
 }
 
 impl MediaStorageService {
     pub fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            cache: Cache::builder()
+                .time_to_live(Duration::from_secs(60 * 30))
+                .max_capacity(100_000)
+                .build(),
+        }
     }
 
     /// Create or get a media mapping
     pub async fn get_or_create_media_mapping(
+        &self,
+        original_media_id: &str,
+        server_url: &str,
+    ) -> Result<MediaMapping, sqlx::Error> {
+        let key = format!("{}|{}", original_media_id, server_url);
+        if let Some(cached) = self.cache.get(&key).await {
+            trace!("Cache hit for media mapping: {}", key);
+            return Ok(cached);
+        }
+        let mapping = self
+            ._get_or_create_media_mapping(original_media_id, server_url)
+            .await?;
+        self.cache.insert(key, mapping.clone()).await;
+        Ok(mapping)
+    }
+
+    async fn _get_or_create_media_mapping(
         &self,
         original_media_id: &str,
         server_url: &str,
@@ -197,6 +224,15 @@ impl MediaStorageService {
         .await?;
 
         if result.rows_affected() > 0 {
+            {
+                let id_to_invalidate = virtual_media_id.to_string();
+                if let Err(e) = self.cache.invalidate_entries_if(move |_, value| {
+                    value.virtual_media_id == id_to_invalidate
+                }) {
+                    error!("Failed to invalidate cache entry: {}", e);
+                    self.cache.invalidate_all();
+                }
+            }
             info!("Deleted media mapping: {}", virtual_media_id);
             Ok(true)
         } else {
@@ -225,6 +261,7 @@ impl MediaStorageService {
                 deleted_count, server_url
             );
         }
+        self.cache.invalidate_all();
         Ok(deleted_count)
     }
 }

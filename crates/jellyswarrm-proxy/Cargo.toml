@@ -60,6 +60,7 @@ serde-aux = "4.7.0"
 serde_with.workspace = true
 async-trait = "0.1.89"
 async-recursion = "1.1.1"
+moka = { version = "0.12.11", features = ["future"] }
 
 [dev-dependencies]
 tokio-test = "0.4.4"
