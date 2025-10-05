@@ -43,17 +43,17 @@ use server_storage::ServerStorageService;
 use user_authorization_service::UserAuthorizationService;
 
 use crate::{
-    config::AppConfig,
+    config::DATA_DIR, request_preprocessing::preprocess_request, session_storage::SessionStorage,
+    ui::ui_routes,
+};
+use crate::{
+    config::{AppConfig, MIGRATOR},
     processors::{
         request_analyzer::RequestAnalyzer,
         request_processor::{RequestProcessingContext, RequestProcessor},
     },
     request_preprocessing::body_to_json,
     ui::Backend,
-};
-use crate::{
-    config::DATA_DIR, request_preprocessing::preprocess_request, session_storage::SessionStorage,
-    ui::ui_routes,
 };
 
 #[derive(Clone)]
@@ -164,6 +164,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let pool = SqlitePool::connect_with(options).await?;
 
+    MIGRATOR.run(&pool).await.unwrap_or_else(|e| {
+        error!("Failed to run database migrations: {}", e);
+        std::process::exit(1);
+    });
+
+    sqlx::query("PRAGMA foreign_keys = ON;")
+        .execute(&pool)
+        .await?;
+
     // Create reqwest client
     let reqwest_client = reqwest::Client::builder()
         .timeout(Duration::from_secs(loaded_config.timeout))
@@ -174,28 +183,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
 
     // Initialize user authorization service
-    let user_authorization = UserAuthorizationService::new(pool.clone())
-        .await
-        .unwrap_or_else(|e| {
-            error!("Failed to initialize user authorization service: {}", e);
-            std::process::exit(1);
-        });
+    let user_authorization = UserAuthorizationService::new(pool.clone());
 
     // Initialize server storage service
-    let server_storage = ServerStorageService::new(pool.clone())
-        .await
-        .unwrap_or_else(|e| {
-            error!("Failed to initialize server storage database: {}", e);
-            std::process::exit(1);
-        });
+    let server_storage = ServerStorageService::new(pool.clone());
 
     // Initialize media storage service
-    let media_storage = MediaStorageService::new(pool.clone())
-        .await
-        .unwrap_or_else(|e| {
-            error!("Failed to initialize media storage service: {}", e);
-            std::process::exit(1);
-        });
+    let media_storage = MediaStorageService::new(pool.clone());
 
     if !loaded_config.preconfigured_servers.is_empty() {
         info!(
