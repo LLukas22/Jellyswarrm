@@ -66,6 +66,7 @@ COPY --from=ui-build /app/ui/dist crates/jellyswarrm-proxy/static/
 # Copy Rust source code and configuration
 COPY crates/jellyswarrm-proxy/askama.toml crates/jellyswarrm-proxy/askama.toml
 COPY crates/jellyswarrm-proxy/src crates/jellyswarrm-proxy/src
+COPY crates/jellyswarrm-proxy/migrations crates/jellyswarrm-proxy/migrations
 COPY crates/jellyswarrm-macros/src crates/jellyswarrm-macros/src
 
 # Build only the application code (dependencies already cached)
