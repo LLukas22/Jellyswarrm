@@ -179,13 +179,6 @@ pub struct User {
     pub name: String,
     pub server_id: String,
     pub id: String,
-    pub has_password: bool,
-    pub has_configured_password: bool,
-    pub has_configured_easy_password: bool,
-    pub enable_auto_login: bool,
-    pub last_login_date: String,
-    pub last_activity_date: String,
-    pub configuration: UserConfiguration,
     pub policy: UserPolicy,
     #[serde(flatten)]
     pub extra: std::collections::HashMap<String, serde_json::Value>,
@@ -212,80 +205,32 @@ pub struct UserConfiguration {
     pub cast_receiver_id: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SyncPlayUserAccessType {
+    CreateAndJoinGroups,
+    JoinGroups,
+    None,
+}
+
 #[skip_serializing_none]
 #[multi_case_struct(pascal, camel)]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct UserPolicy {
     pub is_administrator: bool,
-    pub is_hidden: bool,
-    pub enable_collection_management: bool,
-    pub enable_subtitle_management: bool,
-    pub enable_lyric_management: bool,
-    pub is_disabled: bool,
-    pub blocked_tags: Vec<String>,
-    pub allowed_tags: Vec<String>,
-    pub enable_user_preference_access: bool,
-    pub access_schedules: Vec<String>,
-    pub block_unrated_items: Vec<String>,
-    pub enable_remote_control_of_other_users: bool,
-    pub enable_shared_device_control: bool,
-    pub enable_remote_access: bool,
-    pub enable_live_tv_management: bool,
-    pub enable_live_tv_access: bool,
-    pub enable_media_playback: bool,
-    pub enable_audio_playback_transcoding: bool,
-    pub enable_video_playback_transcoding: bool,
-    pub enable_playback_remuxing: bool,
-    pub force_remote_source_transcoding: bool,
-    pub enable_content_deletion: bool,
-    pub enable_content_deletion_from_folders: Vec<String>,
-    pub enable_content_downloading: bool,
-    pub enable_sync_transcoding: bool,
-    pub enable_media_conversion: bool,
-    pub enabled_devices: Vec<String>,
-    pub enable_all_devices: bool,
-    pub enabled_channels: Vec<String>,
-    pub enable_all_channels: bool,
-    pub enabled_folders: Vec<String>,
-    pub enable_all_folders: bool,
-    pub invalid_login_attempt_count: i32,
-    pub login_attempts_before_lockout: i32,
-    pub max_active_sessions: i32,
-    pub enable_public_sharing: bool,
-    pub blocked_media_folders: Vec<String>,
-    pub blocked_channels: Vec<String>,
-    pub remote_client_bitrate_limit: i32,
-    pub authentication_provider_id: String,
-    pub password_reset_provider_id: String,
-    pub sync_play_access: String,
+    pub sync_play_access: SyncPlayUserAccessType,
+    #[serde(flatten)]
+    pub extra: std::collections::HashMap<String, serde_json::Value>,
 }
 
 #[skip_serializing_none]
 #[multi_case_struct(pascal, camel)]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SessionInfo {
-    pub play_state: PlayState,
-    pub additional_users: Vec<String>,
-    pub capabilities: Capabilities,
-    pub remote_end_point: String,
-    pub playable_media_types: Vec<String>,
-    pub id: String,
     pub user_id: String,
     pub user_name: String,
-    pub client: String,
-    pub last_activity_date: String,
-    pub last_playback_check_in: String,
-    pub device_name: String,
-    pub device_id: String,
-    pub application_version: String,
-    pub is_active: bool,
-    pub supports_media_control: bool,
-    pub supports_remote_control: bool,
-    pub now_playing_queue: Vec<String>,
-    pub now_playing_queue_full_items: Vec<String>,
-    pub has_custom_device_name: bool,
     pub server_id: String,
-    pub supported_commands: Vec<String>,
+    #[serde(flatten)]
+    pub extra: std::collections::HashMap<String, serde_json::Value>,
 }
 
 #[skip_serializing_none]

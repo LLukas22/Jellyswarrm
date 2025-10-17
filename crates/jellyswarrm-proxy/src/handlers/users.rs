@@ -7,7 +7,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     handlers::common::execute_json_request,
-    models::{AuthenticateRequest, AuthenticateResponse, Authorization},
+    models::{AuthenticateRequest, AuthenticateResponse, Authorization, SyncPlayUserAccessType},
     request_preprocessing::preprocess_request,
     url_helper::join_server_url,
     AppState,
@@ -289,14 +289,29 @@ async fn authenticate_on_server(
     }
 
     // Parse response
-    let mut auth_response = response.json::<AuthenticateResponse>().await.map_err(|e| {
+    let response_text = response.text().await.map_err(|e| {
         tracing::error!(
-            "Failed to parse authentication response from {}: {}",
+            "Failed to read authentication response from {}: {}",
             server.name,
             e
         );
-        AuthError::ParseError(e.to_string())
+        AuthError::NetworkError(e.to_string())
     })?;
+
+    tracing::trace!("Raw response from {}: {}", server.name, response_text);
+
+    let auth_response =
+        serde_json::from_str::<AuthenticateResponse>(&response_text).map_err(|e| {
+            tracing::error!(
+                "Failed to parse authentication response from {}: {}. Response body: {}",
+                server.name,
+                e,
+                response_text
+            );
+            AuthError::ParseError(e.to_string())
+        })?;
+
+    let mut auth_response = auth_response;
 
     // We authenticated sucessfully, now we need to get the user or create it
     let user = state
@@ -346,6 +361,8 @@ async fn authenticate_on_server(
 
     // Modify admin status (security measure)
     auth_response.user.policy.is_administrator = false;
+    // Disable SyncPlay access
+    auth_response.user.policy.sync_play_access = SyncPlayUserAccessType::None;
 
     // Generate a unique access token for this authentication
     auth_response.access_token = user.virtual_key.clone();
