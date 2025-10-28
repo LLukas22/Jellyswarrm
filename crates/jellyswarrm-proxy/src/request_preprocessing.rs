@@ -46,7 +46,7 @@ static USER_ID_PATH_TAGS: &[&str] = &["Users"];
 
 static USER_ID_QUERY_TAGS: &[&str] = &["UserId"];
 
-static API_KEY_QUERY_TAGS: &[&str] = &["api_key"];
+static API_KEY_QUERY_TAGS: &[&str] = &["api_key", "ApiKey"];
 
 #[derive(Debug, Clone)]
 pub enum JellyfinAuthorization {
@@ -134,7 +134,7 @@ impl JellyfinAuthorization {
         }
 
         if let Some(auth) = req.url().query_pairs().find_map(|(k, v)| {
-            if k == "api_key" {
+            if (k == "api_key") | (k == "ApiKey") {
                 Some(JellyfinAuthorization::ApiKey(v.to_string()))
             } else {
                 None
