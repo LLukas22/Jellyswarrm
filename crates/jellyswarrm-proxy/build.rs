@@ -37,6 +37,16 @@ fn main() {
 
     if last_hash != current_hash {
         println!("Building UI: new commit detected.");
+
+        // Install/update npm dependencies
+        println!("Installing npm dependencies...");
+        let install_status = Command::new("npm")
+            .args(["install", "--engine-strict=false"])
+            .current_dir(&ui_dir)
+            .status()
+            .expect("Failed to run npm install");
+        assert!(install_status.success(), "npm install failed");
+
         // Build the UI
         let status = Command::new("npm")
             .args(["run", "build:production"])
