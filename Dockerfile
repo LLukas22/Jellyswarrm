@@ -5,12 +5,15 @@ FROM node:20-alpine AS ui-build
 
 WORKDIR /app/ui
 
+# Copy UI version file to detect changes
+COPY ui-version.env ./
+
 # Copy package files for dependency caching
 COPY ui/package.json ui/package-lock.json* ./
 
 # Install all dependencies (including dev deps needed for build)
 RUN --mount=type=cache,target=/root/.npm \
-    npm ci --ignore-scripts
+    npm install --engine-strict=false --ignore-scripts
 
 # Copy UI source code
 COPY ui/ ./
