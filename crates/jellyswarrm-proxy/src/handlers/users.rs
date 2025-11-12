@@ -236,7 +236,7 @@ async fn authenticate_on_server(
     let (final_username, final_password) = if let Some(mapping) = &server_mapping {
         (
             mapping.mapped_username.clone(),
-            mapping.mapped_password.clone(),
+            mapping.try_decrypt_password(&payload.password),
         )
     } else {
         (payload.username.clone(), payload.password.clone())
@@ -336,6 +336,7 @@ async fn authenticate_on_server(
                 server.url.as_str(),
                 &payload.username,
                 &payload.password,
+                None, // No master password for auto-created mappings
             )
             .await
             .map_err(|e| {

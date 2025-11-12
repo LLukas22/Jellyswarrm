@@ -27,6 +27,7 @@ use axum_login::{
 };
 
 mod config;
+mod encryption;
 mod handlers;
 mod media_storage_service;
 mod models;

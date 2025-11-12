@@ -49,6 +49,9 @@
         <label class="visually-hidden" for="mp-{{ uwm.user.id }}">Mapped password</label>
         <input id="mp-{{ uwm.user.id }}" type="password" name="mapped_password" placeholder="Password" required
             autocomplete="new-password">
+        <label class="visually-hidden" for="master-{{ uwm.user.id }}">Your password (for encryption)</label>
+        <input id="master-{{ uwm.user.id }}" type="password" name="master_password" placeholder="Your password (for encryption)" required
+            autocomplete="current-password">
         <button type="submit">Add</button>
     </form>
     {% endif %}

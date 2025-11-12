@@ -55,6 +55,8 @@ pub struct AddMappingForm {
     pub server_url: String,
     pub mapped_username: String,
     pub mapped_password: String,
+    /// The user's master password for encrypting the mapping password
+    pub master_password: Option<String>,
 }
 
 pub async fn create_user_with_mappings(
@@ -275,15 +277,18 @@ pub async fn add_mapping(
         )
             .into_response();
     }
-    match state
-        .user_authorization
-        .add_server_mapping(
-            &form.user_id,
-            &form.server_url,
-            &form.mapped_username,
-            &form.mapped_password,
-        )
-        .await
+    
+    // For UI-added mappings, we'll encrypt the password using the user's master password
+        match state
+            .user_authorization
+            .add_server_mapping(
+                &form.user_id,
+                &form.server_url,
+                &form.mapped_username,
+                &form.mapped_password,
+                form.master_password.as_deref(),
+            )
+            .await
     {
         Ok(_id) => {
             match state

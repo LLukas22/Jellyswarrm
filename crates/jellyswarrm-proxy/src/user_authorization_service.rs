@@ -21,9 +21,55 @@ pub struct ServerMapping {
     pub user_id: String,
     pub server_url: String,
     pub mapped_username: String,
+    /// Password stored in the database (may be encrypted or cleartext)
     pub mapped_password: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl ServerMapping {
+    /// Creates a new ServerMapping with a password (encrypted or decrypted)
+    pub fn new_with_password(
+        id: i64,
+        user_id: String,
+        server_url: String,
+        mapped_username: String,
+        password: String,
+        created_at: chrono::DateTime<chrono::Utc>,
+        updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> Self {
+        Self {
+            id,
+            user_id,
+            server_url,
+            mapped_username,
+            mapped_password: password,
+            created_at,
+            updated_at,
+        }
+    }
+
+    /// Tries to decrypt the stored password using the master password
+    /// Returns the decrypted password if successful, otherwise returns the original password
+    /// Logs a warning if decryption fails, which might indicate the password is stored in cleartext
+    pub fn try_decrypt_password(&self, master_password: &str) -> String {
+        match self.decrypt_password(master_password) {
+            Ok(decrypted) => {
+                tracing::debug!("Successfully decrypted password for mapping {}", self.id);
+                decrypted
+            }
+            Err(e) => {
+                // If decryption fails, assume the password is stored in cleartext
+                tracing::debug!("Password decryption failed for mapping {}: {:?}. Assuming cleartext storage.", self.id, e);
+                self.mapped_password.clone()
+            }
+        }
+    }
+
+    /// Decrypts the stored password using the master password
+    pub fn decrypt_password(&self, master_password: &str) -> Result<String, crate::encryption::EncryptionError> {
+        crate::encryption::decrypt_password(&self.mapped_password, master_password)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -283,14 +329,25 @@ impl UserAuthorizationService {
     }
 
     /// Add or update server mapping for a user
+    /// If master_password is provided, the mapped_password will be encrypted before storage
     pub async fn add_server_mapping(
         &self,
         user_id: &str,
         server_url: &str,
         mapped_username: &str,
         mapped_password: &str,
-    ) -> Result<i64, sqlx::Error> {
+        master_password: Option<&str>,
+    ) -> Result<i64, Box<dyn std::error::Error + Send + Sync>> {
         let now = chrono::Utc::now();
+
+        // Encrypt the password if master_password is provided
+        let password_to_store = if let Some(master_pwd) = master_password {
+            crate::encryption::encrypt_password(mapped_password, master_pwd)
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
+        } else {
+            // Store in cleartext if no master password is provided (backward compatibility)
+            mapped_password.to_string()
+        };
 
         let result = sqlx::query(
             r#"
@@ -302,7 +359,7 @@ impl UserAuthorizationService {
         .bind(user_id)
         .bind(server_url)
         .bind(mapped_username)
-        .bind(mapped_password)
+        .bind(password_to_store)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -335,6 +392,41 @@ impl UserAuthorizationService {
         .await?;
 
         Ok(mapping)
+    }
+
+    /// Get server mapping with decrypted password
+    pub async fn get_server_mapping_with_decrypted_password(
+        &self,
+        user_id: &str,
+        server_url: &str,
+        master_password: &str,
+    ) -> Result<Option<ServerMapping>, Box<dyn std::error::Error + Send + Sync>> {
+        let mapping = self.get_server_mapping(user_id, server_url).await?;
+        
+        if let Some(mapping) = mapping {
+            // Try to decrypt the password
+            match mapping.decrypt_password(master_password) {
+                Ok(decrypted_password) => {
+                    // Create a new mapping with the decrypted password
+                    Ok(Some(ServerMapping::new_with_password(
+                        mapping.id,
+                        mapping.user_id,
+                        mapping.server_url,
+                        mapping.mapped_username,
+                        decrypted_password, // Store decrypted password temporarily
+                        mapping.created_at,
+                        mapping.updated_at,
+                    )))
+                }
+                Err(e) => {
+                    // If decryption fails, return the original mapping with encrypted password
+                    tracing::warn!("Failed to decrypt password for mapping {}: {}", mapping.id, e);
+                    Ok(Some(mapping))
+                }
+            }
+        } else {
+            Ok(None)
+        }
     }
 
     /// List all server mappings for a user
@@ -765,6 +857,7 @@ mod tests {
                 "http://localhost:8096",
                 "mappeduser",
                 "mappedpass",
+                None,
             )
             .await
             .unwrap();
@@ -907,6 +1000,7 @@ mod tests {
                 "http://localhost:8096",
                 "mappeduser",
                 "mappedpass",
+                None,
             )
             .await
             .unwrap();
@@ -1000,6 +1094,7 @@ mod tests {
                 "http://localhost:8096",
                 "mappeduser",
                 "mappedpass",
+                None,
             )
             .await
             .unwrap();
@@ -1114,6 +1209,7 @@ mod tests {
                 "http://localhost:8096",
                 "mappeduser1",
                 "mappedpass1",
+                None,
             )
             .await
             .unwrap();
@@ -1124,6 +1220,7 @@ mod tests {
                 "http://localhost:8097",
                 "mappeduser2",
                 "mappedpass2",
+                None,
             )
             .await
             .unwrap();
@@ -1238,6 +1335,7 @@ mod tests {
                 "http://localhost:8096",
                 "mappeduser",
                 "mappedpass",
+                None,
             )
             .await
             .unwrap();
@@ -1340,7 +1438,7 @@ mod tests {
         // Add mappings for both servers
         for url in ["http://localhost:8096", "http://localhost:8097"] {
             service
-                .add_server_mapping(&user.id, url, "mappeduser", "mappedpass")
+                .add_server_mapping(&user.id, url, "mappeduser", "mappedpass", None)
                 .await
                 .unwrap();
         }
@@ -1393,5 +1491,111 @@ mod tests {
             .unwrap()
             .1;
         assert!(sessions_after.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod encryption_tests {
+    use super::*;
+    use crate::config::MIGRATOR;
+
+    #[tokio::test]
+    async fn test_server_mapping_encryption() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = UserAuthorizationService::new(pool.clone());
+
+        // Create user
+        let user = service
+            .get_or_create_user("testuser", "testpass")
+            .await
+            .unwrap();
+
+        // Add server mapping with encryption
+        let server_url = "http://localhost:8096";
+        let mapped_username = "mappeduser";
+        let mapped_password = "mappedpass";
+        let master_password = "testpass"; // User's login password
+
+        let mapping_id = service
+            .add_server_mapping(
+                &user.id,
+                server_url,
+                mapped_username,
+                mapped_password,
+                Some(master_password),
+            )
+            .await
+            .unwrap();
+
+        // Retrieve the mapping
+        let mapping = service
+            .get_server_mapping(&user.id, server_url)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Verify the mapping was stored
+        assert_eq!(mapping.id, mapping_id);
+        assert_eq!(mapping.user_id, user.id);
+        assert_eq!(mapping.server_url, server_url);
+        assert_eq!(mapping.mapped_username, mapped_username);
+        // The stored password should be encrypted and different from the original
+        assert_ne!(mapping.mapped_password, mapped_password);
+
+        // Try to decrypt the password
+        let decrypted_password = mapping.try_decrypt_password(master_password);
+        assert_eq!(decrypted_password, mapped_password);
+
+        // Try with wrong password - should return original (encrypted) password
+        let wrong_decrypted = mapping.try_decrypt_password("wrongpass");
+        assert_eq!(wrong_decrypted, mapping.mapped_password);
+    }
+
+    #[tokio::test]
+    async fn test_server_mapping_backward_compatibility() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = UserAuthorizationService::new(pool.clone());
+
+        // Create user
+        let user = service
+            .get_or_create_user("testuser", "testpass")
+            .await
+            .unwrap();
+
+        // Add server mapping without encryption (backward compatibility)
+        let server_url = "http://localhost:8096";
+        let mapped_username = "mappeduser";
+        let mapped_password = "mappedpass";
+
+        let mapping_id = service
+            .add_server_mapping(
+                &user.id,
+                server_url,
+                mapped_username,
+                mapped_password,
+                None, // No encryption
+            )
+            .await
+            .unwrap();
+
+        // Retrieve the mapping
+        let mapping = service
+            .get_server_mapping(&user.id, server_url)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Verify the mapping was stored in cleartext
+        assert_eq!(mapping.id, mapping_id);
+        assert_eq!(mapping.user_id, user.id);
+        assert_eq!(mapping.server_url, server_url);
+        assert_eq!(mapping.mapped_username, mapped_username);
+        assert_eq!(mapping.mapped_password, mapped_password);
+
+        // Try to decrypt the password - should return the original since it's cleartext
+        let decrypted_password = mapping.try_decrypt_password("anypassword");
+        assert_eq!(decrypted_password, mapped_password);
     }
 }
