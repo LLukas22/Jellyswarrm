@@ -37,7 +37,7 @@ fn main() {
 
     if last_hash != current_hash {
         println!("Building UI: new commit detected.");
-        
+
         // Install/update npm dependencies
         println!("Installing npm dependencies...");
         let install_status = Command::new("npm")
@@ -46,7 +46,7 @@ fn main() {
             .status()
             .expect("Failed to run npm install");
         assert!(install_status.success(), "npm install failed");
-        
+
         // Build the UI
         let status = Command::new("npm")
             .args(["run", "build:production"])
@@ -73,7 +73,7 @@ fn main() {
         let mut file = fs::File::create(&hash_file).expect("Failed to write hash file");
         file.write_all(current_hash.as_bytes())
             .expect("Failed to write hash");
-            
+
         // Generate UI version file for Docker builds
         generate_ui_version_file(workspace_root);
     } else {
@@ -83,25 +83,32 @@ fn main() {
 
 fn generate_ui_version_file(workspace_root: &std::path::Path) {
     let ui_dir = workspace_root.join("ui");
-    
+
     // Get UI version
     let version_output = Command::new("git")
         .args(["-C", ui_dir.to_str().unwrap(), "describe", "--tags"])
         .output()
         .expect("Failed to get UI version");
-    let ui_version = String::from_utf8_lossy(&version_output.stdout).trim().to_string();
-    
+    let ui_version = String::from_utf8_lossy(&version_output.stdout)
+        .trim()
+        .to_string();
+
     // Get UI commit hash
     let commit_output = Command::new("git")
         .args(["-C", ui_dir.to_str().unwrap(), "rev-parse", "HEAD"])
         .output()
         .expect("Failed to get UI commit hash");
-    let ui_commit = String::from_utf8_lossy(&commit_output.stdout).trim().to_string();
-    
+    let ui_commit = String::from_utf8_lossy(&commit_output.stdout)
+        .trim()
+        .to_string();
+
     // Write version file
     let version_content = format!("UI_VERSION={}\nUI_COMMIT={}\n", ui_version, ui_commit);
     let version_file = workspace_root.join("ui-version.env");
     fs::write(&version_file, version_content).expect("Failed to write ui-version.env");
-    
-    println!("Generated ui-version.env with UI_VERSION={} UI_COMMIT={}", ui_version, ui_commit);
+
+    println!(
+        "Generated ui-version.env with UI_VERSION={} UI_COMMIT={}",
+        ui_version, ui_commit
+    );
 }
