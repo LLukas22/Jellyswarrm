@@ -16,19 +16,12 @@ fn main() {
     let ui_dir = workspace_root.join("ui");
     let dist_dir = manifest_dir.join("static"); // static/ in the crate
 
-    // Get the latest commit hash for the ui directory
+    // Get the latest commit hash for the ui submodule
     let output = Command::new("git")
-        .args([
-            "log",
-            "-n",
-            "1",
-            "--pretty=format:%H",
-            "--",
-            ui_dir.to_str().unwrap(),
-        ])
-        .current_dir(workspace_root)
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&ui_dir)
         .output()
-        .expect("Failed to get git commit hash for ui directory");
+        .expect("Failed to get git commit hash for ui submodule");
     let current_hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
     // Read the last built commit hash
@@ -74,7 +67,7 @@ fn main() {
         file.write_all(current_hash.as_bytes())
             .expect("Failed to write hash");
 
-        // Generate UI version file for Docker builds
+        // Generate UI version file for runtime access
         generate_ui_version_file(workspace_root);
     } else {
         println!("cargo:warning=UI unchanged, skipping build");
@@ -104,8 +97,12 @@ fn generate_ui_version_file(workspace_root: &std::path::Path) {
 
     // Write version file
     let version_content = format!("UI_VERSION={}\nUI_COMMIT={}\n", ui_version, ui_commit);
-    let version_file = workspace_root.join("ui-version.env");
-    fs::write(&version_file, version_content).expect("Failed to write ui-version.env");
+
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let dist_dir = manifest_dir.join("static");
+    let version_file_in_dist = dist_dir.join("ui-version.env");
+    fs::write(&version_file_in_dist, version_content)
+        .expect("Failed to write ui-version.env in static/");
 
     println!(
         "Generated ui-version.env with UI_VERSION={} UI_COMMIT={}",

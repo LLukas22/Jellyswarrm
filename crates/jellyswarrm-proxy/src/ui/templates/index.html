@@ -82,6 +82,10 @@
                 </a>
             </p>
             <p style="margin: 0.5rem 0 0 0; color: var(--pico-muted-color); font-size: 0.75rem;">
+                <i class="fas fa-film" style="margin-right: 0.5rem;"></i>
+                {% match jellyfin_ui_version %}{% when Some with (ui) %}<a href="https://github.com/jellyfin/jellyfin-web/tree/{{ ui.version }}" target="_blank">Jellyfin Web UI {{ ui.version }}</a>{% when None %}Jellyfin Web UI: UNKNOWN{% endmatch %}
+            </p>
+            <p style="margin: 0.5rem 0 0 0; color: var(--pico-muted-color); font-size: 0.75rem;">
                 <i class="fas fa-heart" style="margin-right: 0.25rem; color: var(--pico-del-color);"></i>
                 Built with Rust & HTMX
             </p>
