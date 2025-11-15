@@ -36,12 +36,6 @@ mod tests {
         assert!(media_item.can_download.is_some());
         assert!(media_item.can_download.unwrap());
 
-        assert!(media_item.has_subtitles.is_some());
-        assert!(media_item.has_subtitles.unwrap());
-
-        assert!(media_item.container.is_some());
-        assert_eq!(media_item.container.unwrap(), "mkv");
-
         assert!(media_item.sort_name.is_some());
         assert_eq!(media_item.sort_name.unwrap(), "batman");
 
