@@ -8,8 +8,9 @@ use axum::{
 use axum_login::login_required;
 use hyper::StatusCode;
 use rust_embed::RustEmbed;
+use tracing::error;
 
-use crate::AppState;
+use crate::{AppState, Asset};
 
 mod auth;
 pub mod root;
@@ -33,6 +34,37 @@ async fn resource_handler(Path(path): Path<String>) -> impl IntoResponse {
         Err(StatusCode::NOT_FOUND)
     }
 }
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct JellyfinUiVersion {
+    pub version: String,
+    pub commit: String,
+}
+
+fn get_jellyfin_ui_version() -> Option<JellyfinUiVersion> {
+    if let Some(file) = Asset::get("ui-version.env") {
+        let content = String::from_utf8_lossy(&file.data);
+        let mut version = "unknown";
+        let mut commit = "unknown";
+        for line in content.lines() {
+            if line.starts_with("UI_VERSION=") {
+                version = line.trim_start_matches("UI_VERSION=");
+            } else if line.starts_with("UI_COMMIT=") {
+                commit = line.trim_start_matches("UI_COMMIT=");
+            }
+        }
+        Some(JellyfinUiVersion {
+            version: version.to_string(),
+            commit: commit.to_string(),
+        })
+    } else {
+        error!("Failed to load Jellyfin UI version info from embedded resources");
+        None
+    }
+}
+
+pub static JELLYFIN_UI_VERSION: once_cell::sync::Lazy<Option<JellyfinUiVersion>> =
+    once_cell::sync::Lazy::new(get_jellyfin_ui_version);
 
 pub fn ui_routes() -> axum::Router<AppState> {
     Router::new()
