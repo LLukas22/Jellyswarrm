@@ -337,10 +337,6 @@ pub struct MediaItem {
     pub path: Option<String>,
     pub enable_media_source_display: Option<bool>,
     pub channel_id: Option<String>,
-    pub taglines: Option<Vec<String>>,
-    pub genres: Option<Vec<String>>,
-    pub play_access: Option<String>,
-    pub remote_trailers: Option<Vec<RemoteTrailer>>,
     pub provider_ids: Option<serde_json::Value>,
     pub is_folder: Option<bool>,
     pub parent_id: Option<String>,
@@ -353,40 +349,15 @@ pub struct MediaItem {
     #[serde(rename = "Type")]
     pub item_type: BaseItemKind,
     pub collection_type: Option<CollectionType>,
-    pub people: Option<Vec<Person>>,
-    pub studios: Option<Vec<Studio>>,
-    pub genre_items: Option<Vec<GenreItem>>,
-    pub local_trailer_count: Option<i32>,
     pub user_data: Option<UserData>,
     pub child_count: Option<i32>,
-    pub special_feature_count: Option<i32>,
     pub display_preferences_id: Option<String>,
     pub tags: Option<Vec<String>>,
-    pub primary_image_aspect_ratio: Option<f64>,
     pub series_primary_image_tag: Option<String>,
     pub image_tags: Option<ImageTags>,
     pub backdrop_image_tags: Option<Vec<String>>,
     pub image_blur_hashes: Option<ImageBlurHashes>,
-    pub location_type: Option<String>,
-    pub media_type: Option<String>,
-    pub locked_fields: Option<Vec<String>>,
-    pub lock_data: Option<bool>,
-    // New fields from the provided response
-    pub container: Option<String>,
-    pub premiere_date: Option<String>,
-    pub critic_rating: Option<i32>,
-    pub official_rating: Option<String>,
-    pub community_rating: Option<f64>,
-    pub run_time_ticks: Option<i64>,
-    pub production_year: Option<i32>,
-    pub video_type: Option<String>,
-    pub has_subtitles: Option<bool>,
     pub original_title: Option<String>,
-    pub overview: Option<String>,
-    pub production_locations: Option<Vec<String>>,
-    pub is_hd: Option<bool>,
-    pub width: Option<i32>,
-    pub height: Option<i32>,
     pub media_sources: Option<Vec<MediaSource>>,
     pub media_streams: Option<Vec<MediaStream>>,
     pub chapters: Option<Vec<Chapter>>,
@@ -507,14 +478,6 @@ pub struct Chapter {
     pub image_path: Option<String>,
     pub image_date_modified: Option<String>,
     pub image_tag: Option<String>,
-}
-
-#[skip_serializing_none]
-#[multi_case_struct(pascal, camel)]
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct RemoteTrailer {
-    pub url: String,
-    pub name: Option<String>,
 }
 
 #[skip_serializing_none]
