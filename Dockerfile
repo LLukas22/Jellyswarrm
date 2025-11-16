@@ -3,6 +3,9 @@
 #################################
 FROM node:20-alpine AS ui-build
 
+# Install git for version detection
+RUN apk add --no-cache git
+
 WORKDIR /app/ui
 
 # Copy package files for dependency caching
@@ -10,13 +13,28 @@ COPY ui/package.json ui/package-lock.json* ./
 
 # Install all dependencies (including dev deps needed for build)
 RUN --mount=type=cache,target=/root/.npm \
-    npm ci --ignore-scripts
+    npm install --engine-strict=false --ignore-scripts
 
-# Copy UI source code
+# Copy UI source code and git metadata
 COPY ui/ ./
+COPY .git/modules/ui/ /app/.git/modules/ui/
+
+# Get and print UI version info
+RUN UI_VERSION=$(git describe --tags) && \
+    UI_COMMIT=$(git rev-parse HEAD) && \
+    echo "UI_VERSION=$UI_VERSION" && \
+    echo "UI_COMMIT=$UI_COMMIT"
 
 # Build production UI bundle
 RUN npm run build:production
+
+# Write ui-version.env file
+RUN UI_VERSION=$(git describe --tags) && \
+    UI_COMMIT=$(git rev-parse HEAD) && \
+    printf "UI_VERSION=%s\nUI_COMMIT=%s\n" "$UI_VERSION" "$UI_COMMIT" > dist/ui-version.env && \
+    echo "Generated dist/ui-version.env"
+
+
 
 #################################
 # Stage 2: Rust Dependencies Cache
