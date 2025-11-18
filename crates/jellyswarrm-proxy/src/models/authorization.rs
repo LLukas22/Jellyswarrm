@@ -1,11 +1,9 @@
 use percent_encoding::percent_decode_str;
 
-
 pub fn generate_token() -> String {
     use uuid::Uuid;
     Uuid::new_v4().simple().to_string()
 }
-
 
 // See https://github.com/jellyfin/jellyfin/blob/master/Jellyfin.Server.Implementations/Security/AuthorizationContext.cs
 #[derive(Debug, Clone)]
@@ -114,56 +112,42 @@ impl Authorization {
 /// This mirrors the logic from Jellyfin.Server.Implementations.Security.AuthorizationContext.GetParts
 fn parse_quoted_params(content: &str) -> Result<Vec<(String, String)>, String> {
     let mut result = Vec::new();
-    let mut escaped = false;
+    let mut in_quotes = false;
     let mut start = 0;
     let mut key = String::new();
-    
-    let chars: Vec<char> = content.chars().collect();
-    let mut i = 0;
-    
-    while i < chars.len() {
-        let token = chars[i];
-        
-        if token == '"' || token == ',' {
-            // XOR logic to evaluate whether it is opening or closing a value
-            let is_quote = token == '"';
-            escaped = (!escaped) == is_quote;
-            
-            if token == ',' && !escaped {
-                // Meeting a comma after a closing escape char means the value is complete
-                if start < i {
-                    let value_str: String = chars[start..i].iter().collect();
-                    // Trim quotes only (matching C# Trim('"'))
-                    let trimmed = value_str.trim_start_matches(|c: char| c.is_whitespace())
-                        .trim_end_matches(|c: char| c.is_whitespace())
-                        .trim_matches('"');
-                    let decoded = percent_decode_str(trimmed).decode_utf8_lossy().to_string();
-                    result.push((key.clone(), decoded));
-                    key.clear();
+
+    for (i, ch) in content.char_indices() {
+        match ch {
+            '"' => in_quotes = !in_quotes,
+            ',' if !in_quotes => {
+                if start < i && !key.is_empty() {
+                    let value = decode_value(&content[start..i]);
+                    result.push((std::mem::take(&mut key), value));
                 }
                 start = i + 1;
             }
-        } else if !escaped && token == '=' {
-            let key_str: String = chars[start..i].iter().collect();
-            key = key_str.trim().to_string();
-            start = i + 1;
+            '=' if !in_quotes => {
+                key = content[start..i].trim().to_string();
+                start = i + 1;
+            }
+            _ => {}
         }
-        
-        i += 1;
     }
-    
+
     // Add last value
-    if start < chars.len() {
-        let value_str: String = chars[start..].iter().collect();
-        // Trim quotes only (matching C# Trim('"'))
-        let trimmed = value_str.trim_start_matches(|c: char| c.is_whitespace())
-            .trim_end_matches(|c: char| c.is_whitespace())
-            .trim_matches('"');
-        let decoded = percent_decode_str(trimmed).decode_utf8_lossy().to_string();
-        result.push((key, decoded));
+    if start < content.len() && !key.is_empty() {
+        let value = decode_value(&content[start..]);
+        result.push((key, value));
     }
-    
+
     Ok(result)
+}
+
+/// Decode and clean a parameter value
+#[inline]
+fn decode_value(raw: &str) -> String {
+    let trimmed = raw.trim().trim_matches('"');
+    percent_decode_str(trimmed).decode_utf8_lossy().into_owned()
 }
 
 impl std::fmt::Display for Authorization {
@@ -235,10 +219,10 @@ mod tests {
     #[test]
     fn test_parse_legacy_emby_header() {
         let header = r#"Emby Client="Emby Theater", Device="PC", DeviceId="abc123", Version="3.0.0", Token="test_token""#;
-        
+
         // Should fail without legacy enabled
         assert!(Authorization::parse(header).is_err());
-        
+
         // Should succeed with legacy enabled
         let auth = Authorization::parse_with_legacy(header, true).unwrap();
         assert_eq!(auth.client, "Emby Theater");
@@ -252,7 +236,7 @@ mod tests {
     fn test_parse_url_encoded_values() {
         // Test URL encoding in device name
         let header = r#"MediaBrowser Client="Test", Device="My%20Device%20Name", DeviceId="test123", Version="1.0""#;
-        
+
         let auth = Authorization::parse(header).unwrap();
         assert_eq!(auth.device, "My Device Name");
     }
@@ -261,7 +245,7 @@ mod tests {
     fn test_parse_unquoted_values() {
         // iOS style with unquoted values
         let header = r#"MediaBrowser Device=iPad, Version=1.3.1, DeviceId=device123, Token=, Client=Test Client"#;
-        
+
         let auth = Authorization::parse(header).unwrap();
         assert_eq!(auth.device, "iPad");
         assert_eq!(auth.version, "1.3.1");
@@ -273,7 +257,7 @@ mod tests {
     #[test]
     fn test_parse_mixed_quoted_unquoted() {
         let header = r#"MediaBrowser Client="Jellyfin Web", Device=Firefox, DeviceId="abc123", Version=1.0.0"#;
-        
+
         let auth = Authorization::parse(header).unwrap();
         assert_eq!(auth.client, "Jellyfin Web");
         assert_eq!(auth.device, "Firefox");
@@ -285,7 +269,7 @@ mod tests {
     fn test_parse_with_spaces() {
         // Test with extra spaces around values
         let header = r#"MediaBrowser Client = "Jellyfin Web" , Device = "Firefox" , DeviceId = "abc123" , Version = "1.0.0""#;
-        
+
         let auth = Authorization::parse(header).unwrap();
         assert_eq!(auth.client, "Jellyfin Web");
         assert_eq!(auth.device, "Firefox");
@@ -295,8 +279,9 @@ mod tests {
 
     #[test]
     fn test_parse_empty_token() {
-        let header = r#"MediaBrowser Client="Test", Device="Dev", DeviceId="123", Version="1.0", Token="""#;
-        
+        let header =
+            r#"MediaBrowser Client="Test", Device="Dev", DeviceId="123", Version="1.0", Token="""#;
+
         let auth = Authorization::parse(header).unwrap();
         assert_eq!(auth.token, None);
     }
@@ -306,15 +291,15 @@ mod tests {
         // Missing Version
         let header = r#"MediaBrowser Client="Test", Device="Dev", DeviceId="123""#;
         assert!(Authorization::parse(header).is_err());
-        
+
         // Missing Client
         let header = r#"MediaBrowser Device="Dev", DeviceId="123", Version="1.0""#;
         assert!(Authorization::parse(header).is_err());
-        
+
         // Missing Device
         let header = r#"MediaBrowser Client="Test", DeviceId="123", Version="1.0""#;
         assert!(Authorization::parse(header).is_err());
-        
+
         // Missing DeviceId
         let header = r#"MediaBrowser Client="Test", Device="Dev", Version="1.0""#;
         assert!(Authorization::parse(header).is_err());
@@ -324,7 +309,7 @@ mod tests {
     fn test_parse_invalid_prefix() {
         let header = r#"Bearer token=abc123"#;
         assert!(Authorization::parse(header).is_err());
-        
+
         let header = r#"Basic YWxhZGRpbjpvcGVuc2VzYW1l"#;
         assert!(Authorization::parse(header).is_err());
     }
@@ -339,7 +324,7 @@ mod tests {
     fn test_parse_chromecast_client() {
         // Test case that might be shared with casting device
         let header = r#"MediaBrowser Client="Jellyfin Chromecast", Device="Living Room TV", DeviceId="cast123", Version="1.0.0", Token="shared_token""#;
-        
+
         let auth = Authorization::parse(header).unwrap();
         assert_eq!(auth.client, "Jellyfin Chromecast");
         assert_eq!(auth.device, "Living Room TV");
@@ -349,7 +334,7 @@ mod tests {
     #[test]
     fn test_parse_special_characters_in_device() {
         let header = r#"MediaBrowser Client="Test", Device="John's iPad (2024)", DeviceId="123", Version="1.0""#;
-        
+
         let auth = Authorization::parse(header).unwrap();
         assert_eq!(auth.device, "John's iPad (2024)");
     }
@@ -358,7 +343,7 @@ mod tests {
     fn test_parse_long_device_id() {
         // Real-world Firefox device ID from your test
         let header = r#"MediaBrowser Client="Jellyfin Web", Device="Firefox", DeviceId="TW96aWxsYS81LjAgKFgxMTsgTGludXggeDg2XzY0OyBydjoxNDAuMCkgR2Vja28vMjAxMDAxMDEgRmlyZWZveC8xNDAuMHwxNzUyMDcwMzk0MDky", Version="10.10.7""#;
-        
+
         let auth = Authorization::parse(header).unwrap();
         assert_eq!(auth.device_id, "TW96aWxsYS81LjAgKFgxMTsgTGludXggeDg2XzY0OyBydjoxNDAuMCkgR2Vja28vMjAxMDAxMDEgRmlyZWZveC8xNDAuMHwxNzUyMDcwMzk0MDky");
     }
@@ -367,7 +352,7 @@ mod tests {
     fn test_parse_with_commas_in_quoted_value() {
         // Commas inside quoted values should be preserved
         let header = r#"MediaBrowser Client="Test, Client", Device="Dev, Device", DeviceId="123", Version="1.0""#;
-        
+
         let auth = Authorization::parse(header).unwrap();
         assert_eq!(auth.client, "Test, Client");
         assert_eq!(auth.device, "Dev, Device");
@@ -382,13 +367,13 @@ mod tests {
             version: "10.10.7".to_string(),
             token: Some("test_token".to_string()),
         };
-        
+
         let header = auth.to_header_value();
         assert!(header.starts_with("MediaBrowser"));
         assert!(header.contains(r#"Client="Jellyfin Web""#));
         assert!(header.contains(r#"Device="Firefox""#));
         assert!(header.contains(r#"Token="test_token""#));
-        
+
         // Verify it can be parsed back
         let parsed = Authorization::parse(&header).unwrap();
         assert_eq!(parsed.client, auth.client);
@@ -405,7 +390,7 @@ mod tests {
             version: "1.0".to_string(),
             token: None,
         };
-        
+
         let header = auth.to_header_value();
         assert!(!header.contains("Token="));
     }
@@ -419,10 +404,10 @@ mod tests {
             version: "10.10.7".to_string(),
             token: Some("test_token".to_string()),
         };
-        
+
         let short = auth.to_short_string();
         assert_eq!(short, "Jellyfin Web on Firefox (test_token)");
-        
+
         let auth_no_token = Authorization {
             token: None,
             ..auth
@@ -438,12 +423,12 @@ mod tests {
             r#"MediaBrowser Client="Test", Device="Dev", DeviceId="123", Version="1.0""#,
             r#"MediaBrowser Device=iPad, Version=1.3.1, DeviceId=iPadOS_test, Token=, Client=Swiftfin iPadOS"#,
         ];
-        
+
         for header in original_headers {
             let auth = Authorization::parse(header).unwrap();
             let regenerated = auth.to_header_value();
             let reparsed = Authorization::parse(&regenerated).unwrap();
-            
+
             assert_eq!(auth.client, reparsed.client);
             assert_eq!(auth.device, reparsed.device);
             assert_eq!(auth.device_id, reparsed.device_id);
@@ -456,7 +441,7 @@ mod tests {
     fn test_parse_unknown_parameters_ignored() {
         // Unknown parameters should be ignored
         let header = r#"MediaBrowser Client="Test", Device="Dev", DeviceId="123", Version="1.0", UnknownParam="ignored", AnotherParam="also ignored""#;
-        
+
         let auth = Authorization::parse(header).unwrap();
         assert_eq!(auth.client, "Test");
         assert_eq!(auth.device, "Dev");
@@ -473,7 +458,7 @@ mod tests {
             version: "1.0".to_string(),
             token: Some("abc".to_string()),
         };
-        
+
         let display = format!("{}", auth);
         assert_eq!(display, auth.to_header_value());
     }
