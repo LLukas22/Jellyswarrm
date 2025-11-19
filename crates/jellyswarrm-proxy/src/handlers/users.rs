@@ -109,6 +109,19 @@ pub async fn handle_authenticate_by_name(
         return Err(StatusCode::NOT_FOUND);
     }
 
+    let authentication = extract_auth_header(&headers).map_err(|_| {
+        error!(
+            "No valid 'Authorization' header found in authentication request! Headers: {:?}",
+            headers
+        );
+        StatusCode::BAD_REQUEST
+    })?;
+
+    info!(
+        "Got login request with authentication header: {}",
+        authentication.to_header_value()
+    );
+
     info!(
         "Attempting authentication for user '{}' across {} servers",
         payload.username,
@@ -142,12 +155,12 @@ pub async fn handle_authenticate_by_name(
                     );
                     {
                         let state = state.clone();
-                        let headers = headers.clone();
+                        let authentication = authentication.clone();
                         let payload = payload.clone();
                         auth_tasks.push(tokio::spawn(async move {
                             authenticate_on_server(
                                 state.clone(),
-                                headers.clone(),
+                                authentication.clone(),
                                 payload.clone(),
                                 server,
                                 Some(server_mapping),
@@ -165,7 +178,7 @@ pub async fn handle_authenticate_by_name(
         .into_iter()
         .map(|server| {
             let state = state.clone();
-            let headers = headers.clone();
+            let authentication = authentication.clone();
             let payload = payload.clone();
             info!(
                 "No server mapping found for user '{}' on server '{}'",
@@ -173,7 +186,7 @@ pub async fn handle_authenticate_by_name(
             );
 
             tokio::spawn(async move {
-                authenticate_on_server(state, headers, payload, server, None).await
+                authenticate_on_server(state, authentication, payload, server, None).await
             })
         })
         .collect();
@@ -220,7 +233,7 @@ pub async fn handle_authenticate_by_name(
 /// Authenticates a user on a specific server
 async fn authenticate_on_server(
     state: AppState,
-    headers: HeaderMap,
+    authorization: Authorization,
     payload: AuthenticateRequest,
     server: crate::server_storage::Server,
     server_mapping: Option<crate::user_authorization_service::ServerMapping>,
@@ -248,22 +261,11 @@ async fn authenticate_on_server(
         password: final_password.clone(),
     };
 
-    // Extract authorization header or use default
-    let auth_header = extract_auth_header(&headers);
-    let authorization = Authorization::parse(&auth_header).unwrap_or_else(|_| Authorization {
-        client: "Jellyfin Web".to_string(),
-        device: "JellyswarmProxy".to_string(),
-        device_id: "jellyswarrm-proxy-001".to_string(),
-        version: "10.10.7".to_string(),
-        token: None,
-    });
-    debug!("Using authorization header: {}", auth_header);
-
     // Make authentication request
     let response = state
         .reqwest_client
         .post(auth_url.as_str())
-        .header("Authorization", &auth_header)
+        .header("Authorization", authorization.to_header_value())
         .header("Accept", "application/json")
         .header("Content-Type", "application/json")
         .json(&auth_payload)
@@ -398,37 +400,43 @@ async fn authenticate_on_server(
     Ok(auth_response)
 }
 
-/// Extracts authorization header or provides default
-fn extract_auth_header(headers: &HeaderMap) -> String {
+/// Extracts authorization header
+fn extract_auth_header(headers: &HeaderMap) -> Result<Authorization, AuthError> {
     if let Some(raw_auth) = headers
         .get("authorization")
         .and_then(|value| value.to_str().ok())
     {
         if let Ok(auth) = Authorization::parse(raw_auth) {
             debug!("Extracted 'Authorization' header: {}", raw_auth);
-            auth.to_header_value()
+            Ok(auth)
         } else {
             warn!("Invalid 'Authorization' header format: {}", raw_auth);
-            r#"MediaBrowser Client="Dummy Jellyfin Web", Device="JellyswarmProxy", DeviceId="jellyswarrm-proxy-001", Version="10.10.7""#.to_string()
+            Err(AuthError::ParseError(
+                "Invalid 'Authorization' header format".to_string(),
+            ))
         }
     } else if let Some(raw_auth) = headers
         .get("x-emby-authorization")
         .and_then(|value| value.to_str().ok())
     {
-        if let Ok(auth) = Authorization::parse(raw_auth) {
+        if let Ok(auth) = Authorization::parse_with_legacy(raw_auth, true) {
             debug!("Extracted 'X-Emby-Authorization' header: {}", raw_auth);
-            auth.to_header_value()
+            Ok(auth)
         } else {
             warn!("Invalid 'Authorization' header format: {}", raw_auth);
-            r#"MediaBrowser Client="Dummy Jellyfin Web", Device="JellyswarmProxy", DeviceId="jellyswarrm-proxy-001", Version="10.10.7""#.to_string()
+            Err(AuthError::ParseError(
+                "Invalid 'X-Emby-Authorization' header format".to_string(),
+            ))
         }
     } else {
-        warn!(
-            "No 'Authorization' header found, using dummy header! Headers: {:?}",
+        error!(
+            "No 'Authorization' header found in login request! Headers: {:?}",
             headers
         );
 
-        r#"MediaBrowser Client="Dummy Jellyfin Web", Device="JellyswarmProxy", DeviceId="jellyswarrm-proxy-001", Version="10.10.7""#.to_string()
+        Err(AuthError::ParseError(
+            "No 'Authorization' header found in login request!".to_string(),
+        ))
     }
 }
 

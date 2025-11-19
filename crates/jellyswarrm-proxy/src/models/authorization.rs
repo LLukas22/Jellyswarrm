@@ -152,17 +152,7 @@ fn decode_value(raw: &str) -> String {
 
 impl std::fmt::Display for Authorization {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "MediaBrowser Client=\"{}\", Device=\"{}\", DeviceId=\"{}\", Version=\"{}\"",
-            self.client, self.device, self.device_id, self.version
-        )?;
-
-        if let Some(token) = &self.token {
-            write!(f, ", Token=\"{token}\"")?;
-        }
-
-        Ok(())
+        write!(f, "{}", self.to_header_value())
     }
 }
 
