@@ -1,0 +1,47 @@
+<hgroup>
+    <h1>Welcome, {{ username }}</h1>
+    <h2>Your Connected Servers</h2>
+</hgroup>
+
+{% if servers.is_empty() %}
+    <div style="text-align: center; padding: 2rem;">
+        <i class="fas fa-server fa-3x" style="color: var(--pico-muted-color); margin-bottom: 1rem;"></i>
+        <h3>No Servers Connected</h3>
+        <p>You are not currently connected to any Jellyfin servers.</p>
+    </div>
+{% else %}
+    <table role="grid">
+        <thead>
+            <tr>
+                <th scope="col">Name</th>
+                <th scope="col">URL</th>
+                <th scope="col">Priority</th>
+                <th scope="col">Status</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for server in servers %}
+            <tr>
+                <th scope="row">
+                    <i class="fas fa-server" style="margin-right: 0.5rem; color: var(--pico-muted-color);"></i>
+                    {{ server.name }}
+                </th>
+                <td>
+                    <a href="{{ server.url }}" target="_blank">
+                        {{ server.url }}
+                        <i class="fas fa-external-link-alt" style="font-size: 0.8em; margin-left: 0.25rem;"></i>
+                    </a>
+                </td>
+                <td>{{ server.priority }}</td>
+                <td>
+                    <span hx-get="/{{ ui_route }}/servers/{{ server.id }}/status" 
+                          hx-trigger="load, every 10s" 
+                          hx-swap="outerHTML">
+                        <small class="secondary"><i class="fas fa-circle-notch fa-spin"></i></small>
+                    </span>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+{% endif %}

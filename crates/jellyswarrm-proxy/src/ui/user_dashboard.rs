@@ -6,22 +6,21 @@ use axum::{
 };
 use tracing::error;
 
-use crate::{
-    server_storage::Server,
-    ui::auth::AuthSession,
-    AppState,
-};
+use crate::{server_storage::Server, ui::auth::AuthSession, AppState};
 
 #[derive(Template)]
-#[template(path = "user_dashboard.html")]
-pub struct UserDashboardTemplate {
+#[template(path = "user/user_server_list.html")]
+pub struct UserServerListTemplate {
     pub username: String,
     pub servers: Vec<Server>,
     pub ui_route: String,
-    pub root: Option<String>,
 }
 
-pub async fn dashboard(
+#[derive(Template)]
+#[template(path = "user/user_media.html")]
+pub struct UserMediaTemplate {}
+
+pub async fn get_user_servers(
     State(state): State<AppState>,
     auth_session: AuthSession,
 ) -> impl IntoResponse {
@@ -38,17 +37,27 @@ pub async fn dashboard(
         }
     };
 
-    let template = UserDashboardTemplate {
+    let template = UserServerListTemplate {
         username: user.username,
         servers,
         ui_route: state.get_ui_route().await,
-        root: state.get_url_prefix().await,
     };
 
     match template.render() {
         Ok(html) => Html(html).into_response(),
         Err(e) => {
-            error!("Failed to render user dashboard template: {}", e);
+            error!("Failed to render user server list template: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Template error").into_response()
+        }
+    }
+}
+
+pub async fn get_user_media() -> impl IntoResponse {
+    let template = UserMediaTemplate {};
+    match template.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => {
+            error!("Failed to render user media template: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, "Template error").into_response()
         }
     }

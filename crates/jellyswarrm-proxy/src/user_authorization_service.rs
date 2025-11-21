@@ -677,9 +677,8 @@ impl UserAuthorizationService {
             .map(|row| Server {
                 id: row.get("id"),
                 name: row.get("name"),
-                url: url::Url::parse(row.get::<String, _>("url").as_str()).unwrap_or_else(|_| {
-                    url::Url::parse("http://invalid-url-in-db").unwrap()
-                }),
+                url: url::Url::parse(row.get::<String, _>("url").as_str())
+                    .unwrap_or_else(|_| url::Url::parse("http://invalid-url-in-db").unwrap()),
                 priority: row.get("priority"),
                 created_at: row.get("created_at"),
                 updated_at: row.get("updated_at"),

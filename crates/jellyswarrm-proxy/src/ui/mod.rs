@@ -87,7 +87,10 @@ pub fn ui_routes() -> axum::Router<AppState> {
         .route("/users", get(admin::users::users_page))
         .route("/users", post(admin::users::add_user))
         .route("/users/list", get(admin::users::get_user_list))
-        .route("/users/{id}", axum::routing::delete(admin::users::delete_user))
+        .route(
+            "/users/{id}",
+            axum::routing::delete(admin::users::delete_user),
+        )
         .route("/users/mappings", post(admin::users::add_mapping))
         .route(
             "/users/{user_id}/mappings/{mapping_id}",
@@ -118,8 +121,12 @@ pub fn ui_routes() -> axum::Router<AppState> {
     Router::new()
         // Root
         .route("/", get(root::index))
-        .route("/dashboard", get(user_dashboard::dashboard))
-        .route("/servers/{id}/status", get(server_status::check_server_status))
+        .route("/user/servers", get(user_dashboard::get_user_servers))
+        .route("/user/media", get(user_dashboard::get_user_media))
+        .route(
+            "/servers/{id}/status",
+            get(server_status::check_server_status),
+        )
         .merge(admin_routes)
         .route_layer(login_required!(Backend, login_url = "/ui/login"))
         .route("/resources/{*path}", get(resource_handler))
