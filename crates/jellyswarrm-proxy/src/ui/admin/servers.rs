@@ -8,25 +8,19 @@ use axum::{
 use serde::Deserialize;
 use tracing::{error, info};
 
-use crate::{server_storage::Server, url_helper::join_server_url, AppState};
+use crate::{server_storage::Server, AppState};
 
 #[derive(Template)]
-#[template(path = "servers.html")]
+#[template(path = "admin/servers.html")]
 pub struct ServersPageTemplate {
     pub ui_route: String,
 }
 
 #[derive(Template)]
-#[template(path = "server_list.html")]
+#[template(path = "admin/server_list.html")]
 pub struct ServerListTemplate {
     pub servers: Vec<Server>,
     pub ui_route: String,
-}
-
-#[derive(Template)]
-#[template(path = "server_status.html")]
-pub struct ServerStatusTemplate {
-    pub error_message: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -205,88 +199,6 @@ pub async fn update_server_priority(
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Html("<div class=\"alert alert-error\">Failed to update priority</div>"),
-            )
-                .into_response()
-        }
-    }
-}
-
-/// Check server status
-pub async fn check_server_status(
-    State(state): State<AppState>,
-    Path(server_id): Path<i64>,
-) -> impl IntoResponse {
-    // Get the server details first
-    match state.server_storage.get_server_by_id(server_id).await {
-        Ok(Some(server)) => {
-            // Test connection to the server
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(5))
-                .build()
-                .unwrap();
-
-            let status_url = join_server_url(&server.url, "/system/info/public");
-
-            match client.get(status_url.as_str()).send().await {
-                Ok(response) if response.status().is_success() => {
-                    let template = ServerStatusTemplate {
-                        error_message: None,
-                    };
-
-                    match template.render() {
-                        Ok(html) => Html(html).into_response(),
-                        Err(e) => {
-                            error!("Failed to render status template: {}", e);
-                            (StatusCode::INTERNAL_SERVER_ERROR, "Template error").into_response()
-                        }
-                    }
-                }
-                Ok(response) => {
-                    let template = ServerStatusTemplate {
-                        error_message: Some(format!("HTTP {}", response.status().as_u16())),
-                    };
-
-                    match template.render() {
-                        Ok(html) => Html(html).into_response(),
-                        Err(e) => {
-                            error!("Failed to render status template: {}", e);
-                            (StatusCode::INTERNAL_SERVER_ERROR, "Template error").into_response()
-                        }
-                    }
-                }
-                Err(e) => {
-                    let error_msg = if e.is_timeout() {
-                        "Connection timeout".to_string()
-                    } else if e.is_connect() {
-                        "Connection refused".to_string()
-                    } else {
-                        format!("Network error: {e}")
-                    };
-
-                    let template = ServerStatusTemplate {
-                        error_message: Some(error_msg),
-                    };
-
-                    match template.render() {
-                        Ok(html) => Html(html).into_response(),
-                        Err(e) => {
-                            error!("Failed to render status template: {}", e);
-                            (StatusCode::INTERNAL_SERVER_ERROR, "Template error").into_response()
-                        }
-                    }
-                }
-            }
-        }
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            Html("<span style=\"color: #dc3545;\">Server not found</span>"),
-        )
-            .into_response(),
-        Err(e) => {
-            error!("Failed to get server: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Html("<span style=\"color: #dc3545;\">Database error</span>"),
             )
                 .into_response()
         }

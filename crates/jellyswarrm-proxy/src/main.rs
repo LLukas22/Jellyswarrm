@@ -264,10 +264,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let session_layer = SessionManagerLayer::new(session_store)
         .with_secure(false)
+        .with_same_site(tower_sessions::cookie::SameSite::Lax)
         .with_expiry(Expiry::OnInactivity(time::Duration::days(1))) // 24 hour
         .with_signed(key);
 
-    let backend = Backend::new(app_state.config.clone());
+    let backend = Backend::new(
+        app_state.config.clone(),
+        app_state.user_authorization.clone(),
+    );
     let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
 
     let ui_route = loaded_config.ui_route.to_string();

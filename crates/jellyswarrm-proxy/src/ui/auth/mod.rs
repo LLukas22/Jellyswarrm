@@ -3,18 +3,26 @@ use std::sync::Arc;
 use axum_login::{AuthUser, AuthnBackend, UserId};
 use serde::{Deserialize, Serialize};
 use tokio::{sync::RwLock, task};
+use tracing::{error, info};
 
-use crate::config::AppConfig;
+use crate::{config::AppConfig, user_authorization_service::UserAuthorizationService};
 
 mod routes;
 
 pub use routes::router;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum UserRole {
+    Admin,
+    User,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct User {
-    id: i64,
+    pub id: String,
     pub username: String,
-    password: String,
+    pub password: String,
+    pub role: UserRole,
 }
 
 // Here we've implemented `Debug` manually to avoid accidentally logging the
@@ -25,15 +33,16 @@ impl std::fmt::Debug for User {
             .field("id", &self.id)
             .field("username", &self.username)
             .field("password", &"[redacted]")
+            .field("role", &self.role)
             .finish()
     }
 }
 
 impl AuthUser for User {
-    type Id = i64;
+    type Id = String;
 
     fn id(&self) -> Self::Id {
-        self.id
+        self.id.clone()
     }
 
     fn session_auth_hash(&self) -> &[u8] {
@@ -56,11 +65,12 @@ pub struct Credentials {
 #[derive(Debug, Clone)]
 pub struct Backend {
     config: Arc<RwLock<AppConfig>>,
+    user_auth: Arc<UserAuthorizationService>,
 }
 
 impl Backend {
-    pub fn new(config: Arc<RwLock<AppConfig>>) -> Self {
-        Self { config }
+    pub fn new(config: Arc<RwLock<AppConfig>>, user_auth: Arc<UserAuthorizationService>) -> Self {
+        Self { config, user_auth }
     }
 }
 
@@ -68,6 +78,8 @@ impl Backend {
 pub enum Error {
     #[error(transparent)]
     TaskJoin(#[from] task::JoinError),
+    #[error(transparent)]
+    Sqlx(#[from] sqlx::Error),
 }
 
 impl AuthnBackend for Backend {
@@ -80,34 +92,61 @@ impl AuthnBackend for Backend {
         creds: Self::Credentials,
     ) -> Result<Option<Self::User>, Self::Error> {
         let config = self.config.read().await;
-        if creds.username != config.username {
-            return Ok(None);
-        }
-
-        if creds.password == config.password {
+        info!("Authenticating user: {}", creds.username);
+        if creds.username == config.username && creds.password == config.password {
+            info!("Admin authentication successful");
             // If the password is correct, we return the default user.
             let user = User {
-                id: 1,
+                id: "admin".to_string(),
                 username: creds.username,
                 password: config.password.clone(),
+                role: UserRole::Admin,
             };
-            Ok(Some(user))
-        } else {
-            Ok(None)
+            return Ok(Some(user));
         }
+
+        if let Some(user) = self
+            .user_auth
+            .get_user_by_credentials(&creds.username, &creds.password)
+            .await?
+        {
+            info!("User authentication successful: {}", user.original_username);
+            let user = User {
+                id: user.id,
+                username: user.original_username,
+                password: user.original_password_hash,
+                role: UserRole::User,
+            };
+            return Ok(Some(user));
+        }
+
+        info!("Authentication failed for user: {}", creds.username);
+        Ok(None)
     }
 
     async fn get_user(&self, user_id: &UserId<Self>) -> Result<Option<Self::User>, Self::Error> {
-        let config = self.config.read().await;
-        if *user_id != 1 {
-            return Ok(None); // Only one user in this example.
+        info!("Getting user by ID: {}", user_id);
+        if user_id == "admin" {
+            let config = self.config.read().await;
+            return Ok(Some(User {
+                id: "admin".to_string(),
+                username: config.username.clone(),
+                password: config.password.clone(),
+                role: UserRole::Admin,
+            }));
         }
 
-        Ok(Some(User {
-            id: 1,
-            username: config.username.clone(),
-            password: config.password.clone(),
-        }))
+        if let Some(user) = self.user_auth.get_user_by_id(user_id).await? {
+            let user = User {
+                id: user.id,
+                username: user.original_username,
+                password: user.original_password_hash,
+                role: UserRole::User,
+            };
+            return Ok(Some(user));
+        }
+
+        Ok(None)
     }
 }
 

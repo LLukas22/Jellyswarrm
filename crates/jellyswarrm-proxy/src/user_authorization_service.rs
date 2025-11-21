@@ -656,6 +656,38 @@ impl UserAuthorizationService {
             .await?;
         Ok(res.rows_affected())
     }
+
+    /// Get all servers mapped to a user, sorted by priority
+    pub async fn get_mapped_servers(&self, user_id: &str) -> Result<Vec<Server>, sqlx::Error> {
+        let rows = sqlx::query(
+            r#"
+            SELECT s.id, s.name, s.url, s.priority, s.created_at, s.updated_at
+            FROM servers s
+            JOIN server_mappings sm ON RTRIM(s.url, '/') = RTRIM(sm.server_url, '/')
+            WHERE sm.user_id = ?
+            ORDER BY s.priority DESC, s.name ASC
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let servers = rows
+            .into_iter()
+            .map(|row| Server {
+                id: row.get("id"),
+                name: row.get("name"),
+                url: url::Url::parse(row.get::<String, _>("url").as_str()).unwrap_or_else(|_| {
+                    url::Url::parse("http://invalid-url-in-db").unwrap()
+                }),
+                priority: row.get("priority"),
+                created_at: row.get("created_at"),
+                updated_at: row.get("updated_at"),
+            })
+            .collect();
+
+        Ok(servers)
+    }
 }
 
 #[cfg(test)]

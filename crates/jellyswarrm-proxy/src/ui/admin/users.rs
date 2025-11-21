@@ -16,7 +16,7 @@ use crate::{
 };
 
 #[derive(Template)]
-#[template(path = "users.html")]
+#[template(path = "admin/users.html")]
 pub struct UsersPageTemplate {
     pub ui_route: String,
 }
@@ -30,14 +30,14 @@ pub struct UserWithMappings {
 }
 
 #[derive(Template)]
-#[template(path = "user_list.html")]
+#[template(path = "admin/user_list.html")]
 pub struct UserListTemplate {
     pub users: Vec<UserWithMappings>,
     pub ui_route: String,
 }
 
 #[derive(Template)]
-#[template(path = "user_item.html")]
+#[template(path = "admin/user_item.html")]
 pub struct UserItememplate {
     pub uwm: UserWithMappings,
     pub ui_route: String,
