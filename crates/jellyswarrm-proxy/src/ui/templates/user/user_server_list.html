@@ -34,7 +34,7 @@
                 </td>
                 <td>{{ server.priority }}</td>
                 <td>
-                    <span hx-get="/{{ ui_route }}/servers/{{ server.id }}/status" 
+                    <span hx-get="/{{ ui_route }}/user/servers/{{ server.id }}/status" 
                           hx-trigger="load, every 10s" 
                           hx-swap="outerHTML">
                         <small class="secondary"><i class="fas fa-circle-notch fa-spin"></i></small>

@@ -124,6 +124,10 @@ pub fn ui_routes() -> axum::Router<AppState> {
         .route("/user/servers", get(user_dashboard::get_user_servers))
         .route("/user/media", get(user_dashboard::get_user_media))
         .route(
+            "/user/servers/{id}/status",
+            get(user_dashboard::check_user_server_status),
+        )
+        .route(
             "/servers/{id}/status",
             get(server_status::check_server_status),
         )

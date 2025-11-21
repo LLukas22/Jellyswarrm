@@ -1,0 +1,17 @@
+{% if let Some(username) = username %}
+    <span style="color: var(--pico-primary-color);">
+        <i class="fas fa-check-circle" style="margin-right: 0.25rem;"></i>
+        {{ username }}
+    </span>
+{% else %}
+    {% if let Some(error) = error_message %}
+        <span style="color: var(--pico-del-color);">
+            <i class="fas fa-exclamation-circle" style="margin-right: 0.25rem;"></i>
+            {{ error }}
+        </span>
+    {% else %}
+        <span style="color: var(--pico-muted-color);">
+            <i class="fas fa-circle-notch fa-spin"></i>
+        </span>
+    {% endif %}
+{% endif %}
