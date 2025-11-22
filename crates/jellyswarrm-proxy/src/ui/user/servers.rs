@@ -2,7 +2,7 @@ use askama::Template;
 use axum::{
     extract::{Path, State},
     http::{HeaderValue, StatusCode},
-    response::{Html, IntoResponse, Response},
+    response::{Html, IntoResponse},
     Form,
 };
 use serde::Deserialize;
@@ -162,7 +162,7 @@ pub async fn connect_server(
                 .user_authorization
                 .add_server_mapping(
                     &user.id,
-                    &server.url.as_str(),
+                    server.url.as_str(),
                     &form.username,
                     &form.password,
                 )
@@ -182,7 +182,7 @@ pub async fn connect_server(
 
                     if let Err(e) = state.user_authorization.store_authorization_session(
                         &user.id,
-                        &server.url.as_str(),
+                        server.url.as_str(),
                         &auth,
                         auth_response.access_token,
                         auth_response.user.id,
@@ -199,41 +199,41 @@ pub async fn connect_server(
                         HeaderValue::from_str(&format!("/{}", state.get_ui_route().await))
                             .unwrap(),
                     );
-                    return response;
+                    response
                 }
                 Err(e) => {
                     error!("Failed to create mapping: {}", e);
-                    return (
+                    (
                         StatusCode::OK,
                         Html("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Database error</div>"),
                     )
-                        .into_response();
+                        .into_response()
                 }
             }
         }
         Ok(response) => {
             let status = response.status();
             if status == StatusCode::UNAUTHORIZED {
-                 return (
+                 (
                     StatusCode::OK,
                     Html("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Invalid credentials</div>"),
                 )
-                    .into_response();
+                    .into_response()
             } else {
-                 return (
+                 (
                     StatusCode::OK,
                     Html(format!("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Upstream error: {}</div>", status)),
                 )
-                    .into_response();
+                    .into_response()
             }
         }
         Err(e) => {
             error!("Failed to authenticate with upstream: {}", e);
-             return (
+             (
                 StatusCode::OK,
                 Html(format!("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Connection error: {}</div>", e)),
             )
-                .into_response();
+                .into_response()
         }
     }
 }
