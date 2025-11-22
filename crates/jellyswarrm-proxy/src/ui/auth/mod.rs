@@ -149,7 +149,6 @@ impl AuthnBackend for Backend {
     }
 
     async fn get_user(&self, user_id: &UserId<Self>) -> Result<Option<Self::User>, Self::Error> {
-        info!("Getting user by ID: {}", user_id);
         if user_id == "admin" {
             let config = self.config.read().await;
             return Ok(Some(User {

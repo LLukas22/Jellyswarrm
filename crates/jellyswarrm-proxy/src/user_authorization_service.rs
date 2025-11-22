@@ -613,6 +613,47 @@ impl UserAuthorizationService {
         Ok(res.rows_affected() > 0)
     }
 
+    /// Update user password
+    pub async fn update_user_password(
+        &self,
+        user_id: &str,
+        new_password: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let password_hash = Self::hash_password(new_password);
+        let now = chrono::Utc::now();
+
+        let res = sqlx::query(
+            r#"
+            UPDATE users 
+            SET original_password_hash = ?, updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(password_hash)
+        .bind(now)
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Verify user password
+    pub async fn verify_user_password(
+        &self,
+        user_id: &str,
+        password: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let user = self.get_user_by_id(user_id).await?;
+        
+        if let Some(user) = user {
+            let password_hash = Self::hash_password(password);
+            Ok(user.original_password_hash == password_hash)
+        } else {
+            Ok(false)
+        }
+    }
+
     /// Get counts of authorization sessions per normalized server URL for a user
     pub async fn session_counts_by_server(
         &self,
