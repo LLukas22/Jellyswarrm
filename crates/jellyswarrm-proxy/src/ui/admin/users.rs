@@ -275,6 +275,10 @@ pub async fn add_mapping(
         )
             .into_response();
     }
+
+    let config = state.config.read().await;
+    let admin_password = &config.password;
+
     match state
         .user_authorization
         .add_server_mapping(
@@ -282,6 +286,7 @@ pub async fn add_mapping(
             &form.server_url,
             &form.mapped_username,
             &form.mapped_password,
+            Some(admin_password),
         )
         .await
     {

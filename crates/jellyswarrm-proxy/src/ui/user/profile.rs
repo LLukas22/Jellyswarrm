@@ -65,9 +65,19 @@ pub async fn post_user_password(
         .await
     {
         Ok(true) => {
+            let admin_password = {
+                let config = state.config.read().await;
+                config.password.clone()
+            };
+
             match state
                 .user_authorization
-                .update_user_password(&user.id, &form.new_password)
+                .update_user_password(
+                    &user.id,
+                    &form.current_password,
+                    &form.new_password,
+                    &admin_password,
+                )
                 .await
             {
                 Ok(_) => {

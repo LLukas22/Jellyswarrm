@@ -165,12 +165,16 @@ pub async fn connect_server(
                     server.url.as_str(),
                     &form.username,
                     &form.password,
+                    None,
                 )
                 .await
             {
                 Ok(_) => {
-                    info!("Created mapping for user {} to server {}", user.username, server.name);
-                    
+                    info!(
+                        "Created mapping for user {} to server {}",
+                        user.username, server.name
+                    );
+
                     // Create authorization session
                     let auth = Authorization {
                         client: "Jellyswarrm Proxy".to_string(),
@@ -180,14 +184,18 @@ pub async fn connect_server(
                         token: None,
                     };
 
-                    if let Err(e) = state.user_authorization.store_authorization_session(
-                        &user.id,
-                        server.url.as_str(),
-                        &auth,
-                        auth_response.access_token,
-                        auth_response.user.id,
-                        None,
-                    ).await {
+                    if let Err(e) = state
+                        .user_authorization
+                        .store_authorization_session(
+                            &user.id,
+                            server.url.as_str(),
+                            &auth,
+                            auth_response.access_token,
+                            auth_response.user.id,
+                            None,
+                        )
+                        .await
+                    {
                         error!("Failed to store session: {}", e);
                         // Continue anyway, as mapping was created
                     }
@@ -196,8 +204,7 @@ pub async fn connect_server(
                     let mut response = StatusCode::OK.into_response();
                     response.headers_mut().insert(
                         "HX-Redirect",
-                        HeaderValue::from_str(&format!("/{}", state.get_ui_route().await))
-                            .unwrap(),
+                        HeaderValue::from_str(&format!("/{}", state.get_ui_route().await)).unwrap(),
                     );
                     response
                 }
@@ -214,13 +221,13 @@ pub async fn connect_server(
         Ok(response) => {
             let status = response.status();
             if status == StatusCode::UNAUTHORIZED {
-                 (
+                (
                     StatusCode::OK,
                     Html("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Invalid credentials</div>"),
                 )
                     .into_response()
             } else {
-                 (
+                (
                     StatusCode::OK,
                     Html(format!("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Upstream error: {}</div>", status)),
                 )
@@ -229,7 +236,7 @@ pub async fn connect_server(
         }
         Err(e) => {
             error!("Failed to authenticate with upstream: {}", e);
-             (
+            (
                 StatusCode::OK,
                 Html(format!("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Connection error: {}</div>", e)),
             )
@@ -254,7 +261,11 @@ pub async fn delete_server_mapping(
     };
 
     // Find the mapping
-    let mappings = match state.user_authorization.list_server_mappings(&user.id).await {
+    let mappings = match state
+        .user_authorization
+        .list_server_mappings(&user.id)
+        .await
+    {
         Ok(m) => m,
         Err(e) => {
             error!("Failed to list mappings: {}", e);
@@ -264,17 +275,26 @@ pub async fn delete_server_mapping(
 
     // Normalize URLs for comparison (remove trailing slashes)
     let server_url = server.url.as_str().trim_end_matches('/');
-    
-    if let Some(mapping) = mappings.iter().find(|m| m.server_url.trim_end_matches('/') == server_url) {
-        match state.user_authorization.delete_server_mapping(mapping.id).await {
+
+    if let Some(mapping) = mappings
+        .iter()
+        .find(|m| m.server_url.trim_end_matches('/') == server_url)
+    {
+        match state
+            .user_authorization
+            .delete_server_mapping(mapping.id)
+            .await
+        {
             Ok(_) => {
-                info!("Deleted mapping for user {} to server {}", user.username, server.name);
+                info!(
+                    "Deleted mapping for user {} to server {}",
+                    user.username, server.name
+                );
                 // Return HX-Redirect header for HTMX
                 let mut response = StatusCode::OK.into_response();
                 response.headers_mut().insert(
                     "HX-Redirect",
-                    HeaderValue::from_str(&format!("/{}", state.get_ui_route().await))
-                        .unwrap(),
+                    HeaderValue::from_str(&format!("/{}", state.get_ui_route().await)).unwrap(),
                 );
                 return response;
             }

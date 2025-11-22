@@ -7,10 +7,7 @@ use axum::{
 use serde::Deserialize;
 use tracing::error;
 
-use crate::{
-    ui::auth::AuthenticatedUser,
-    url_helper::join_server_url, AppState,
-};
+use crate::{ui::auth::AuthenticatedUser, url_helper::join_server_url, AppState};
 
 #[derive(Deserialize, Clone)]
 pub struct MediaFolder {
@@ -109,7 +106,9 @@ pub async fn get_user_media(
                     }
                 }
                 Ok(resp) => {
-                    let error_msg = if resp.status() == StatusCode::FORBIDDEN || resp.status() == StatusCode::UNAUTHORIZED {
+                    let error_msg = if resp.status() == StatusCode::FORBIDDEN
+                        || resp.status() == StatusCode::UNAUTHORIZED
+                    {
                         "Session expired, please reconnect".to_string()
                     } else {
                         format!("HTTP {}", resp.status())

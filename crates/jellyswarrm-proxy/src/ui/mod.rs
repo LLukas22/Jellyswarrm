@@ -133,7 +133,10 @@ pub fn ui_routes() -> axum::Router<AppState> {
         )
         .route("/user/media", get(user::media::get_user_media))
         .route("/user/profile", get(user::profile::get_user_profile))
-        .route("/user/profile/password", post(user::profile::post_user_password))
+        .route(
+            "/user/profile/password",
+            post(user::profile::post_user_password),
+        )
         .route(
             "/user/servers/{id}/status",
             get(user::servers::check_user_server_status),
