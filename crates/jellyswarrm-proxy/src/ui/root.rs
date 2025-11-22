@@ -2,13 +2,13 @@ use askama::Template;
 use axum::{
     extract::State,
     http::StatusCode,
-    response::{Html, IntoResponse, Redirect},
+    response::{Html, IntoResponse},
 };
 use tracing::{error, info};
 
 use crate::{
     ui::{
-        auth::{AuthSession, UserRole},
+        auth::{AuthenticatedUser, UserRole},
         JellyfinUiVersion, JELLYFIN_UI_VERSION,
     },
     AppState,
@@ -33,15 +33,10 @@ pub struct AdminIndexTemplate {
 }
 
 /// Root/home page
-pub async fn index(State(state): State<AppState>, auth_session: AuthSession) -> impl IntoResponse {
-    let user = match auth_session.user {
-        Some(user) => user,
-        None => {
-            info!("No user found in session, redirecting to login");
-            return Redirect::to("/ui/login").into_response();
-        }
-    };
-
+pub async fn index(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+) -> impl IntoResponse {
     let response = if user.role == UserRole::User {
         let template = UserIndexTemplate {
             version: Some(env!("CARGO_PKG_VERSION").to_string()),

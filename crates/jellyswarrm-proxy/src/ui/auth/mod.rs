@@ -1,5 +1,9 @@
 use std::sync::Arc;
 
+use axum::{
+    extract::FromRequestParts,
+    http::{request::Parts, StatusCode},
+};
 use axum_login::{AuthUser, AuthnBackend, UserId};
 use serde::{Deserialize, Serialize};
 use tokio::{sync::RwLock, task};
@@ -23,6 +27,26 @@ pub struct User {
     pub username: String,
     pub password: String,
     pub role: UserRole,
+}
+
+pub struct AuthenticatedUser(pub User);
+
+impl<S> FromRequestParts<S> for AuthenticatedUser
+where
+    S: Send + Sync,
+{
+    type Rejection = StatusCode;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let auth_session = AuthSession::from_request_parts(parts, state)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        match auth_session.user {
+            Some(user) => Ok(AuthenticatedUser(user)),
+            None => Err(StatusCode::UNAUTHORIZED),
+        }
+    }
 }
 
 // Here we've implemented `Debug` manually to avoid accidentally logging the

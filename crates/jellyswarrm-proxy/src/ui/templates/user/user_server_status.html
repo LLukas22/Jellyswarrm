@@ -4,7 +4,12 @@
         {{ username }}
     </span>
 {% else %}
-    {% if let Some(error) = error_message %}
+    {% if needs_login %}
+         <span style="color: #f39c12;" data-tooltip="Please login via the Web UI to sync your session">
+            <i class="fas fa-exclamation-triangle" style="margin-right: 0.25rem;"></i>
+            Online (Login required)
+        </span>
+    {% else if let Some(error) = error_message %}
         <span style="color: var(--pico-del-color);">
             <i class="fas fa-exclamation-circle" style="margin-right: 0.25rem;"></i>
             {{ error }}

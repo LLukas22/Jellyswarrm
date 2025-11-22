@@ -12,7 +12,7 @@ use rust_embed::RustEmbed;
 use tracing::error;
 
 use crate::{
-    ui::auth::{AuthSession, UserRole},
+    ui::auth::{AuthenticatedUser, UserRole},
     AppState, Asset,
 };
 
@@ -20,7 +20,7 @@ pub mod admin;
 pub mod auth;
 pub mod root;
 pub mod server_status;
-pub mod user_dashboard;
+pub mod user;
 pub use auth::Backend;
 
 #[derive(RustEmbed)]
@@ -28,13 +28,14 @@ pub use auth::Backend;
 struct Resources;
 
 async fn require_admin(
-    auth_session: AuthSession,
+    AuthenticatedUser(user): AuthenticatedUser,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> impl IntoResponse {
-    match auth_session.user {
-        Some(user) if user.role == UserRole::Admin => next.run(req).await,
-        _ => StatusCode::FORBIDDEN.into_response(),
+    if user.role == UserRole::Admin {
+        next.run(req).await
+    } else {
+        StatusCode::FORBIDDEN.into_response()
     }
 }
 
@@ -121,11 +122,19 @@ pub fn ui_routes() -> axum::Router<AppState> {
     Router::new()
         // Root
         .route("/", get(root::index))
-        .route("/user/servers", get(user_dashboard::get_user_servers))
-        .route("/user/media", get(user_dashboard::get_user_media))
+        .route("/user/servers", get(user::servers::get_user_servers))
+        .route(
+            "/user/servers/{id}",
+            axum::routing::delete(user::servers::delete_server_mapping),
+        )
+        .route(
+            "/user/servers/{id}/connect",
+            post(user::servers::connect_server),
+        )
+        .route("/user/media", get(user::media::get_user_media))
         .route(
             "/user/servers/{id}/status",
-            get(user_dashboard::check_user_server_status),
+            get(user::servers::check_user_server_status),
         )
         .route(
             "/servers/{id}/status",
