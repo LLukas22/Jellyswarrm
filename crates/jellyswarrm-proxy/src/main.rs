@@ -28,6 +28,7 @@ use axum_login::{
 
 mod config;
 mod encryption;
+mod federated_users;
 mod handlers;
 mod media_storage_service;
 mod models;
@@ -39,6 +40,7 @@ mod ui;
 mod url_helper;
 mod user_authorization_service;
 
+use federated_users::FederatedUserService;
 use media_storage_service::MediaStorageService;
 use server_storage::ServerStorageService;
 use user_authorization_service::UserAuthorizationService;
@@ -66,6 +68,7 @@ pub struct AppState {
     pub play_sessions: Arc<SessionStorage>,
     pub config: Arc<tokio::sync::RwLock<AppConfig>>,
     pub processors: Arc<JsonProcessors>,
+    pub federated_users: Arc<FederatedUserService>,
 }
 
 impl AppState {
@@ -74,6 +77,16 @@ impl AppState {
         data_context: DataContext,
         json_processors: JsonProcessors,
     ) -> Self {
+        // Create temporary state to initialize FederatedUserService
+        // This is a bit circular but FederatedUserService needs parts of AppState
+        // We can construct it manually here since we have all components
+        let federated_users = Arc::new(FederatedUserService::new_from_components(
+            data_context.server_storage.clone(),
+            data_context.user_authorization.clone(),
+            reqwest_client.clone(),
+            data_context.config.clone(),
+        ));
+
         Self {
             reqwest_client,
             user_authorization: data_context.user_authorization,
@@ -82,6 +95,7 @@ impl AppState {
             play_sessions: data_context.play_sessions,
             config: data_context.config,
             processors: Arc::new(json_processors),
+            federated_users,
         }
     }
 

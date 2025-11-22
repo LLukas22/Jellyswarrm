@@ -65,7 +65,49 @@
   @media (prefers-reduced-motion: reduce) {
     .htmx-added, .htmx-swapping { animation:none; }
   }
+
+  .sync-report {
+    margin-bottom: 1rem;
+    padding: 1rem;
+    background: var(--pico-card-background-color);
+    border: 1px solid var(--pico-card-border-color);
+    border-radius: var(--pico-border-radius);
+  }
+  .sync-report ul {
+    margin-bottom: 0;
+    padding-left: 1rem;
+  }
 </style>
+
+{% if let Some(report) = sync_report %}
+<div class="sync-report">
+  <strong>Federated Sync Results:</strong>
+  <ul>
+    {% for result in report %}
+    <li>
+      {{ result.server_name }}:
+      {% match result.status %}
+        {% when crate::federated_users::SyncStatus::Created %}
+          <span class="badge" style="background-color: #28a745;">Created</span>
+        {% when crate::federated_users::SyncStatus::AlreadyExists %}
+          <span class="badge" style="background-color: #ffc107; color: black;">Exists</span>
+        {% when crate::federated_users::SyncStatus::Failed %}
+          <span class="badge" style="background-color: #dc3545;">Failed</span>
+        {% when crate::federated_users::SyncStatus::Skipped %}
+          <span class="badge" style="background-color: #6c757d;">Skipped</span>
+        {% when crate::federated_users::SyncStatus::Deleted %}
+          <span class="badge" style="background-color: #dc3545;">Deleted</span>
+        {% when crate::federated_users::SyncStatus::NotFound %}
+          <span class="badge" style="background-color: #6c757d;">Not Found</span>
+      {% endmatch %}
+      {% if let Some(msg) = result.message %}
+        <small>({{ msg }})</small>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
 
 <div class="filter-bar">
   <input id="user-filter" type="search" placeholder="Filter users" oninput="filterUsers(this.value)">

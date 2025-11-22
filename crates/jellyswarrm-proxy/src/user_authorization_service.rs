@@ -705,9 +705,7 @@ impl UserAuthorizationService {
                 Ok(p) => p,
                 Err(e) => {
                     error!("Failed to encrypt password during update: {}", e);
-                    return Err(sqlx::Error::Protocol(
-                        format!("Encryption failed: {}", e),
-                    ));
+                    return Err(sqlx::Error::Protocol(format!("Encryption failed: {}", e)));
                 }
             };
 

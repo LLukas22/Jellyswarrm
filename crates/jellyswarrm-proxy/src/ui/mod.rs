@@ -112,6 +112,14 @@ pub fn ui_routes() -> axum::Router<AppState> {
             "/servers/{id}/priority",
             axum::routing::patch(admin::servers::update_server_priority),
         )
+        .route(
+            "/servers/{id}/admin",
+            post(admin::servers::add_server_admin),
+        )
+        .route(
+            "/servers/{id}/admin",
+            axum::routing::delete(admin::servers::delete_server_admin),
+        )
         // Settings
         .route("/settings", get(admin::settings::settings_page))
         .route("/settings/form", get(admin::settings::settings_form))

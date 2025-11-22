@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use tracing::{error, info};
 
 use crate::{
+    federated_users::ServerSyncResult,
     server_storage::Server,
     user_authorization_service::{ServerMapping, User},
     AppState,
@@ -34,6 +35,7 @@ pub struct UserWithMappings {
 pub struct UserListTemplate {
     pub users: Vec<UserWithMappings>,
     pub ui_route: String,
+    pub sync_report: Option<Vec<ServerSyncResult>>,
 }
 
 #[derive(Template)]
@@ -47,6 +49,8 @@ pub struct UserItememplate {
 pub struct AddUserForm {
     pub username: String,
     pub password: String,
+    #[serde(default)]
+    pub enable_federation: bool,
 }
 
 #[derive(Deserialize)]
@@ -177,8 +181,10 @@ pub async fn get_user_item(
     }
 }
 
-/// List users with mappings
-pub async fn get_user_list(State(state): State<AppState>) -> impl IntoResponse {
+async fn get_user_list_impl(
+    state: &AppState,
+    report: Option<Vec<ServerSyncResult>>,
+) -> impl IntoResponse {
     // Fetch servers once for mapping lookup
     let servers = match state.server_storage.list_servers().await {
         Ok(s) => s,
@@ -192,12 +198,13 @@ pub async fn get_user_list(State(state): State<AppState>) -> impl IntoResponse {
         Ok(users) => {
             let mut result = Vec::new();
             for user in users {
-                result.push(create_user_with_mappings(&state, user, &servers, false).await);
+                result.push(create_user_with_mappings(state, user, &servers, false).await);
             }
 
             let template = UserListTemplate {
                 users: result,
                 ui_route: state.get_ui_route().await,
+                sync_report: report,
             };
             match template.render() {
                 Ok(html) => Html(html).into_response(),
@@ -214,6 +221,11 @@ pub async fn get_user_list(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
+/// List users with mappings
+pub async fn get_user_list(State(state): State<AppState>) -> impl IntoResponse {
+    get_user_list_impl(&state, None).await
+}
+
 /// Add user
 pub async fn add_user(State(state): State<AppState>, Form(form): Form<AddUserForm>) -> Response {
     if form.username.trim().is_empty() || form.password.is_empty() {
@@ -228,9 +240,22 @@ pub async fn add_user(State(state): State<AppState>, Form(form): Form<AddUserFor
         .get_or_create_user(&form.username, &form.password)
         .await
     {
-        Ok(_user) => {
+        Ok(user) => {
             info!("Created user {}", form.username);
-            get_user_list(State(state)).await.into_response()
+
+            // Sync to all servers if enabled
+            let report = if form.enable_federation {
+                Some(
+                    state
+                        .federated_users
+                        .sync_user_to_all_servers(&form.username, &form.password, &user.id)
+                        .await,
+                )
+            } else {
+                None
+            };
+
+            get_user_list_impl(&state, report).await.into_response()
         }
         Err(e) => {
             error!("Failed to create user: {}", e);
@@ -243,10 +268,53 @@ pub async fn add_user(State(state): State<AppState>, Form(form): Form<AddUserFor
     }
 }
 
+#[derive(Deserialize)]
+pub struct DeleteUserForm {
+    #[serde(default)]
+    pub delete_federated: bool,
+}
+
 /// Delete user
-pub async fn delete_user(State(state): State<AppState>, Path(user_id): Path<String>) -> Response {
+pub async fn delete_user(
+    State(state): State<AppState>,
+    Path(user_id): Path<String>,
+    Form(form): Form<DeleteUserForm>,
+) -> Response {
+    // 1. Get user to get username for remote deletion
+    let username = match state.user_authorization.get_user_by_id(&user_id).await {
+        Ok(Some(u)) => u.original_username,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Html("<div class=\"alert alert-error\">User not found</div>"),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            error!("Failed to fetch user by id {}: {}", user_id, e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("<div class=\"alert alert-error\">Database error</div>"),
+            )
+                .into_response();
+        }
+    };
+
+    // 2. Delete from federated servers if requested
+    let report = if form.delete_federated {
+        Some(
+            state
+                .federated_users
+                .delete_user_from_all_servers(&username)
+                .await,
+        )
+    } else {
+        None
+    };
+
+    // 3. Delete locally
     match state.user_authorization.delete_user(&user_id).await {
-        Ok(true) => get_user_list(State(state)).await.into_response(),
+        Ok(true) => get_user_list_impl(&state, report).await.into_response(),
         Ok(false) => (
             StatusCode::NOT_FOUND,
             Html("<div class=\"alert alert-error\">User not found</div>"),

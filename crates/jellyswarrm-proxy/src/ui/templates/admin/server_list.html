@@ -1,9 +1,11 @@
 <style>
 /* Lightweight shared styles (can be moved to global if reused) */
-.icon-btn {--_size:.7rem; font-size:var(--_size); line-height:1; padding:.3rem .45rem; display:inline-flex; align-items:center; justify-content:center; border:1px solid var(--muted-border,#555); background:transparent; cursor:pointer;}
-.icon-btn:hover {background:rgba(255,255,255,.05);}
+.icon-btn {--_size:1.1rem; font-size:var(--_size); line-height:1; padding:.5rem; display:inline-flex; align-items:center; justify-content:center; border:1px solid var(--muted-border,#555); background:transparent; cursor:pointer; border-radius: 0.25rem; transition: all 0.2s;}
+.icon-btn:hover {background:rgba(255,255,255,.1); transform: translateY(-1px);}
 .icon-btn.danger {color:var(--del,#e55353); border-color:var(--del,#e55353);}
-.status-chip {font-size:.65rem; padding:.25rem .55rem; border-radius:1rem; background:var(--pill-bg,rgba(127,127,127,.15)); display:inline-block; min-width:70px; text-align:center;}
+.icon-btn.danger:hover {background:rgba(229, 83, 83, 0.1);}
+.status-chip {font-size:.75rem; padding:.25rem .75rem; border-radius:1rem; background:var(--pill-bg,rgba(127,127,127,.15)); display:inline-flex; align-items: center; justify-content: center; min-width:80px; font-weight: 500;}
+.status-container { display: flex; align-items: center; gap: 0.75rem; }
 </style>
 
 {% if servers.is_empty() %}
@@ -19,39 +21,100 @@
             <th>URL</th>
             <th>Priority</th>
             <th>Status</th>
-            <th>Actions</th>
+            <th style="text-align: center;">Actions</th>
         </tr>
     </thead>
     <tbody>
-        {% for server in servers %}
+        {% for item in servers %}
         <tr>
-            <td><strong>{{ server.name }}</strong></td>
-            <td><a href="{{ server.url }}" target="_blank" rel="noopener noreferrer">{{ server.url }}</a></td>
-            <td>
-          <input type="number" value="{{ server.priority }}" min="1" max="999"
-              hx-patch="/{{ ui_route }}/servers/{{ server.id }}/priority"
+            <td style="vertical-align: middle;"><strong>{{ item.server.name }}</strong></td>
+            <td style="vertical-align: middle;"><a href="{{ item.server.url }}" target="_blank" rel="noopener noreferrer">{{ item.server.url }}</a></td>
+            <td style="vertical-align: middle;">
+          <input type="number" value="{{ item.server.priority }}" min="1" max="999"
+              hx-patch="/{{ ui_route }}/servers/{{ item.server.id }}/priority"
               hx-trigger="change delay:200ms"
               hx-include="closest tr"
               name="priority"
               hx-target="#server-list" hx-swap="innerHTML"
-              style="width: 130px; min-width: 130px;">
+              style="width: 130px; min-width: 130px; margin-bottom: 0;">
             </td>
-            <td>
-                <span hx-get="/{{ ui_route }}/servers/{{ server.id }}/status" 
-                      hx-trigger="load, every 5s" 
-                      hx-swap="outerHTML"
-                      style="min-width: 80px; display: inline-block;">
-                    <span style="color: #666;">Checking...</span>
-                </span>
+            <td style="vertical-align: middle;">
+                <div class="status-container">
+                    <span hx-get="/{{ ui_route }}/servers/{{ item.server.id }}/status" 
+                          hx-trigger="load, every 5s" 
+                          hx-swap="outerHTML"
+                          style="min-width: 80px; display: inline-block;">
+                        <span style="color: #666;">Checking...</span>
+                    </span>
+                    {% if item.has_admin %}
+                    <span class="status-chip" style="background-color: #2e7d32; color: white;">
+                        <i class="fas fa-shield-alt" style="margin-right: 0.3rem; font-size: 0.7rem;"></i> Federated
+                    </span>
+                    {% endif %}
+                </div>
             </td>
-            <td style="text-align: center;">
-                                <button type="button" class="icon-btn danger"
-                        hx-delete="/{{ ui_route }}/servers/{{ server.id }}"
-                        hx-confirm="Delete server '{{ server.name }}'?"
+            <td style="text-align: center; vertical-align: middle;">
+                <div style="display: flex; justify-content: center; gap: 0.5rem;">
+                {% if !item.has_admin %}
+                <button type="button" class="icon-btn"
+                        onclick="document.getElementById('add-admin-modal-{{ item.server.id }}').showModal()"
+                        title="Add Admin">
+                    <i class="fas fa-user-shield" aria-hidden="true"></i>
+                </button>
+                
+                <dialog id="add-admin-modal-{{ item.server.id }}">
+                    <article>
+                        <header>
+                            <button aria-label="Close" rel="prev" onclick="this.closest('dialog').close()"></button>
+                            <h3>Add Admin for {{ item.server.name }}</h3>
+                        </header>
+                        
+                        <div style="background-color: rgba(255, 193, 7, 0.1); border-left: 4px solid #ffc107; padding: 1rem; margin-bottom: 1.5rem; text-align: left;">
+                            <div style="display: flex; align-items: flex-start; gap: 0.75rem;">
+                                <i class="fas fa-exclamation-triangle" style="color: #ffc107; margin-top: 0.2rem;"></i>
+                                <div>
+                                    <strong style="color: #e0a800; display: block; margin-bottom: 0.25rem;">Disclaimer</strong>
+                                    <span style="font-size: 0.9rem; color: var(--text-color);">Adding an admin account gives Jellyswarrm <strong>full administrative control</strong> over this Jellyfin server. This allows the proxy to manage users and settings automatically.</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div id="admin-form-error-{{ item.server.id }}"></div>
+
+                        <form hx-post="/{{ ui_route }}/servers/{{ item.server.id }}/admin" hx-target="#admin-form-error-{{ item.server.id }}" hx-swap="innerHTML">
+                            <label>
+                                Username
+                                <input type="text" name="username" required>
+                            </label>
+                            <label>
+                                Password
+                                <input type="password" name="password" required>
+                            </label>
+                            <footer>
+                                <button type="button" class="secondary" onclick="this.closest('dialog').close()">Cancel</button>
+                                <button type="submit">Add Admin</button>
+                            </footer>
+                        </form>
+                    </article>
+                </dialog>
+                {% else %}
+                <button type="button" class="icon-btn danger"
+                        hx-delete="/{{ ui_route }}/servers/{{ item.server.id }}/admin"
+                        hx-confirm="Remove admin credentials for '{{ item.server.name }}'?"
+                        hx-target="#server-list" hx-swap="innerHTML"
+                        title="Remove Admin">
+                    <i class="fas fa-user-times" aria-hidden="true"></i>
+                </button>
+                {% endif %}
+
+                <button type="button" class="icon-btn danger"
+                        hx-delete="/{{ ui_route }}/servers/{{ item.server.id }}"
+                        hx-confirm="Delete server '{{ item.server.name }}'?"
                         hx-target="#server-list" hx-swap="innerHTML"
                         title="Delete server">
-                                    <i class="fas fa-trash" aria-hidden="true"></i><span class="sr-only" style="position:absolute;left:-9999px;">Delete</span>
+                    <i class="fas fa-trash" aria-hidden="true"></i><span class="sr-only" style="position:absolute;left:-9999px;">Delete</span>
                 </button>
+                </div>
             </td>
         </tr>
         {% endfor %}

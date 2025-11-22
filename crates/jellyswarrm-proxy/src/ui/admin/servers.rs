@@ -8,7 +8,9 @@ use axum::{
 use serde::Deserialize;
 use tracing::{error, info};
 
-use crate::{server_storage::Server, AppState};
+use crate::{
+    encryption::encrypt_password, server_storage::Server, url_helper::join_server_url, AppState,
+};
 
 #[derive(Template)]
 #[template(path = "admin/servers.html")]
@@ -16,10 +18,15 @@ pub struct ServersPageTemplate {
     pub ui_route: String,
 }
 
+pub struct ServerWithAdmin {
+    pub server: Server,
+    pub has_admin: bool,
+}
+
 #[derive(Template)]
 #[template(path = "admin/server_list.html")]
 pub struct ServerListTemplate {
-    pub servers: Vec<Server>,
+    pub servers: Vec<ServerWithAdmin>,
     pub ui_route: String,
 }
 
@@ -33,6 +40,55 @@ pub struct AddServerForm {
 #[derive(Deserialize)]
 pub struct UpdatePriorityForm {
     pub priority: i32,
+}
+
+#[derive(Deserialize)]
+pub struct AddServerAdminForm {
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Deserialize)]
+struct AuthResponse {
+    #[serde(rename = "User")]
+    user: JellyfinUser,
+}
+
+#[derive(Deserialize)]
+struct JellyfinUser {
+    #[serde(rename = "Policy")]
+    policy: UserPolicy,
+}
+
+#[derive(Deserialize)]
+struct UserPolicy {
+    #[serde(rename = "IsAdministrator")]
+    is_administrator: bool,
+}
+
+async fn render_server_list(state: &AppState) -> Result<String, String> {
+    match state.server_storage.list_servers().await {
+        Ok(servers) => {
+            let mut servers_with_admin = Vec::new();
+            for server in servers {
+                let has_admin = state
+                    .server_storage
+                    .get_server_admin(server.id)
+                    .await
+                    .unwrap_or(None)
+                    .is_some();
+                servers_with_admin.push(ServerWithAdmin { server, has_admin });
+            }
+
+            let template = ServerListTemplate {
+                servers: servers_with_admin,
+                ui_route: state.get_ui_route().await,
+            };
+
+            template.render().map_err(|e| e.to_string())
+        }
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 /// Main servers management page
@@ -52,24 +108,11 @@ pub async fn servers_page(State(state): State<AppState>) -> impl IntoResponse {
 
 /// Get server list partial (for HTMX)
 pub async fn get_server_list(State(state): State<AppState>) -> impl IntoResponse {
-    match state.server_storage.list_servers().await {
-        Ok(servers) => {
-            let template = ServerListTemplate {
-                servers,
-                ui_route: state.get_ui_route().await,
-            };
-
-            match template.render() {
-                Ok(html) => Html(html).into_response(),
-                Err(e) => {
-                    error!("Failed to render server list template: {}", e);
-                    (StatusCode::INTERNAL_SERVER_ERROR, "Template error").into_response()
-                }
-            }
-        }
+    match render_server_list(&state).await {
+        Ok(html) => Html(html).into_response(),
         Err(e) => {
-            error!("Failed to fetch servers: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response()
+            error!("Failed to render server list: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Error").into_response()
         }
     }
 }
@@ -199,6 +242,178 @@ pub async fn update_server_priority(
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Html("<div class=\"alert alert-error\">Failed to update priority</div>"),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Add server admin
+pub async fn add_server_admin(
+    State(state): State<AppState>,
+    Path(server_id): Path<i64>,
+    Form(form): Form<AddServerAdminForm>,
+) -> Response {
+    // 1. Get server details
+    let server = match state.server_storage.get_server_by_id(server_id).await {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Html("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Server not found</div>"),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            error!("Failed to get server: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Database error</div>"),
+            )
+                .into_response();
+        }
+    };
+
+    // 2. Verify credentials with upstream Jellyfin and check admin status
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let auth_url = join_server_url(&server.url, "/Users/AuthenticateByName");
+    let body = serde_json::json!({
+        "Username": form.username,
+        "Pw": form.password
+    });
+
+    let auth_header = format!(
+        "MediaBrowser Client=\"Jellyswarrm Proxy\", Device=\"Server\", DeviceId=\"jellyswarrm-proxy\", Version=\"{}\"",
+        env!("CARGO_PKG_VERSION")
+    );
+
+    match client
+        .post(auth_url.as_str())
+        .header("Authorization", auth_header)
+        .json(&body)
+        .send()
+        .await
+    {
+        Ok(response) if response.status().is_success() => {
+            // Parse response to check if user is admin
+            let auth_response = match response.json::<AuthResponse>().await {
+                Ok(r) => r,
+                Err(e) => {
+                    error!("Failed to parse auth response: {}", e);
+                    return (
+                        StatusCode::OK,
+                        Html("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Invalid server response</div>"),
+                    )
+                        .into_response();
+                }
+            };
+
+            if !auth_response.user.policy.is_administrator {
+                return (
+                    StatusCode::OK,
+                    Html("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">User is not an administrator on this server</div>"),
+                )
+                    .into_response();
+            }
+
+            // 3. Encrypt password with admin master password
+            let config = state.config.read().await;
+            let encrypted_password = match encrypt_password(&form.password, &config.password) {
+                Ok(p) => p,
+                Err(e) => {
+                    error!("Encryption failed: {}", e);
+                    return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Html("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Encryption failed</div>"),
+                        )
+                            .into_response();
+                }
+            };
+
+            // 4. Save to database
+            match state
+                .server_storage
+                .add_server_admin(server_id, &form.username, &encrypted_password)
+                .await
+            {
+                Ok(_) => {
+                    info!("Added admin for server {}", server.name);
+                    match render_server_list(&state).await {
+                        Ok(html) => Html(format!(
+                            r#"<div id="server-list" hx-swap-oob="innerHTML">{}</div>"#,
+                            html
+                        ))
+                        .into_response(),
+                        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to add server admin: {}", e);
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Html("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Database error</div>"),
+                    )
+                        .into_response()
+                }
+            }
+        }
+        Ok(response) => {
+            let status = response.status();
+            if status == StatusCode::UNAUTHORIZED {
+                (
+                    StatusCode::OK,
+                    Html("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Invalid credentials</div>"),
+                )
+                    .into_response()
+            } else {
+                (
+                    StatusCode::OK,
+                    Html(format!(
+                        "<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Upstream error: {}</div>",
+                        status
+                    )),
+                )
+                    .into_response()
+            }
+        }
+        Err(e) => {
+            error!("Failed to authenticate with upstream: {}", e);
+            (
+                StatusCode::OK,
+                Html(format!(
+                    "<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Connection error: {}</div>",
+                    e
+                )),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Delete server admin
+pub async fn delete_server_admin(
+    State(state): State<AppState>,
+    Path(server_id): Path<i64>,
+) -> Response {
+    match state.server_storage.delete_server_admin(server_id).await {
+        Ok(true) => {
+            info!("Deleted admin for server ID: {}", server_id);
+            get_server_list(State(state)).await.into_response()
+        }
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Html("<div class=\"alert alert-error\">Admin not found</div>"),
+        )
+            .into_response(),
+        Err(e) => {
+            error!("Failed to delete server admin: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("<div class=\"alert alert-error\">Failed to delete admin</div>"),
             )
                 .into_response()
         }
