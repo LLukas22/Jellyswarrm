@@ -12,6 +12,7 @@ use crate::{
 pub enum SyncStatus {
     Created,
     AlreadyExists,
+    ExistsWithDifferentPassword,
     Failed,
     Skipped,
     Deleted,
@@ -145,42 +146,65 @@ impl FederatedUserService {
                     .await
                 {
                     Ok((remote_user_id, created)) => {
-                        let status = if created {
-                            SyncStatus::Created
+                        let (status, should_map) = if created {
+                            (SyncStatus::Created, true)
                         } else {
-                            SyncStatus::AlreadyExists
+                            // User exists. Check if password matches.
+                            match self
+                                .check_user_password(server.url.as_ref(), username, password)
+                                .await
+                            {
+                                Ok(true) => (SyncStatus::AlreadyExists, true),
+                                Ok(false) => (SyncStatus::ExistsWithDifferentPassword, false),
+                                Err(e) => {
+                                    warn!(
+                                        "Failed to check password for existing user {} on {}: {}",
+                                        username, server.name, e
+                                    );
+                                    // Assume mismatch or failure, don't map to be safe
+                                    (SyncStatus::ExistsWithDifferentPassword, false)
+                                }
+                            }
                         };
 
                         info!(
-                            "Synced user {} to server {} (Remote ID: {}, Created: {})",
-                            username, server.name, remote_user_id, created
+                            "Synced user {} to server {} (Remote ID: {}, Status: {:?})",
+                            username, server.name, remote_user_id, status
                         );
 
-                        if let Err(e) = self
-                            .user_authorization
-                            .add_server_mapping(
-                                user_id,
-                                server.url.as_str(),
-                                username,
-                                password,
-                                Some(password), // Encrypt with their own password so they can use it
-                            )
-                            .await
-                        {
-                            error!(
-                                "Failed to create local mapping for synced user on server {}: {}",
-                                server.name, e
-                            );
-                            results.push(ServerSyncResult {
-                                server_name: server.name.clone(),
-                                status: SyncStatus::Failed,
-                                message: Some(format!("Failed to save local mapping: {}", e)),
-                            });
+                        if should_map {
+                            if let Err(e) = self
+                                .user_authorization
+                                .add_server_mapping(
+                                    user_id,
+                                    server.url.as_str(),
+                                    username,
+                                    password,
+                                    Some(password), // Encrypt with their own password so they can use it
+                                )
+                                .await
+                            {
+                                error!(
+                                    "Failed to create local mapping for synced user on server {}: {}",
+                                    server.name, e
+                                );
+                                results.push(ServerSyncResult {
+                                    server_name: server.name.clone(),
+                                    status: SyncStatus::Failed,
+                                    message: Some(format!("Failed to save local mapping: {}", e)),
+                                });
+                            } else {
+                                results.push(ServerSyncResult {
+                                    server_name: server.name.clone(),
+                                    status,
+                                    message: None,
+                                });
+                            }
                         } else {
                             results.push(ServerSyncResult {
                                 server_name: server.name.clone(),
                                 status,
-                                message: None,
+                                message: Some("User exists with different password".to_string()),
                             });
                         }
                     }
@@ -319,6 +343,45 @@ impl FederatedUserService {
         }
 
         results
+    }
+
+    async fn check_user_password(
+        &self,
+        server_url: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<bool, anyhow::Error> {
+        let auth_url = format!(
+            "{}/Users/AuthenticateByName",
+            server_url.trim_end_matches('/')
+        );
+
+        let auth_header = format!(
+            "MediaBrowser Client=\"Jellyswarrm Proxy\", Device=\"Server\", DeviceId=\"jellyswarrm-proxy\", Version=\"{}\"",
+            env!("CARGO_PKG_VERSION")
+        );
+
+        let response = self
+            .reqwest_client
+            .post(&auth_url)
+            .header("Authorization", auth_header)
+            .json(&serde_json::json!({
+                "Username": username,
+                "Pw": password
+            }))
+            .send()
+            .await?;
+
+        if response.status().is_success() {
+            Ok(true)
+        } else if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            Ok(false)
+        } else {
+            Err(anyhow::anyhow!(
+                "Authentication check failed: {}",
+                response.status()
+            ))
+        }
     }
 
     async fn authenticate_as_admin(
