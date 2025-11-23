@@ -81,7 +81,7 @@
 
                         <div id="admin-form-error-{{ item.server.id }}"></div>
 
-                        <form hx-post="/{{ ui_route }}/servers/{{ item.server.id }}/admin" hx-target="#admin-form-error-{{ item.server.id }}" hx-swap="innerHTML">
+                        <form id="add-admin-form-{{ item.server.id }}" hx-post="/{{ ui_route }}/servers/{{ item.server.id }}/admin" hx-target="#admin-form-error-{{ item.server.id }}" hx-swap="innerHTML">
                             <label>
                                 Username
                                 <input type="text" name="username" required>
@@ -90,11 +90,11 @@
                                 Password
                                 <input type="password" name="password" required>
                             </label>
-                            <footer>
-                                <button type="button" class="secondary" onclick="this.closest('dialog').close()">Cancel</button>
-                                <button type="submit">Add Admin</button>
-                            </footer>
                         </form>
+                        <footer style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                            <button type="button" class="secondary" onclick="this.closest('dialog').close()" style="margin-bottom: 0;">Cancel</button>
+                            <button type="submit" form="add-admin-form-{{ item.server.id }}" style="margin-bottom: 0;">Add Admin</button>
+                        </footer>
                     </article>
                 </dialog>
                 {% else %}

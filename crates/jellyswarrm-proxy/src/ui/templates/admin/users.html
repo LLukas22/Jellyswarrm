@@ -16,14 +16,14 @@
             <label>Password
                 <input type="password" name="password" placeholder="••••••" required>
             </label>
-            <label>
-                <input type="checkbox" name="enable_federation" value="true" checked>
-                <span data-tooltip="Automatically creates this user on all connected Jellyfin servers where an admin is configured.">Enable Federation</span>
-            </label>
             <div style="display:flex; align-items:center; padding-top:1.5rem;">
                 <button type="submit">Add</button>
             </div>
         </div>
+        <label style="margin-top: -0.5rem;">
+            <input type="checkbox" name="enable_federation" value="true" checked>
+            <span data-tooltip="Automatically creates this user on all connected Jellyfin servers where an admin is configured.">Enable Federation</span>
+        </label>
     </form>
 </section>
 

@@ -88,10 +88,7 @@ pub fn ui_routes() -> axum::Router<AppState> {
         .route("/users", get(admin::users::users_page))
         .route("/users", post(admin::users::add_user))
         .route("/users/list", get(admin::users::get_user_list))
-        .route(
-            "/users/{id}",
-            axum::routing::delete(admin::users::delete_user),
-        )
+        .route("/users/{id}/delete", post(admin::users::delete_user))
         .route("/users/mappings", post(admin::users::add_mapping))
         .route(
             "/users/{user_id}/mappings/{mapping_id}",

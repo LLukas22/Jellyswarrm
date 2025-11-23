@@ -14,16 +14,16 @@
                         <h3>Delete User</h3>
                     </header>
                     <p>Are you sure you want to delete <strong>{{ uwm.user.original_username }}</strong>?</p>
-                    <form hx-delete="/{{ ui_route }}/users/{{ uwm.user.id }}" hx-target="#user-list" hx-swap="innerHTML">
-                        <label>
+                    <form id="delete-user-form-{{ uwm.user.id }}" hx-post="/{{ ui_route }}/users/{{ uwm.user.id }}/delete" hx-target="#user-list" hx-swap="innerHTML">
+                        <label style="margin-bottom: 1.5rem;">
                             <input type="checkbox" name="delete_federated" value="true" checked>
                             <span data-tooltip="If checked, this user will be removed from all upstream servers where an admin is configured.">Also delete from connected Jellyfin servers</span>
                         </label>
-                        <footer>
-                            <button type="button" class="secondary" onclick="this.closest('dialog').close()">Cancel</button>
-                            <button type="submit" style="background-color: var(--del-color); border-color: var(--del-color);">Delete</button>
-                        </footer>
                     </form>
+                    <footer style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                        <button type="button" class="secondary" onclick="this.closest('dialog').close()" style="margin-bottom: 0;">Cancel</button>
+                        <button type="submit" form="delete-user-form-{{ uwm.user.id }}" style="background-color: var(--del-color); border-color: var(--del-color); margin-bottom: 0;">Delete</button>
+                    </footer>
                 </article>
             </dialog>
         </div>
