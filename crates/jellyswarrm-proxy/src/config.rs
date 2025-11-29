@@ -94,6 +94,62 @@ mod base64_serde {
     }
 }
 
+macro_rules! define_fallback_deserializer {
+    ($name:ident, $type:ty, $fallback_fn:path) => {
+        fn $name<'de, D>(deserializer: D) -> Result<$type, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            use serde::Deserialize;
+            let v: Result<serde_json::Value, _> = Deserialize::deserialize(deserializer);
+            match v {
+                Ok(val) => {
+                    // First try direct deserialization (handles numbers, booleans, etc.)
+                    if let Ok(t) = serde_json::from_value::<$type>(val.clone()) {
+                        return Ok(t);
+                    }
+
+                    // If that fails, try parsing from string if it is a string
+                    if let serde_json::Value::String(s) = &val {
+                        match s.parse::<$type>() {
+                            Ok(parsed) => return Ok(parsed),
+                            Err(_) => tracing::info!(
+                                "Ignoring invalid value for {}: '{}', falling back to default",
+                                stringify!($name),
+                                s
+                            ),
+                        }
+                    } else {
+                        tracing::info!(
+                            "Ignoring invalid value for {}, falling back to default",
+                            stringify!($name)
+                        );
+                    }
+
+                    Ok($fallback_fn())
+                }
+                Err(_) => {
+                    tracing::info!(
+                        "Ignoring invalid configuration structure for {}, falling back to default",
+                        stringify!($name)
+                    );
+                    Ok($fallback_fn())
+                }
+            }
+        }
+    };
+}
+
+define_fallback_deserializer!(deserialize_port, u16, default_port);
+define_fallback_deserializer!(deserialize_host, String, default_host);
+define_fallback_deserializer!(
+    deserialize_include_server_name_in_media,
+    bool,
+    default_include_server_name_in_media
+);
+define_fallback_deserializer!(deserialize_timeout, u64, default_timeout);
+define_fallback_deserializer!(deserialize_ui_route, UrlSegment, default_ui_route);
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PreconfiguredServer {
     pub url: String,
@@ -109,11 +165,14 @@ pub struct AppConfig {
     pub public_address: String,
     #[serde(default = "default_server_name")]
     pub server_name: String,
-    #[serde(default = "default_host")]
+    #[serde(default = "default_host", deserialize_with = "deserialize_host")]
     pub host: String,
-    #[serde(default = "default_port")]
+    #[serde(default = "default_port", deserialize_with = "deserialize_port")]
     pub port: u16,
-    #[serde(default = "default_include_server_name_in_media")]
+    #[serde(
+        default = "default_include_server_name_in_media",
+        deserialize_with = "deserialize_include_server_name_in_media"
+    )]
     pub include_server_name_in_media: bool,
 
     #[serde(default = "default_username")]
@@ -127,10 +186,13 @@ pub struct AppConfig {
     #[serde(default = "default_session_key", with = "base64_serde")]
     pub session_key: Vec<u8>,
 
-    #[serde(default = "default_timeout")]
+    #[serde(default = "default_timeout", deserialize_with = "deserialize_timeout")]
     pub timeout: u64, // in seconds
 
-    #[serde(default = "default_ui_route")]
+    #[serde(
+        default = "default_ui_route",
+        deserialize_with = "deserialize_ui_route"
+    )]
     pub ui_route: UrlSegment,
 
     #[serde(default)]
@@ -247,6 +309,14 @@ impl From<String> for UrlSegment {
 impl From<&str> for UrlSegment {
     fn from(s: &str) -> Self {
         UrlSegment::from(s.to_string())
+    }
+}
+
+impl std::str::FromStr for UrlSegment {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        UrlSegment::new(s)
     }
 }
 
