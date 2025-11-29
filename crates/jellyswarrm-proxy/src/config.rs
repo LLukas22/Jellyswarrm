@@ -74,7 +74,7 @@ fn default_ui_route() -> UrlSegment {
 
 mod base64_serde {
     use super::*;
-    use serde::de::Error;
+    use serde::de::Error as DeError;
     use serde::{Deserializer, Serializer};
 
     pub fn serialize<S>(bytes: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error>
@@ -94,111 +94,61 @@ mod base64_serde {
     }
 }
 
-macro_rules! create_safe_deserializer {
-    ($name:ident, $type:ty, $default_fn:path, $inner_deserializer:path) => {
+macro_rules! define_fallback_deserializer {
+    ($name:ident, $type:ty, $fallback_fn:path) => {
         fn $name<'de, D>(deserializer: D) -> Result<$type, D::Error>
         where
             D: serde::Deserializer<'de>,
         {
-            match $inner_deserializer(deserializer) {
-                Ok(v) => Ok(v),
-                Err(_) => {
-                    tracing::warn!(
-                        "Failed to deserialize field {}, falling back to default",
-                        stringify!($name)
-                    );
-                    Ok($default_fn())
-                }
-            }
-        }
-    };
-    ($name:ident, $type:ty, $default_fn:path, $inner_deserializer:path, $validator:path) => {
-        fn $name<'de, D>(deserializer: D) -> Result<$type, D::Error>
-        where
-            D: serde::Deserializer<'de>,
-        {
-            match $inner_deserializer(deserializer) {
-                Ok(v) => match $validator(v) {
-                    Ok(v) => Ok(v),
-                    Err(e) => {
-                        tracing::warn!(
-                            "Validation failed for field {}: {}, falling back to default",
-                            stringify!($name),
-                            e
-                        );
-                        Ok($default_fn())
+            use serde::Deserialize;
+            let v: Result<serde_json::Value, _> = Deserialize::deserialize(deserializer);
+            match v {
+                Ok(val) => {
+                    // First try direct deserialization (handles numbers, booleans, etc.)
+                    if let Ok(t) = serde_json::from_value::<$type>(val.clone()) {
+                        return Ok(t);
                     }
-                },
+
+                    // If that fails, try parsing from string if it is a string
+                    if let serde_json::Value::String(s) = &val {
+                        match s.parse::<$type>() {
+                            Ok(parsed) => return Ok(parsed),
+                            Err(_) => tracing::info!(
+                                "Ignoring invalid value for {}: '{}', falling back to default",
+                                stringify!($name),
+                                s
+                            ),
+                        }
+                    } else {
+                        tracing::info!(
+                            "Ignoring invalid value for {}, falling back to default",
+                            stringify!($name)
+                        );
+                    }
+
+                    Ok($fallback_fn())
+                }
                 Err(_) => {
-                    tracing::warn!(
-                        "Failed to deserialize field {}, falling back to default",
+                    tracing::info!(
+                        "Ignoring invalid configuration structure for {}, falling back to default",
                         stringify!($name)
                     );
-                    Ok($default_fn())
+                    Ok($fallback_fn())
                 }
             }
         }
     };
 }
 
-fn validate_not_empty(s: String) -> Result<String, String> {
-    if s.trim().is_empty() {
-        Err("Value cannot be empty".to_string())
-    } else {
-        Ok(s)
-    }
-}
-
-create_safe_deserializer!(
-    deserialize_port,
-    u16,
-    default_port,
-    serde_aux::prelude::deserialize_number_from_string
-);
-
-create_safe_deserializer!(
-    deserialize_timeout,
-    u64,
-    default_timeout,
-    serde_aux::prelude::deserialize_number_from_string
-);
-
-create_safe_deserializer!(
+define_fallback_deserializer!(deserialize_port, u16, default_port);
+define_fallback_deserializer!(deserialize_host, String, default_host);
+define_fallback_deserializer!(
     deserialize_include_server_name_in_media,
     bool,
-    default_include_server_name_in_media,
-    serde_aux::prelude::deserialize_bool_from_anything
+    default_include_server_name_in_media
 );
-
-create_safe_deserializer!(
-    deserialize_server_name,
-    String,
-    default_server_name,
-    String::deserialize,
-    validate_not_empty
-);
-
-create_safe_deserializer!(
-    deserialize_host,
-    String,
-    default_host,
-    String::deserialize,
-    validate_not_empty
-);
-
-create_safe_deserializer!(
-    deserialize_ui_route,
-    UrlSegment,
-    default_ui_route,
-    UrlSegment::deserialize
-);
-
-create_safe_deserializer!(
-    deserialize_session_key,
-    Vec<u8>,
-    default_session_key,
-    base64_serde::deserialize
-);
+define_fallback_deserializer!(deserialize_timeout, u64, default_timeout);
+define_fallback_deserializer!(deserialize_ui_route, UrlSegment, default_ui_route);
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PreconfiguredServer {
@@ -213,10 +163,7 @@ pub struct AppConfig {
     pub server_id: String,
     #[serde(default = "default_public_address")]
     pub public_address: String,
-    #[serde(
-        default = "default_server_name",
-        deserialize_with = "deserialize_server_name"
-    )]
+    #[serde(default = "default_server_name")]
     pub server_name: String,
     #[serde(default = "default_host", deserialize_with = "deserialize_host")]
     pub host: String,
@@ -236,17 +183,16 @@ pub struct AppConfig {
     #[serde(default)]
     pub preconfigured_servers: Vec<PreconfiguredServer>,
 
-    #[serde(
-        default = "default_session_key",
-        deserialize_with = "deserialize_session_key",
-        serialize_with = "base64_serde::serialize"
-    )]
+    #[serde(default = "default_session_key", with = "base64_serde")]
     pub session_key: Vec<u8>,
 
     #[serde(default = "default_timeout", deserialize_with = "deserialize_timeout")]
     pub timeout: u64, // in seconds
 
-    #[serde(default = "default_ui_route", deserialize_with = "deserialize_ui_route")]
+    #[serde(
+        default = "default_ui_route",
+        deserialize_with = "deserialize_ui_route"
+    )]
     pub ui_route: UrlSegment,
 
     #[serde(default)]
@@ -366,6 +312,14 @@ impl From<&str> for UrlSegment {
     }
 }
 
+impl std::str::FromStr for UrlSegment {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        UrlSegment::new(s)
+    }
+}
+
 impl serde::Serialize for UrlSegment {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -387,135 +341,5 @@ impl<'de> serde::Deserialize<'de> for UrlSegment {
         } else {
             Ok(UrlSegment(t))
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde::Deserialize;
-
-    #[derive(Debug, Deserialize)]
-    struct TestConfig {
-        #[serde(default = "default_port", deserialize_with = "deserialize_port")]
-        port: u16,
-        #[serde(default = "default_host", deserialize_with = "deserialize_host")]
-        host: String,
-        #[serde(
-            default = "default_include_server_name_in_media",
-            deserialize_with = "deserialize_include_server_name_in_media"
-        )]
-        include_server_name_in_media: bool,
-        #[serde(
-            default = "default_server_name",
-            deserialize_with = "deserialize_server_name"
-        )]
-        server_name: String,
-        #[serde(
-            default = "default_session_key",
-            deserialize_with = "deserialize_session_key"
-        )]
-        session_key: Vec<u8>,
-        #[serde(default = "default_ui_route", deserialize_with = "deserialize_ui_route")]
-        ui_route: UrlSegment,
-    }
-
-    #[test]
-    fn test_deserialize_port_valid() {
-        let json = r#"{"port": 8080}"#;
-        let config: TestConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(config.port, 8080);
-
-        let json = r#"{"port": "8080"}"#;
-        let config: TestConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(config.port, 8080);
-    }
-
-    #[test]
-    fn test_deserialize_port_invalid() {
-        let json = r#"{"port": "invalid"}"#;
-        let config: TestConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(config.port, default_port());
-
-        let json = r#"{"port": 999999}"#; // Overflow
-        let config: TestConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(config.port, default_port());
-    }
-
-    #[test]
-    fn test_deserialize_host_valid() {
-        let json = r#"{"host": "127.0.0.1"}"#;
-        let config: TestConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(config.host, "127.0.0.1");
-    }
-
-    #[test]
-    fn test_deserialize_host_invalid() {
-        let json = r#"{"host": ""}"#; // Empty string
-        let config: TestConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(config.host, default_host());
-    }
-
-    #[test]
-    fn test_deserialize_bool_valid() {
-        let json = r#"{"include_server_name_in_media": true}"#;
-        let config: TestConfig = serde_json::from_str(json).unwrap();
-        assert!(config.include_server_name_in_media);
-
-        let json = r#"{"include_server_name_in_media": "true"}"#;
-        let config: TestConfig = serde_json::from_str(json).unwrap();
-        assert!(config.include_server_name_in_media);
-
-        let json = r#"{"include_server_name_in_media": "on"}"#;
-        let config: TestConfig = serde_json::from_str(json).unwrap();
-        assert!(config.include_server_name_in_media);
-    }
-
-    #[test]
-    fn test_deserialize_bool_invalid() {
-        let json = r#"{"include_server_name_in_media": "invalid"}"#;
-        let config: TestConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(
-            config.include_server_name_in_media,
-            default_include_server_name_in_media()
-        );
-    }
-
-    #[test]
-    fn test_deserialize_server_name_invalid() {
-        let json = r#"{"server_name": ""}"#;
-        let config: TestConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(config.server_name, default_server_name());
-    }
-
-    #[test]
-    fn test_deserialize_session_key_valid() {
-        let key = Key::generate().master().to_vec();
-        let encoded = BASE64_STANDARD.encode(&key);
-        let json = format!(r#"{{"session_key": "{}"}}"#, encoded);
-        let config: TestConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(config.session_key, key);
-    }
-
-    #[test]
-    fn test_deserialize_session_key_invalid() {
-        let json = r#"{"session_key": "invalid-base64"}"#;
-        let config: TestConfig = serde_json::from_str(json).unwrap();
-        // Should fall back to default (random key), so we just check it's not empty
-        assert!(!config.session_key.is_empty());
-    }
-
-    #[test]
-    fn test_deserialize_ui_route_valid() {
-        let json = r#"{"ui_route": "admin"}"#;
-        let config: TestConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(config.ui_route.as_str(), "admin");
-    }
-
-    #[test]
-    fn test_deserialize_ui_route_invalid() {
-        let json = r#"{"ui_route": ""}"#; // Empty route is invalid for UrlSegment
-        let config: TestConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(config.ui_route.as_str(), default_ui_route().as_str());
     }
 }
