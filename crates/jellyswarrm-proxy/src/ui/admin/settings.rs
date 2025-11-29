@@ -11,13 +11,13 @@ use tracing::error;
 use crate::{config::save_config, AppState};
 
 #[derive(Template)]
-#[template(path = "settings.html")]
+#[template(path = "admin/settings.html")]
 pub struct SettingsPageTemplate {
     pub ui_route: String,
 }
 
 #[derive(Template)]
-#[template(path = "settings_form.html")]
+#[template(path = "admin/settings_form.html")]
 pub struct SettingsFormTemplate {
     pub server_id: String,
     pub public_address: String,

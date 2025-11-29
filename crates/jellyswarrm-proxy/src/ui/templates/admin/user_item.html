@@ -3,9 +3,29 @@
         <div style="display:flex; align-items:center; gap:.5rem;">
             <h3 style="margin:0;">{{ uwm.user.original_username }} <span class="badge" title="Total sessions">{{
                     uwm.total_sessions }}</span></h3>
+            
             <i class="fas fa-trash danger" style="margin-left:auto;" aria-label="Delete user"
-                hx-delete="/{{ ui_route }}/users/{{ uwm.user.id }}" hx-target="#user-list" hx-swap="innerHTML"
-                hx-confirm="Delete user '{{ uwm.user.original_username }}' and all mappings?"></i>
+               onclick="document.getElementById('delete-user-modal-{{ uwm.user.id }}').showModal()"></i>
+
+            <dialog id="delete-user-modal-{{ uwm.user.id }}" onclick="if(event.target===this)this.close()">
+                <article>
+                    <header>
+                        <button aria-label="Close" rel="prev" onclick="this.closest('dialog').close()"></button>
+                        <h3>Delete User</h3>
+                    </header>
+                    <p>Are you sure you want to delete <strong>{{ uwm.user.original_username }}</strong>?</p>
+                    <form id="delete-user-form-{{ uwm.user.id }}" hx-post="/{{ ui_route }}/users/{{ uwm.user.id }}/delete" hx-target="#user-list" hx-swap="innerHTML">
+                        <label style="margin-bottom: 1.5rem;">
+                            <input type="checkbox" name="delete_federated" value="true" checked>
+                            <span data-tooltip="If checked, this user will be removed from all upstream servers where an admin is configured.">Also delete from connected Jellyfin servers</span>
+                        </label>
+                    </form>
+                    <footer style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                        <button type="button" class="secondary" onclick="this.closest('dialog').close()" style="margin-bottom: 0;">Cancel</button>
+                        <button type="submit" form="delete-user-form-{{ uwm.user.id }}" style="background-color: var(--del-color); border-color: var(--del-color); margin-bottom: 0;">Delete</button>
+                    </footer>
+                </article>
+            </dialog>
         </div>
         <p class="user-key" title="Virtual key">{{ uwm.user.virtual_key }}</p>
     </header>

@@ -1,0 +1,135 @@
+/* Global Styles for Jellyswarrm */
+
+/* --- Components --- */
+
+/* Icon Buttons */
+.icon-btn {
+  --_size: 1.1rem;
+  font-size: var(--_size);
+  line-height: 1;
+  padding: .5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--pico-muted-border-color, #555);
+  background: transparent;
+  cursor: pointer;
+  border-radius: 0.25rem;
+  transition: all 0.2s;
+  color: var(--pico-color);
+}
+
+.icon-btn:hover {
+  background: var(--pico-card-background-color);
+  transform: translateY(-1px);
+}
+
+.icon-btn.danger {
+  color: var(--pico-del-color, #e55353);
+  border-color: var(--pico-del-color, #e55353);
+}
+
+.icon-btn.danger:hover {
+  background: rgba(229, 83, 83, 0.1);
+}
+
+/* Badges & Chips */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: .25em .55em;
+  font-size: .75rem;
+  font-weight: 500;
+  line-height: 1;
+  border-radius: 1rem;
+  color: #fff;
+  background: var(--pico-primary-background);
+}
+
+.badge.muted, .status-chip {
+  background: var(--pico-muted-border-color, rgba(127, 127, 127, .15));
+  color: var(--pico-color);
+}
+
+.badge.success { background-color: #2e7d32; color: white; }
+.badge.warning { background-color: #ffc107; color: black; }
+.badge.danger { background-color: #dc3545; color: white; }
+.badge.secondary { background-color: #6c757d; color: white; }
+
+/* Status Container */
+.status-container {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+/* Filter Bar */
+.filter-bar {
+  margin-bottom: 1rem;
+}
+
+/* User Key */
+.user-key {
+  font-size: .6rem;
+  opacity: .6;
+  word-break: break-all;
+  padding-top: .25em;
+}
+
+/* Danger Text/Icon */
+.text-danger, .danger {
+  color: var(--pico-del-color, #d9534f);
+}
+i.danger {
+  cursor: pointer;
+}
+
+/* Empty State */
+.empty-state {
+  padding: 1rem;
+  border: 2px dashed var(--pico-border-color, #ccc);
+  border-radius: .6rem;
+  text-align: center;
+}
+
+/* Sync Report */
+.sync-report {
+  margin-bottom: 1rem;
+  padding: 1rem;
+  background: var(--pico-card-background-color);
+  border: 1px solid var(--pico-card-border-color);
+  border-radius: var(--pico-border-radius);
+}
+.sync-report ul {
+  margin-bottom: 0;
+  padding-left: 1rem;
+}
+
+/* --- Animations --- */
+.htmx-added {
+  animation: fadeInSoft 160ms ease-out, highlightSoft 900ms ease-out;
+}
+.htmx-swapping {
+  animation: fadeOutSoft 140ms ease-in forwards;
+  pointer-events: none;
+}
+
+@keyframes fadeInSoft {
+  from { opacity: 0; transform: translateY(2px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeOutSoft {
+  from { opacity: 1; transform: translateY(0); }
+  to   { opacity: 0; transform: translateY(-2px); }
+}
+
+@keyframes highlightSoft {
+  0% { background: var(--pico-mark-background-color, #fff8d9); }
+  100% { background: transparent; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .htmx-added, .htmx-swapping { animation: none; }
+}

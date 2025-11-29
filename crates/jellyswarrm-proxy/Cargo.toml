@@ -59,6 +59,7 @@ serde-aux = "4.7.0"
 async-trait = "0.1.89"
 async-recursion = "1.1.1"
 moka = { version = "0.12.11", features = ["future"] }
+aes-gcm = "0.10.3"
 serde_with = "3.16.1"
 
 [dev-dependencies]

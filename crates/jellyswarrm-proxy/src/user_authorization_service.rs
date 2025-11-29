@@ -1,7 +1,8 @@
 use sha2::{Digest, Sha256};
 use sqlx::{FromRow, Row, SqlitePool};
-use tracing::info;
+use tracing::{error, info, warn};
 
+use crate::encryption::{decrypt_password, encrypt_password};
 use crate::models::{generate_token, Authorization};
 use crate::server_storage::Server;
 
@@ -289,8 +290,21 @@ impl UserAuthorizationService {
         server_url: &str,
         mapped_username: &str,
         mapped_password: &str,
+        master_password: Option<&str>,
     ) -> Result<i64, sqlx::Error> {
         let now = chrono::Utc::now();
+
+        let final_password = if let Some(master) = master_password {
+            match encrypt_password(mapped_password, master) {
+                Ok(encrypted) => encrypted,
+                Err(e) => {
+                    warn!("Failed to encrypt password: {}. Storing as plaintext.", e);
+                    mapped_password.to_string()
+                }
+            }
+        } else {
+            mapped_password.to_string()
+        };
 
         let result = sqlx::query(
             r#"
@@ -302,7 +316,7 @@ impl UserAuthorizationService {
         .bind(user_id)
         .bind(server_url)
         .bind(mapped_username)
-        .bind(mapped_password)
+        .bind(final_password)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -314,6 +328,31 @@ impl UserAuthorizationService {
             user_id, server_url
         );
         Ok(mapping_id)
+    }
+
+    /// Decrypt a server mapping password
+    pub fn decrypt_server_mapping_password(
+        &self,
+        mapping: &ServerMapping,
+        user_password: &str,
+        admin_password: &str,
+    ) -> String {
+        // Try user password first
+        if let Ok(decrypted) = decrypt_password(&mapping.mapped_password, user_password) {
+            return decrypted;
+        }
+
+        // Try admin password
+        if let Ok(decrypted) = decrypt_password(&mapping.mapped_password, admin_password) {
+            return decrypted;
+        }
+
+        // If decryption fails, assume it's plaintext (legacy or fallback)
+        warn!(
+            "Failed to decrypt password for mapping {}. Assuming plaintext.",
+            mapping.id
+        );
+        mapping.mapped_password.clone()
     }
 
     /// Get server mapping
@@ -613,6 +652,99 @@ impl UserAuthorizationService {
         Ok(res.rows_affected() > 0)
     }
 
+    /// Update user password and re-encrypt server mappings
+    pub async fn update_user_password(
+        &self,
+        user_id: &str,
+        old_password: &str,
+        new_password: &str,
+        admin_password: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let mut transaction = self.pool.begin().await?;
+
+        // 1. Update user password hash
+        let password_hash = Self::hash_password(new_password);
+        let now = chrono::Utc::now();
+
+        let res = sqlx::query(
+            r#"
+            UPDATE users 
+            SET original_password_hash = ?, updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(password_hash)
+        .bind(now)
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await?;
+
+        if res.rows_affected() == 0 {
+            return Ok(false);
+        }
+
+        // 2. Re-encrypt all server mappings
+        let mappings = sqlx::query_as::<_, ServerMapping>(
+            r#"
+            SELECT id, user_id, server_url, mapped_username, mapped_password, created_at, updated_at
+            FROM server_mappings 
+            WHERE user_id = ?
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(&mut *transaction)
+        .await?;
+
+        for mapping in mappings {
+            // Decrypt with old credentials
+            let decrypted_password =
+                self.decrypt_server_mapping_password(&mapping, old_password, admin_password);
+
+            // Encrypt with new password
+            let new_encrypted_password = match encrypt_password(&decrypted_password, new_password) {
+                Ok(p) => p,
+                Err(e) => {
+                    error!("Failed to encrypt password during update: {}", e);
+                    return Err(sqlx::Error::Protocol(format!("Encryption failed: {}", e)));
+                }
+            };
+
+            // Update mapping in DB
+            sqlx::query(
+                r#"
+                UPDATE server_mappings
+                SET mapped_password = ?, updated_at = ?
+                WHERE id = ?
+                "#,
+            )
+            .bind(new_encrypted_password)
+            .bind(now)
+            .bind(mapping.id)
+            .execute(&mut *transaction)
+            .await?;
+        }
+
+        transaction.commit().await?;
+
+        Ok(true)
+    }
+
+    /// Verify user password
+    pub async fn verify_user_password(
+        &self,
+        user_id: &str,
+        password: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let user = self.get_user_by_id(user_id).await?;
+
+        if let Some(user) = user {
+            let password_hash = Self::hash_password(password);
+            Ok(user.original_password_hash == password_hash)
+        } else {
+            Ok(false)
+        }
+    }
+
     /// Get counts of authorization sessions per normalized server URL for a user
     pub async fn session_counts_by_server(
         &self,
@@ -655,6 +787,37 @@ impl UserAuthorizationService {
             .execute(&self.pool)
             .await?;
         Ok(res.rows_affected())
+    }
+
+    /// Get all servers mapped to a user, sorted by priority
+    pub async fn get_mapped_servers(&self, user_id: &str) -> Result<Vec<Server>, sqlx::Error> {
+        let rows = sqlx::query(
+            r#"
+            SELECT s.id, s.name, s.url, s.priority, s.created_at, s.updated_at
+            FROM servers s
+            JOIN server_mappings sm ON RTRIM(s.url, '/') = RTRIM(sm.server_url, '/')
+            WHERE sm.user_id = ?
+            ORDER BY s.priority DESC, s.name ASC
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let servers = rows
+            .into_iter()
+            .map(|row| Server {
+                id: row.get("id"),
+                name: row.get("name"),
+                url: url::Url::parse(row.get::<String, _>("url").as_str())
+                    .unwrap_or_else(|_| url::Url::parse("http://invalid-url-in-db").unwrap()),
+                priority: row.get("priority"),
+                created_at: row.get("created_at"),
+                updated_at: row.get("updated_at"),
+            })
+            .collect();
+
+        Ok(servers)
     }
 }
 
@@ -765,6 +928,7 @@ mod tests {
                 "http://localhost:8096",
                 "mappeduser",
                 "mappedpass",
+                None,
             )
             .await
             .unwrap();
@@ -907,6 +1071,7 @@ mod tests {
                 "http://localhost:8096",
                 "mappeduser",
                 "mappedpass",
+                None,
             )
             .await
             .unwrap();
@@ -1000,6 +1165,7 @@ mod tests {
                 "http://localhost:8096",
                 "mappeduser",
                 "mappedpass",
+                None,
             )
             .await
             .unwrap();
@@ -1114,6 +1280,7 @@ mod tests {
                 "http://localhost:8096",
                 "mappeduser1",
                 "mappedpass1",
+                None,
             )
             .await
             .unwrap();
@@ -1124,6 +1291,7 @@ mod tests {
                 "http://localhost:8097",
                 "mappeduser2",
                 "mappedpass2",
+                None,
             )
             .await
             .unwrap();
@@ -1238,6 +1406,7 @@ mod tests {
                 "http://localhost:8096",
                 "mappeduser",
                 "mappedpass",
+                None,
             )
             .await
             .unwrap();
@@ -1340,7 +1509,7 @@ mod tests {
         // Add mappings for both servers
         for url in ["http://localhost:8096", "http://localhost:8097"] {
             service
-                .add_server_mapping(&user.id, url, "mappeduser", "mappedpass")
+                .add_server_mapping(&user.id, url, "mappeduser", "mappedpass", None)
                 .await
                 .unwrap();
         }

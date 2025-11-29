@@ -1,0 +1,53 @@
+<hgroup>
+    <h1>User Profile</h1>
+    <h2>Manage your account settings</h2>
+</hgroup>
+
+<article>
+    <header>
+        <strong>Profile Information</strong>
+    </header>
+    <div class="grid">
+        <div>
+            <label>
+                Username
+                <input type="text" value="{{ username }}" readonly>
+            </label>
+        </div>
+    </div>
+</article>
+
+<article>
+    <header>
+        <strong>Change Password</strong>
+    </header>
+    
+    <form id="password_form" 
+          hx-post="/{{ ui_route }}/user/profile/password" 
+          hx-target="#password_message" 
+          hx-swap="innerHTML"
+          hx-indicator="#password-loading">
+          
+        <div id="password_message" style="margin-bottom: 1rem;"></div>
+        
+        <label>
+            Current Password
+            <input type="password" name="current_password" required autocomplete="current-password">
+        </label>
+        <label>
+            New Password
+            <input type="password" name="new_password" required autocomplete="new-password">
+        </label>
+        <label>
+            Confirm New Password
+            <input type="password" name="confirm_password" required autocomplete="new-password">
+        </label>
+        
+        <button type="submit">
+            Update Password
+            <span id="password-loading" class="htmx-indicator" style="margin-left: 0.5rem;">
+                <i class="fas fa-circle-notch fa-spin"></i>
+            </span>
+        </button>
+    </form>
+</article>

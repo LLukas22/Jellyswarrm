@@ -246,10 +246,17 @@ async fn authenticate_on_server(
     );
 
     // Get user mapping for this server
+    let config = state.config.read().await;
+    let admin_password = &config.password;
+
     let (final_username, final_password) = if let Some(mapping) = &server_mapping {
         (
             mapping.mapped_username.clone(),
-            mapping.mapped_password.clone(),
+            state.user_authorization.decrypt_server_mapping_password(
+                mapping,
+                &payload.password,
+                admin_password,
+            ),
         )
     } else {
         (payload.username.clone(), payload.password.clone())
@@ -325,26 +332,26 @@ async fn authenticate_on_server(
             AuthError::InternalError
         })?;
 
-    // if we dont have a server mapping, we need to create one
-    if server_mapping.is_none() {
-        info!(
-            "Creating server mapping for user '{}' on server '{}'",
-            payload.username, server.name
-        );
-        state
-            .user_authorization
-            .add_server_mapping(
-                &user.id,
-                server.url.as_str(),
-                &payload.username,
-                &payload.password,
-            )
-            .await
-            .map_err(|e| {
-                tracing::error!("Error creating server mapping: {}", e);
-                AuthError::InternalError
-            })?;
-    }
+    // Update or create server mapping to ensure it's encrypted
+    // This handles creating new mappings and upgrading legacy plaintext mappings
+    info!(
+        "Updating server mapping for user '{}' on server '{}'",
+        payload.username, server.name
+    );
+    state
+        .user_authorization
+        .add_server_mapping(
+            &user.id,
+            server.url.as_str(),
+            &final_username,
+            &final_password,
+            Some(&payload.password),
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!("Error updating server mapping: {}", e);
+            AuthError::InternalError
+        })?;
 
     let auth_token = auth_response.access_token.clone();
 
