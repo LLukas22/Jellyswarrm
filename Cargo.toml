@@ -2,6 +2,7 @@
 members = [
     "crates/jellyswarrm-proxy",
     "crates/jellyswarrm-macros",
+    "crates/jellyfin-api",
 ]
 resolver = "2"
 

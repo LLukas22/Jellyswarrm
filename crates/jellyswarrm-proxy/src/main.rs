@@ -83,7 +83,6 @@ impl AppState {
         let federated_users = Arc::new(FederatedUserService::new_from_components(
             data_context.server_storage.clone(),
             data_context.user_authorization.clone(),
-            reqwest_client.clone(),
             data_context.config.clone(),
         ));
 
@@ -111,6 +110,11 @@ impl AppState {
     pub async fn get_url_prefix(&self) -> Option<String> {
         let config = self.config.read().await;
         config.url_prefix.as_ref().map(|prefix| prefix.to_string())
+    }
+
+    pub async fn get_admin_password(&self) -> String {
+        let config = self.config.read().await;
+        config.password.clone()
     }
 
     pub async fn remove_prefix_from_path<'a>(&self, path: &'a str) -> &'a str {

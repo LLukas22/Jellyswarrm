@@ -1,17 +1,15 @@
 use askama::Template;
 use axum::{
     extract::{Path, State},
-    http::{HeaderValue, StatusCode},
     response::{Html, IntoResponse},
     Form,
 };
+use hyper::{header::HeaderValue, StatusCode};
+use jellyfin_api::JellyfinClient;
 use serde::Deserialize;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
-use crate::{
-    models::Authorization, server_storage::Server, ui::auth::AuthenticatedUser,
-    url_helper::join_server_url, AppState,
-};
+use crate::{server_storage::Server, ui::auth::AuthenticatedUser, AppState};
 
 #[derive(Template)]
 #[template(path = "user/user_server_list.html")]
@@ -33,23 +31,7 @@ pub struct ConnectServerForm {
 pub struct UserServerStatusTemplate {
     pub username: Option<String>,
     pub error_message: Option<String>,
-    pub needs_login: bool,
-}
-
-#[derive(Deserialize)]
-struct AuthResponse {
-    #[serde(rename = "AccessToken")]
-    access_token: String,
-    #[serde(rename = "User")]
-    user: JellyfinUser,
-}
-
-#[derive(Deserialize)]
-struct JellyfinUser {
-    #[serde(rename = "Id")]
-    id: String,
-    #[serde(rename = "Name")]
-    name: String,
+    pub server_version: String,
 }
 
 pub async fn get_user_servers(
@@ -120,43 +102,24 @@ pub async fn connect_server(
     };
 
     // Verify credentials with upstream Jellyfin
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .unwrap();
+    let server_url = server.url.clone();
 
-    let auth_url = join_server_url(&server.url, "/Users/AuthenticateByName");
-    let body = serde_json::json!({
-        "Username": form.username,
-        "Pw": form.password
-    });
+    let client_info = crate::config::CLIENT_INFO.clone();
 
-    let auth_header = format!(
-        "MediaBrowser Client=\"Jellyswarrm Proxy\", Device=\"Server\", DeviceId=\"jellyswarrm-proxy\", Version=\"{}\"",
-        env!("CARGO_PKG_VERSION")
-    );
+    let client = match JellyfinClient::new(server_url.as_str(), client_info) {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Failed to create jellyfin client: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("<span style=\"color: #dc3545;\">Client error</span>"),
+            )
+                .into_response();
+        }
+    };
 
-    match client
-        .post(auth_url.as_str())
-        .header("Authorization", auth_header)
-        .json(&body)
-        .send()
-        .await
-    {
-        Ok(response) if response.status().is_success() => {
-            // Parse response to get token and user ID
-            let auth_response = match response.json::<AuthResponse>().await {
-                Ok(r) => r,
-                Err(e) => {
-                    error!("Failed to parse auth response: {}", e);
-                    return (
-                        StatusCode::OK,
-                        Html("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Invalid server response</div>"),
-                    )
-                        .into_response();
-                }
-            };
-
+    match client.authenticate_by_name(&form.username, &form.password).await {
+        Ok(_) => {
             // Credentials valid, create mapping
             match state
                 .user_authorization
@@ -165,7 +128,7 @@ pub async fn connect_server(
                     server.url.as_str(),
                     &form.username,
                     &form.password,
-                    None,
+                    Some(&user.password),
                 )
                 .await
             {
@@ -175,31 +138,6 @@ pub async fn connect_server(
                         user.username, server.name
                     );
 
-                    // Create authorization session
-                    let auth = Authorization {
-                        client: "Jellyswarrm Proxy".to_string(),
-                        device: "Server".to_string(),
-                        device_id: "jellyswarrm-proxy".to_string(),
-                        version: env!("CARGO_PKG_VERSION").to_string(),
-                        token: None,
-                    };
-
-                    if let Err(e) = state
-                        .user_authorization
-                        .store_authorization_session(
-                            &user.id,
-                            server.url.as_str(),
-                            &auth,
-                            auth_response.access_token,
-                            auth_response.user.id,
-                            None,
-                        )
-                        .await
-                    {
-                        error!("Failed to store session: {}", e);
-                        // Continue anyway, as mapping was created
-                    }
-
                     // Return HX-Redirect header for HTMX
                     let mut response = StatusCode::OK.into_response();
                     response.headers_mut().insert(
@@ -207,32 +145,23 @@ pub async fn connect_server(
                         HeaderValue::from_str(&format!("/{}", state.get_ui_route().await)).unwrap(),
                     );
                     response
-                }
-                Err(e) => {
-                    error!("Failed to create mapping: {}", e);
-                    (
-                        StatusCode::OK,
-                        Html("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Database error</div>"),
-                    )
-                        .into_response()
-                }
+                },
+                 Err(e) => {
+                     error!("Failed to create mapping: {}", e);
+                     (
+                         StatusCode::OK,
+                         Html("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Database error</div>"),
+                     )
+                         .into_response()
+                 }
             }
         }
-        Ok(response) => {
-            let status = response.status();
-            if status == StatusCode::UNAUTHORIZED {
-                (
-                    StatusCode::OK,
-                    Html("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Invalid credentials</div>"),
-                )
-                    .into_response()
-            } else {
-                (
-                    StatusCode::OK,
-                    Html(format!("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Upstream error: {}</div>", status)),
-                )
-                    .into_response()
-            }
+        Err(jellyfin_api::error::Error::AuthenticationFailed(_)) => {
+            (
+                StatusCode::OK,
+                Html("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Invalid credentials</div>"),
+            )
+                .into_response()
         }
         Err(e) => {
             error!("Failed to authenticate with upstream: {}", e);
@@ -333,15 +262,45 @@ pub async fn check_user_server_status(
         }
     };
 
-    // Check for existing session
-    let sessions = match state
+    // Always check public system info first to get version and name
+    let server_url = server.url.clone();
+    let client_info = crate::config::CLIENT_INFO.clone();
+
+    let (public_info, client) = match JellyfinClient::new(server_url.as_str(), client_info) {
+        Ok(c) => match c.get_public_system_info().await {
+            Ok(info) => (info, c),
+            Err(_) => {
+                return (
+                    StatusCode::OK,
+                    Html("<span style=\"color: #dc3545;\">Server offline or unreachable</span>"),
+                )
+                    .into_response()
+            }
+        },
+        Err(e) => {
+            error!("Failed to create jellyfin client: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("<span style=\"color: #dc3545;\">Client error</span>"),
+            )
+                .into_response();
+        }
+    };
+
+    // Check for mapping and try to authenticate
+    let mapping = match state
         .user_authorization
-        .get_user_sessions(&user.id, None)
+        .get_server_mapping(&user.id, server.url.as_str())
         .await
     {
-        Ok(s) => s,
+        Ok(Some(m)) => m,
+        Ok(None) => return (
+            StatusCode::OK,
+            Html("<span style=\"color: #dc3545;\">No mapping found for user on this server</span>"),
+        )
+            .into_response(),
         Err(e) => {
-            error!("Failed to get sessions: {}", e);
+            error!("Failed to get server mapping: {}", e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Html("<span style=\"color: #dc3545;\">Database error</span>"),
@@ -350,80 +309,51 @@ pub async fn check_user_server_status(
         }
     };
 
-    // Find session for this server
-    let session = sessions
-        .iter()
-        .filter(|(_, s)| s.id == server.id)
-        .max_by_key(|(auth, _)| auth.updated_at);
+    let admin_password = state.get_admin_password().await;
 
-    if let Some((auth, _)) = session {
-        // Try to get profile with token
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(5))
-            .build()
-            .unwrap();
+    let password = state.user_authorization.decrypt_server_mapping_password(
+        &mapping,
+        &user.password,
+        &admin_password,
+    );
 
-        let profile_url = join_server_url(&server.url, "/Users/Me");
-
-        let auth_header = format!(
-            "MediaBrowser Client=\"Jellyswarrm Proxy\", Device=\"Server\", DeviceId=\"jellyswarrm-proxy\", Version=\"{}\", Token=\"{}\"",
-            env!("CARGO_PKG_VERSION"),
-            auth.jellyfin_token
-        );
-
-        match client
-            .get(profile_url.as_str())
-            .header("Authorization", auth_header)
-            .send()
-            .await
-        {
-            Ok(response) if response.status().is_success() => {
-                match response.json::<JellyfinUser>().await {
-                    Ok(profile) => {
-                        let template = UserServerStatusTemplate {
-                            username: Some(profile.name),
-                            error_message: None,
-                            needs_login: false,
-                        };
-                        match template.render() {
-                            Ok(html) => return Html(html).into_response(),
-                            Err(e) => error!("Template error: {}", e),
-                        }
-                    }
-                    Err(e) => error!("Failed to parse profile: {}", e),
+    match client
+        .authenticate_by_name(&mapping.mapped_username, &password)
+        .await
+    {
+        Ok(jellyfin_user) => {
+            let template = UserServerStatusTemplate {
+                username: Some(jellyfin_user.name),
+                error_message: None,
+                server_version: public_info.version.unwrap_or("unknown".to_string()),
+            };
+            if let Err(e) = client.logout().await {
+                warn!("Failed to logout from upstream server: {}", e);
+            }
+            match template.render() {
+                Ok(html) => Html(html).into_response(),
+                Err(e) => {
+                    error!("Failed to render user server status template: {}", e);
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Html("<span style=\"color: #dc3545;\">Template error</span>"),
+                    )
+                        .into_response()
                 }
             }
-            _ => {
-                // Token might be expired or invalid, fall through to public check
-            }
         }
-    }
-
-    // Fallback: Check if server is online (public info)
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .unwrap();
-
-    let status_url = join_server_url(&server.url, "/system/info/public");
-
-    let (msg, needs_login) = match client.get(status_url.as_str()).send().await {
-        Ok(resp) if resp.status().is_success() => ("Online".to_string(), true),
-        Ok(resp) => (format!("HTTP {}", resp.status().as_u16()), false),
-        Err(_) => ("Offline".to_string(), false),
-    };
-
-    let template = UserServerStatusTemplate {
-        username: None,
-        error_message: Some(msg),
-        needs_login,
-    };
-
-    match template.render() {
-        Ok(html) => Html(html).into_response(),
         Err(e) => {
-            error!("Template error: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, "Template error").into_response()
+            // Auth failed, log it but continue to check existing session
+            tracing::warn!(
+                "Failed to authenticate with mapped credentials for server {}: {}",
+                server.id,
+                e
+            );
+            (
+                    StatusCode::UNAUTHORIZED,
+                    Html("<span style=\"color: #dc3545;\">Failed to log in with provided credentials</span>"),
+                )
+                    .into_response()
         }
     }
 }

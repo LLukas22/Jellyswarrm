@@ -8,9 +8,7 @@ use axum::{
 use serde::Deserialize;
 use tracing::{error, info};
 
-use crate::{
-    encryption::encrypt_password, server_storage::Server, url_helper::join_server_url, AppState,
-};
+use crate::{encryption::encrypt_password, server_storage::Server, AppState};
 
 #[derive(Template)]
 #[template(path = "admin/servers.html")]
@@ -46,24 +44,6 @@ pub struct UpdatePriorityForm {
 pub struct AddServerAdminForm {
     pub username: String,
     pub password: String,
-}
-
-#[derive(Deserialize)]
-struct AuthResponse {
-    #[serde(rename = "User")]
-    user: JellyfinUser,
-}
-
-#[derive(Deserialize)]
-struct JellyfinUser {
-    #[serde(rename = "Policy")]
-    policy: UserPolicy,
-}
-
-#[derive(Deserialize)]
-struct UserPolicy {
-    #[serde(rename = "IsAdministrator")]
-    is_administrator: bool,
 }
 
 async fn render_server_list(state: &AppState) -> Result<String, String> {
@@ -275,44 +255,29 @@ pub async fn add_server_admin(
     };
 
     // 2. Verify credentials with upstream Jellyfin and check admin status
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .unwrap();
+    let client_info = crate::config::CLIENT_INFO.clone();
 
-    let auth_url = join_server_url(&server.url, "/Users/AuthenticateByName");
-    let body = serde_json::json!({
-        "Username": form.username,
-        "Pw": form.password
-    });
-
-    let auth_header = format!(
-        "MediaBrowser Client=\"Jellyswarrm Proxy\", Device=\"Server\", DeviceId=\"jellyswarrm-proxy\", Version=\"{}\"",
-        env!("CARGO_PKG_VERSION")
-    );
+    let client = match jellyfin_api::JellyfinClient::new(server.url.as_str(), client_info) {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Failed to create jellyfin client: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Client error</div>"),
+            )
+                .into_response();
+        }
+    };
 
     match client
-        .post(auth_url.as_str())
-        .header("Authorization", auth_header)
-        .json(&body)
-        .send()
+        .authenticate_by_name(&form.username, &form.password)
         .await
     {
-        Ok(response) if response.status().is_success() => {
-            // Parse response to check if user is admin
-            let auth_response = match response.json::<AuthResponse>().await {
-                Ok(r) => r,
-                Err(e) => {
-                    error!("Failed to parse auth response: {}", e);
-                    return (
-                        StatusCode::OK,
-                        Html("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Invalid server response</div>"),
-                    )
-                        .into_response();
-                }
-            };
+        Ok(user) => {
+            // Check if user is admin
+            let is_admin = user.policy.map(|p| p.is_administrator).unwrap_or(false);
 
-            if !auth_response.user.policy.is_administrator {
+            if !is_admin {
                 return (
                     StatusCode::OK,
                     Html("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">User is not an administrator on this server</div>"),
@@ -361,24 +326,12 @@ pub async fn add_server_admin(
                 }
             }
         }
-        Ok(response) => {
-            let status = response.status();
-            if status == StatusCode::UNAUTHORIZED {
-                (
-                    StatusCode::OK,
-                    Html("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Invalid credentials</div>"),
-                )
-                    .into_response()
-            } else {
-                (
-                    StatusCode::OK,
-                    Html(format!(
-                        "<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Upstream error: {}</div>",
-                        status
-                    )),
-                )
-                    .into_response()
-            }
+        Err(jellyfin_api::error::Error::AuthenticationFailed(_)) => {
+            (
+                StatusCode::OK,
+                Html("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Invalid credentials</div>"),
+            )
+                .into_response()
         }
         Err(e) => {
             error!("Failed to authenticate with upstream: {}", e);

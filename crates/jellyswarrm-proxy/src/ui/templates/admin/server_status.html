@@ -5,5 +5,8 @@
 {% else %}
     <span class="status-chip" style="background: rgba(40, 167, 69, 0.15); color: #28a745; font-weight: bold; padding: 0.25rem 0.75rem; border-radius: 1rem; font-size: 0.85rem; display: inline-flex; align-items: center; gap: 0.25rem;" title="Server is responding">
         <i class="fas fa-check-circle"></i> Online
+        {% if let Some(ver) = server_version %}
+            <span style="font-weight: normal; opacity: 0.8; font-size: 0.75em;">({{ ver }})</span>
+        {% endif %}
     </span>
 {% endif %}

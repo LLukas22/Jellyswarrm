@@ -61,6 +61,7 @@ async-recursion = "1.1.1"
 moka = { version = "0.12.11", features = ["future"] }
 aes-gcm = "0.10.3"
 serde_with = "3.16.1"
+jellyfin-api = { path = "../jellyfin-api" }
 
 [dev-dependencies]
 tokio-test = "0.4.4"

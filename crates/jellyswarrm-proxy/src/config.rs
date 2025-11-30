@@ -9,11 +9,19 @@ use tower_sessions::cookie::Key;
 use tracing::info;
 use uuid::Uuid;
 
+use jellyfin_api::ClientInfo;
 use once_cell::sync::Lazy;
 
 use base64::prelude::*;
 
 pub static MIGRATOR: Migrator = sqlx::migrate!();
+
+pub static CLIENT_INFO: Lazy<ClientInfo> = Lazy::new(|| ClientInfo {
+    client: "Jellyswarrm Proxy".to_string(),
+    device: "Server".to_string(),
+    device_id: "jellyswarrm-proxy".to_string(),
+    version: env!("CARGO_PKG_VERSION").to_string(),
+});
 
 // Lazily-resolved data directory shared across the application.
 // Priority: env var JELLYSWARRM_DATA_DIR, else "./data" relative to current working dir.

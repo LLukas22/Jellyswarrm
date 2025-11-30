@@ -6,12 +6,13 @@ use axum::{
 };
 use tracing::error;
 
-use crate::{url_helper::join_server_url, AppState};
+use crate::AppState;
 
 #[derive(Template)]
 #[template(path = "admin/server_status.html")]
 pub struct ServerStatusTemplate {
     pub error_message: Option<String>,
+    pub server_version: Option<String>,
 }
 
 /// Check server status
@@ -22,31 +23,31 @@ pub async fn check_server_status(
     // Get the server details first
     match state.server_storage.get_server_by_id(server_id).await {
         Ok(Some(server)) => {
-            // Test connection to the server
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(5))
-                .build()
-                .unwrap();
+            let client_info = crate::config::CLIENT_INFO.clone();
 
-            let status_url = join_server_url(&server.url, "/system/info/public");
-
-            match client.get(status_url.as_str()).send().await {
-                Ok(response) if response.status().is_success() => {
+            let client = match jellyfin_api::JellyfinClient::new(server.url.as_str(), client_info) {
+                Ok(c) => c,
+                Err(e) => {
                     let template = ServerStatusTemplate {
-                        error_message: None,
+                        error_message: Some(format!("Client error: {}", e)),
+                        server_version: None,
                     };
 
-                    match template.render() {
+                    return match template.render() {
                         Ok(html) => Html(html).into_response(),
                         Err(e) => {
                             error!("Failed to render status template: {}", e);
                             (StatusCode::INTERNAL_SERVER_ERROR, "Template error").into_response()
                         }
-                    }
+                    };
                 }
-                Ok(response) => {
+            };
+
+            match client.get_public_system_info().await {
+                Ok(info) => {
                     let template = ServerStatusTemplate {
-                        error_message: Some(format!("HTTP {}", response.status().as_u16())),
+                        error_message: None,
+                        server_version: info.version,
                     };
 
                     match template.render() {
@@ -58,16 +59,9 @@ pub async fn check_server_status(
                     }
                 }
                 Err(e) => {
-                    let error_msg = if e.is_timeout() {
-                        "Connection timeout".to_string()
-                    } else if e.is_connect() {
-                        "Connection refused".to_string()
-                    } else {
-                        format!("Network error: {e}")
-                    };
-
                     let template = ServerStatusTemplate {
-                        error_message: Some(error_msg),
+                        error_message: Some(format!("Error: {}", e)),
+                        server_version: None,
                     };
 
                     match template.render() {
