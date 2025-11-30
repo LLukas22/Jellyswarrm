@@ -9,7 +9,11 @@ use jellyfin_api::JellyfinClient;
 use serde::Deserialize;
 use tracing::{error, info, warn};
 
-use crate::{server_storage::Server, ui::auth::AuthenticatedUser, AppState};
+use crate::{
+    server_storage::Server,
+    ui::{auth::AuthenticatedUser, user::common::authenticate_user_on_server},
+    AppState,
+};
 
 #[derive(Template)]
 #[template(path = "user/user_server_list.html")]
@@ -262,66 +266,8 @@ pub async fn check_user_server_status(
         }
     };
 
-    // Always check public system info first to get version and name
-    let server_url = server.url.clone();
-    let client_info = crate::config::CLIENT_INFO.clone();
-
-    let (public_info, client) = match JellyfinClient::new(server_url.as_str(), client_info) {
-        Ok(c) => match c.get_public_system_info().await {
-            Ok(info) => (info, c),
-            Err(_) => {
-                return (
-                    StatusCode::OK,
-                    Html("<span style=\"color: #dc3545;\">Server offline or unreachable</span>"),
-                )
-                    .into_response()
-            }
-        },
-        Err(e) => {
-            error!("Failed to create jellyfin client: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Html("<span style=\"color: #dc3545;\">Client error</span>"),
-            )
-                .into_response();
-        }
-    };
-
-    // Check for mapping and try to authenticate
-    let mapping = match state
-        .user_authorization
-        .get_server_mapping(&user.id, server.url.as_str())
-        .await
-    {
-        Ok(Some(m)) => m,
-        Ok(None) => return (
-            StatusCode::OK,
-            Html("<span style=\"color: #dc3545;\">No mapping found for user on this server</span>"),
-        )
-            .into_response(),
-        Err(e) => {
-            error!("Failed to get server mapping: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Html("<span style=\"color: #dc3545;\">Database error</span>"),
-            )
-                .into_response();
-        }
-    };
-
-    let admin_password = state.get_admin_password().await;
-
-    let password = state.user_authorization.decrypt_server_mapping_password(
-        &mapping,
-        &user.password,
-        &admin_password,
-    );
-
-    match client
-        .authenticate_by_name(&mapping.mapped_username, &password)
-        .await
-    {
-        Ok(jellyfin_user) => {
+    match authenticate_user_on_server(&state, &user, &server).await {
+        Ok((client, jellyfin_user, public_info)) => {
             let template = UserServerStatusTemplate {
                 username: Some(jellyfin_user.name),
                 error_message: None,
@@ -342,18 +288,10 @@ pub async fn check_user_server_status(
                 }
             }
         }
-        Err(e) => {
-            // Auth failed, log it but continue to check existing session
-            tracing::warn!(
-                "Failed to authenticate with mapped credentials for server {}: {}",
-                server.id,
-                e
-            );
-            (
-                    StatusCode::UNAUTHORIZED,
-                    Html("<span style=\"color: #dc3545;\">Failed to log in with provided credentials</span>"),
-                )
-                    .into_response()
-        }
+        Err(e) => (
+            StatusCode::OK,
+            Html(format!("<span style=\"color: #dc3545;\">{}</span>", e)),
+        )
+            .into_response(),
     }
 }
