@@ -1,7 +1,9 @@
 [package]
 name = "jellyfin-api"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
 
 [dependencies]
 reqwest = { workspace = true }

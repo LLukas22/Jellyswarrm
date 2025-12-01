@@ -73,7 +73,8 @@ impl FederatedUserService {
         };
 
         let config = self.config.read().await;
-        let admin_password = &config.password;
+        let admin_password = config.password.clone();
+        drop(config);
 
         for server in servers {
             // Check if we have admin credentials for this server
@@ -90,7 +91,7 @@ impl FederatedUserService {
             } {
                 // Decrypt admin password
                 let decrypted_admin_password =
-                    match decrypt_password(&admin.password, admin_password) {
+                    match decrypt_password(&admin.password, &admin_password) {
                         Ok(p) => p,
                         Err(e) => {
                             error!(
