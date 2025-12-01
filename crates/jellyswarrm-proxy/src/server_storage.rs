@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use sqlx::{Row, SqlitePool};
+use sqlx::{FromRow, Row, SqlitePool};
 use tracing::info;
 use url::Url;
 
@@ -9,6 +9,16 @@ pub struct Server {
     pub name: String,
     pub url: Url,
     pub priority: i32,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct ServerAdmin {
+    pub id: i64,
+    pub server_id: i64,
+    pub username: String,
+    pub password: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -184,6 +194,65 @@ impl ServerStorageService {
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
         }
+    }
+
+    pub async fn add_server_admin(
+        &self,
+        server_id: i64,
+        username: &str,
+        password: &str,
+    ) -> Result<i64, sqlx::Error> {
+        let now = chrono::Utc::now();
+
+        let result = sqlx::query(
+            r#"
+            INSERT OR REPLACE INTO server_admins (server_id, username, password, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(server_id)
+        .bind(username)
+        .bind(password)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+
+        let admin_id = result.last_insert_rowid();
+        info!("Added admin for server ID: {}", server_id);
+        Ok(admin_id)
+    }
+
+    pub async fn get_server_admin(
+        &self,
+        server_id: i64,
+    ) -> Result<Option<ServerAdmin>, sqlx::Error> {
+        let row = sqlx::query_as::<_, ServerAdmin>(
+            r#"
+            SELECT id, server_id, username, password, created_at, updated_at
+            FROM server_admins 
+            WHERE server_id = ?
+            "#,
+        )
+        .bind(server_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row)
+    }
+
+    pub async fn delete_server_admin(&self, server_id: i64) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query(
+            r#"
+            DELETE FROM server_admins 
+            WHERE server_id = ?
+            "#,
+        )
+        .bind(server_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
     }
 }
 

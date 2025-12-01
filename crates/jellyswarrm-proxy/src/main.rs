@@ -27,6 +27,8 @@ use axum_login::{
 };
 
 mod config;
+mod encryption;
+mod federated_users;
 mod handlers;
 mod media_storage_service;
 mod models;
@@ -38,6 +40,7 @@ mod ui;
 mod url_helper;
 mod user_authorization_service;
 
+use federated_users::FederatedUserService;
 use media_storage_service::MediaStorageService;
 use server_storage::ServerStorageService;
 use user_authorization_service::UserAuthorizationService;
@@ -65,6 +68,7 @@ pub struct AppState {
     pub play_sessions: Arc<SessionStorage>,
     pub config: Arc<tokio::sync::RwLock<AppConfig>>,
     pub processors: Arc<JsonProcessors>,
+    pub federated_users: Arc<FederatedUserService>,
 }
 
 impl AppState {
@@ -73,6 +77,15 @@ impl AppState {
         data_context: DataContext,
         json_processors: JsonProcessors,
     ) -> Self {
+        // Create temporary state to initialize FederatedUserService
+        // This is a bit circular but FederatedUserService needs parts of AppState
+        // We can construct it manually here since we have all components
+        let federated_users = Arc::new(FederatedUserService::new_from_components(
+            data_context.server_storage.clone(),
+            data_context.user_authorization.clone(),
+            data_context.config.clone(),
+        ));
+
         Self {
             reqwest_client,
             user_authorization: data_context.user_authorization,
@@ -81,6 +94,7 @@ impl AppState {
             play_sessions: data_context.play_sessions,
             config: data_context.config,
             processors: Arc::new(json_processors),
+            federated_users,
         }
     }
 
@@ -96,6 +110,11 @@ impl AppState {
     pub async fn get_url_prefix(&self) -> Option<String> {
         let config = self.config.read().await;
         config.url_prefix.as_ref().map(|prefix| prefix.to_string())
+    }
+
+    pub async fn get_admin_password(&self) -> String {
+        let config = self.config.read().await;
+        config.password.clone()
     }
 
     pub async fn remove_prefix_from_path<'a>(&self, path: &'a str) -> &'a str {
@@ -264,10 +283,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let session_layer = SessionManagerLayer::new(session_store)
         .with_secure(false)
+        .with_same_site(tower_sessions::cookie::SameSite::Lax)
         .with_expiry(Expiry::OnInactivity(time::Duration::days(1))) // 24 hour
         .with_signed(key);
 
-    let backend = Backend::new(app_state.config.clone());
+    let backend = Backend::new(
+        app_state.config.clone(),
+        app_state.user_authorization.clone(),
+    );
     let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
 
     let ui_route = loaded_config.ui_route.to_string();

@@ -1,0 +1,154 @@
+<hgroup>
+    <h1>Welcome, {{ username }}</h1>
+    <h2>Your Connected Servers</h2>
+</hgroup>
+
+{% if servers.is_empty() %}
+    <div style="text-align: center; padding: 2rem;">
+        <i class="fas fa-server fa-3x" style="color: var(--pico-muted-color); margin-bottom: 1rem;"></i>
+        <h3>No Servers Connected</h3>
+        <p>You are not currently connected to any Jellyfin servers.</p>
+    </div>
+{% else %}
+    <table role="grid">
+        <thead>
+            <tr>
+                <th scope="col">Name</th>
+                <th scope="col">URL</th>
+                <th scope="col">Priority</th>
+                <th scope="col">Status</th>
+                <th scope="col">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for server in servers %}
+            <tr>
+                <th scope="row">
+                    <i class="fas fa-server" style="margin-right: 0.5rem; color: var(--pico-muted-color);"></i>
+                    {{ server.name }}
+                </th>
+                <td>
+                    <a href="{{ server.url }}" target="_blank">
+                        {{ server.url }}
+                        <i class="fas fa-external-link-alt" style="font-size: 0.8em; margin-left: 0.25rem;"></i>
+                    </a>
+                </td>
+                <td>{{ server.priority }}</td>
+                <td>
+                    <span hx-get="/{{ ui_route }}/user/servers/{{ server.id }}/status" 
+                          hx-trigger="load, every 10s" 
+                          hx-swap="outerHTML">
+                        <small class="secondary"><i class="fas fa-circle-notch fa-spin"></i></small>
+                    </span>
+                </td>
+                <td>
+                    <button 
+                        hx-delete="/{{ ui_route }}/user/servers/{{ server.id }}"
+                        hx-confirm="Are you sure you want to disconnect from {{ server.name }}?"
+                        class="outline secondary"
+                        style="padding: 0.25rem 0.5rem; font-size: 0.8em;">
+                        Disconnect
+                    </button>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+{% endif %}
+
+{% if !unmapped_servers.is_empty() %}
+    <hr>
+    <h2>Available Servers</h2>
+    <p>Connect to these servers by providing your credentials.</p>
+    
+    <table role="grid">
+        <thead>
+            <tr>
+                <th scope="col">Name</th>
+                <th scope="col">URL</th>
+                <th scope="col">Status</th>
+                <th scope="col">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for server in unmapped_servers %}
+            <tr>
+                <th scope="row">
+                    <i class="fas fa-server" style="margin-right: 0.5rem; color: var(--pico-muted-color);"></i>
+                    <strong>{{ server.name }}</strong>
+                </th>
+                <td>
+                    <a href="{{ server.url }}" target="_blank">
+                        <small>{{ server.url }}</small>
+                        <i class="fas fa-external-link-alt" style="font-size: 0.8em; margin-left: 0.25rem;"></i>
+                    </a>
+                </td>
+                <td>
+                    <span hx-get="/{{ ui_route }}/servers/{{ server.id }}/status" 
+                          hx-trigger="load" 
+                          hx-swap="outerHTML">
+                        <small class="secondary"><i class="fas fa-circle-notch fa-spin"></i></small>
+                    </span>
+                </td>
+                <td>
+                    <button 
+                        onclick="openConnectModal('{{ server.id }}', '{{ server.name }}')"
+                        class="contrast outline"
+                        style="padding: 0.25rem 0.5rem; font-size: 0.8em;">
+                        Connect
+                    </button>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+
+    <dialog id="connect_modal">
+        <article>
+            <header>
+                <button aria-label="Close" rel="prev" onclick="closeConnectModal()"></button>
+                <h3>Connect to <span id="modal_server_name"></span></h3>
+            </header>
+            <div id="connect_error"></div>
+            <form id="connect_form" method="post" hx-post="" hx-target="#connect_error" hx-swap="innerHTML">
+                <label>
+                    Username
+                    <input type="text" name="username" required>
+                </label>
+                <label>
+                    Password
+                    <input type="password" name="password" required>
+                </label>
+                <footer>
+                    <div class="grid">
+                        <button type="button" class="secondary" onclick="closeConnectModal()">Cancel</button>
+                        <button type="submit">Connect</button>
+                    </div>
+                </footer>
+            </form>
+        </article>
+    </dialog>
+
+    <script>
+        (function() {
+            const modal = document.getElementById('connect_modal');
+            const form = document.getElementById('connect_form');
+            const serverNameSpan = document.getElementById('modal_server_name');
+            const errorDiv = document.getElementById('connect_error');
+            const uiRoute = "{{ ui_route }}";
+
+            window.openConnectModal = function(id, name) {
+                serverNameSpan.innerText = name;
+                form.setAttribute('hx-post', '/' + uiRoute + '/user/servers/' + id + '/connect');
+                htmx.process(form);
+                errorDiv.innerHTML = '';
+                form.reset();
+                modal.showModal();
+            }
+
+            window.closeConnectModal = function() {
+                modal.close();
+            }
+        })();
+    </script>
+{% endif %}

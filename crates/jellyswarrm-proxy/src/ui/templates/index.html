@@ -15,24 +15,8 @@
                 </li>
             </ul>
             <ul>
-                <li>
-                    <a href="#" hx-get="/{{ ui_route }}/servers" hx-target="#main-content" class="nav-link">
-                        <i class="fas fa-server" style="margin-right: 0.25rem;"></i>
-                        Servers
-                    </a>
-                </li>
-                <li>
-                    <a href="#" hx-get="/{{ ui_route }}/users" hx-target="#main-content" class="nav-link">
-                        <i class="fas fa-users" style="margin-right: 0.25rem;"></i>
-                        Users
-                    </a>
-                </li>
-                <li>
-                    <a href="#" hx-get="/{{ ui_route }}/settings" hx-target="#main-content" class="nav-link">
-                        <i class="fas fa-cog" style="margin-right: 0.25rem;"></i>
-                        Settings
-                    </a>
-                </li>
+
+                {% block tabs %}{% endblock %}
                 <li>
                     {% match root %}{% when Some with (r) %}<a href="/{{ r }}" target="_blank">{% when None %}<a href="/" target="_blank">{% endmatch %}
                         <i class="fas fa-film" style="margin-right: 0.25rem;"></i>
@@ -61,14 +45,8 @@
         </div>
 
         <!-- Main content area -->
-        <section>
-            <div id="main-content" hx-get="/{{ ui_route }}/servers" hx-trigger="load">
-                <div style="text-align: center; padding: 2rem;">
-                    <i class="fas fa-spinner fa-spin" style="font-size: 1.5rem; color: var(--pico-muted-color);"></i>
-                    <p style="margin-top: 1rem; color: var(--pico-muted-color);">Loading dashboard...</p>
-                </div>
-            </div>
-        </section>
+        {% block main_content %} {% endblock %}
+        
     </main>
 
     <!-- Footer -->

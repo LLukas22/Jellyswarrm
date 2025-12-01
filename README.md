@@ -26,7 +26,8 @@ Jellyswarrm is a reverse proxy that lets you combine multiple Jellyfin servers i
 <p align="center">
   <!-- Side-by-side smaller views, same height -->
   <img src="./media/servers.png" alt="Server Selection" height="250px" style="margin-right:10px;">
-  <img src="./media/users.png" alt="User Mappings" height="250px">
+  <img src="./media/users.png" alt="User Mappings" height="250px" style="margin-right:10px;">
+  <img src="./media/user_page.png" alt="Settings" height="250px">
 </p>
 
 ## Features
@@ -40,17 +41,16 @@ Jellyswarrm is a reverse proxy that lets you combine multiple Jellyfin servers i
 * **Direct Playback** – Play content straight from the original server without extra overhead.
 * **User Mapping** – Link accounts across servers for a consistent user experience.
 * **API Compatibility** – Appears as a normal Jellyfin server, so existing apps and tools still work.
+* **Server Federation** – Automatically sync users across connected servers.
+* **User Page** – Personal dashboard for managing credentials and libraries. 
 
 ### ⚠️ In Progress
 
-- **QuickConnect** – This feature isn’t available yet. Please log in using your **username & password** for now.
+* **QuickConnect** – This feature isn’t available yet. Please log in using your **username & password** for now.
 * **Websocket Support** – Needed for real-time features like SyncPlay (not fully reliable yet).
 * **Audio Streaming** – May not function correctly (still untested in many cases).
 * **Automatic Bitrate Adjustment** – Stream quality based on network conditions isn’t supported yet.
-
-### 🚫 Not Planned
-
-* **Admin Functions** – Server administration (user management, settings, etc.) won’t be supported through Jellyswarrm.
+* **Media Management** – Features like adding or deleting media libraries through Jellyswarrm are not implemented yet.
 
 ---
 

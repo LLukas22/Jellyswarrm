@@ -1,0 +1,37 @@
+{% extends "../index.html" %}
+
+
+{% block tabs %}
+
+<li>
+    <a href="#" hx-get="/{{ ui_route }}/servers" hx-target="#main-content" class="nav-link">
+        <i class="fas fa-server" style="margin-right: 0.25rem;"></i>
+        Servers
+    </a>
+</li>
+<li>
+    <a href="#" hx-get="/{{ ui_route }}/users" hx-target="#main-content" class="nav-link">
+        <i class="fas fa-users" style="margin-right: 0.25rem;"></i>
+        Users
+    </a>
+</li>
+<li>
+    <a href="#" hx-get="/{{ ui_route }}/settings" hx-target="#main-content" class="nav-link">
+        <i class="fas fa-cog" style="margin-right: 0.25rem;"></i>
+        Settings
+    </a>
+</li>
+
+{% endblock %}
+
+
+{% block main_content %} 
+<section>
+    <div id="main-content" hx-get="/{{ ui_route }}/servers" hx-trigger="load">
+        <div style="text-align: center; padding: 2rem;">
+            <i class="fas fa-spinner fa-spin" style="font-size: 1.5rem; color: var(--pico-muted-color);"></i>
+            <p style="margin-top: 1rem; color: var(--pico-muted-color);">Loading dashboard...</p>
+        </div>
+    </div>
+</section>
+{% endblock %}

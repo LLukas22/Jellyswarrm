@@ -1,0 +1,57 @@
+{% if let Some(report) = sync_report %}
+<div class="sync-report">
+  <strong>Federated Sync Results:</strong>
+  <ul>
+    {% for result in report %}
+    <li>
+      {{ result.server_name }}:
+      {% match result.status %}
+        {% when crate::federated_users::SyncStatus::Created %}
+          <span class="badge success">Created</span>
+        {% when crate::federated_users::SyncStatus::AlreadyExists %}
+          <span class="badge warning">Exists</span>
+        {% when crate::federated_users::SyncStatus::ExistsWithDifferentPassword %}
+          <span class="badge danger">Exists (Password Mismatch)</span>
+        {% when crate::federated_users::SyncStatus::Failed %}
+          <span class="badge danger">Failed</span>
+        {% when crate::federated_users::SyncStatus::Skipped %}
+          <span class="badge secondary">Skipped</span>
+        {% when crate::federated_users::SyncStatus::Deleted %}
+          <span class="badge danger">Deleted</span>
+        {% when crate::federated_users::SyncStatus::NotFound %}
+          <span class="badge secondary">Not Found</span>
+      {% endmatch %}
+      {% if let Some(msg) = result.message %}
+        <small>({{ msg }})</small>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+<div class="filter-bar">
+  <input id="user-filter" type="search" placeholder="Filter users" oninput="filterUsers(this.value)">
+</div>
+
+{% if users.is_empty() %}
+<div class="empty-state" role="note">
+  <p>No users yet. Add one above to begin.</p>
+</div>
+{% else %}
+<section class="user-list" aria-label="Users">
+  {% for uwm in users %}
+  {% include "user_item.html" %}
+  {% endfor %}
+</section>
+{% endif %}
+
+<script>
+  function filterUsers(q) {
+    q = q.toLowerCase().trim();
+    for (const art of document.querySelectorAll('section.user-list > article')) {
+      const name = art.dataset.username.toLowerCase();
+      art.hidden = q && !name.includes(q);
+    }
+  }
+</script>

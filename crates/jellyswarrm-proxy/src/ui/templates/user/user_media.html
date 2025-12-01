@@ -1,0 +1,38 @@
+{% for server in servers %}
+    <article>
+        <header>
+            <strong>{{ server.server_name }}</strong>
+            {% if let Some(error) = server.error %}
+                <span style="color: #dc3545; float: right;">{{ error }}</span>
+            {% endif %}
+        </header>
+        {% if !server.libraries.is_empty() %}
+            <div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 1rem;">
+                {% for lib in server.libraries %}
+                    <div style="text-align: center; padding: 1rem; border: 1px solid var(--pico-muted-border-color); border-radius: 0.5rem;">
+                        <i class="fas fa-folder fa-2x" style="margin-bottom: 0.5rem; color: var(--pico-primary-background);"></i>
+                        <div style="font-weight: bold;">{{ lib.name }}</div>
+                        <small style="color: var(--pico-muted-color);">
+                            {% match lib.collection_type %}
+                                {% when Some with (ctype) %}
+                                    {{ ctype }}
+                                {% when None %}
+                                    unknown
+                            {% endmatch %}
+                        </small>
+                    </div>
+                {% endfor %}
+            </div>
+        {% else %}
+            {% if server.error.is_none() %}
+                <p style="color: var(--pico-muted-color);">No libraries found.</p>
+            {% endif %}
+        {% endif %}
+    </article>
+{% endfor %}
+
+{% if servers.is_empty() %}
+    <div style="text-align: center; padding: 2rem;">
+        <p>No servers mapped.</p>
+    </div>
+{% endif %}
