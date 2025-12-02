@@ -1,0 +1,54 @@
+name: Update UI Submodule
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'The tag to update the UI submodule to (e.g., v10.9.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-ui:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Update UI Submodule
+        run: |
+          cd ui
+          git fetch --tags origin
+          git checkout ${{ inputs.tag }}
+          cd ..
+
+      - name: Create Pull Request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          BRANCH_NAME="update-ui-${TAG}"
+          git checkout -b "$BRANCH_NAME"
+          git add ui
+          
+          if git diff --staged --quiet; then
+            echo "No changes detected in submodule."
+            exit 0
+          fi
+
+          git commit -m "Update UI to ${TAG}"
+          git push origin "$BRANCH_NAME" --force
+          
+          gh pr create --title "Update UI to ${TAG}" --body "Updates the UI submodule to tag ${TAG}." --base main --head "$BRANCH_NAME" || echo "PR might already exist"
