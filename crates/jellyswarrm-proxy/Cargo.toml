@@ -34,6 +34,7 @@ sha2.workspace = true
 hex.workspace = true
 chrono.workspace = true
 rand.workspace = true
+moka.workspace = true
 dashmap = "6.1.0"
 uuid = { version = "1.0", features = ["v4"] }
 anyhow = "1.0.98"
@@ -58,7 +59,7 @@ base64 = "0.22.1"
 serde-aux = "4.7.0"
 async-trait = "0.1.89"
 async-recursion = "1.1.1"
-moka = { version = "0.12.11", features = ["future"] }
+
 aes-gcm = "0.10.3"
 serde_with = "3.16.1"
 jellyfin-api = { path = "../jellyfin-api" }

@@ -23,6 +23,11 @@ pub static CLIENT_INFO: Lazy<ClientInfo> = Lazy::new(|| ClientInfo {
     version: env!("CARGO_PKG_VERSION").to_string(),
 });
 
+pub static CLIENT_STORAGE: Lazy<jellyfin_api::storage::JellyfinClientStorage> = Lazy::new(|| {
+    jellyfin_api::storage::JellyfinClientStorage::new(300, std::time::Duration::from_secs(60 * 15))
+    // 15 minutes
+});
+
 // Lazily-resolved data directory shared across the application.
 // Priority: env var JELLYSWARRM_DATA_DIR, else "./data" relative to current working dir.
 // The directory is created on first access.

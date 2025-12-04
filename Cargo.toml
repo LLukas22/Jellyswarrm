@@ -22,6 +22,7 @@ hyper = { version = "1.0", features = ["full"] }
 hyper-util = { version = "0.1", features = ["full"] }
 http-body-util = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "gzip", "brotli", "deflate", "rustls-tls"]  }
+moka = { version = "0.12.11", features = ["future"] }
 
 # Database
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono"] }

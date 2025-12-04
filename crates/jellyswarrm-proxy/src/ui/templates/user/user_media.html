@@ -6,18 +6,22 @@
                 <span style="color: #dc3545; float: right;">{{ error }}</span>
             {% endif %}
         </header>
-        {% if !server.libraries.is_empty() %}
+        {% if !server.items.is_empty() %}
             <div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 1rem;">
-                {% for lib in server.libraries %}
-                    <div style="text-align: center; padding: 1rem; border: 1px solid var(--pico-muted-border-color); border-radius: 0.5rem;">
-                        <i class="fas fa-folder fa-2x" style="margin-bottom: 0.5rem; color: var(--pico-primary-background);"></i>
-                        <div style="font-weight: bold;">{{ lib.name }}</div>
+                {% for item in server.items %}
+                    <div style="text-align: center; padding: 0.5rem; border: 1px solid var(--pico-muted-border-color); border-radius: 0.5rem; overflow: hidden;">
+                        <div style="aspect-ratio: 2/3; background-color: #000; margin-bottom: 0.5rem; border-radius: 0.25rem; overflow: hidden;">
+                            <img src="{{ ui_route }}/user/media/image/{{ server.server_id }}/{{ item.id }}" 
+                                 alt="{{ item.name }}" 
+                                 style="width: 100%; height: 100%; object-fit: cover;"
+                                 loading="lazy">
+                        </div>
+                        <div style="font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ item.name }}</div>
                         <small style="color: var(--pico-muted-color);">
-                            {% match lib.collection_type %}
-                                {% when Some with (ctype) %}
-                                    {{ ctype }}
+                            {% match item.production_year %}
+                                {% when Some with (year) %}
+                                    {{ year }}
                                 {% when None %}
-                                    unknown
                             {% endmatch %}
                         </small>
                     </div>
@@ -25,7 +29,7 @@
             </div>
         {% else %}
             {% if server.error.is_none() %}
-                <p style="color: var(--pico-muted-color);">No libraries found.</p>
+                <p style="color: var(--pico-muted-color);">No media found.</p>
             {% endif %}
         {% endif %}
     </article>
