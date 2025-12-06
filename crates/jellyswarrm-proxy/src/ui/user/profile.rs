@@ -8,7 +8,7 @@ use axum::{
 use serde::Deserialize;
 use tracing::error;
 
-use crate::{ui::auth::AuthenticatedUser, AppState};
+use crate::{encryption::Password, ui::auth::AuthenticatedUser, AppState};
 
 #[derive(Template)]
 #[template(path = "user/user_profile.html")]
@@ -19,9 +19,9 @@ pub struct UserProfileTemplate {
 
 #[derive(Deserialize)]
 pub struct ChangePasswordForm {
-    pub current_password: String,
-    pub new_password: String,
-    pub confirm_password: String,
+    pub current_password: Password,
+    pub new_password: Password,
+    pub confirm_password: Password,
 }
 
 pub async fn get_user_profile(

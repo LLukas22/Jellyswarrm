@@ -6,12 +6,14 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+tokio = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 url = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+moka = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

@@ -137,6 +137,18 @@ pub fn ui_routes() -> axum::Router<AppState> {
             post(user::servers::connect_server),
         )
         .route("/user/media", get(user::media::get_user_media))
+        .route(
+            "/user/media/server/{server_id}/libraries",
+            get(user::media::get_server_libraries),
+        )
+        .route(
+            "/user/media/server/{server_id}/library/{library_id}/items",
+            get(user::media::get_library_items),
+        )
+        .route(
+            "/user/media/image/{server_id}/{item_id}",
+            get(user::media::proxy_media_image),
+        )
         .route("/user/profile", get(user::profile::get_user_profile))
         .route(
             "/user/profile/password",

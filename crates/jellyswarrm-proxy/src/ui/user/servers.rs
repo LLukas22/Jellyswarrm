@@ -10,6 +10,7 @@ use serde::Deserialize;
 use tracing::{error, info, warn};
 
 use crate::{
+    encryption::Password,
     server_storage::Server,
     ui::{auth::AuthenticatedUser, user::common::authenticate_user_on_server},
     AppState,
@@ -27,7 +28,7 @@ pub struct UserServerListTemplate {
 #[derive(Deserialize)]
 pub struct ConnectServerForm {
     pub username: String,
-    pub password: String,
+    pub password: Password,
 }
 
 #[derive(Template)]
@@ -122,7 +123,7 @@ pub async fn connect_server(
         }
     };
 
-    match client.authenticate_by_name(&form.username, &form.password).await {
+    match client.authenticate_by_name(&form.username, form.password.as_str()).await {
         Ok(_) => {
             // Credentials valid, create mapping
             match state
@@ -132,7 +133,7 @@ pub async fn connect_server(
                     server.url.as_str(),
                     &form.username,
                     &form.password,
-                    Some(&user.password),
+                    Some(&user.password_hash),
                 )
                 .await
             {

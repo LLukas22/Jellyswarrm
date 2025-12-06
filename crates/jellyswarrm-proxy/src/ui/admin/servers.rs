@@ -8,7 +8,11 @@ use axum::{
 use serde::Deserialize;
 use tracing::{error, info};
 
-use crate::{encryption::encrypt_password, server_storage::Server, AppState};
+use crate::{
+    encryption::{encrypt_password, Password},
+    server_storage::Server,
+    AppState,
+};
 
 #[derive(Template)]
 #[template(path = "admin/servers.html")]
@@ -43,7 +47,7 @@ pub struct UpdatePriorityForm {
 #[derive(Deserialize)]
 pub struct AddServerAdminForm {
     pub username: String,
-    pub password: String,
+    pub password: Password,
 }
 
 async fn render_server_list(state: &AppState) -> Result<String, String> {
@@ -270,7 +274,7 @@ pub async fn add_server_admin(
     };
 
     match client
-        .authenticate_by_name(&form.username, &form.password)
+        .authenticate_by_name(&form.username, form.password.as_str())
         .await
     {
         Ok(user) => {
@@ -287,7 +291,7 @@ pub async fn add_server_admin(
 
             // 3. Encrypt password with admin master password
             let config = state.config.read().await;
-            let encrypted_password = match encrypt_password(&form.password, &config.password) {
+            let encrypted_password = match encrypt_password(&form.password, &config.password.clone().into()) {
                 Ok(p) => p,
                 Err(e) => {
                     error!("Encryption failed: {}", e);

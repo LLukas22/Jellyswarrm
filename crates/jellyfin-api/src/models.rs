@@ -65,3 +65,29 @@ pub struct PublicSystemInfo {
     #[serde(rename = "StartupWizardCompleted")]
     pub startup_wizard_completed: Option<bool>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BaseItem {
+    #[serde(rename = "Name")]
+    pub name: String,
+    #[serde(rename = "Id")]
+    pub id: String,
+    #[serde(rename = "Type")]
+    pub type_: String,
+    #[serde(rename = "ImageTags")]
+    pub image_tags: Option<std::collections::HashMap<String, String>>,
+    #[serde(rename = "ProductionYear")]
+    pub production_year: Option<i32>,
+    #[serde(rename = "RunTimeTicks")]
+    pub run_time_ticks: Option<i64>,
+    #[serde(rename = "CommunityRating")]
+    pub community_rating: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ItemsResponse {
+    #[serde(rename = "Items")]
+    pub items: Vec<BaseItem>,
+    #[serde(rename = "TotalRecordCount")]
+    pub total_record_count: i32,
+}
