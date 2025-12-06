@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use tracing::{error, info};
 
 use crate::{
+    encryption::Password,
     federated_users::ServerSyncResult,
     server_storage::Server,
     user_authorization_service::{ServerMapping, User},
@@ -48,7 +49,7 @@ pub struct UserItememplate {
 #[derive(Deserialize)]
 pub struct AddUserForm {
     pub username: String,
-    pub password: String,
+    pub password: Password,
     #[serde(default)]
     pub enable_federation: bool,
 }
@@ -58,7 +59,7 @@ pub struct AddMappingForm {
     pub user_id: String,
     pub server_url: String,
     pub mapped_username: String,
-    pub mapped_password: String,
+    pub mapped_password: Password,
 }
 
 pub async fn create_user_with_mappings(
@@ -228,7 +229,7 @@ pub async fn get_user_list(State(state): State<AppState>) -> impl IntoResponse {
 
 /// Add user
 pub async fn add_user(State(state): State<AppState>, Form(form): Form<AddUserForm>) -> Response {
-    if form.username.trim().is_empty() || form.password.is_empty() {
+    if form.username.trim().is_empty() || form.password.as_str().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
             Html("<div class=\"alert alert-error\">Username and password required</div>"),
@@ -336,7 +337,7 @@ pub async fn add_mapping(
     State(state): State<AppState>,
     Form(form): Form<AddMappingForm>,
 ) -> Response {
-    if form.mapped_username.trim().is_empty() || form.mapped_password.is_empty() {
+    if form.mapped_username.trim().is_empty() || form.mapped_password.as_str().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
             Html("<div class=\"alert alert-error\">Mapping credentials required</div>"),
@@ -354,7 +355,7 @@ pub async fn add_mapping(
             &form.server_url,
             &form.mapped_username,
             &form.mapped_password,
-            Some(admin_password),
+            Some(&admin_password.into()),
         )
         .await
     {

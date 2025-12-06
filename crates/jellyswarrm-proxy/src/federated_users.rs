@@ -3,8 +3,10 @@ use std::sync::Arc;
 use tracing::{error, info, warn};
 
 use crate::{
-    encryption::decrypt_password, server_storage::ServerStorageService,
-    user_authorization_service::UserAuthorizationService, AppState,
+    encryption::{decrypt_password, HashedPassword, Password},
+    server_storage::ServerStorageService,
+    user_authorization_service::UserAuthorizationService,
+    AppState,
 };
 use jellyfin_api::JellyfinClient;
 
@@ -60,7 +62,7 @@ impl FederatedUserService {
     pub async fn sync_user_to_all_servers(
         &self,
         username: &str,
-        password: &str,
+        password: &Password,
         user_id: &str,
     ) -> Vec<ServerSyncResult> {
         let mut results = Vec::new();
@@ -73,7 +75,8 @@ impl FederatedUserService {
         };
 
         let config = self.config.read().await;
-        let admin_password = config.password.clone();
+        let admin_password: HashedPassword = config.password.clone().into();
+
         drop(config);
 
         for server in servers {
@@ -124,7 +127,7 @@ impl FederatedUserService {
 
                 // Authenticate as admin to get token
                 match client
-                    .authenticate_by_name(&admin.username, &decrypted_admin_password)
+                    .authenticate_by_name(&admin.username, decrypted_admin_password.as_str())
                     .await
                 {
                     Ok(_) => {}
@@ -167,11 +170,13 @@ impl FederatedUserService {
                             Err(_) => continue,
                         };
 
-                    let (status, should_map) =
-                        match user_client.authenticate_by_name(username, password).await {
-                            Ok(_) => (SyncStatus::AlreadyExists, true),
-                            Err(_) => (SyncStatus::ExistsWithDifferentPassword, false),
-                        };
+                    let (status, should_map) = match user_client
+                        .authenticate_by_name(username, password.as_str())
+                        .await
+                    {
+                        Ok(_) => (SyncStatus::AlreadyExists, true),
+                        Err(_) => (SyncStatus::ExistsWithDifferentPassword, false),
+                    };
 
                     info!(
                         "Synced user {} to server {} (Remote ID: {}, Status: {:?})",
@@ -186,7 +191,7 @@ impl FederatedUserService {
                                 server.url.as_str(),
                                 username,
                                 password,
-                                Some(password), // Encrypt with their own password so they can use it
+                                Some(&password.into()), // Encrypt with their own password so they can use it
                             )
                             .await
                         {
@@ -215,7 +220,7 @@ impl FederatedUserService {
                     }
                 } else {
                     // Create user
-                    match client.create_user(username, Some(password)).await {
+                    match client.create_user(username, Some(password.as_str())).await {
                         Ok(new_user) => {
                             info!(
                                 "Synced user {} to server {} (Remote ID: {}, Status: Created)",
@@ -229,7 +234,7 @@ impl FederatedUserService {
                                     server.url.as_str(),
                                     username,
                                     password,
-                                    Some(password), // Encrypt with their own password so they can use it
+                                    Some(&password.into()), // Encrypt with their own password so they can use it
                                 )
                                 .await
                             {
@@ -305,7 +310,7 @@ impl FederatedUserService {
                 }
             } {
                 let decrypted_admin_password =
-                    match decrypt_password(&admin.password, admin_password) {
+                    match decrypt_password(&admin.password, &admin_password.into()) {
                         Ok(p) => p,
                         Err(e) => {
                             error!(
@@ -337,7 +342,7 @@ impl FederatedUserService {
                 };
 
                 match client
-                    .authenticate_by_name(&admin.username, &decrypted_admin_password)
+                    .authenticate_by_name(&admin.username, decrypted_admin_password.as_str())
                     .await
                 {
                     Ok(_) => {}

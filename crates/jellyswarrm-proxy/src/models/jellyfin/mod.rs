@@ -6,7 +6,10 @@ use jellyswarrm_macros::multi_case_struct;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_with::skip_serializing_none;
 
-use crate::models::{enums::CollectionType, jellyfin::enums::BaseItemKind};
+use crate::{
+    encryption::Password,
+    models::{enums::CollectionType, jellyfin::enums::BaseItemKind},
+};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(untagged)]
@@ -110,7 +113,7 @@ pub struct NowPlayingQueueItem {
 pub struct AuthenticateRequest {
     pub username: String,
     #[serde(rename = "Pw")]
-    pub password: String,
+    pub password: Password,
 }
 
 #[multi_case_struct(pascal, camel)]

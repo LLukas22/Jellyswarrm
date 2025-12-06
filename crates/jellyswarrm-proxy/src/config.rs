@@ -14,6 +14,8 @@ use once_cell::sync::Lazy;
 
 use base64::prelude::*;
 
+use crate::encryption::Password;
+
 pub static MIGRATOR: Migrator = sqlx::migrate!();
 
 pub static CLIENT_INFO: Lazy<ClientInfo> = Lazy::new(|| ClientInfo {
@@ -69,8 +71,8 @@ fn default_username() -> String {
     "admin".to_string()
 }
 
-fn default_password() -> String {
-    "jellyswarrm".to_string()
+fn default_password() -> Password {
+    "jellyswarrm".to_string().into()
 }
 
 fn default_session_key() -> Vec<u8> {
@@ -191,7 +193,7 @@ pub struct AppConfig {
     #[serde(default = "default_username")]
     pub username: String,
     #[serde(default = "default_password")]
-    pub password: String,
+    pub password: Password,
 
     #[serde(default)]
     pub preconfigured_servers: Vec<PreconfiguredServer>,

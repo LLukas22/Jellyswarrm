@@ -245,6 +245,7 @@ impl JellyfinClient {
             .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn get_items(
         &self,
         user_id: &str,
@@ -252,6 +253,7 @@ impl JellyfinClient {
         recursive: bool,
         include_item_types: Option<Vec<String>>,
         limit: Option<i32>,
+        start_index: Option<i32>,
         sort_by: Option<String>,
         sort_order: Option<String>,
     ) -> Result<crate::models::ItemsResponse, Error> {
@@ -270,6 +272,10 @@ impl JellyfinClient {
 
         if let Some(l) = limit {
             query.push(("Limit", l.to_string()));
+        }
+
+        if let Some(si) = start_index {
+            query.push(("StartIndex", si.to_string()));
         }
 
         if let Some(s) = sort_by {

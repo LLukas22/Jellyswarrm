@@ -46,8 +46,8 @@ use server_storage::ServerStorageService;
 use user_authorization_service::UserAuthorizationService;
 
 use crate::{
-    config::DATA_DIR, request_preprocessing::preprocess_request, session_storage::SessionStorage,
-    ui::ui_routes,
+    config::DATA_DIR, encryption::Password, request_preprocessing::preprocess_request,
+    session_storage::SessionStorage, ui::ui_routes,
 };
 use crate::{
     config::{AppConfig, MIGRATOR},
@@ -112,7 +112,7 @@ impl AppState {
         config.url_prefix.as_ref().map(|prefix| prefix.to_string())
     }
 
-    pub async fn get_admin_password(&self) -> String {
+    pub async fn get_admin_password(&self) -> Password {
         let config = self.config.read().await;
         config.password.clone()
     }

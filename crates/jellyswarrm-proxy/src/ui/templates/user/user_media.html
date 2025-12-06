@@ -1,42 +1,106 @@
-{% for server in servers %}
-    <article>
-        <header>
-            <strong>{{ server.server_name }}</strong>
-            {% if let Some(error) = server.error %}
-                <span style="color: #dc3545; float: right;">{{ error }}</span>
-            {% endif %}
-        </header>
-        {% if !server.items.is_empty() %}
-            <div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 1rem;">
-                {% for item in server.items %}
-                    <div style="text-align: center; padding: 0.5rem; border: 1px solid var(--pico-muted-border-color); border-radius: 0.5rem; overflow: hidden;">
-                        <div style="aspect-ratio: 2/3; background-color: #000; margin-bottom: 0.5rem; border-radius: 0.25rem; overflow: hidden;">
-                            <img src="{{ ui_route }}/user/media/image/{{ server.server_id }}/{{ item.id }}" 
-                                 alt="{{ item.name }}" 
-                                 style="width: 100%; height: 100%; object-fit: cover;"
-                                 loading="lazy">
-                        </div>
-                        <div style="font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ item.name }}</div>
-                        <small style="color: var(--pico-muted-color);">
-                            {% match item.production_year %}
-                                {% when Some with (year) %}
-                                    {{ year }}
-                                {% when None %}
-                            {% endmatch %}
-                        </small>
-                    </div>
-                {% endfor %}
+<div class="container">
+    <h1>My Media</h1>
+    
+    <div id="servers-container">
+        {% for server in servers %}
+        <article class="server-section" id="server-{{ server.id }}">
+            <header>
+                <h2><i class="fas fa-server"></i> {{ server.name }}</h2>
+            </header>
+            
+            <div class="libraries-container"
+                 hx-get="/{{ ui_route }}/user/media/server/{{ server.id }}/libraries"
+                 hx-trigger="load"
+                 hx-swap="innerHTML">
+                <div aria-busy="true">Loading libraries...</div>
             </div>
-        {% else %}
-            {% if server.error.is_none() %}
-                <p style="color: var(--pico-muted-color);">No media found.</p>
-            {% endif %}
-        {% endif %}
-    </article>
-{% endfor %}
-
-{% if servers.is_empty() %}
-    <div style="text-align: center; padding: 2rem;">
-        <p>No servers mapped.</p>
+        </article>
+        {% endfor %}
     </div>
-{% endif %}
+</div>
+
+<style>
+    .server-section {
+        margin-bottom: 2rem;
+    }
+    
+    .libraries-grid {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+    }
+    
+    .horizontal-scroll-container {
+        display: flex;
+        flex-direction: row;
+        overflow-x: auto;
+        gap: 1rem;
+        padding: 0.5rem 0.5rem 1rem 0.5rem;
+        align-items: stretch;
+        scrollbar-width: thin; /* Firefox */
+    }
+    
+    /* Webkit scrollbar styling */
+    .horizontal-scroll-container::-webkit-scrollbar {
+        height: 8px;
+    }
+    
+    .horizontal-scroll-container::-webkit-scrollbar-track {
+        background: var(--card-background-color);
+        border-radius: 4px;
+    }
+    
+    .horizontal-scroll-container::-webkit-scrollbar-thumb {
+        background-color: var(--secondary);
+        border-radius: 4px;
+    }
+
+    .media-card {
+        flex: 0 0 160px;
+        width: 160px;
+        padding: 0;
+        overflow: hidden;
+        transition: transform 0.2s;
+        border: 1px solid var(--card-border-color);
+        border-radius: var(--border-radius);
+        background-color: var(--card-background-color);
+    }
+    
+    .media-card:hover {
+        transform: scale(1.05);
+        z-index: 1;
+    }
+    
+    .media-card img {
+        width: 100%;
+        aspect-ratio: 2/3;
+        object-fit: cover;
+        display: block;
+    }
+    
+    .media-card footer {
+        padding: 0.5rem;
+        font-size: 0.85rem;
+        text-align: center;
+        line-height: 1.2;
+        overflow-wrap: break-word;
+    }
+    
+    .placeholder-image {
+        width: 100%;
+        aspect-ratio: 2/3;
+        background-color: var(--secondary);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 2rem;
+        color: var(--contrast);
+    }
+    
+    .load-more-sentinel {
+        flex: 0 0 50px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+</style>

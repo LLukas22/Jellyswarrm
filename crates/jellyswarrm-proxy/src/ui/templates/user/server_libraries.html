@@ -1,0 +1,14 @@
+<div class="libraries-grid">
+    {% for library in libraries %}
+    <details>
+        <summary><strong>{{ library.name }} ({{ library.count }})</strong></summary>
+        <div class="library-items-container horizontal-scroll-container"
+             id="library-{{ server_id }}-{{ library.id }}"
+             hx-get="/{{ ui_route }}/user/media/server/{{ server_id }}/library/{{ library.id }}/items"
+             hx-trigger="intersect once"
+             hx-swap="innerHTML">
+            <div aria-busy="true">Loading items...</div>
+        </div>
+    </details>
+    {% endfor %}
+</div>

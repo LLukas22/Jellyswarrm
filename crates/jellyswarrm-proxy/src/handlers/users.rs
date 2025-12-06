@@ -249,13 +249,15 @@ async fn authenticate_on_server(
     let config = state.config.read().await;
     let admin_password = &config.password;
 
+    let given_password = payload.password.clone();
+
     let (final_username, final_password) = if let Some(mapping) = &server_mapping {
         (
             mapping.mapped_username.clone(),
             state.user_authorization.decrypt_server_mapping_password(
                 mapping,
-                &payload.password,
-                admin_password,
+                &given_password.clone().into(),
+                &admin_password.into(),
             ),
         )
     } else {
@@ -325,7 +327,7 @@ async fn authenticate_on_server(
     // We authenticated sucessfully, now we need to get the user or create it
     let user = state
         .user_authorization
-        .get_or_create_user(&payload.username, &payload.password)
+        .get_or_create_user(&payload.username, &given_password)
         .await
         .map_err(|e| {
             tracing::error!("Error getting user: {}", e);
@@ -345,7 +347,7 @@ async fn authenticate_on_server(
             server.url.as_str(),
             &final_username,
             &final_password,
-            Some(&payload.password),
+            Some(&given_password.into()),
         )
         .await
         .map_err(|e| {

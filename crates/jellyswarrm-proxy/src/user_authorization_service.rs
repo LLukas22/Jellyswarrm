@@ -1,8 +1,9 @@
-use sha2::{Digest, Sha256};
 use sqlx::{FromRow, Row, SqlitePool};
 use tracing::{error, info, warn};
 
-use crate::encryption::{decrypt_password, encrypt_password};
+use crate::encryption::{
+    decrypt_password, encrypt_password, EncryptedPassword, HashedPassword, Password,
+};
 use crate::models::{generate_token, Authorization};
 use crate::server_storage::Server;
 
@@ -11,7 +12,7 @@ pub struct User {
     pub id: String,
     pub virtual_key: String,
     pub original_username: String,
-    pub original_password_hash: String,
+    pub original_password_hash: HashedPassword,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -22,7 +23,7 @@ pub struct ServerMapping {
     pub user_id: String,
     pub server_url: String,
     pub mapped_username: String,
-    pub mapped_password: String,
+    pub mapped_password: EncryptedPassword,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -184,9 +185,9 @@ impl UserAuthorizationService {
     pub async fn get_or_create_user(
         &self,
         username: &str,
-        password: &str,
+        password: &Password,
     ) -> Result<User, sqlx::Error> {
-        let password_hash = Self::hash_password(password);
+        let password_hash: HashedPassword = password.into();
 
         // Try to find existing user
         if let Some(user) = self.get_user_by_credentials(username, password).await? {
@@ -264,9 +265,9 @@ impl UserAuthorizationService {
     pub async fn get_user_by_credentials(
         &self,
         username: &str,
-        password: &str,
+        password: &Password,
     ) -> Result<Option<User>, sqlx::Error> {
-        let password_hash = Self::hash_password(password);
+        let password_hash: HashedPassword = password.into();
 
         let user = sqlx::query_as::<_, User>(
             r#"
@@ -289,8 +290,8 @@ impl UserAuthorizationService {
         user_id: &str,
         server_url: &str,
         mapped_username: &str,
-        mapped_password: &str,
-        master_password: Option<&str>,
+        mapped_password: &Password,
+        master_password: Option<&HashedPassword>,
     ) -> Result<i64, sqlx::Error> {
         let now = chrono::Utc::now();
 
@@ -299,11 +300,12 @@ impl UserAuthorizationService {
                 Ok(encrypted) => encrypted,
                 Err(e) => {
                     warn!("Failed to encrypt password: {}. Storing as plaintext.", e);
-                    mapped_password.to_string()
+                    EncryptedPassword::from_raw(mapped_password.as_str().into())
                 }
             }
         } else {
-            mapped_password.to_string()
+            warn!("No encryption password provided. Storing as plaintext!");
+            EncryptedPassword::from_raw(mapped_password.as_str().into())
         };
 
         let result = sqlx::query(
@@ -334,9 +336,9 @@ impl UserAuthorizationService {
     pub fn decrypt_server_mapping_password(
         &self,
         mapping: &ServerMapping,
-        user_password: &str,
-        admin_password: &str,
-    ) -> String {
+        user_password: &HashedPassword,
+        admin_password: &HashedPassword,
+    ) -> Password {
         // Try user password first
         if let Ok(decrypted) = decrypt_password(&mapping.mapped_password, user_password) {
             return decrypted;
@@ -352,7 +354,7 @@ impl UserAuthorizationService {
             "Failed to decrypt password for mapping {}. Assuming plaintext.",
             mapping.id
         );
-        mapping.mapped_password.clone()
+        mapping.mapped_password.clone().into_inner().into()
     }
 
     /// Get server mapping
@@ -613,13 +615,6 @@ impl UserAuthorizationService {
         Ok(sessions)
     }
 
-    /// Hash a password using SHA-256
-    fn hash_password(password: &str) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(password.as_bytes());
-        hex::encode(hasher.finalize())
-    }
-
     /// List all users
     pub async fn list_users(&self) -> Result<Vec<User>, sqlx::Error> {
         let users = sqlx::query_as::<_, User>(
@@ -656,14 +651,14 @@ impl UserAuthorizationService {
     pub async fn update_user_password(
         &self,
         user_id: &str,
-        old_password: &str,
-        new_password: &str,
-        admin_password: &str,
+        old_password: &Password,
+        new_password: &Password,
+        admin_password: &Password,
     ) -> Result<bool, sqlx::Error> {
         let mut transaction = self.pool.begin().await?;
 
         // 1. Update user password hash
-        let password_hash = Self::hash_password(new_password);
+        let password_hash: HashedPassword = new_password.into();
         let now = chrono::Utc::now();
 
         let res = sqlx::query(
@@ -695,19 +690,23 @@ impl UserAuthorizationService {
         .fetch_all(&mut *transaction)
         .await?;
 
+        let old_password = old_password.into();
+        let admin_password = admin_password.into();
+
         for mapping in mappings {
             // Decrypt with old credentials
             let decrypted_password =
-                self.decrypt_server_mapping_password(&mapping, old_password, admin_password);
+                self.decrypt_server_mapping_password(&mapping, &old_password, &admin_password);
 
             // Encrypt with new password
-            let new_encrypted_password = match encrypt_password(&decrypted_password, new_password) {
-                Ok(p) => p,
-                Err(e) => {
-                    error!("Failed to encrypt password during update: {}", e);
-                    return Err(sqlx::Error::Protocol(format!("Encryption failed: {}", e)));
-                }
-            };
+            let new_encrypted_password =
+                match encrypt_password(&decrypted_password, &new_password.into()) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        error!("Failed to encrypt password during update: {}", e);
+                        return Err(sqlx::Error::Protocol(format!("Encryption failed: {}", e)));
+                    }
+                };
 
             // Update mapping in DB
             sqlx::query(
@@ -733,13 +732,12 @@ impl UserAuthorizationService {
     pub async fn verify_user_password(
         &self,
         user_id: &str,
-        password: &str,
+        password: &Password,
     ) -> Result<bool, sqlx::Error> {
         let user = self.get_user_by_id(user_id).await?;
 
         if let Some(user) = user {
-            let password_hash = Self::hash_password(password);
-            Ok(user.original_password_hash == password_hash)
+            Ok(user.original_password_hash.verify(password.as_str()))
         } else {
             Ok(false)
         }
@@ -917,7 +915,7 @@ mod tests {
 
         // Create user
         let user = service
-            .get_or_create_user("testuser", "testpass")
+            .get_or_create_user("testuser", &"testpass".into())
             .await
             .unwrap();
 
@@ -927,7 +925,7 @@ mod tests {
                 &user.id,
                 "http://localhost:8096",
                 "mappeduser",
-                "mappedpass",
+                &"mappedpass".into(),
                 None,
             )
             .await
@@ -1060,7 +1058,7 @@ mod tests {
 
         // Create user
         let user = service
-            .get_or_create_user("testuser", "testpass")
+            .get_or_create_user("testuser", &"testpass".into())
             .await
             .unwrap();
 
@@ -1070,7 +1068,7 @@ mod tests {
                 &user.id,
                 "http://localhost:8096",
                 "mappeduser",
-                "mappedpass",
+                &"mappedpass".into(),
                 None,
             )
             .await
@@ -1154,7 +1152,7 @@ mod tests {
 
         // Create user
         let user = service
-            .get_or_create_user("testuser", "testpass")
+            .get_or_create_user("testuser", &"testpass".into())
             .await
             .unwrap();
 
@@ -1164,7 +1162,7 @@ mod tests {
                 &user.id,
                 "http://localhost:8096",
                 "mappeduser",
-                "mappedpass",
+                &"mappedpass".into(),
                 None,
             )
             .await
@@ -1269,7 +1267,7 @@ mod tests {
 
         // Create user
         let user = service
-            .get_or_create_user("testuser", "testpass")
+            .get_or_create_user("testuser", &"testpass".into())
             .await
             .unwrap();
 
@@ -1279,7 +1277,7 @@ mod tests {
                 &user.id,
                 "http://localhost:8096",
                 "mappeduser1",
-                "mappedpass1",
+                &"mappedpass1".into(),
                 None,
             )
             .await
@@ -1290,7 +1288,7 @@ mod tests {
                 &user.id,
                 "http://localhost:8097",
                 "mappeduser2",
-                "mappedpass2",
+                &"mappedpass2".into(),
                 None,
             )
             .await
@@ -1395,7 +1393,7 @@ mod tests {
 
         // Create user
         let user = service
-            .get_or_create_user("testuser", "testpass")
+            .get_or_create_user("testuser", &"testpass".into())
             .await
             .unwrap();
 
@@ -1405,7 +1403,7 @@ mod tests {
                 &user.id,
                 "http://localhost:8096",
                 "mappeduser",
-                "mappedpass",
+                &"mappedpass".into(),
                 None,
             )
             .await
@@ -1502,14 +1500,14 @@ mod tests {
 
         // Create user
         let user = service
-            .get_or_create_user("testuser", "testpass")
+            .get_or_create_user("testuser", &"testpass".into())
             .await
             .unwrap();
 
         // Add mappings for both servers
         for url in ["http://localhost:8096", "http://localhost:8097"] {
             service
-                .add_server_mapping(&user.id, url, "mappeduser", "mappedpass", None)
+                .add_server_mapping(&user.id, url, "mappeduser", &"mappedpass".into(), None)
                 .await
                 .unwrap();
         }

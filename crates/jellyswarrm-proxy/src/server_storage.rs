@@ -3,6 +3,8 @@ use sqlx::{FromRow, Row, SqlitePool};
 use tracing::info;
 use url::Url;
 
+use crate::encryption::EncryptedPassword;
+
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub struct Server {
     pub id: i64,
@@ -18,7 +20,7 @@ pub struct ServerAdmin {
     pub id: i64,
     pub server_id: i64,
     pub username: String,
-    pub password: String,
+    pub password: EncryptedPassword,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -200,7 +202,7 @@ impl ServerStorageService {
         &self,
         server_id: i64,
         username: &str,
-        password: &str,
+        password: &EncryptedPassword,
     ) -> Result<i64, sqlx::Error> {
         let now = chrono::Utc::now();
 

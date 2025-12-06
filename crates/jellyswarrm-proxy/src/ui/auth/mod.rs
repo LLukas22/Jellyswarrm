@@ -9,7 +9,10 @@ use serde::{Deserialize, Serialize};
 use tokio::{sync::RwLock, task};
 use tracing::{error, info};
 
-use crate::{config::AppConfig, user_authorization_service::UserAuthorizationService};
+use crate::{
+    config::AppConfig, encryption::HashedPassword,
+    user_authorization_service::UserAuthorizationService,
+};
 
 mod routes;
 
@@ -25,7 +28,7 @@ pub enum UserRole {
 pub struct User {
     pub id: String,
     pub username: String,
-    pub password: String,
+    pub password_hash: HashedPassword,
     pub role: UserRole,
 }
 
@@ -70,10 +73,10 @@ impl AuthUser for User {
     }
 
     fn session_auth_hash(&self) -> &[u8] {
-        self.password.as_bytes() // We use the password hash as the auth
-                                 // hash--what this means
-                                 // is when the user changes their password the
-                                 // auth session becomes invalid.
+        self.password_hash.as_str().as_bytes() // We use the password hash as the auth
+                                               // hash--what this means
+                                               // is when the user changes their password the
+                                               // auth session becomes invalid.
     }
 }
 
@@ -115,15 +118,16 @@ impl AuthnBackend for Backend {
         &self,
         creds: Self::Credentials,
     ) -> Result<Option<Self::User>, Self::Error> {
+        let password = creds.password.into();
         let config = self.config.read().await;
         info!("Authenticating user: {}", creds.username);
-        if creds.username == config.username && creds.password == config.password {
+        if creds.username == config.username && password == config.password {
             info!("Admin authentication successful");
             // If the password is correct, we return the default user.
             let user = User {
                 id: "admin".to_string(),
                 username: creds.username,
-                password: config.password.clone(),
+                password_hash: config.password.clone().into(),
                 role: UserRole::Admin,
             };
             return Ok(Some(user));
@@ -131,14 +135,14 @@ impl AuthnBackend for Backend {
 
         if let Some(user) = self
             .user_auth
-            .get_user_by_credentials(&creds.username, &creds.password)
+            .get_user_by_credentials(&creds.username, &password)
             .await?
         {
             info!("User authentication successful: {}", user.original_username);
             let user = User {
                 id: user.id,
                 username: user.original_username,
-                password: user.original_password_hash,
+                password_hash: user.original_password_hash,
                 role: UserRole::User,
             };
             return Ok(Some(user));
@@ -154,7 +158,7 @@ impl AuthnBackend for Backend {
             return Ok(Some(User {
                 id: "admin".to_string(),
                 username: config.username.clone(),
-                password: config.password.clone(),
+                password_hash: config.password.clone().into(),
                 role: UserRole::Admin,
             }));
         }
@@ -163,7 +167,7 @@ impl AuthnBackend for Backend {
             let user = User {
                 id: user.id,
                 username: user.original_username,
-                password: user.original_password_hash,
+                password_hash: user.original_password_hash,
                 role: UserRole::User,
             };
             return Ok(Some(user));
