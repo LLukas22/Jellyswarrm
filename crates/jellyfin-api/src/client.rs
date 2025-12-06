@@ -208,10 +208,18 @@ impl JellyfinClient {
         self.request(reqwest::Method::GET, "Users/Me", None).await
     }
 
-    pub async fn get_media_folders(&self) -> Result<Vec<crate::models::MediaFolder>, Error> {
-        let response: MediaFoldersResponse = self
-            .request(reqwest::Method::GET, "Library/MediaFolders", None)
-            .await?;
+    pub async fn get_media_folders(
+        &self,
+        user_id: Option<&str>,
+    ) -> Result<Vec<crate::models::MediaFolder>, Error> {
+        let path = if let Some(uid) = user_id {
+            format!("Users/{}/Views", uid)
+        } else {
+            "Library/MediaFolders".to_string()
+        };
+
+        let response: MediaFoldersResponse =
+            self.request(reqwest::Method::GET, &path, None).await?;
         Ok(response.items)
     }
 
@@ -380,7 +388,7 @@ mod tests {
         let client = JellyfinClient::new(&mock_server.uri(), client_info).unwrap();
         let client = client.with_token("test_token".to_string());
 
-        let folders = client.get_media_folders().await.unwrap();
+        let folders = client.get_media_folders(None).await.unwrap();
 
         assert_eq!(folders.len(), 1);
         assert_eq!(folders[0].name, "Movies");

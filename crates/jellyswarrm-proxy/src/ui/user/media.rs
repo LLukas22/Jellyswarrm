@@ -100,7 +100,7 @@ pub async fn get_server_libraries(
     if let Ok((client, jellyfin_user, _)) =
         authenticate_user_on_server(&state, &user, &server).await
     {
-        match client.get_media_folders().await {
+        match client.get_media_folders(Some(&jellyfin_user.id)).await {
             Ok(folders) => {
                 let mut libraries = Vec::new();
                 for folder in folders {

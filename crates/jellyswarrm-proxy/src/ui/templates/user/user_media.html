@@ -36,7 +36,7 @@
         overflow-x: auto;
         gap: 1rem;
         padding: 0.5rem 0.5rem 1rem 0.5rem;
-        align-items: stretch;
+        align-items: start;
         scrollbar-width: thin; /* Firefox */
     }
     
@@ -56,19 +56,16 @@
     }
 
     .media-card {
-        flex: 0 0 160px;
-        width: 160px;
-        padding: 0;
+        flex: 0 0 140px;
+        width: 140px;
+        background: var(--card-background-color);
+        border-radius: var(--border-radius);
         overflow: hidden;
         transition: transform 0.2s;
-        border: 1px solid var(--card-border-color);
-        border-radius: var(--border-radius);
-        background-color: var(--card-background-color);
     }
     
     .media-card:hover {
         transform: scale(1.05);
-        z-index: 1;
     }
     
     .media-card img {
@@ -80,10 +77,11 @@
     
     .media-card footer {
         padding: 0.5rem;
-        font-size: 0.85rem;
+        font-size: 0.8rem;
         text-align: center;
-        line-height: 1.2;
-        overflow-wrap: break-word;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }
     
     .placeholder-image {
