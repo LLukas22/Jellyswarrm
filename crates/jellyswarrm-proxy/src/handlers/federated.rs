@@ -92,7 +92,7 @@ pub async fn get_items_from_all_servers(
                     for item in items_response.iter_mut_items() {
                         match process_media_item(
                             item.clone(),
-                            &state_clone.media_storage,
+                            &state_clone,
                             &server_clone,
                             true, // Change name to include server name
                             &server_id,

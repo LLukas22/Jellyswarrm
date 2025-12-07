@@ -117,6 +117,11 @@ impl AppState {
         config.password.clone()
     }
 
+    pub async fn can_change_item_names(&self) -> bool {
+        let config = self.config.read().await;
+        config.include_server_name_in_media
+    }
+
     pub async fn remove_prefix_from_path<'a>(&self, path: &'a str) -> &'a str {
         let config = self.config.read().await;
         if let Some(prefix) = &config.url_prefix {
