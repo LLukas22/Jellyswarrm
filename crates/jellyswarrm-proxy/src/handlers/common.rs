@@ -183,20 +183,27 @@ pub async fn get_virtual_id(
 /// Replaces the original ids with vitual ids that map back to the original media item and server.
 pub async fn process_media_item(
     item: MediaItem,
-    media_storage: &MediaStorageService,
+    state: &AppState,
     server: &Server,
-    change_name: bool,
+    should_change_name: bool,
     server_id: &str,
 ) -> Result<MediaItem, StatusCode> {
     let mut item = item;
 
+    let media_storage = &state.media_storage;
+
+    let allowed_to_change_name = state.can_change_item_names().await;
+
     let can_change_name = if let Some(ref collection_type) = item.collection_type {
-        !matches!(collection_type, CollectionType::LiveTv)
+        match collection_type {
+            CollectionType::LiveTv => false,
+            _ => allowed_to_change_name,
+        }
     } else {
-        true
+        allowed_to_change_name
     };
 
-    if can_change_name && change_name {
+    if can_change_name && should_change_name {
         if let Some(name) = &item.name {
             item.name = Some(format!("{} [{}]", name, server.name));
         }
