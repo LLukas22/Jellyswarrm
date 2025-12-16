@@ -68,7 +68,7 @@ RUN mkdir -p crates/jellyswarrm-proxy/src crates/jellyswarrm-macros/src crates/j
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/tmp/target,sharing=locked \
-    CARGO_TARGET_DIR=/tmp/target cargo build --release --bin jellyswarrm-proxy \
+    CARGO_TARGET_DIR=/tmp/target cargo build --release --features legacy-lowercase --bin jellyswarrm-proxy \
 	&& cp /tmp/target/release/jellyswarrm-proxy /app/jellyswarrm-proxy-deps \
 	&& rm -rf crates/jellyswarrm-proxy/src crates/jellyswarrm-macros/src crates/jellyfin-api/src
 
@@ -98,7 +98,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && rm -rf /tmp/target/release/deps/libjellyfin_api* \
     && touch crates/jellyswarrm-macros/src/lib.rs \
     && touch crates/jellyfin-api/src/lib.rs \
-    && CARGO_TARGET_DIR=/tmp/target cargo build --release --bin jellyswarrm-proxy \
+    && CARGO_TARGET_DIR=/tmp/target cargo build --release --features legacy-lowercase --bin jellyswarrm-proxy \
     && cp /tmp/target/release/jellyswarrm-proxy /app/jellyswarrm-proxy
 
 #################################
