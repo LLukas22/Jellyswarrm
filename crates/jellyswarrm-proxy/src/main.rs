@@ -147,12 +147,115 @@ pub struct JsonProcessors {
     pub request_analyzer: RequestAnalyzer,
 }
 
+/// These traits on axum::Router allow simple additional matching on lower-case
+/// endpoints that some legacy clients use. (I'm looking at you, Roku build)
+/// This could be changed to issue HTTP redirects, or additional logging
+/// use `--features legacy-lowercase` to enable
+use axum::routing::MethodRouter;
+
+#[cfg(feature = "legacy-lowercase")]
+fn lower_case_path_preserving_params(path: &str) -> String {
+    let mut result = String::with_capacity(path.len());
+    let mut in_braces = false;
+
+    for c in path.chars() {
+        match c {
+            '{' => {
+                in_braces = true;
+                result.push(c);
+            }
+            '}' => {
+                in_braces = false;
+                result.push(c);
+            }
+            _ => {
+                if in_braces {
+                    result.push(c); // keep parameter as-is
+                } else {
+                    result.extend(c.to_lowercase());
+                }
+            }
+        }
+    }
+
+    result
+}
+
+pub trait RouterLegacyExt<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    /// Register a canonical route and a lowercase legacy variant.
+    fn route_legacy(self, path: &str, mr: MethodRouter<S>) -> Router<S>;
+    /// Nest a router under both canonical and lowercase prefixes.
+    fn nest_legacy(self, path: &str, router: Router<S>) -> Router<S>;
+    /// Merge another router and also merge its lowercase-legacy form
+    /// which does nothing special, it's just for semantic completeness
+    fn merge_legacy(self, router: Router<S>) -> Router<S>;
+}
+
+#[cfg(not(feature = "legacy-lowercase"))]
+impl<S> RouterLegacyExt<S> for axum::Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    fn route_legacy(self, path: &str, mr: MethodRouter<S>) -> Router<S> {
+        self.route(path, mr)
+    }
+
+    fn nest_legacy(self, path: &str, router: Router<S>) -> Router<S> {
+        self.nest(path, router)
+    }
+
+    fn merge_legacy(self, router: Router<S>) -> Router<S> {
+        self.merge(router)
+    }
+}
+
+#[cfg(feature = "legacy-lowercase")]
+impl<S> RouterLegacyExt<S> for Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    fn route_legacy(self, path: &str, mr: MethodRouter<S>) -> Router<S> {
+        // canonical route
+        let router = self.route(path, mr.clone());
+
+        // lowercase legacy route
+        let legacy_path = lower_case_path_preserving_params(path);
+        if legacy_path != path {
+            router.route(&legacy_path, mr)
+        } else {
+            router
+        }
+    }
+
+    fn nest_legacy(self, path: &str, router: Router<S>) -> Router<S> {
+        // register canonical nest
+        let outer = self.nest(path, router.clone());
+
+        // register lowercase legacy nest if different
+        let legacy_path = lower_case_path_preserving_params(path);
+        if legacy_path != path {
+            outer.nest(&legacy_path, router)
+        } else {
+            outer
+        }
+    }
+
+    fn merge_legacy(self, router: Router<S>) -> Router<S> {
+        self.merge(router)
+    }
+}
+
 #[derive(RustEmbed)]
 #[folder = "static/"]
 struct Asset;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    use crate::RouterLegacyExt;
+
     // Initialize file logging
 
     let file_appender = tracing_appender::rolling::daily(DATA_DIR.join("logs"), "jellyswarm.log");
@@ -304,142 +407,138 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // UI Management routes
         .nest(&format!("/{ui_route}"), ui_routes())
         .route("/", get(index_handler))
-        .route(
+        .route_legacy(
             "/QuickConnect/Enabled",
             get(handlers::quick_connect::handle_quick_connect),
         )
-        .route(
+        .route_legacy(
             "/Branding/Configuration",
             get(handlers::branding::handle_branding),
         )
         // User authentication and profile routes
-        .nest(
+        .nest_legacy(
             "/Users",
             Router::new()
-                .route(
-                    "/authenticatebyname",
-                    post(handlers::users::handle_authenticate_by_name),
-                )
-                .route(
+                .route_legacy(
                     "/AuthenticateByName",
                     post(handlers::users::handle_authenticate_by_name),
                 )
-                .route("/Me", get(handlers::users::handle_get_me))
-                .route("/{user_id}", get(handlers::users::handle_get_user_by_id))
-                .route(
+                .route_legacy("/Me", get(handlers::users::handle_get_me))
+                .route_legacy("/{user_id}", get(handlers::users::handle_get_user_by_id))
+                .route_legacy(
                     "/{user_id}/Views",
                     get(handlers::federated::get_items_from_all_servers),
                 )
-                .route(
+                .route_legacy(
                     "/{user_id}/Items",
                     get(handlers::federated::get_items_from_all_servers_if_not_restricted),
                 )
-                .route(
+                .route_legacy(
                     "/{user_id}/Items/Resume",
                     get(handlers::federated::get_items_from_all_servers),
                 )
-                .route(
+                .route_legacy(
                     "/{user_id}/Items/Latest",
                     get(handlers::federated::get_items_from_all_servers_if_not_restricted),
                 )
-                .route("/{user_id}/Items/{item_id}", get(handlers::items::get_item))
-                .route(
+                .route_legacy("/{user_id}/Items/{item_id}", get(handlers::items::get_item))
+                .route_legacy(
                     "/{user_id}/Items/{item_id}/SpecialFeatures",
                     get(handlers::items::get_items_list),
                 ),
         )
-        .route(
+        .route_legacy(
             "/UserViews",
             get(handlers::federated::get_items_from_all_servers),
         )
         // System info routes
-        .nest(
+        .nest_legacy(
             "/System",
             Router::new()
-                .route("/Info", get(handlers::system::info))
-                .route("/Info/Public", get(handlers::system::info_public)),
+                .route_legacy("/Info", get(handlers::system::info))
+                .route_legacy("/Info/Public", get(handlers::system::info_public)),
         )
-        .route("/system/info/public", get(handlers::system::info_public))
         // Item routes (non-user specific)
-        .nest(
+        .nest_legacy(
             "/Items",
             Router::new()
-                .route(
+                .route_legacy(
                     "/",
                     get(handlers::federated::get_items_from_all_servers_if_not_restricted),
                 )
-                .route(
+                .route_legacy(
                     "/Suggestions",
                     get(handlers::federated::get_items_from_all_servers_if_not_restricted),
                 )
-                .route(
+                .route_legacy(
                     "/Latest",
                     get(handlers::federated::get_items_from_all_servers_if_not_restricted),
                 )
-                .route("/{item_id}", get(handlers::items::get_item))
-                .route("/{item_id}/Similar", get(handlers::items::get_items))
-                .route("/{item_id}/LocalTrailers", get(handlers::items::get_items))
-                .route(
+                .route_legacy("/{item_id}", get(handlers::items::get_item))
+                .route_legacy("/{item_id}/Similar", get(handlers::items::get_items))
+                .route_legacy("/{item_id}/LocalTrailers", get(handlers::items::get_items))
+                .route_legacy(
                     "/{item_id}/SpecialFeatures",
                     get(handlers::items::get_items),
                 )
-                .route(
+                .route_legacy(
                     "/{item_id}/PlaybackInfo",
                     post(handlers::items::post_playback_info),
                 ),
         )
-        .route("/MediaSegments/{item_id}", get(handlers::items::get_items))
+        .route_legacy("/MediaSegments/{item_id}", get(handlers::items::get_items))
         // Show-specific routes
-        .nest(
+        .nest_legacy(
             "/Shows",
             Router::new()
-                .route("/{item_id}/Seasons", get(handlers::items::get_items))
-                .route("/{item_id}/Episodes", get(handlers::items::get_items))
-                .route(
+                .route_legacy("/{item_id}/Seasons", get(handlers::items::get_items))
+                .route_legacy("/{item_id}/Episodes", get(handlers::items::get_items))
+                .route_legacy(
                     "/NextUp",
                     get(handlers::federated::get_items_from_all_servers_if_not_restricted),
                 ),
         )
-        .nest(
+        .nest_legacy(
             "/LiveTv",
             Router::new()
-                .route(
+                .route_legacy(
                     "/Channels",
                     get(handlers::federated::get_items_from_all_servers),
                 )
-                .route("/Channels/{item_id}", get(handlers::items::get_item))
-                .route(
+                .route_legacy("/Channels/{item_id}", get(handlers::items::get_item))
+                .route_legacy(
                     "/Programs",
                     get(handlers::federated::get_items_from_all_servers),
                 )
-                .route(
+                .route_legacy(
                     "/Programs/Recommended",
                     get(handlers::federated::get_items_from_all_servers),
                 )
-                .route("/Programs/{item_id}", get(handlers::items::get_item))
-                .route(
+                .route_legacy("/Programs/{item_id}", get(handlers::items::get_item))
+                .route_legacy(
                     "/Recordings",
                     get(handlers::federated::get_items_from_all_servers),
                 )
-                .route(
+                .route_legacy(
                     "/Recordings/Folders",
                     get(handlers::federated::get_items_from_all_servers),
                 )
-                .route("/Recordings/{item_id}", get(handlers::items::get_item))
-                .route(
+                .route_legacy("/Recordings/{item_id}", get(handlers::items::get_item))
+                .route_legacy(
                     "/LiveRecordings/{recordingId}/stream",
                     get(handlers::videos::get_stream),
                 )
-                .route(
+                .route_legacy(
                     "/LiveStreamFiles/{streamId}/stream.{container}",
                     get(handlers::videos::get_stream),
                 ),
         )
         // Video streaming routes
-        .nest(
+        .nest_legacy(
             "/Videos",
             Router::new()
                 .route("/{stream_id}/Trickplay/{*path}", get(proxy_handler))
+                .route("/{stream_id}/{*path}", get(handlers::videos::get_stream_part))
                 .route("/{item_id}/stream", get(handlers::videos::get_stream))
                 .route("/{item_id}/stream.mkv", get(handlers::videos::get_stream))
                 .route("/{item_id}/stream.mp4", get(handlers::videos::get_stream))
@@ -448,17 +547,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     get(handlers::videos::get_video_resource),
                 ),
         )
-        .route(
-            "/videos/{stream_id}/{*path}",
-            get(handlers::videos::get_stream_part),
-        )
         // Persons
-        .nest(
+        .nest_legacy(
             "/Persons",
             Router::new().route("/", get(handlers::federated::get_items_from_all_servers)),
         )
         // Artists
-        .nest(
+        .nest_legacy(
             "/Artists",
             Router::new().route("/", get(handlers::federated::get_items_from_all_servers)),
         )

@@ -7,13 +7,17 @@ repository.workspace = true
 description = "A high-performance reverse proxy for combining multiple Jellyfin instances"
 license = "MIT OR Apache-2.0"
 
+[features]
+default = []
+legacy-lowercase = []
+
 [[bin]]
 name = "jellyswarrm-proxy"
 path = "src/main.rs"
 
 [dependencies]
 jellyswarrm-macros.workspace = true
-axum.workspace = true
+axum = { version="0.7", workspace = true }
 tokio.workspace = true
 tower.workspace = true
 tower-http.workspace = true
