@@ -537,19 +537,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nest_legacy(
             "/Videos",
             Router::new()
-                .route("/{stream_id}/Trickplay/{*path}", get(proxy_handler))
-                .route("/{item_id}/stream", get(handlers::videos::get_stream))
-                .route("/{item_id}/stream.mkv", get(handlers::videos::get_stream))
-                .route("/{item_id}/stream.mp4", get(handlers::videos::get_stream)),
+                .route_legacy("/{stream_id}/Trickplay/{*path}", get(proxy_handler))
+                .route_legacy("/{item_id}/stream", get(handlers::videos::get_stream))
+                .route_legacy("/{item_id}/stream.mkv", get(handlers::videos::get_stream))
+                .route_legacy("/{item_id}/stream.mp4", get(handlers::videos::get_stream))
         )
-        .route( // upper case V in /Videos
-            "/Videos/{stream_id}/{item_id}/{*path}",
-            get(handlers::videos::get_video_resource),
-        )
-        .route( // lower case V in /Videos
-            "/videos/{stream_id}/{*path}",
-            get(handlers::videos::get_stream_part),
-        )
+        // As this is not part of the nest above it does not conflict with Trickplay]
+        .route_legacy("/Videos/{stream_id}/{*path}", get(handlers::videos::get_video_resource))
         // Persons
         .nest_legacy(
             "/Persons",
