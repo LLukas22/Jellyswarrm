@@ -21,6 +21,9 @@ pub async fn get_video_resource(
         .original_request
         .ok_or(StatusCode::BAD_REQUEST)?;
 
+    #[cfg(debug_assertions)]
+    info!("get_video_resource for {}", original_request.url());
+
     let re = Regex::new(r"(?i)/videos/([^/]+)/").unwrap();
 
     let captures = re
