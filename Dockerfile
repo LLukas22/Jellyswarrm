@@ -64,14 +64,14 @@ RUN mkdir -p crates/jellyswarrm-proxy/src crates/jellyswarrm-macros/src crates/j
 	&& echo "use proc_macro::TokenStream; #[proc_macro_attribute] pub fn multi_case_struct(_args: TokenStream, input: TokenStream) -> TokenStream { input }" > crates/jellyswarrm-macros/src/lib.rs \
 	&& echo "" > crates/jellyfin-api/src/lib.rs
 
-ARG BUILD_MODE=release
+ARG BUILD_TYPE=release
 # Build dependencies only (will be cached) with optional debug mode
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/tmp/target,sharing=locked \
     set -eux; \
-    # Decide cargo build flags based on BUILD_MODE
-    if [ "$BUILD_MODE" = "release" ]; then \
+    # Decide cargo build flags based on BUILD_TYPE
+    if [ "$BUILD_TYPE" = "release" ]; then \
         BUILD_FLAGS="--release"; \
         TARGET_DIR="release"; \
     else \
@@ -103,14 +103,14 @@ COPY crates/jellyswarrm-proxy/migrations crates/jellyswarrm-proxy/migrations
 COPY crates/jellyswarrm-macros/src crates/jellyswarrm-macros/src
 COPY crates/jellyfin-api/src crates/jellyfin-api/src
 
-ARG BUILD_MODE=release
+ARG BUILD_TYPE=release
 # Build only the application code (dependencies already cached) with optional debug mode
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/tmp/target,sharing=locked \
     set -eux; \
     # Determine cargo flags and target directory
-    if [ "$BUILD_MODE" = "release" ]; then \
+    if [ "$BUILD_TYPE" = "release" ]; then \
         BUILD_FLAGS="--release"; \
         TARGET_DIR="release"; \
     else \
