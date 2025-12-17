@@ -64,13 +64,26 @@ RUN mkdir -p crates/jellyswarrm-proxy/src crates/jellyswarrm-macros/src crates/j
 	&& echo "use proc_macro::TokenStream; #[proc_macro_attribute] pub fn multi_case_struct(_args: TokenStream, input: TokenStream) -> TokenStream { input }" > crates/jellyswarrm-macros/src/lib.rs \
 	&& echo "" > crates/jellyfin-api/src/lib.rs
 
-# Build dependencies only (will be cached)
+ARG BUILD_MODE=release
+# Build dependencies only (will be cached) with optional debug mode
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/tmp/target,sharing=locked \
-    CARGO_TARGET_DIR=/tmp/target cargo build --release --features legacy-lowercase --bin jellyswarrm-proxy \
-	&& cp /tmp/target/release/jellyswarrm-proxy /app/jellyswarrm-proxy-deps \
-	&& rm -rf crates/jellyswarrm-proxy/src crates/jellyswarrm-macros/src crates/jellyfin-api/src
+    set -eux; \
+    # Decide cargo build flags based on BUILD_MODE
+    if [ "$BUILD_MODE" = "release" ]; then \
+        BUILD_FLAGS="--release"; \
+        TARGET_DIR="release"; \
+    else \
+        BUILD_FLAGS=""; \
+        TARGET_DIR="debug"; \
+    fi; \
+    # Build
+    CARGO_TARGET_DIR=/tmp/target cargo build $BUILD_FLAGS --features legacy-lowercase --bin jellyswarrm-proxy; \
+    # Copy binary to final location
+    cp /tmp/target/$TARGET_DIR/jellyswarrm-proxy /app/jellyswarrm-proxy-deps; \
+    # Clean up source dirs to save space
+    rm -rf crates/jellyswarrm-proxy/src crates/jellyswarrm-macros/src crates/jellyfin-api/src
 
 #################################
 # Stage 3: Build Rust Application
@@ -90,16 +103,30 @@ COPY crates/jellyswarrm-proxy/migrations crates/jellyswarrm-proxy/migrations
 COPY crates/jellyswarrm-macros/src crates/jellyswarrm-macros/src
 COPY crates/jellyfin-api/src crates/jellyfin-api/src
 
-# Build only the application code (dependencies already cached)
+ARG BUILD_MODE=release
+# Build only the application code (dependencies already cached) with optional debug mode
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/tmp/target,sharing=locked \
-    rm -rf /tmp/target/release/deps/libjellyswarrm_macros* /tmp/target/release/deps/jellyswarrm_macros* \
-    && rm -rf /tmp/target/release/deps/libjellyfin_api* \
-    && touch crates/jellyswarrm-macros/src/lib.rs \
-    && touch crates/jellyfin-api/src/lib.rs \
-    && CARGO_TARGET_DIR=/tmp/target cargo build --release --features legacy-lowercase --bin jellyswarrm-proxy \
-    && cp /tmp/target/release/jellyswarrm-proxy /app/jellyswarrm-proxy
+    set -eux; \
+    # Determine cargo flags and target directory
+    if [ "$BUILD_MODE" = "release" ]; then \
+        BUILD_FLAGS="--release"; \
+        TARGET_DIR="release"; \
+    else \
+        BUILD_FLAGS=""; \
+        TARGET_DIR="debug"; \
+    fi; \
+    # Clean previous build artifacts
+    rm -rf /tmp/target/$TARGET_DIR/deps/libjellyswarrm_macros* /tmp/target/$TARGET_DIR/deps/jellyswarrm_macros*; \
+    rm -rf /tmp/target/$TARGET_DIR/deps/libjellyfin_api*; \
+    # Touch lib.rs files so build will recompile if needed
+    touch crates/jellyswarrm-macros/src/lib.rs; \
+    touch crates/jellyfin-api/src/lib.rs; \
+    # Build the binary
+    CARGO_TARGET_DIR=/tmp/target cargo build $BUILD_FLAGS --features legacy-lowercase --bin jellyswarrm-proxy; \
+    # Copy the resulting binary
+    cp /tmp/target/$TARGET_DIR/jellyswarrm-proxy /app/jellyswarrm-proxy
 
 #################################
 # Stage 4: Runtime Image (Alpine)
