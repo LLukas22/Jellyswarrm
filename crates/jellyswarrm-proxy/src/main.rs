@@ -252,6 +252,21 @@ where
 #[folder = "static/"]
 struct Asset;
 
+fn make_request_span(request: &Request<axum::body::Body>) -> tracing::Span {
+    tracing::info_span!(
+        "http_request",
+        method = %request.method(),
+        uri = %request.uri()
+    )
+}
+
+fn log_response(response: &Response, latency: Duration, _span: &tracing::Span) {
+    info!(
+        status = %response.status(),
+        latency_ms = latency.as_millis(),
+    );
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     use crate::RouterLegacyExt;
@@ -400,6 +415,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         app_state.user_authorization.clone(),
     );
     let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
+
+    #[cfg(not(debug_assertions))]
+    let trace_layer = TraceLayer::new_for_http();
+
+    #[cfg(debug_assertions)]
+    let trace_layer = TraceLayer::new_for_http()
+        .make_span_with(make_request_span)
+        .on_response(log_response);
 
     let ui_route = loaded_config.ui_route.to_string();
 
@@ -561,8 +584,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .fallback(proxy_handler)
         .layer(
             ServiceBuilder::new()
-                .layer(TraceLayer::new_for_http())
-                .layer(CorsLayer::permissive()),
+                .layer(trace_layer)
+                .layer(CorsLayer::permissive())
         )
         .layer(MessagesManagerLayer)
         .layer(auth_layer)
