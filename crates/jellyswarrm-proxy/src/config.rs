@@ -16,6 +16,33 @@ use base64::prelude::*;
 
 use crate::encryption::Password;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MediaStreamingMode {
+    Redirect,
+    Proxy,
+}
+
+impl std::str::FromStr for MediaStreamingMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "redirect" => Ok(MediaStreamingMode::Redirect),
+            "proxy" => Ok(MediaStreamingMode::Proxy),
+            _ => Err(format!("Invalid media streaming mode: {}", s)),
+        }
+    }
+}
+
+impl fmt::Display for MediaStreamingMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MediaStreamingMode::Redirect => write!(f, "Redirect"),
+            MediaStreamingMode::Proxy => write!(f, "Proxy"),
+        }
+    }
+}
+
 pub static MIGRATOR: Migrator = sqlx::migrate!();
 
 pub static CLIENT_INFO: Lazy<ClientInfo> = Lazy::new(|| ClientInfo {
@@ -85,6 +112,10 @@ fn default_timeout() -> u64 {
 
 fn default_ui_route() -> UrlSegment {
     UrlSegment("ui".to_string())
+}
+
+fn default_media_streaming_mode() -> MediaStreamingMode {
+    MediaStreamingMode::Redirect
 }
 
 mod base64_serde {
@@ -164,6 +195,11 @@ define_fallback_deserializer!(
 );
 define_fallback_deserializer!(deserialize_timeout, u64, default_timeout);
 define_fallback_deserializer!(deserialize_ui_route, UrlSegment, default_ui_route);
+define_fallback_deserializer!(
+    deserialize_media_streaming_mode,
+    MediaStreamingMode,
+    default_media_streaming_mode
+);
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PreconfiguredServer {
@@ -212,6 +248,12 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub url_prefix: Option<UrlSegment>,
+
+    #[serde(
+        default = "default_media_streaming_mode",
+        deserialize_with = "deserialize_media_streaming_mode"
+    )]
+    pub media_streaming_mode: MediaStreamingMode,
 }
 
 pub const DEFAULT_CONFIG_FILENAME: &str = "jellyswarrm.toml";
@@ -269,7 +311,9 @@ pub fn load_config() -> AppConfig {
 /// Persist configuration to the first existing file or the primary default file.
 pub fn save_config(cfg: &AppConfig) -> std::io::Result<()> {
     let toml_str = toml::to_string_pretty(cfg).expect("serialize config");
-    fs::write(config_path(), toml_str)
+    fs::write(config_path(), toml_str)?;
+    info!("Configuration saved to {:?}", config_path());
+    Ok(())
 }
 
 // A normalized URL path segment (no leading/trailing slashes, non-empty).

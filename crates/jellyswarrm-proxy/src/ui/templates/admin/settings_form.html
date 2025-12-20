@@ -1,5 +1,5 @@
 <div id="settings-messages"></div>
-<form hx-post="/{{ ui_route }}/settings/save" hx-target="#settings-form" hx-swap="outerHTML" hx-disabled-elt="this">
+<form hx-post="/{{ ui_route }}/settings/save" hx-target="#settings-form" hx-swap="innerHTML" hx-disabled-elt="this">
   <fieldset>
     <label>Server ID
       <input type="text" name="server_id" value="{{ server_id }}" disabled>
@@ -9,6 +9,16 @@
     </label>
     <label>Server Name
       <input type="text" name="server_name" value="{{ server_name }}" required>
+    </label>
+    <label>Media Streaming Mode
+      <select name="media_streaming_mode" aria-describedby="streaming-mode-help">
+        <option value="Redirect" {% if media_streaming_mode == "Redirect" %}selected{% endif %}>Redirect (Direct Play)</option>
+        <option value="Proxy" {% if media_streaming_mode == "Proxy" %}selected{% endif %}>Proxy (Tunnel)</option>
+      </select>
+      <small id="streaming-mode-help">
+        <strong>Redirect:</strong> Clients stream directly from backend servers. Best performance, but requires direct network access to all backends.<br>
+        <strong>Proxy:</strong> Media is proxied through Jellyswarrm. Simplifies access, but increases bandwidth and CPU usage on this server.
+      </small>
     </label>
     <label>Add Server Names to Media
       <input type="checkbox" role="switch" name="include_server_name_in_media" value="true" {% if include_server_name_in_media %}checked{% endif %}>

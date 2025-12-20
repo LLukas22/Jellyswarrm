@@ -63,6 +63,7 @@ async-recursion = "1.1.1"
 aes-gcm = "0.10.3"
 serde_with = "3.16.1"
 jellyfin-api = { path = "../jellyfin-api" }
+futures-util = "0.3.31"
 
 [dev-dependencies]
 tokio-test = "0.4.4"

@@ -1631,6 +1631,7 @@ dependencies = [
  "config",
  "dashmap",
  "fs_extra",
+ "futures-util",
  "hex",
  "http-body-util",
  "hyper",
