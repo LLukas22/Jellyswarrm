@@ -136,7 +136,7 @@ impl AppState {
 
     pub async fn get_media_streaming_mode(&self) -> MediaStreamingMode {
         let config = self.config.read().await;
-        config.media_streaming_mode.clone()
+        config.media_streaming_mode
     }
 }
 

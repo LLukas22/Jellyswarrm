@@ -29,7 +29,7 @@ async fn proxy_request(client: &Client, url: url::Url) -> Result<Response, Statu
     // Create a stream that yields chunks as they are received from the upstream server
     let stream = resp
         .bytes_stream()
-        .map(|result| result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)));
+        .map(|result| result.map_err(std::io::Error::other));
 
     let body = Body::from_stream(stream);
 
