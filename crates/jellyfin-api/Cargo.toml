@@ -17,4 +17,4 @@ moka = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
-wiremock = "0.6"
+wiremock = { workspace = true }

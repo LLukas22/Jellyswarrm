@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
 use serde_default::DefaultFromSerde;
 use sqlx::migrate::Migrator;
 use std::fmt;
@@ -10,7 +11,6 @@ use tracing::info;
 use uuid::Uuid;
 
 use jellyfin_api::ClientInfo;
-use once_cell::sync::Lazy;
 
 use base64::prelude::*;
 
@@ -45,14 +45,14 @@ impl fmt::Display for MediaStreamingMode {
 
 pub static MIGRATOR: Migrator = sqlx::migrate!();
 
-pub static CLIENT_INFO: Lazy<ClientInfo> = Lazy::new(|| ClientInfo {
+pub static CLIENT_INFO: LazyLock<ClientInfo> = LazyLock::new(|| ClientInfo {
     client: "Jellyswarrm Proxy".to_string(),
     device: "Server".to_string(),
     device_id: "jellyswarrm-proxy".to_string(),
     version: env!("CARGO_PKG_VERSION").to_string(),
 });
 
-pub static CLIENT_STORAGE: Lazy<jellyfin_api::storage::JellyfinClientStorage> = Lazy::new(|| {
+pub static CLIENT_STORAGE: LazyLock<jellyfin_api::storage::JellyfinClientStorage> = LazyLock::new(|| {
     jellyfin_api::storage::JellyfinClientStorage::new(300, std::time::Duration::from_secs(60 * 15))
     // 15 minutes
 });
@@ -60,7 +60,7 @@ pub static CLIENT_STORAGE: Lazy<jellyfin_api::storage::JellyfinClientStorage> = 
 // Lazily-resolved data directory shared across the application.
 // Priority: env var JELLYSWARRM_DATA_DIR, else "./data" relative to current working dir.
 // The directory is created on first access.
-pub static DATA_DIR: Lazy<PathBuf> = Lazy::new(|| {
+pub static DATA_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
     let base = std::env::var("JELLYSWARRM_DATA_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| std::env::current_dir().unwrap().join("data"));

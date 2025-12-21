@@ -1,3 +1,4 @@
+use std::sync::LazyLock;
 use axum::{
     body::Body,
     extract::Path,
@@ -79,8 +80,8 @@ fn get_jellyfin_ui_version() -> Option<JellyfinUiVersion> {
     }
 }
 
-pub static JELLYFIN_UI_VERSION: once_cell::sync::Lazy<Option<JellyfinUiVersion>> =
-    once_cell::sync::Lazy::new(get_jellyfin_ui_version);
+pub static JELLYFIN_UI_VERSION: LazyLock<Option<JellyfinUiVersion>> =
+    LazyLock::new(get_jellyfin_ui_version);
 
 pub fn ui_routes() -> axum::Router<AppState> {
     let admin_routes = Router::new()

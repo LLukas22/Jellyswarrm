@@ -1,52 +1,96 @@
 [workspace]
-members = [
-    "crates/jellyswarrm-proxy",
-    "crates/jellyswarrm-macros",
-    "crates/jellyfin-api",
+members = ["crates/jellyswarrm-proxy", "crates/jellyswarrm-macros", "crates/jellyfin-api",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0"
-edition = "2021"
 authors = ["lukaskreussel@gmail.com"]
+edition = "2021"
 repository = "https://github.com/LLukas22/Jellyswarrm"
+version = "0.2.0"
 
 [workspace.dependencies]
+# Own Crates
 jellyswarrm-macros = { path = "crates/jellyswarrm-macros" }
+jellyfin-api = { path = "crates/jellyfin-api" }
+
+
 # HTTP and Web Framework
-axum = { version = "0.8", features = ["macros"] }
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace"] }
+axum = { version = "0.8", features = ["macros"] }
+http-body-util = "0.1"
 hyper = { version = "1.0", features = ["full"] }
 hyper-util = { version = "0.1", features = ["full"] }
-http-body-util = "0.1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "gzip", "brotli", "deflate", "rustls-tls"]  }
 moka = { version = "0.12.11", features = ["future"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "gzip", "brotli", "deflate", "rustls-tls"] }
+rust-embed = "8"
+mime_guess = "2"
+axum-login = "0.18.0"
+axum-messages = "0.8.0"
+tower-sessions = { version = "0.14.0", features = ["signed"] }
+tower-sessions-sqlx-store = { version = "0.15.0", features = ["sqlite"] }
 
-# Database
-sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono"] }
-
-# Async Runtime
-tokio = { version = "1.0", features = ["full"] }
-
-# Logging and Tracing
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-tracing-appender = "0.2"
+# UI 
+askama = { version = "0.12", features = ["with-axum"] }
+askama_axum = "0.4" 
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_with = "3.14.0"
+serde_urlencoded = "0.7.1"
+serde-aux = "4.7.0"
+serde_default = "0.2.0"
 
-# Utilities
-url = {version = "2.4", features = ["serde"]}
-uuid = { version = "1.0", features = ["v4", "serde"] }
-chrono = { version = "0.4", features = ["serde"] }
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono"] }
+
+# Error Handling
 thiserror = "1.0"
-sha2 = "0.10"
-hex = "0.4"
-rand = "0.8"
+anyhow = "1.0.98"
+
+# Async Runtime
+tokio = { version = "1.0", features = ["full"] }
 
 # Development dependencies
-tokio-test = "0.4"
+
+
+# Logging and Tracing
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Utilities
+url = { version = "2.4", features = ["serde"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+proc-macro2 = "1.0"
+quote = "1.0"
+rand = "0.8"
+sha2 = "0.10"
+chrono = { version = "0.4", features = ["serde"] }
+hex = "0.4"
+syn = { version = "2.0", features = ["full", "extra-traits"] }
+indexmap = "2.11.4"
+regex = "1.11.1"
+percent-encoding = "2.3.1"
+time = "0.3.41"
+base64 = "0.22.1"
+futures-util = "0.3.31"
+aes-gcm = "0.10.3"
+async-trait = "0.1.89"
+async-recursion = "1.1.1"
+
+# Config
+config = "0.15.19"
+toml = "0.9.8"
+
+# Dev Dependencies
+wiremock = "0.6"
+tokio-test = "0.4.4"
+tempfile = "3.14.0"
+mockall = "0.13.1"
+
+
+# Build Dependencies
+fs_extra = "1.2"
