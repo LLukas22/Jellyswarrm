@@ -1,4 +1,3 @@
-use std::sync::LazyLock;
 use axum::{
     body::Body,
     extract::Path,
@@ -10,6 +9,7 @@ use axum::{
 use axum_login::login_required;
 use hyper::StatusCode;
 use rust_embed::RustEmbed;
+use std::sync::LazyLock;
 use tracing::error;
 
 use crate::{

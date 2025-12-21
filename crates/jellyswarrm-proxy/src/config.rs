@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
-use std::sync::LazyLock;
 use serde_default::DefaultFromSerde;
 use sqlx::migrate::Migrator;
 use std::fmt;
 use std::fs;
 use std::ops::Deref;
 use std::path::PathBuf;
+use std::sync::LazyLock;
 use tower_sessions::cookie::Key;
 use tracing::info;
 use uuid::Uuid;
@@ -52,10 +52,14 @@ pub static CLIENT_INFO: LazyLock<ClientInfo> = LazyLock::new(|| ClientInfo {
     version: env!("CARGO_PKG_VERSION").to_string(),
 });
 
-pub static CLIENT_STORAGE: LazyLock<jellyfin_api::storage::JellyfinClientStorage> = LazyLock::new(|| {
-    jellyfin_api::storage::JellyfinClientStorage::new(300, std::time::Duration::from_secs(60 * 15))
-    // 15 minutes
-});
+pub static CLIENT_STORAGE: LazyLock<jellyfin_api::storage::JellyfinClientStorage> =
+    LazyLock::new(|| {
+        jellyfin_api::storage::JellyfinClientStorage::new(
+            300,
+            std::time::Duration::from_secs(60 * 15),
+        )
+        // 15 minutes
+    });
 
 // Lazily-resolved data directory shared across the application.
 // Priority: env var JELLYSWARRM_DATA_DIR, else "./data" relative to current working dir.
