@@ -7,7 +7,7 @@ use axum::{
 use axum_login::{AuthUser, AuthnBackend, UserId};
 use serde::{Deserialize, Serialize};
 use tokio::{sync::RwLock, task};
-use tracing::{error, info};
+use tracing::info;
 
 use crate::{
     config::AppConfig, encryption::HashedPassword,

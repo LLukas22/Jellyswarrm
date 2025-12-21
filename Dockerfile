@@ -39,7 +39,7 @@ RUN UI_VERSION=$(git describe --tags) && \
 #################################
 # Stage 2: Rust Dependencies Cache
 #################################
-FROM rust:1-alpine AS rust-deps
+FROM rust:1.92.0-alpine AS rust-deps
 
 WORKDIR /app
 

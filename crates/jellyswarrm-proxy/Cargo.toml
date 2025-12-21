@@ -1,9 +1,9 @@
 [package]
 name = "jellyswarrm-proxy"
-version.workspace = true
-edition.workspace = true
-authors.workspace = true
-repository.workspace = true
+version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+repository = { workspace = true }
 description = "A high-performance reverse proxy for combining multiple Jellyfin instances"
 license = "MIT OR Apache-2.0"
 
@@ -12,63 +12,60 @@ name = "jellyswarrm-proxy"
 path = "src/main.rs"
 
 [dependencies]
-jellyswarrm-macros.workspace = true
-axum.workspace = true
-tokio.workspace = true
-tower.workspace = true
-tower-http.workspace = true
-hyper.workspace = true
-hyper-util.workspace = true
-http-body-util.workspace = true
-tracing.workspace = true
-askama = { version = "0.12", features = ["with-axum"] }
-askama_axum = "0.4"
-tracing-subscriber.workspace = true
-tracing-appender.workspace = true
-url.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-reqwest.workspace = true
-sqlx.workspace = true
-sha2.workspace = true
-hex.workspace = true
-chrono.workspace = true
-rand.workspace = true
-moka.workspace = true
-dashmap = "6.1.0"
-uuid = { version = "1.0", features = ["v4"] }
-anyhow = "1.0.98"
-serde_urlencoded = "0.7.1"
-indexmap = "2.11.4"
-regex = "1.11.1"
-rust-embed = "8"
-mime_guess = "2"
-percent-encoding = "2.3.1"
-config = "0.15.19"
-toml = "0.9.8"
-once_cell = "1.19"
-serde_default = "0.2.0"
-axum-login = "0.18.0"
-password-auth = "1.0.0"
-thiserror.workspace = true
-axum-messages = "0.8.0"
-tower-sessions = { version = "0.14.0", features = ["signed"] }
-tower-sessions-sqlx-store = { version = "0.15.0", features = ["sqlite"] }
-time = "0.3.41"
-base64 = "0.22.1"
-serde-aux = "4.7.0"
-async-trait = "0.1.89"
-async-recursion = "1.1.1"
+jellyswarrm-macros = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+hyper = { workspace = true }
+http-body-util = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
+url = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+sqlx = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+chrono = { workspace = true }
+rand = { workspace = true }
+moka = { workspace = true }
+askama = { workspace = true }
+uuid = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+rust-embed = { workspace = true }
+mime_guess = { workspace = true }
+config = { workspace = true }
+toml = { workspace = true }
 
-aes-gcm = "0.10.3"
-serde_with = "3.16.1"
-jellyfin-api = { path = "../jellyfin-api" }
-futures-util = "0.3.31"
+regex = { workspace = true }
+percent-encoding = { workspace = true }
+
+serde_default = { workspace = true }
+
+axum-login = { workspace = true }
+axum-messages = { workspace = true }
+tower-sessions = { workspace = true }
+tower-sessions-sqlx-store = { workspace = true }
+
+
+time = { workspace = true }
+base64 = { workspace = true }
+async-trait = { workspace = true }
+async-recursion = { workspace = true }
+
+aes-gcm = { workspace = true }
+serde_with = { workspace = true }
+jellyfin-api = { workspace = true }
+futures-util = { workspace = true }
 
 [dev-dependencies]
-tokio-test = "0.4.4"
-tempfile = "3.14.0"
-mockall = "0.13.1"
+tokio-test = { workspace = true }
+tempfile = { workspace = true }
+mockall = { workspace = true }
 
 [build-dependencies]
-fs_extra = "1.2"
+fs_extra = { workspace = true }

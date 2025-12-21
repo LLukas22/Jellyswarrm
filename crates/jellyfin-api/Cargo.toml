@@ -3,6 +3,7 @@ name = "jellyfin-api"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+license = "MIT OR Apache-2.0"
 repository.workspace = true
 
 [dependencies]
@@ -17,4 +18,4 @@ moka = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
-wiremock = "0.6"
+wiremock = { workspace = true }
