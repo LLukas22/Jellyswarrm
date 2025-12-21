@@ -8,7 +8,10 @@ use axum::{
 use serde::Deserialize;
 use tracing::error;
 
-use crate::{config::save_config, AppState};
+use crate::{
+    config::{save_config, MediaStreamingMode},
+    AppState,
+};
 
 #[derive(Template)]
 #[template(path = "admin/settings.html")]
@@ -24,6 +27,7 @@ pub struct SettingsFormTemplate {
     pub server_name: String,
     pub include_server_name_in_media: bool,
     pub ui_route: String,
+    pub media_streaming_mode: String,
 }
 
 pub async fn settings_page(State(state): State<AppState>) -> impl IntoResponse {
@@ -47,6 +51,7 @@ pub async fn settings_form(State(state): State<AppState>) -> impl IntoResponse {
         server_name: cfg.server_name,
         include_server_name_in_media: cfg.include_server_name_in_media,
         ui_route: state.get_ui_route().await,
+        media_streaming_mode: cfg.media_streaming_mode.to_string(),
     };
     match form.render() {
         Ok(html) => Html(html).into_response(),
@@ -64,6 +69,7 @@ pub struct SaveForm {
     // When the checkbox is unchecked the field is absent; default to false.
     #[serde(default)]
     pub include_server_name_in_media: bool,
+    pub media_streaming_mode: String,
 }
 
 pub async fn save_settings(
@@ -76,11 +82,23 @@ pub async fn save_settings(
         )
         .into_response();
     }
+
+    let mode = match form.media_streaming_mode.parse::<MediaStreamingMode>() {
+        Ok(m) => m,
+        Err(_) => {
+            return Html(
+                "<div id=\"settings-messages\" class=\"alert alert-error\">Invalid media streaming mode</div>",
+            )
+            .into_response()
+        }
+    };
+
     {
         let mut cfg = state.config.write().await;
         cfg.public_address = form.public_address.trim().to_string();
         cfg.server_name = form.server_name.trim().to_string();
         cfg.include_server_name_in_media = form.include_server_name_in_media;
+        cfg.media_streaming_mode = mode;
         if let Err(e) = save_config(&cfg) {
             error!("Save failed: {}", e);
         }

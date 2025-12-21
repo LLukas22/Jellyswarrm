@@ -46,10 +46,6 @@ use server_storage::ServerStorageService;
 use user_authorization_service::UserAuthorizationService;
 
 use crate::{
-    config::DATA_DIR, encryption::Password, request_preprocessing::preprocess_request,
-    session_storage::SessionStorage, ui::ui_routes,
-};
-use crate::{
     config::{AppConfig, MIGRATOR},
     processors::{
         request_analyzer::RequestAnalyzer,
@@ -57,6 +53,13 @@ use crate::{
     },
     request_preprocessing::body_to_json,
     ui::Backend,
+};
+use crate::{
+    config::{MediaStreamingMode, DATA_DIR},
+    encryption::Password,
+    request_preprocessing::preprocess_request,
+    session_storage::SessionStorage,
+    ui::ui_routes,
 };
 
 #[derive(Clone)]
@@ -129,6 +132,11 @@ impl AppState {
         } else {
             path
         }
+    }
+
+    pub async fn get_media_streaming_mode(&self) -> MediaStreamingMode {
+        let config = self.config.read().await;
+        config.media_streaming_mode
     }
 }
 
