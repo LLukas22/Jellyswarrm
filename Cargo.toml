@@ -21,7 +21,6 @@ tower-http = { version = "0.5", features = ["cors", "trace"] }
 axum = { version = "0.8", features = ["macros"] }
 http-body-util = "0.1"
 hyper = { version = "1.0", features = ["full"] }
-hyper-util = { version = "0.1", features = ["full"] }
 moka = { version = "0.12.11", features = ["future"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "gzip", "brotli", "deflate", "rustls-tls"] }
 rust-embed = "8"
@@ -32,15 +31,13 @@ tower-sessions = { version = "0.14.0", features = ["signed"] }
 tower-sessions-sqlx-store = { version = "0.15.0", features = ["sqlite"] }
 
 # UI 
-askama = { version = "0.12", features = ["with-axum"] }
-askama_axum = "0.4" 
+askama = { version = "0.14.0" }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_with = "3.14.0"
 serde_urlencoded = "0.7.1"
-serde-aux = "4.7.0"
 serde_default = "0.2.0"
 
 # Database
@@ -52,9 +49,6 @@ anyhow = "1.0.98"
 
 # Async Runtime
 tokio = { version = "1.0", features = ["full"] }
-
-# Development dependencies
-
 
 # Logging and Tracing
 tracing = "0.1"
@@ -71,7 +65,6 @@ sha2 = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 hex = "0.4"
 syn = { version = "2.0", features = ["full", "extra-traits"] }
-indexmap = "2.11.4"
 regex = "1.11.1"
 percent-encoding = "2.3.1"
 time = "0.3.41"
