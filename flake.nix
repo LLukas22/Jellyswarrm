@@ -188,17 +188,27 @@
                 RestrictSUIDSGID = true;
                 RemoveIPC = true;
                 PrivateMounts = true;
-              };
+              } // (
+                if cfg.passwordFile != null
+                then {
+                  LoadCredential = "password:${cfg.passwordFile}";
+                  ExecStart = "${pkgs.bash}/bin/bash -c 'JELLYSWARRM_PASSWORD=$(cat $CREDENTIALS_DIRECTORY/password) exec ${cfg.package}/bin/jellyswarrm-proxy'";
+                }
+                else {
+                  ExecStart = "${cfg.package}/bin/jellyswarrm-proxy";
+                }
+              );
 
               environment = {
                 JELLYSWARRM_HOST = cfg.host;
                 JELLYSWARRM_PORT = toString cfg.port;
                 JELLYSWARRM_USERNAME = cfg.username;
                 JELLYSWARRM_DATA_DIR = cfg.dataDir;
-                JELLYSWARRM_PASSWORD = if cfg.passwordFile != null
-                  then builtins.readFile cfg.passwordFile
-                  else "jellyswarrm";
-              } // cfg.extraEnvironment;
+              } // cfg.extraEnvironment // (
+                if cfg.passwordFile == null
+                then { JELLYSWARRM_PASSWORD = "jellyswarrm"; }
+                else {}
+              );
             };
 
             networking.firewall = mkIf cfg.openFirewall {
