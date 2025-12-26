@@ -31,6 +31,14 @@ async fn process_user(
     Ok(server_user)
 }
 
+// http://foo:3000/users/public?)
+pub async fn handle_public(
+    _state: State<AppState>,
+) -> Result<Json<Vec<crate::models::User>>, StatusCode> {
+    // For now, return an empty list
+    Ok(Json(vec![]))
+}
+
 pub async fn handle_get_me(
     State(state): State<AppState>,
     req: Request,

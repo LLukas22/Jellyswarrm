@@ -332,6 +332,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "/AuthenticateByName",
                     post(handlers::users::handle_authenticate_by_name),
                 )
+                .route("/Public", get(handlers::users::handle_public))
                 .route("/Me", get(handlers::users::handle_get_me))
                 .route("/{user_id}", get(handlers::users::handle_get_user_by_id))
                 .route(
@@ -356,6 +357,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     get(handlers::items::get_items_list),
                 ),
         )
+        .route("/users/public", get(handlers::users::handle_public))
         .route(
             "/UserViews",
             get(handlers::federated::get_items_from_all_servers),
