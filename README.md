@@ -62,7 +62,7 @@ Here’s a minimal `docker-compose.yml` example to get started:
 ```yaml
 services:
   jellyswarrm:
-    image: ghcr.io/llukas22/jellyswarrm:latest
+    image: fivespeeddeasil/jellyswarrm:latest
     container_name: jellyswarrm
     restart: unless-stopped
     ports:
