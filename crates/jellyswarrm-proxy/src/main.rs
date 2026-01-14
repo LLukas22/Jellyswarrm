@@ -314,13 +314,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let key = Key::from(loaded_config.session_key.as_slice());
 
-    // Secure session configuration
-    // Note: with_secure(true) requires HTTPS. Set to false for local development.
-    // In production, ensure you're running behind a reverse proxy with HTTPS.
     let session_layer = SessionManagerLayer::new(session_store)
-        .with_secure(false) // Set to true in production with HTTPS
-        .with_same_site(tower_sessions::cookie::SameSite::Strict) // Changed from Lax for CSRF protection
-        .with_http_only(true) // Prevent JavaScript access
+        .with_secure(false)
+        .with_same_site(tower_sessions::cookie::SameSite::Lax)
         .with_expiry(Expiry::OnInactivity(time::Duration::days(1))) // 24 hour
         .with_signed(key);
 

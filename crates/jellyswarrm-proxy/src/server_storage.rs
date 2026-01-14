@@ -181,7 +181,8 @@ impl ServerStorageService {
         Ok(servers.into_iter().next())
     }
 
-    /// Validate server URL to prevent SSRF attacks
+    /// Validate server URL to prevent SSRF attacks against the container itself
+    /// Note: Private IPs (192.168.x.x, 10.x.x, etc.) are allowed for homelab use
     fn validate_server_url(url: &str) -> Result<(), sqlx::Error> {
         let parsed = Url::parse(url).map_err(|e| {
             sqlx::Error::Io(std::io::Error::new(
@@ -206,7 +207,7 @@ impl ServerStorageService {
             ))
         })?;
 
-        // Prevent localhost/loopback addresses
+        // Prevent localhost/loopback addresses (could attack the container itself)
         if host == "localhost"
             || host == "127.0.0.1"
             || host == "::1"
@@ -216,53 +217,6 @@ impl ServerStorageService {
             return Err(sqlx::Error::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "Localhost and loopback addresses are not allowed",
-            )));
-        }
-
-        // Prevent link-local addresses (169.254.0.0/16)
-        if host.starts_with("169.254.") {
-            return Err(sqlx::Error::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Link-local addresses are not allowed",
-            )));
-        }
-
-        // Prevent private IP ranges
-        // 10.0.0.0/8
-        if host.starts_with("10.") {
-            return Err(sqlx::Error::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Private IP addresses (10.0.0.0/8) are not allowed",
-            )));
-        }
-
-        // 172.16.0.0/12
-        if host.starts_with("172.") {
-            if let Some(second_octet) = host.split('.').nth(1) {
-                if let Ok(octet) = second_octet.parse::<u8>() {
-                    if (16..=31).contains(&octet) {
-                        return Err(sqlx::Error::Io(std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            "Private IP addresses (172.16.0.0/12) are not allowed",
-                        )));
-                    }
-                }
-            }
-        }
-
-        // 192.168.0.0/16
-        if host.starts_with("192.168.") {
-            return Err(sqlx::Error::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Private IP addresses (192.168.0.0/16) are not allowed",
-            )));
-        }
-
-        // Prevent IPv6 loopback and link-local
-        if host.starts_with("fe80:") || host.starts_with("::1") {
-            return Err(sqlx::Error::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "IPv6 loopback and link-local addresses are not allowed",
             )));
         }
 
