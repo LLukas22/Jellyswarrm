@@ -4,6 +4,7 @@ use axum::{
 };
 use hyper::StatusCode;
 use regex::Regex;
+use std::collections::BTreeMap;
 use std::sync::LazyLock;
 use tokio::task::JoinSet;
 use tracing::{debug, error, trace};
@@ -135,29 +136,27 @@ pub async fn get_items_from_all_servers(
         });
     }
 
-    // Wait for all tasks to complete and collect results with their original indices
-    let mut indexed_results: Vec<(usize, Option<crate::models::ItemsResponseVariants>)> =
-        Vec::new();
+    // Use BTreeMap for automatic ordering (avoids manual sorting)
+    let mut indexed_results: BTreeMap<usize, crate::models::ItemsResponseVariants> =
+        BTreeMap::new();
     while let Some(result) = join_set.join_next().await {
         match result {
-            Ok((index, items)) => indexed_results.push((index, items)),
+            Ok((index, Some(items))) => {
+                indexed_results.insert(index, items);
+            }
+            Ok((_, None)) => {} // Skip failed requests
             Err(e) => error!("Task failed: {:?}", e),
         }
     }
 
-    // Sort results by original server order
-    indexed_results.sort_by_key(|(index, _)| *index);
-
-    // Extract items in original server order
-    let mut server_items: Vec<crate::models::ItemsResponseVariants> = Vec::new();
-    for (_, items) in indexed_results {
-        if let Some(items) = items {
-            server_items.push(items);
-        }
-    }
+    // Extract items in original server order (already sorted by BTreeMap)
+    let server_items: Vec<crate::models::ItemsResponseVariants> =
+        indexed_results.into_values().collect();
 
     // Interleave items from all servers with Live TV filtering
-    let mut interleaved_items = Vec::new();
+    // Pre-allocate capacity to avoid reallocations
+    let estimated_capacity = server_items.iter().map(|items| items.len()).sum::<usize>();
+    let mut interleaved_items = Vec::with_capacity(estimated_capacity);
     let mut live_tv_count = 0;
     let max_items = server_items
         .iter()
@@ -169,17 +168,22 @@ pub async fn get_items_from_all_servers(
         for server_item_list in &server_items {
             if let Some(item) = server_item_list.get(i) {
                 // Skip additional Live TV items
-                if let Some(collectiontype) = &item.collection_type {
+                let should_skip = if let Some(collectiontype) = &item.collection_type {
                     if *collectiontype == CollectionType::LiveTv
                         && item.item_type == BaseItemKind::UserView
                     {
                         live_tv_count += 1;
-                        if live_tv_count > 1 {
-                            continue;
-                        }
+                        live_tv_count > 1
+                    } else {
+                        false
                     }
+                } else {
+                    false
+                };
+
+                if !should_skip {
+                    interleaved_items.push(item.clone());
                 }
-                interleaved_items.push(item.clone());
             }
         }
     }

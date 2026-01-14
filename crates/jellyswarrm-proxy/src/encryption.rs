@@ -7,6 +7,10 @@ use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
 };
+use argon2::{
+    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+    Argon2,
+};
 use base64::{engine::general_purpose, Engine as _};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -52,11 +56,23 @@ impl From<&str> for Password {
     }
 }
 
-/// Hash a password using SHA-256
+/// Hash a password using Argon2id (secure password hashing)
 pub fn hash_password(password: &str) -> String {
+    let salt = SaltString::generate(&mut OsRng);
+    let argon2 = Argon2::default();
+
+    argon2
+        .hash_password(password.as_bytes(), &salt)
+        .expect("Failed to hash password")
+        .to_string()
+}
+
+/// Legacy SHA-256 password verification (for migration from old hashes)
+fn verify_legacy_sha256(password: &str, hash: &str) -> bool {
     let mut hasher = Sha256::new();
     hasher.update(password.as_bytes());
-    hex::encode(hasher.finalize())
+    let computed_hash = hex::encode(hasher.finalize());
+    computed_hash == hash
 }
 
 /// A wrapper type for hashed passwords.
@@ -79,7 +95,23 @@ impl HashedPassword {
     }
 
     pub fn verify(&self, password: &str) -> bool {
-        self.0 == hash_password(password)
+        // Try Argon2 verification first
+        if let Ok(parsed_hash) = PasswordHash::new(&self.0) {
+            if Argon2::default()
+                .verify_password(password.as_bytes(), &parsed_hash)
+                .is_ok()
+            {
+                return true;
+            }
+        }
+
+        // Fallback to legacy SHA-256 verification for backwards compatibility
+        // This allows existing users to continue logging in
+        if self.0.len() == 64 && self.0.chars().all(|c| c.is_ascii_hexdigit()) {
+            return verify_legacy_sha256(password, &self.0);
+        }
+
+        false
     }
 
     pub fn from_hashed(hashed: String) -> Self {
@@ -228,13 +260,20 @@ pub fn decrypt_password(
     Ok(result)
 }
 
-/// Derives a 32-byte key from a password using SHA-256
+/// Derives a 32-byte key from a password using Argon2id
+/// Uses a fixed salt since this is for encryption key derivation, not password storage
 fn derive_key(password: &str) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(password.as_bytes());
-    let result = hasher.finalize();
+    // Use a fixed salt for key derivation (not password hashing!)
+    // This ensures the same password always produces the same encryption key
+    let salt = b"jellyswarrm-kdf-salt-v1-do-not-change";
+
+    let argon2 = Argon2::default();
     let mut key = [0u8; 32];
-    key.copy_from_slice(&result[..32]);
+
+    argon2
+        .hash_password_into(password.as_bytes(), salt, &mut key)
+        .expect("Failed to derive encryption key");
+
     key
 }
 

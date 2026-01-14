@@ -1,7 +1,7 @@
 use axum::{
     body::Body,
     extract::{Request, State},
-    http::{HeaderName, StatusCode},
+    http::{self, HeaderName, StatusCode},
     response::{IntoResponse, Response},
     routing::{any, get, post},
     Router,
@@ -15,7 +15,11 @@ use std::{net::SocketAddr, str::FromStr};
 use std::{sync::Arc, time::Duration};
 use tokio::task::AbortHandle;
 use tower::ServiceBuilder;
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::{
+    cors::CorsLayer,
+    set_header::SetResponseHeaderLayer,
+    trace::TraceLayer,
+};
 use tower_sessions::cookie::Key;
 use tower_sessions_sqlx_store::SqliteStore;
 use tracing::{debug, error, info, trace, warn};
@@ -192,7 +196,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Resolve database path inside DATA_DIR
     let db_path = DATA_DIR.join("jellyswarrm.db");
     let db_url = format!("sqlite://{}", db_path.to_string_lossy());
-    let options = SqliteConnectOptions::from_str(&db_url)?.create_if_missing(true);
+    let options = SqliteConnectOptions::from_str(&db_url)?
+        .create_if_missing(true)
+        .busy_timeout(Duration::from_secs(10))
+        .optimize_on_close(true, None);
 
     let pool = SqlitePool::connect_with(options).await?;
 
@@ -201,9 +208,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     });
 
-    sqlx::query("PRAGMA foreign_keys = ON;")
-        .execute(&pool)
-        .await?;
+    // Configure SQLite for optimal performance
+    sqlx::query(
+        r#"
+        PRAGMA foreign_keys = ON;
+        PRAGMA journal_mode = WAL;
+        PRAGMA synchronous = NORMAL;
+        PRAGMA cache_size = -64000;
+        PRAGMA temp_store = MEMORY;
+        PRAGMA mmap_size = 268435456;
+        PRAGMA page_size = 4096;
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    info!("SQLite performance optimizations applied");
 
     // Create reqwest client
     let reqwest_client = reqwest::Client::builder()
@@ -294,9 +314,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let key = Key::from(loaded_config.session_key.as_slice());
 
+    // Secure session configuration
+    // Note: with_secure(true) requires HTTPS. Set to false for local development.
+    // In production, ensure you're running behind a reverse proxy with HTTPS.
     let session_layer = SessionManagerLayer::new(session_store)
-        .with_secure(false)
-        .with_same_site(tower_sessions::cookie::SameSite::Lax)
+        .with_secure(false) // Set to true in production with HTTPS
+        .with_same_site(tower_sessions::cookie::SameSite::Strict) // Changed from Lax for CSRF protection
+        .with_http_only(true) // Prevent JavaScript access
         .with_expiry(Expiry::OnInactivity(time::Duration::days(1))) // 24 hour
         .with_signed(key);
 
@@ -307,6 +331,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
 
     let ui_route = loaded_config.ui_route.to_string();
+
+    // TODO: Add rate limiting for authentication endpoints
+    // Recommended: Use tower-governor or similar rate limiting middleware
+    // to prevent brute force attacks (5 requests per 10 seconds per IP)
+
+    // Security headers
+    let security_headers = ServiceBuilder::new()
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("x-frame-options"),
+            http::HeaderValue::from_static("DENY"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("x-content-type-options"),
+            http::HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("x-xss-protection"),
+            http::HeaderValue::from_static("1; mode=block"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("referrer-policy"),
+            http::HeaderValue::from_static("strict-origin-when-cross-origin"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("content-security-policy"),
+            http::HeaderValue::from_static("default-src 'self' 'unsafe-inline' 'unsafe-eval'; img-src 'self' data: https:; media-src 'self' https:; connect-src 'self' https:"),
+        ));
 
     let app = Router::new()
         // UI Management routes
@@ -479,6 +530,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .layer(TraceLayer::new_for_http())
                 .layer(CorsLayer::permissive()),
         )
+        .layer(security_headers)
         .layer(MessagesManagerLayer)
         .layer(auth_layer)
         .with_state(app_state);

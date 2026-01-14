@@ -41,13 +41,8 @@ impl ServerStorageService {
         url: &str,
         priority: i32,
     ) -> Result<i64, sqlx::Error> {
-        // Validate URL
-        if Url::parse(url).is_err() {
-            return Err(sqlx::Error::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Invalid URL format",
-            )));
-        }
+        // Validate URL with SSRF protection
+        Self::validate_server_url(url)?;
 
         let now = chrono::Utc::now();
 
@@ -184,6 +179,94 @@ impl ServerStorageService {
     pub async fn get_best_server(&self) -> Result<Option<Server>, sqlx::Error> {
         let servers = self.list_servers().await?;
         Ok(servers.into_iter().next())
+    }
+
+    /// Validate server URL to prevent SSRF attacks
+    fn validate_server_url(url: &str) -> Result<(), sqlx::Error> {
+        let parsed = Url::parse(url).map_err(|e| {
+            sqlx::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Invalid URL format: {}", e),
+            ))
+        })?;
+
+        // Only allow http/https schemes
+        if parsed.scheme() != "http" && parsed.scheme() != "https" {
+            return Err(sqlx::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Only http and https schemes are allowed",
+            )));
+        }
+
+        // Get host and check for dangerous addresses
+        let host = parsed.host_str().ok_or_else(|| {
+            sqlx::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "URL must have a host",
+            ))
+        })?;
+
+        // Prevent localhost/loopback addresses
+        if host == "localhost"
+            || host == "127.0.0.1"
+            || host == "::1"
+            || host.starts_with("127.")
+            || host == "0.0.0.0"
+        {
+            return Err(sqlx::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Localhost and loopback addresses are not allowed",
+            )));
+        }
+
+        // Prevent link-local addresses (169.254.0.0/16)
+        if host.starts_with("169.254.") {
+            return Err(sqlx::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Link-local addresses are not allowed",
+            )));
+        }
+
+        // Prevent private IP ranges
+        // 10.0.0.0/8
+        if host.starts_with("10.") {
+            return Err(sqlx::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Private IP addresses (10.0.0.0/8) are not allowed",
+            )));
+        }
+
+        // 172.16.0.0/12
+        if host.starts_with("172.") {
+            if let Some(second_octet) = host.split('.').nth(1) {
+                if let Ok(octet) = second_octet.parse::<u8>() {
+                    if (16..=31).contains(&octet) {
+                        return Err(sqlx::Error::Io(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "Private IP addresses (172.16.0.0/12) are not allowed",
+                        )));
+                    }
+                }
+            }
+        }
+
+        // 192.168.0.0/16
+        if host.starts_with("192.168.") {
+            return Err(sqlx::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Private IP addresses (192.168.0.0/16) are not allowed",
+            )));
+        }
+
+        // Prevent IPv6 loopback and link-local
+        if host.starts_with("fe80:") || host.starts_with("::1") {
+            return Err(sqlx::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "IPv6 loopback and link-local addresses are not allowed",
+            )));
+        }
+
+        Ok(())
     }
 
     /// Internal method to convert database row to Server struct
