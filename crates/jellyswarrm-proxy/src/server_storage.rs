@@ -41,9 +41,6 @@ impl ServerStorageService {
         url: &str,
         priority: i32,
     ) -> Result<i64, sqlx::Error> {
-        // Validate URL with SSRF protection
-        Self::validate_server_url(url)?;
-
         let now = chrono::Utc::now();
 
         let result = sqlx::query(
@@ -179,48 +176,6 @@ impl ServerStorageService {
     pub async fn get_best_server(&self) -> Result<Option<Server>, sqlx::Error> {
         let servers = self.list_servers().await?;
         Ok(servers.into_iter().next())
-    }
-
-    /// Validate server URL to prevent SSRF attacks against the container itself
-    /// Note: Private IPs (192.168.x.x, 10.x.x, etc.) are allowed for homelab use
-    fn validate_server_url(url: &str) -> Result<(), sqlx::Error> {
-        let parsed = Url::parse(url).map_err(|e| {
-            sqlx::Error::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("Invalid URL format: {}", e),
-            ))
-        })?;
-
-        // Only allow http/https schemes
-        if parsed.scheme() != "http" && parsed.scheme() != "https" {
-            return Err(sqlx::Error::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Only http and https schemes are allowed",
-            )));
-        }
-
-        // Get host and check for dangerous addresses
-        let host = parsed.host_str().ok_or_else(|| {
-            sqlx::Error::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "URL must have a host",
-            ))
-        })?;
-
-        // Prevent localhost/loopback addresses (could attack the container itself)
-        if host == "localhost"
-            || host == "127.0.0.1"
-            || host == "::1"
-            || host.starts_with("127.")
-            || host == "0.0.0.0"
-        {
-            return Err(sqlx::Error::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Localhost and loopback addresses are not allowed",
-            )));
-        }
-
-        Ok(())
     }
 
     /// Internal method to convert database row to Server struct

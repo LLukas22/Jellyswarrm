@@ -295,16 +295,19 @@ impl UserAuthorizationService {
     ) -> Result<i64, sqlx::Error> {
         let now = chrono::Utc::now();
 
-        // Require master password for encryption - no plaintext fallback
-        let master = master_password.ok_or_else(|| {
-            error!("Master password required for encrypting server credentials");
-            sqlx::Error::Protocol("Master password required for encryption".into())
-        })?;
-
-        let final_password = encrypt_password(mapped_password, master).map_err(|e| {
-            error!("Failed to encrypt password: {}", e);
-            sqlx::Error::Protocol(format!("Password encryption failed: {}", e))
-        })?;
+        // Encrypt password if master password provided, otherwise store as plaintext (legacy fallback)
+        let final_password = if let Some(master) = master_password {
+            match encrypt_password(mapped_password, master) {
+                Ok(encrypted) => encrypted,
+                Err(e) => {
+                    warn!("Failed to encrypt password: {}. Storing as plaintext.", e);
+                    EncryptedPassword::from_raw(mapped_password.as_str().to_string())
+                }
+            }
+        } else {
+            warn!("No encryption password provided. Storing as plaintext!");
+            EncryptedPassword::from_raw(mapped_password.as_str().to_string())
+        };
 
         let result = sqlx::query(
             r#"

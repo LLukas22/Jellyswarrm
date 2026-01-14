@@ -12,9 +12,8 @@ version = "0.2.0"
 [workspace.dependencies]
 aes-gcm = "0.10.3"
 anyhow = "1.0.100"
-argon2 = "0.5.3"
 
-# UI 
+# UI
 askama = { version = "0.14.0" }
 async-recursion = "1.1.1"
 async-trait = "0.1.89"
@@ -88,15 +87,3 @@ uuid = { version = "1.19.0", features = ["v4", "serde"] }
 
 # Dev Dependencies
 wiremock = "0.6.5"
-
-# Optimized release profile for maximum performance
-[profile.release]
-opt-level = 3              # Maximum optimizations
-lto = "thin"               # Link-time optimization (thin for faster builds)
-codegen-units = 1          # Better optimization (slower compile, faster runtime)
-strip = true               # Remove debug symbols
-panic = "abort"            # Smaller binary size
-
-# Fast development builds with some optimization
-[profile.dev]
-opt-level = 1              # Some optimization in dev mode

@@ -208,22 +208,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     });
 
-    // Configure SQLite for optimal performance
-    sqlx::query(
-        r#"
-        PRAGMA foreign_keys = ON;
-        PRAGMA journal_mode = WAL;
-        PRAGMA synchronous = NORMAL;
-        PRAGMA cache_size = -64000;
-        PRAGMA temp_store = MEMORY;
-        PRAGMA mmap_size = 268435456;
-        PRAGMA page_size = 4096;
-        "#,
-    )
-    .execute(&pool)
-    .await?;
-
-    info!("SQLite performance optimizations applied");
+    // Enable foreign key constraints
+    sqlx::query("PRAGMA foreign_keys = ON;")
+        .execute(&pool)
+        .await?;
 
     // Create reqwest client
     let reqwest_client = reqwest::Client::builder()
@@ -356,8 +344,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ));
 
     let app = Router::new()
-        // UI Management routes
-        .nest(&format!("/{ui_route}"), ui_routes())
+        // UI Management routes with security headers
+        .nest(&format!("/{ui_route}"), ui_routes().layer(security_headers))
         .route("/", get(index_handler))
         .route(
             "/QuickConnect/Enabled",
@@ -526,7 +514,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .layer(TraceLayer::new_for_http())
                 .layer(CorsLayer::permissive()),
         )
-        .layer(security_headers)
         .layer(MessagesManagerLayer)
         .layer(auth_layer)
         .with_state(app_state);
