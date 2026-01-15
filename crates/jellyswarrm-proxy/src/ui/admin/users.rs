@@ -186,7 +186,7 @@ async fn get_user_list_impl(
     state: &AppState,
     report: Option<Vec<ServerSyncResult>>,
 ) -> impl IntoResponse {
-    // Fetch servers once for mapping lookup
+    // Fetch all data upfront to avoid N+1 queries
     let servers = match state.server_storage.list_servers().await {
         Ok(s) => s,
         Err(e) => {
@@ -195,29 +195,104 @@ async fn get_user_list_impl(
         }
     };
 
-    match state.user_authorization.list_users().await {
-        Ok(users) => {
-            let mut result = Vec::new();
-            for user in users {
-                result.push(create_user_with_mappings(state, user, &servers, false).await);
-            }
-
-            let template = UserListTemplate {
-                users: result,
-                ui_route: state.get_ui_route().await,
-                sync_report: report,
-            };
-            match template.render() {
-                Ok(html) => Html(html).into_response(),
-                Err(e) => {
-                    error!("Render error: {}", e);
-                    (StatusCode::INTERNAL_SERVER_ERROR, "Template error").into_response()
-                }
-            }
-        }
+    let users = match state.user_authorization.list_users().await {
+        Ok(u) => u,
         Err(e) => {
             error!("Failed to list users: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response()
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
+        }
+    };
+
+    // Bulk fetch all session counts (single query instead of N queries)
+    let all_session_counts: HashMap<(String, String), i64> = match state
+        .user_authorization
+        .all_session_counts()
+        .await
+    {
+        Ok(counts) => counts
+            .into_iter()
+            .map(|(user_id, url, cnt)| ((user_id, url), cnt))
+            .collect(),
+        Err(e) => {
+            error!("Failed to fetch session counts: {}", e);
+            HashMap::new()
+        }
+    };
+
+    // Bulk fetch all server mappings (single query instead of N queries)
+    let all_mappings: HashMap<String, Vec<ServerMapping>> = match state
+        .user_authorization
+        .list_all_server_mappings()
+        .await
+    {
+        Ok(mappings) => {
+            let mut map: HashMap<String, Vec<ServerMapping>> = HashMap::new();
+            for mapping in mappings {
+                map.entry(mapping.user_id.clone())
+                    .or_default()
+                    .push(mapping);
+            }
+            map
+        }
+        Err(e) => {
+            error!("Failed to fetch all mappings: {}", e);
+            HashMap::new()
+        }
+    };
+
+    // Build UserWithMappings for each user using pre-fetched data (no additional DB calls)
+    let mut result = Vec::new();
+    for user in users {
+        let user_mappings = all_mappings.get(&user.id).cloned().unwrap_or_default();
+
+        let mut mappings_vec: Vec<(ServerMapping, Server, i64)> = Vec::new();
+        let mut mapped_urls: Vec<String> = Vec::new();
+
+        for mapping in user_mappings {
+            if let Some(server) = servers.iter().find(|srv| {
+                srv.url.as_str().trim_end_matches('/')
+                    == mapping.server_url.trim_end_matches('/')
+            }) {
+                let count = all_session_counts
+                    .get(&(user.id.clone(), mapping.server_url.trim_end_matches('/').to_string()))
+                    .cloned()
+                    .unwrap_or(0);
+                mapped_urls.push(server.url.as_str().trim_end_matches('/').to_string());
+                mappings_vec.push((mapping, server.clone(), count));
+            }
+        }
+
+        let available_servers: Vec<Server> = servers
+            .iter()
+            .filter(|srv| {
+                !mapped_urls
+                    .iter()
+                    .any(|u| u == srv.url.as_str().trim_end_matches('/'))
+            })
+            .cloned()
+            .collect();
+
+        let user_total_sessions: i64 = mappings_vec.iter().map(|(_, _, c)| *c).sum();
+
+        result.push(UserWithMappings {
+            user,
+            mappings: mappings_vec,
+            available_servers,
+            total_sessions: user_total_sessions,
+            open_mappings: false,
+        });
+    }
+
+    let template = UserListTemplate {
+        users: result,
+        ui_route: state.get_ui_route().await,
+        sync_report: report,
+    };
+    match template.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => {
+            error!("Render error: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Template error").into_response()
         }
     }
 }

@@ -779,6 +779,21 @@ impl UserAuthorizationService {
             .collect())
     }
 
+    /// List all server mappings for all users (bulk fetch to avoid N+1 queries)
+    pub async fn list_all_server_mappings(&self) -> Result<Vec<ServerMapping>, sqlx::Error> {
+        let mappings = sqlx::query_as::<_, ServerMapping>(
+            r#"
+            SELECT id, user_id, server_url, mapped_username, mapped_password, created_at, updated_at
+            FROM server_mappings
+            ORDER BY user_id, server_url
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(mappings)
+    }
+
     /// Delete all authorization sessions for a given user.
     pub async fn delete_all_sessions_for_user(&self, user_id: &str) -> Result<u64, sqlx::Error> {
         let res = sqlx::query("DELETE FROM authorization_sessions WHERE user_id = ?")

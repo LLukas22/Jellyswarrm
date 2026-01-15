@@ -27,7 +27,12 @@
                 </article>
             </dialog>
         </div>
-        <p class="user-key" title="Virtual key">{{ uwm.user.virtual_key }}</p>
+        <div style="display: flex; align-items: center; gap: 0.5rem;">
+            <p class="user-key" title="Virtual key" style="margin: 0;">{{ uwm.user.virtual_key }}</p>
+            <button type="button" class="copy-btn" onclick="copyToClipboard('{{ uwm.user.virtual_key }}', this)" title="Copy virtual key">
+                <i class="fas fa-copy"></i>
+            </button>
+        </div>
     </header>
 
     <section>

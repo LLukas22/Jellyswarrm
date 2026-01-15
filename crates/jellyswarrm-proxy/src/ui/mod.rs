@@ -132,6 +132,29 @@ pub fn ui_routes() -> axum::Router<AppState> {
         .route("/settings/form", get(admin::settings::settings_form))
         .route("/settings/save", post(admin::settings::save_settings))
         .route("/settings/reload", post(admin::settings::reload_config))
+        // Admin management
+        .route("/admins", get(admin::admins::admins_page))
+        .route("/admins", post(admin::admins::add_admin))
+        .route("/admins/list", get(admin::admins::get_admin_list))
+        .route(
+            "/admins/{id}",
+            axum::routing::delete(admin::admins::delete_admin),
+        )
+        .route(
+            "/admins/{id}/password",
+            post(admin::admins::change_admin_password),
+        )
+        .route(
+            "/admins/{id}/promote",
+            post(admin::admins::promote_admin),
+        )
+        .route(
+            "/admins/{id}/demote",
+            post(admin::admins::demote_admin),
+        )
+        // Audit logs
+        .route("/audit", get(admin::audit::audit_page))
+        .route("/audit/list", get(admin::audit::get_audit_list))
         .route_layer(middleware::from_fn(require_admin));
 
     Router::new()

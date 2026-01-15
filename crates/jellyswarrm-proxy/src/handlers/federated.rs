@@ -11,7 +11,7 @@ use tracing::{debug, error, trace};
 
 use crate::{
     handlers::{
-        common::{execute_json_request, process_media_item},
+        common::{execute_json_request, extract_all_ids_from_items, process_media_item},
         items::get_items,
     },
     models::enums::{BaseItemKind, CollectionType},
@@ -90,6 +90,26 @@ pub async fn get_items_from_all_servers(
             {
                 Ok(mut items_response) => {
                     let server_id = { state_clone.config.read().await.server_id.clone() };
+                    let server_url = server_clone.url.as_str();
+
+                    // Pre-warm the media mapping cache with all IDs from items
+                    // This reduces DB queries from O(n*m) to O(1) batch query
+                    let items_slice = items_response.items_slice();
+                    let all_ids = extract_all_ids_from_items(items_slice);
+                    if !all_ids.is_empty() {
+                        if let Err(e) = state_clone
+                            .media_storage
+                            .prewarm_cache_for_ids(&all_ids, server_url)
+                            .await
+                        {
+                            debug!(
+                                "Failed to prewarm cache for server '{}': {:?}",
+                                server_clone.name, e
+                            );
+                            // Continue anyway - individual lookups will still work
+                        }
+                    }
+
                     for item in items_response.iter_mut_items() {
                         match process_media_item(
                             item.clone(),

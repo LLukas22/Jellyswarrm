@@ -10,7 +10,8 @@ use tokio::{sync::RwLock, task};
 use tracing::info;
 
 use crate::{
-    config::AppConfig, encryption::HashedPassword,
+    admin_storage::AdminStorageService,
+    config::AppConfig, encryption::{HashedPassword, Password},
     user_authorization_service::UserAuthorizationService,
 };
 
@@ -30,6 +31,7 @@ pub struct User {
     pub username: String,
     pub password_hash: HashedPassword,
     pub role: UserRole,
+    pub is_super_admin: bool,
 }
 
 pub struct AuthenticatedUser(pub User);
@@ -93,11 +95,16 @@ pub struct Credentials {
 pub struct Backend {
     config: Arc<RwLock<AppConfig>>,
     user_auth: Arc<UserAuthorizationService>,
+    admin_storage: Arc<AdminStorageService>,
 }
 
 impl Backend {
-    pub fn new(config: Arc<RwLock<AppConfig>>, user_auth: Arc<UserAuthorizationService>) -> Self {
-        Self { config, user_auth }
+    pub fn new(
+        config: Arc<RwLock<AppConfig>>,
+        user_auth: Arc<UserAuthorizationService>,
+        admin_storage: Arc<AdminStorageService>,
+    ) -> Self {
+        Self { config, user_auth, admin_storage }
     }
 }
 
@@ -118,21 +125,43 @@ impl AuthnBackend for Backend {
         &self,
         creds: Self::Credentials,
     ) -> Result<Option<Self::User>, Self::Error> {
-        let password = creds.password.into();
-        let config = self.config.read().await;
         info!("Authenticating user: {}", creds.username);
-        if creds.username == config.username && password == config.password {
-            info!("Admin authentication successful");
-            // If the password is correct, we return the default user.
+
+        // First, try to authenticate against admin_users table (multi-admin support)
+        if let Some(admin) = self
+            .admin_storage
+            .authenticate(&creds.username, &creds.password)
+            .await?
+        {
+            info!("Admin authentication successful via database: {}", admin.username);
             let user = User {
-                id: "admin".to_string(),
-                username: creds.username,
-                password_hash: config.password.clone().into(),
+                id: format!("admin-{}", admin.id),
+                username: admin.username,
+                password_hash: HashedPassword::from_hashed(admin.password_hash),
                 role: UserRole::Admin,
+                is_super_admin: admin.is_super_admin,
             };
             return Ok(Some(user));
         }
 
+        // Fallback to config-based admin authentication for backwards compatibility
+        let password: Password = creds.password.clone().into();
+        let password_hashed: HashedPassword = password.clone().into();
+        let config = self.config.read().await;
+        if creds.username == config.username && password_hashed == config.password.clone().into() {
+            info!("Admin authentication successful via config");
+            let user = User {
+                id: "admin".to_string(),
+                username: creds.username,
+                password_hash: password_hashed,
+                role: UserRole::Admin,
+                is_super_admin: true, // Config admin is always super admin
+            };
+            return Ok(Some(user));
+        }
+        drop(config);
+
+        // Try regular user authentication
         if let Some(user) = self
             .user_auth
             .get_user_by_credentials(&creds.username, &password)
@@ -144,6 +173,7 @@ impl AuthnBackend for Backend {
                 username: user.original_username,
                 password_hash: user.original_password_hash,
                 role: UserRole::User,
+                is_super_admin: false,
             };
             return Ok(Some(user));
         }
@@ -153,6 +183,22 @@ impl AuthnBackend for Backend {
     }
 
     async fn get_user(&self, user_id: &UserId<Self>) -> Result<Option<Self::User>, Self::Error> {
+        // Check if this is a database admin (format: "admin-{id}")
+        if let Some(admin_id_str) = user_id.strip_prefix("admin-") {
+            if let Ok(admin_id) = admin_id_str.parse::<i64>() {
+                if let Some(admin) = self.admin_storage.get_admin_by_id(admin_id).await? {
+                    return Ok(Some(User {
+                        id: format!("admin-{}", admin.id),
+                        username: admin.username,
+                        password_hash: HashedPassword::from_hashed(admin.password_hash),
+                        role: UserRole::Admin,
+                        is_super_admin: admin.is_super_admin,
+                    }));
+                }
+            }
+        }
+
+        // Config-based admin fallback
         if user_id == "admin" {
             let config = self.config.read().await;
             return Ok(Some(User {
@@ -160,15 +206,18 @@ impl AuthnBackend for Backend {
                 username: config.username.clone(),
                 password_hash: config.password.clone().into(),
                 role: UserRole::Admin,
+                is_super_admin: true,
             }));
         }
 
+        // Regular user lookup
         if let Some(user) = self.user_auth.get_user_by_id(user_id).await? {
             let user = User {
                 id: user.id,
                 username: user.original_username,
                 password_hash: user.original_password_hash,
                 role: UserRole::User,
+                is_super_admin: false,
             };
             return Ok(Some(user));
         }

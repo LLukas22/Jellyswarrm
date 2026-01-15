@@ -1,0 +1,104 @@
+<h2 style="margin-bottom: 1rem;">Admin Users</h2>
+
+{% if admins.is_empty() %}
+<p>No admin users found.</p>
+{% else %}
+<div class="overflow-auto">
+    <table>
+        <thead>
+            <tr>
+                <th>Username</th>
+                <th>Role</th>
+                <th>Last Login</th>
+                <th>Created</th>
+                <th style="text-align: right;">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in admins %}
+            <tr>
+                <td>
+                    <strong>{{ item.admin.username }}</strong>
+                    {% if current_admin_id == format!("admin-{}", item.admin.id) %}
+                    <span style="font-size: 0.75rem; opacity: 0.7;">(you)</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if item.admin.is_super_admin %}
+                    <span style="background-color: var(--pico-primary-background); color: var(--pico-primary-inverse); padding: 0.2rem 0.5rem; border-radius: 0.25rem; font-size: 0.8rem;">
+                        Super Admin
+                    </span>
+                    {% else %}
+                    <span style="background-color: var(--pico-secondary-background); color: var(--pico-secondary-inverse); padding: 0.2rem 0.5rem; border-radius: 0.25rem; font-size: 0.8rem;">
+                        Admin
+                    </span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% match item.admin.last_login_at %}
+                    {% when Some with (dt) %}
+                    {{ dt.format("%Y-%m-%d %H:%M") }}
+                    {% when None %}
+                    <span style="opacity: 0.5;">Never</span>
+                    {% endmatch %}
+                </td>
+                <td>{{ item.admin.created_at.format("%Y-%m-%d") }}</td>
+                <td style="text-align: right;">
+                    <div style="display: flex; gap: 0.5rem; justify-content: flex-end; flex-wrap: wrap;">
+                        <!-- Password change form -->
+                        <details style="position: relative;">
+                            <summary style="cursor: pointer; padding: 0.25rem 0.5rem; background: var(--pico-secondary-background); border-radius: 0.25rem; font-size: 0.8rem;">
+                                <i class="fas fa-key"></i> Password
+                            </summary>
+                            <div style="position: absolute; right: 0; top: 100%; background: var(--pico-card-background); border: 1px solid var(--pico-muted-border-color); border-radius: 0.25rem; padding: 1rem; z-index: 100; min-width: 200px; margin-top: 0.25rem;">
+                                <form hx-post="/{{ ui_route }}/admins/{{ item.admin.id }}/password" hx-target="#messages" hx-swap="innerHTML">
+                                    <input type="password" name="new_password" placeholder="New password" minlength="4" required style="margin-bottom: 0.5rem;">
+                                    <button type="submit" style="width: 100%;">Update</button>
+                                </form>
+                            </div>
+                        </details>
+
+                        {% if is_super_admin %}
+                        <!-- Promote/Demote buttons -->
+                        {% if item.admin.is_super_admin %}
+                        {% if current_admin_id != format!("admin-{}", item.admin.id) %}
+                        <button
+                            hx-post="/{{ ui_route }}/admins/{{ item.admin.id }}/demote"
+                            hx-target="#admin-list"
+                            hx-swap="innerHTML"
+                            hx-confirm="Demote this admin from super admin?"
+                            style="padding: 0.25rem 0.5rem; font-size: 0.8rem;"
+                            class="secondary">
+                            <i class="fas fa-arrow-down"></i> Demote
+                        </button>
+                        {% endif %}
+                        {% else %}
+                        <button
+                            hx-post="/{{ ui_route }}/admins/{{ item.admin.id }}/promote"
+                            hx-target="#admin-list"
+                            hx-swap="innerHTML"
+                            style="padding: 0.25rem 0.5rem; font-size: 0.8rem;">
+                            <i class="fas fa-arrow-up"></i> Promote
+                        </button>
+                        {% endif %}
+
+                        <!-- Delete button -->
+                        {% if item.can_delete %}
+                        <button
+                            hx-delete="/{{ ui_route }}/admins/{{ item.admin.id }}"
+                            hx-target="#admin-list"
+                            hx-swap="innerHTML"
+                            hx-confirm="Are you sure you want to delete this admin?"
+                            style="padding: 0.25rem 0.5rem; font-size: 0.8rem; background-color: var(--pico-del-color);">
+                            <i class="fas fa-trash"></i>
+                        </button>
+                        {% endif %}
+                        {% endif %}
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}

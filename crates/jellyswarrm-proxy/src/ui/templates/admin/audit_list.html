@@ -1,0 +1,100 @@
+{% if logs.is_empty() %}
+<p style="text-align: center; opacity: 0.7; padding: 2rem;">No audit logs found.</p>
+{% else %}
+<div class="overflow-auto">
+    <table>
+        <thead>
+            <tr>
+                <th>Time</th>
+                <th>Actor</th>
+                <th>Action</th>
+                <th>Resource</th>
+                <th>Details</th>
+                <th>IP</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for log in logs %}
+            <tr>
+                <td style="white-space: nowrap; font-size: 0.85rem;">
+                    {{ log.created_at.format("%Y-%m-%d %H:%M:%S") }}
+                </td>
+                <td>
+                    <span style="background-color: {% if log.actor_type == "admin" %}var(--pico-primary-background){% elif log.actor_type == "user" %}var(--pico-secondary-background){% else %}var(--pico-muted-background){% endif %}; color: {% if log.actor_type == "admin" %}var(--pico-primary-inverse){% elif log.actor_type == "user" %}var(--pico-secondary-inverse){% else %}var(--pico-muted-color){% endif %}; padding: 0.15rem 0.4rem; border-radius: 0.2rem; font-size: 0.75rem; text-transform: uppercase;">
+                        {{ log.actor_type }}
+                    </span>
+                    <br>
+                    <small style="opacity: 0.8;">{{ log.actor_name }}</small>
+                </td>
+                <td>
+                    <span style="
+                        background-color: {% if log.action == "create" %}#27ae60{% elif log.action == "delete" %}#e74c3c{% elif log.action == "login" %}#3498db{% elif log.action == "logout" %}#9b59b6{% else %}#f39c12{% endif %};
+                        color: white;
+                        padding: 0.15rem 0.4rem;
+                        border-radius: 0.2rem;
+                        font-size: 0.75rem;
+                        text-transform: uppercase;">
+                        {{ log.action }}
+                    </span>
+                </td>
+                <td>
+                    <strong style="font-size: 0.85rem;">{{ log.resource_type }}</strong>
+                    {% match log.resource_name %}
+                    {% when Some with (name) %}
+                    <br><small style="opacity: 0.7;">{{ name }}</small>
+                    {% when None %}
+                    {% endmatch %}
+                </td>
+                <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.85rem;">
+                    {% match log.details %}
+                    {% when Some with (details) %}
+                    <span title="{{ details }}">{{ details }}</span>
+                    {% when None %}
+                    <span style="opacity: 0.5;">-</span>
+                    {% endmatch %}
+                </td>
+                <td style="font-size: 0.85rem; opacity: 0.7;">
+                    {% match log.ip_address %}
+                    {% when Some with (ip) %}
+                    {{ ip }}
+                    {% when None %}
+                    <span style="opacity: 0.5;">-</span>
+                    {% endmatch %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<!-- Pagination -->
+<nav aria-label="Pagination" style="margin-top: 1rem;">
+    <ul style="display: flex; justify-content: center; gap: 0.5rem; list-style: none; padding: 0;">
+        {% if page > 1 %}
+        <li>
+            <a href="#"
+               hx-get="/{{ ui_route }}/audit/list?page={{ page - 1 }}{% if filter.actor_type.is_some() %}&actor_type={{ filter.actor_type.as_ref().unwrap() }}{% endif %}{% if filter.action.is_some() %}&action={{ filter.action.as_ref().unwrap() }}{% endif %}{% if filter.resource_type.is_some() %}&resource_type={{ filter.resource_type.as_ref().unwrap() }}{% endif %}"
+               hx-target="#audit-list"
+               hx-swap="innerHTML"
+               style="padding: 0.5rem 1rem;">
+                <i class="fas fa-chevron-left"></i> Previous
+            </a>
+        </li>
+        {% endif %}
+        <li style="display: flex; align-items: center; padding: 0 1rem; opacity: 0.7;">
+            Page {{ page }} of {{ total_pages }}
+        </li>
+        {% if page < total_pages %}
+        <li>
+            <a href="#"
+               hx-get="/{{ ui_route }}/audit/list?page={{ page + 1 }}{% if filter.actor_type.is_some() %}&actor_type={{ filter.actor_type.as_ref().unwrap() }}{% endif %}{% if filter.action.is_some() %}&action={{ filter.action.as_ref().unwrap() }}{% endif %}{% if filter.resource_type.is_some() %}&resource_type={{ filter.resource_type.as_ref().unwrap() }}{% endif %}"
+               hx-target="#audit-list"
+               hx-swap="innerHTML"
+               style="padding: 0.5rem 1rem;">
+                Next <i class="fas fa-chevron-right"></i>
+            </a>
+        </li>
+        {% endif %}
+    </ul>
+</nav>
+{% endif %}

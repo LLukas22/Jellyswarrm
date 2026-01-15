@@ -1,0 +1,36 @@
+<div id="messages"></div>
+
+<header>
+    <h1>Admin Management</h1>
+    <h3>Manage administrator accounts.</h3>
+</header>
+
+{% if is_super_admin %}
+<section id="add-admin" aria-labelledby="add-admin-heading">
+    <h2 id="add-admin-heading" style="margin-bottom:.5rem;">Add Admin</h2>
+    <form hx-post="/{{ ui_route }}/admins" hx-target="#admin-list" hx-swap="innerHTML" hx-disabled-elt="this" hx-on::after-request="if(event.detail.successful) this.reset()">
+        <div class="grid" style="--pico-grid-gap:1rem;">
+            <label> Username
+                <input type="text" name="username" placeholder="e.g. admin2" autocomplete="off" required>
+            </label>
+            <label> Password
+                <input type="password" name="password" placeholder="Password" minlength="4" required>
+            </label>
+            <label style="display: flex; align-items: center; gap: 0.5rem; padding-top: 2rem;">
+                <input type="checkbox" name="is_super_admin" value="true" style="width: auto;">
+                Super Admin
+            </label>
+            <div style="display:flex; align-items:center; padding-top:1.5rem;">
+                <button type="submit">Add Admin</button>
+            </div>
+        </div>
+    </form>
+    <p style="font-size:.8rem; opacity:.7; margin-top:.5rem;">Super admins can manage other admin accounts.</p>
+</section>
+
+<hr />
+{% endif %}
+
+<section id="admin-list" hx-get="/{{ ui_route }}/admins/list" hx-trigger="load">
+    <p>Loading admins...</p>
+</section>

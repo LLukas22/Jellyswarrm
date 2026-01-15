@@ -59,6 +59,75 @@ impl MediaStorageService {
         Ok(mapping)
     }
 
+    /// Pre-warm the cache by batch fetching existing mappings for a list of original IDs
+    /// This reduces database round-trips when processing many media items
+    pub async fn prewarm_cache_for_ids(
+        &self,
+        original_media_ids: &[String],
+        server_url: &str,
+    ) -> Result<(), sqlx::Error> {
+        if original_media_ids.is_empty() {
+            return Ok(());
+        }
+
+        // Normalize IDs
+        let normalized_ids: Vec<String> = original_media_ids
+            .iter()
+            .map(|id| Self::normalize_uuid(id))
+            .collect();
+
+        // Check which IDs are not already cached
+        let mut uncached_ids = Vec::new();
+        for id in &normalized_ids {
+            let key = format!("{}|{}", id, server_url);
+            if self.original_mapping_cache.get(&key).await.is_none() {
+                uncached_ids.push(id.clone());
+            }
+        }
+
+        if uncached_ids.is_empty() {
+            debug!("All {} IDs already cached", normalized_ids.len());
+            return Ok(());
+        }
+
+        debug!(
+            "Pre-warming cache: {} IDs uncached out of {}",
+            uncached_ids.len(),
+            normalized_ids.len()
+        );
+
+        // Batch fetch existing mappings (up to 500 at a time to avoid query limits)
+        for chunk in uncached_ids.chunks(500) {
+            let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let query = format!(
+                r#"
+                SELECT id, virtual_media_id, original_media_id, server_url, created_at
+                FROM media_mappings
+                WHERE original_media_id IN ({}) AND server_url = ?
+                "#,
+                placeholders
+            );
+
+            let mut query_builder = sqlx::query_as::<_, MediaMapping>(&query);
+            for id in chunk {
+                query_builder = query_builder.bind(id);
+            }
+            query_builder = query_builder.bind(server_url);
+
+            let mappings = query_builder.fetch_all(&self.pool).await?;
+
+            // Insert fetched mappings into cache
+            for mapping in mappings {
+                let key = format!("{}|{}", mapping.original_media_id, server_url);
+                self.original_mapping_cache
+                    .insert(key, mapping)
+                    .await;
+            }
+        }
+
+        Ok(())
+    }
+
     async fn _get_or_create_media_mapping(
         &self,
         original_media_id: &str,

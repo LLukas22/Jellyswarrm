@@ -30,6 +30,8 @@ use axum_login::{
     AuthManagerLayerBuilder,
 };
 
+mod admin_storage;
+mod audit_service;
 mod config;
 mod encryption;
 mod federated_users;
@@ -44,6 +46,8 @@ mod ui;
 mod url_helper;
 mod user_authorization_service;
 
+use admin_storage::AdminStorageService;
+use audit_service::AuditService;
 use federated_users::FederatedUserService;
 use media_storage_service::MediaStorageService;
 use server_storage::ServerStorageService;
@@ -72,6 +76,8 @@ pub struct AppState {
     pub user_authorization: Arc<UserAuthorizationService>,
     pub server_storage: Arc<ServerStorageService>,
     pub media_storage: Arc<MediaStorageService>,
+    pub admin_storage: Arc<AdminStorageService>,
+    pub audit_service: Arc<AuditService>,
     pub play_sessions: Arc<SessionStorage>,
     pub config: Arc<tokio::sync::RwLock<AppConfig>>,
     pub processors: Arc<JsonProcessors>,
@@ -98,6 +104,8 @@ impl AppState {
             user_authorization: data_context.user_authorization,
             server_storage: data_context.server_storage,
             media_storage: data_context.media_storage,
+            admin_storage: data_context.admin_storage,
+            audit_service: data_context.audit_service,
             play_sessions: data_context.play_sessions,
             config: data_context.config,
             processors: Arc::new(json_processors),
@@ -150,6 +158,8 @@ pub struct DataContext {
     pub user_authorization: Arc<UserAuthorizationService>,
     pub server_storage: Arc<ServerStorageService>,
     pub media_storage: Arc<MediaStorageService>,
+    pub admin_storage: Arc<AdminStorageService>,
+    pub audit_service: Arc<AuditService>,
     pub play_sessions: Arc<SessionStorage>,
     pub config: Arc<tokio::sync::RwLock<AppConfig>>,
 }
@@ -231,6 +241,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize media storage service
     let media_storage = MediaStorageService::new(pool.clone());
 
+    // Initialize admin storage service
+    let admin_storage = AdminStorageService::new(pool.clone());
+
+    // Initialize audit service
+    let audit_service = AuditService::new(pool.clone());
+
     if !loaded_config.preconfigured_servers.is_empty() {
         info!(
             "Adding {} preconfigured servers from config",
@@ -276,10 +292,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    let admin_storage = Arc::new(admin_storage);
+    let audit_service = Arc::new(audit_service);
+
+    // Initialize first super admin from config if no admins exist
+    let config_password_hash: encryption::HashedPassword = (&loaded_config.password).into();
+    if let Err(e) = admin_storage
+        .init_from_config(&loaded_config.username, &config_password_hash)
+        .await
+    {
+        error!("Failed to initialize admin from config: {}", e);
+    }
+
     let data_context = DataContext {
         user_authorization: Arc::new(user_authorization.clone()),
         server_storage: Arc::new(server_storage.clone()),
         media_storage: Arc::new(media_storage.clone()),
+        admin_storage: admin_storage.clone(),
+        audit_service: audit_service.clone(),
         play_sessions: Arc::new(SessionStorage::new()),
         config: Arc::new(tokio::sync::RwLock::new(loaded_config.clone())),
     };
@@ -311,6 +341,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backend = Backend::new(
         app_state.config.clone(),
         app_state.user_authorization.clone(),
+        app_state.admin_storage.clone(),
     );
     let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
 

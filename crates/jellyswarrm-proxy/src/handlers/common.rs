@@ -179,6 +179,116 @@ pub async fn get_virtual_id(
     Ok(mapping.virtual_media_id.clone())
 }
 
+/// Extract all IDs from a media item that need virtual ID resolution
+/// This is used for cache prewarming to reduce database round-trips
+pub fn extract_all_ids_from_item(item: &MediaItem) -> Vec<String> {
+    let mut ids = Vec::new();
+
+    // Main item ID
+    ids.push(item.id.clone());
+
+    // Optional IDs
+    if let Some(ref id) = item.parent_id {
+        ids.push(id.clone());
+    }
+    if let Some(ref id) = item.item_id {
+        ids.push(id.clone());
+    }
+    if let Some(ref id) = item.etag {
+        ids.push(id.clone());
+    }
+    if let Some(ref id) = item.series_id {
+        ids.push(id.clone());
+    }
+    if let Some(ref id) = item.season_id {
+        ids.push(id.clone());
+    }
+    if let Some(ref id) = item.display_preferences_id {
+        ids.push(id.clone());
+    }
+    if let Some(ref id) = item.parent_logo_item_id {
+        ids.push(id.clone());
+    }
+    if let Some(ref id) = item.parent_backdrop_item_id {
+        ids.push(id.clone());
+    }
+    if let Some(ref id) = item.parent_logo_image_tag {
+        ids.push(id.clone());
+    }
+    if let Some(ref id) = item.parent_thumb_item_id {
+        ids.push(id.clone());
+    }
+    if let Some(ref id) = item.parent_thumb_image_tag {
+        ids.push(id.clone());
+    }
+    if let Some(ref id) = item.series_primary_image_tag {
+        ids.push(id.clone());
+    }
+
+    // Image tags (HashMap values)
+    if let Some(ref image_tags) = item.image_tags {
+        for tag_id in image_tags.values() {
+            ids.push(tag_id.clone());
+        }
+    }
+
+    // Backdrop image tags (Vec)
+    if let Some(ref backdrop_tags) = item.backdrop_image_tags {
+        ids.extend(backdrop_tags.iter().cloned());
+    }
+
+    // Parent backdrop image tags (Vec)
+    if let Some(ref parent_backdrop_tags) = item.parent_backdrop_image_tags {
+        ids.extend(parent_backdrop_tags.iter().cloned());
+    }
+
+    // Image blur hashes (nested HashMap - extract keys from inner maps)
+    if let Some(ref blur_hashes) = item.image_blur_hashes {
+        for hash_map in blur_hashes.values() {
+            for hash_id in hash_map.keys() {
+                ids.push(hash_id.clone());
+            }
+        }
+    }
+
+    // Chapter image tags
+    if let Some(ref chapters) = item.chapters {
+        for chapter in chapters {
+            if let Some(ref tag) = chapter.image_tag {
+                ids.push(tag.clone());
+            }
+        }
+    }
+
+    // Trickplay keys
+    if let Some(ref trickplay) = item.trickplay {
+        for id in trickplay.keys() {
+            ids.push(id.clone());
+        }
+    }
+
+    // Media source IDs
+    if let Some(ref media_sources) = item.media_sources {
+        for source in media_sources {
+            ids.push(source.id.clone());
+        }
+    }
+
+    ids
+}
+
+/// Extract all IDs from a list of media items for batch cache prewarming
+pub fn extract_all_ids_from_items(items: &[MediaItem]) -> Vec<String> {
+    let mut all_ids = Vec::new();
+    for item in items {
+        all_ids.extend(extract_all_ids_from_item(item));
+    }
+    // Deduplicate
+    all_ids.sort();
+    all_ids.dedup();
+    all_ids
+}
+
 /// Processes a media item.
 /// Replaces the original ids with vitual ids that map back to the original media item and server.
 pub async fn process_media_item(
