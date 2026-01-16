@@ -21,7 +21,7 @@ governor = "0.10.0"
 askama = { version = "0.14.0" }
 async-recursion = "1.1.1"
 async-trait = "0.1.89"
-axum = { version = "0.8.8", features = ["macros"] }
+axum = { version = "0.8.8", features = ["macros", "ws"] }
 axum-login = "0.18.0"
 axum-messages = "0.8.0"
 base64 = "0.22.1"
@@ -77,6 +77,10 @@ toml = "0.9.8"
 # HTTP and Web Framework
 tower = "0.5.2"
 tower-http = { version = "0.6.8", features = ["cors", "trace", "set-header"] }
+
+# WebSocket Support
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+futures-channel = "0.3"
 tower-sessions = { version = "0.14.0", features = ["signed"] }
 tower-sessions-sqlx-store = { version = "0.15.0", features = ["sqlite"] }
 

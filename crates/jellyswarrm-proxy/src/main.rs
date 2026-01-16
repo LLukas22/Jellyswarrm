@@ -618,6 +618,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/Artists",
             Router::new().route("/", get(handlers::federated::get_items_from_all_servers)),
         )
+        // WebSocket routes for real-time features (SyncPlay, notifications, etc.)
+        .route("/socket", get(handlers::websocket::websocket_handler))
+        .route("/Socket", get(handlers::websocket::websocket_handler))
+        .route(
+            "/Notifications/WebSocket",
+            get(handlers::websocket::websocket_handler),
+        )
         .route("/{*path}", any(proxy_handler))
         .fallback(proxy_handler)
         .layer(
