@@ -9,14 +9,13 @@ use axum::{
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as TungsteniteMessage};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::{
     models::Authorization,
     request_preprocessing::JellyfinAuthorization,
     server_storage::Server,
     url_helper::join_server_url,
-    user_authorization_service::AuthorizationSession,
     AppState,
 };
 
@@ -213,9 +212,21 @@ pub async fn websocket_handler(
     headers: HeaderMap,
     Query(query): Query<WebSocketQuery>,
 ) -> Response {
+    info!("[WEBSOCKET] Incoming WebSocket upgrade request");
+
     // Extract authorization from headers or query
     let auth = extract_auth_from_headers(&headers)
         .or_else(|| query.get_api_key().map(|k| JellyfinAuthorization::ApiKey(k.to_string())));
+
+    if let Some(ref a) = auth {
+        info!("[WEBSOCKET] Auth method: {:?}", std::mem::discriminant(a));
+    } else {
+        warn!("[WEBSOCKET] No authentication provided for WebSocket connection");
+    }
+
+    if let Some(ref device_id) = query.device_id {
+        info!("[WEBSOCKET] Device ID: {}", device_id);
+    }
 
     ws.on_upgrade(move |socket| handle_websocket(socket, state, auth, query))
 }
@@ -227,16 +238,21 @@ async fn handle_websocket(
     auth: Option<JellyfinAuthorization>,
     query: WebSocketQuery,
 ) {
+    info!("[WEBSOCKET] Processing WebSocket connection upgrade");
+
     // Resolve backend server and get the real token
     let resolved = match resolve_backend(&state, auth).await {
         Some(r) => r,
         None => {
-            error!("No backend server available for WebSocket connection");
+            error!("[WEBSOCKET] No backend server available for WebSocket connection");
             return;
         }
     };
 
     let server_name = resolved.server.name.clone();
+    info!("[WEBSOCKET] Resolved to backend server: {}", server_name);
+    info!("[WEBSOCKET] Backend URL: {}", resolved.server.url);
+    info!("[WEBSOCKET] Real token available: {}", resolved.real_token.is_some());
 
     // Build backend WebSocket URL with the REAL token
     let backend_url = build_backend_ws_url(
@@ -247,17 +263,20 @@ async fn handle_websocket(
     );
 
     info!(
-        "Proxying WebSocket to backend: {} (token remapped: {})",
+        "[WEBSOCKET] Connecting to backend: {} (token remapped: {})",
         backend_url.split('?').next().unwrap_or(&backend_url),
         resolved.real_token.is_some()
     );
 
     // Connect to backend WebSocket
     let backend_connection = match connect_async(&backend_url).await {
-        Ok((ws_stream, _response)) => ws_stream,
+        Ok((ws_stream, response)) => {
+            info!("[WEBSOCKET] Backend connection successful, status: {:?}", response.status());
+            ws_stream
+        }
         Err(e) => {
             error!(
-                "Failed to connect to backend WebSocket {}: {}",
+                "[WEBSOCKET] Failed to connect to backend {}: {}",
                 backend_url.split('?').next().unwrap_or(&backend_url),
                 e
             );
@@ -265,7 +284,7 @@ async fn handle_websocket(
         }
     };
 
-    info!("WebSocket connection established to {}", server_name);
+    info!("[WEBSOCKET] WebSocket proxy established to {}", server_name);
 
     // Split both connections into read/write halves
     let (mut backend_write, mut backend_read) = backend_connection.split();

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, SqlitePool};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use crate::server_storage::{Server, ServerStorageService};
 
@@ -147,16 +147,17 @@ impl HealthMonitorService {
             }
 
             if health.is_online {
-                debug!(
-                    "Server {} is online ({}ms, version: {:?})",
+                info!(
+                    "[HEALTH] Server '{}' is ONLINE ({}ms, version: {})",
                     server.name,
                     health.response_time_ms.unwrap_or(0),
-                    health.server_version
+                    health.server_version.as_deref().unwrap_or("unknown")
                 );
             } else {
                 warn!(
-                    "Server {} is offline: {:?}",
-                    server.name, health.error_message
+                    "[HEALTH] Server '{}' is OFFLINE: {}",
+                    server.name,
+                    health.error_message.as_deref().unwrap_or("unknown error")
                 );
             }
 

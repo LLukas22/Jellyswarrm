@@ -7,7 +7,7 @@ use regex::Regex;
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
 use tokio::task::JoinSet;
-use tracing::{debug, error, trace};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::{
     handlers::{
@@ -42,21 +42,36 @@ pub async fn get_items_from_all_servers(
     State(state): State<AppState>,
     req: Request,
 ) -> Result<Json<crate::models::ItemsResponseVariants>, StatusCode> {
-    let (original_request, _, _, sessions, _) =
+    let uri = req.uri().clone();
+    info!("[FEDERATED] Fetching items from all servers for: {}", uri);
+
+    let (original_request, _, user, sessions, _) =
         extract_request_infos(req, &state).await.map_err(|e| {
-            error!("Failed to preprocess request: {}", e);
+            error!("[FEDERATED] Failed to preprocess request: {}", e);
             StatusCode::BAD_REQUEST
         })?;
 
-    let sessions = sessions.ok_or(StatusCode::UNAUTHORIZED)?;
+    if let Some(ref u) = user {
+        info!("[FEDERATED] User: {} ({})", u.original_username, u.id);
+    }
+
+    let sessions = sessions.ok_or_else(|| {
+        warn!("[FEDERATED] No sessions found - returning 401");
+        StatusCode::UNAUTHORIZED
+    })?;
+
     if sessions.is_empty() {
+        warn!("[FEDERATED] Sessions list is empty - returning 401");
         return Err(StatusCode::UNAUTHORIZED);
     }
+
+    info!("[FEDERATED] Querying {} backend server(s) in parallel", sessions.len());
 
     // Create JoinSet for parallel execution
     let mut join_set = JoinSet::new();
 
     for (index, (session, server)) in sessions.into_iter().enumerate() {
+        info!("[FEDERATED] Adding server to query: {} ({})", server.name, server.url);
         let request = match original_request.try_clone() {
             Some(req) => req,
             None => {
@@ -132,9 +147,9 @@ pub async fn get_items_from_all_servers(
                     }
 
                     let item_count = items_response.len();
-                    debug!(
-                        "Successfully retrieved {} items from server: {}",
-                        item_count, server_clone.name
+                    info!(
+                        "[FEDERATED] Server '{}' returned {} items",
+                        server_clone.name, item_count
                     );
                     trace!(
                         "Items from server '{}': {}",
@@ -209,8 +224,8 @@ pub async fn get_items_from_all_servers(
     }
 
     let count = interleaved_items.len();
-    debug!(
-        "Returning {} interleaved items from {} servers",
+    info!(
+        "[FEDERATED] Returning {} total items (merged from {} server responses)",
         count,
         server_items.len()
     );

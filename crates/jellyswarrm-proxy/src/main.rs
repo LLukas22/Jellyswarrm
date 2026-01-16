@@ -810,15 +810,17 @@ async fn proxy_handler(
         }
     }
     let response = state.reqwest_client.execute(request).await.map_err(|e| {
-        error!("Failed to execute proxy request: {}", e);
+        error!("[PROXY] Failed to execute request: {}", e);
         StatusCode::BAD_GATEWAY
     })?;
 
     let status = response.status();
-    if !status.is_success() {
+    if status.is_success() {
+        info!("[RESPONSE] {} {} -> {}", status.as_u16(), status.canonical_reason().unwrap_or(""), request_url);
+    } else {
         warn!(
-            "Upstream server returned error status: {} for Request to: {}",
-            status, request_url
+            "[RESPONSE] {} {} -> {}",
+            status.as_u16(), status.canonical_reason().unwrap_or("ERROR"), request_url
         );
     }
     let headers = response.headers().clone();
