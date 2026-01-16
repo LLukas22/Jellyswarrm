@@ -1615,7 +1615,6 @@ dependencies = [
  "chrono",
  "config",
  "fs_extra",
- "futures-channel",
  "futures-util",
  "governor",
  "hex",

@@ -16,6 +16,7 @@ use crate::{
     request_preprocessing::JellyfinAuthorization,
     server_storage::Server,
     url_helper::join_server_url,
+    user_authorization_service::AuthorizationSession,
     AppState,
 };
 
@@ -34,6 +35,13 @@ impl WebSocketQuery {
     pub fn get_api_key(&self) -> Option<&str> {
         self.api_key.as_deref().or(self.api_key_alt.as_deref())
     }
+}
+
+/// Result of resolving the backend server for WebSocket
+struct ResolvedBackend {
+    server: Server,
+    /// The real Jellyfin token for this server (not the virtual proxy token)
+    real_token: Option<String>,
 }
 
 /// Extract authorization from headers (similar to request_preprocessing)
@@ -73,11 +81,11 @@ fn extract_auth_from_headers(headers: &HeaderMap) -> Option<JellyfinAuthorizatio
     None
 }
 
-/// Resolve which backend server to connect to based on authorization
-async fn resolve_backend_server(
+/// Resolve which backend server to connect to and get the real token
+async fn resolve_backend(
     state: &AppState,
     auth: Option<JellyfinAuthorization>,
-) -> Option<Server> {
+) -> Option<ResolvedBackend> {
     // Try to find a server based on the user's authorization
     if let Some(auth) = auth {
         if let Some(token) = auth.token() {
@@ -88,42 +96,57 @@ async fn resolve_backend_server(
                 .await
             {
                 // Use the first available session's server (usually the highest priority one)
-                if let Some((_session, server)) = sessions.into_iter().next() {
+                if let Some((session, server)) = sessions.into_iter().next() {
                     debug!(
-                        "Resolved WebSocket to server {} for user session",
+                        "Resolved WebSocket to server {} for user session (real token available)",
                         server.name
                     );
-                    return Some(server);
+                    return Some(ResolvedBackend {
+                        server,
+                        real_token: Some(session.jellyfin_token),
+                    });
                 }
             }
         }
     }
 
     // Fallback: use the best available server (highest priority, healthy)
+    // Note: Without a session, we don't have a real token
     if let Ok(Some(server)) = state.server_storage.get_best_server().await {
         debug!(
-            "Using best available server for WebSocket: {}",
+            "Using best available server for WebSocket (no session): {}",
             server.name
         );
-        return Some(server);
+        return Some(ResolvedBackend {
+            server,
+            real_token: None,
+        });
     }
 
     // Last resort: get any server
     if let Ok(servers) = state.server_storage.list_servers().await {
         if let Some(server) = servers.into_iter().next() {
             debug!(
-                "Using first available server for WebSocket: {}",
+                "Using first available server for WebSocket (no session): {}",
                 server.name
             );
-            return Some(server);
+            return Some(ResolvedBackend {
+                server,
+                real_token: None,
+            });
         }
     }
 
     None
 }
 
-/// Build backend WebSocket URL from server and original query params
-fn build_backend_ws_url(server: &Server, path: &str, query: &WebSocketQuery) -> String {
+/// Build backend WebSocket URL using the REAL server token
+fn build_backend_ws_url(
+    server: &Server,
+    path: &str,
+    real_token: Option<&str>,
+    device_id: Option<&str>,
+) -> String {
     let mut base_url = server.url.clone();
 
     // Convert http(s) to ws(s)
@@ -136,14 +159,15 @@ fn build_backend_ws_url(server: &Server, path: &str, query: &WebSocketQuery) -> 
     // Join the path
     let ws_url = join_server_url(&base_url, path);
 
-    // Add query parameters back
+    // Add query parameters with the REAL token
     let mut url_string = ws_url.to_string();
     let mut params = vec![];
 
-    if let Some(api_key) = query.get_api_key() {
-        params.push(format!("api_key={}", api_key));
+    // Use the real Jellyfin token, not the virtual proxy token
+    if let Some(token) = real_token {
+        params.push(format!("api_key={}", token));
     }
-    if let Some(device_id) = &query.device_id {
+    if let Some(device_id) = device_id {
         params.push(format!("deviceId={}", device_id));
     }
 
@@ -203,20 +227,30 @@ async fn handle_websocket(
     auth: Option<JellyfinAuthorization>,
     query: WebSocketQuery,
 ) {
-    // Resolve backend server
-    let server = match resolve_backend_server(&state, auth).await {
-        Some(s) => s,
+    // Resolve backend server and get the real token
+    let resolved = match resolve_backend(&state, auth).await {
+        Some(r) => r,
         None => {
             error!("No backend server available for WebSocket connection");
             return;
         }
     };
 
-    let server_name = server.name.clone();
+    let server_name = resolved.server.name.clone();
 
-    // Build backend WebSocket URL
-    let backend_url = build_backend_ws_url(&server, "/socket", &query);
-    info!("Proxying WebSocket to backend: {}", backend_url);
+    // Build backend WebSocket URL with the REAL token
+    let backend_url = build_backend_ws_url(
+        &resolved.server,
+        "/socket",
+        resolved.real_token.as_deref(),
+        query.device_id.as_deref(),
+    );
+
+    info!(
+        "Proxying WebSocket to backend: {} (token remapped: {})",
+        backend_url.split('?').next().unwrap_or(&backend_url),
+        resolved.real_token.is_some()
+    );
 
     // Connect to backend WebSocket
     let backend_connection = match connect_async(&backend_url).await {
@@ -224,7 +258,8 @@ async fn handle_websocket(
         Err(e) => {
             error!(
                 "Failed to connect to backend WebSocket {}: {}",
-                backend_url, e
+                backend_url.split('?').next().unwrap_or(&backend_url),
+                e
             );
             return;
         }
