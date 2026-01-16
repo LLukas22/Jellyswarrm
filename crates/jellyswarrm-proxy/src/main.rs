@@ -236,10 +236,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db_url = format!("sqlite://{}", db_path.to_string_lossy());
     let options = SqliteConnectOptions::from_str(&db_url)?
         .create_if_missing(true)
-        .busy_timeout(Duration::from_secs(10))
-        .optimize_on_close(true, None);
+        .busy_timeout(Duration::from_secs(30))
+        .optimize_on_close(true, None)
+        // WAL mode allows concurrent reads while writing
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        // NORMAL sync is safe and much faster than FULL
+        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+        // Increase page cache to 64MB (negative = KB)
+        .pragma("cache_size", "-65536")
+        // Enable memory-mapped I/O (256MB)
+        .pragma("mmap_size", "268435456")
+        // Store temp tables in memory
+        .pragma("temp_store", "MEMORY");
 
-    let pool = SqlitePool::connect_with(options).await?;
+    // Create connection pool with more connections for concurrency
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(20)
+        .min_connections(2)
+        .acquire_timeout(Duration::from_secs(30))
+        .connect_with(options)
+        .await?;
+
+    info!("Database connection pool initialized with WAL mode");
 
     MIGRATOR.run(&pool).await.unwrap_or_else(|e| {
         error!("Failed to run database migrations: {}", e);
