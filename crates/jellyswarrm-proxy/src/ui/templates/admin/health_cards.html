@@ -1,0 +1,53 @@
+<div class="grid">
+    {% for stat in stats %}
+    <article style="border-left: 4px solid {% if stat.current_status.is_online %}var(--pico-ins-color){% else %}var(--pico-del-color){% endif %};">
+        <header>
+            {% if stat.current_status.is_online %}
+            <mark style="background: var(--pico-ins-color);">Online</mark>
+            {% else %}
+            <mark style="background: var(--pico-del-color);">Offline</mark>
+            {% endif %}
+            <strong>{{ stat.server_name }}</strong>
+        </header>
+
+        <div class="grid" style="--pico-grid-gap: 0.5rem;">
+            <div>
+                <small style="color: var(--pico-muted-color);">Uptime (24h)</small><br>
+                <strong style="font-size: 1.25rem; color: {% if stat.uptime_percentage >= 99.0 %}var(--pico-ins-color){% elif stat.uptime_percentage >= 95.0 %}var(--pico-mark-background-color){% else %}var(--pico-del-color){% endif %};">
+                    {{ stat.uptime_percentage|round(1) }}%
+                </strong>
+            </div>
+            <div>
+                <small style="color: var(--pico-muted-color);">Avg Response</small><br>
+                <strong style="font-size: 1.25rem;">
+                    {% match stat.avg_response_time_ms %}
+                    {% when Some with (time) %}{{ time|round(0) }}ms{% when None %}N/A{% endmatch %}
+                </strong>
+            </div>
+        </div>
+
+        {% if stat.current_status.server_version.is_some() %}
+        <p><small>Version: <kbd>{{ stat.current_status.server_version.as_ref().unwrap() }}</kbd></small></p>
+        {% endif %}
+
+        {% if stat.current_status.error_message.is_some() %}
+        <p style="color: var(--pico-del-color);"><small><i class="fas fa-exclamation-triangle"></i> {{ stat.current_status.error_message.as_ref().unwrap() }}</small></p>
+        {% endif %}
+
+        <footer>
+            <small style="color: var(--pico-muted-color);">
+                Last checked: {{ stat.current_status.last_checked.format("%H:%M:%S") }} |
+                {{ stat.total_checks }} checks
+            </small>
+        </footer>
+    </article>
+    {% endfor %}
+
+    {% if stats.is_empty() %}
+    <article>
+        <p style="text-align: center; color: var(--pico-muted-color);">
+            <i class="fas fa-info-circle"></i> No servers configured. Add servers to see health status.
+        </p>
+    </article>
+    {% endif %}
+</div>

@@ -1,10 +1,19 @@
 use std::collections::HashMap;
 use std::fs;
+use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use hyper::StatusCode;
 use regex::Regex;
 use tracing::{error, info};
+
+/// Regex for extracting line/column info from JSON parse errors
+static JSON_ERROR_POSITION_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"line\s*(\d+)\s*column\s*(\d+)").expect("valid regex pattern"));
+
+/// Regex for extracting video ID from transcoding URLs
+static VIDEO_ID_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"/videos/([^/]+)/").expect("valid regex pattern"));
 
 use crate::models::enums::CollectionType;
 use crate::{
@@ -109,8 +118,7 @@ where
 
             // Extract line/column info and show snippet
             let err_str = parse_error.to_string();
-            let re = Regex::new(r"line\s*(\d+)\s*column\s*(\d+)").unwrap();
-            if let Some(caps) = re.captures(&err_str) {
+            if let Some(caps) = JSON_ERROR_POSITION_RE.captures(&err_str) {
                 if let (Some(line_m), Some(col_m)) = (caps.get(1), caps.get(2)) {
                     if let (Ok(line), Ok(col)) = (
                         line_m.as_str().parse::<usize>(),
@@ -478,8 +486,7 @@ pub async fn track_play_session(
     state: &AppState,
 ) -> Result<(), StatusCode> {
     if let Some(transcoding_url) = &item.transcoding_url {
-        let re = Regex::new(r"/videos/([^/]+)/").unwrap();
-        let id = re
+        let id = VIDEO_ID_RE
             .captures(transcoding_url)
             .and_then(|cap| cap.get(1))
             .map(|m| m.as_str())

@@ -1,5 +1,9 @@
 pub mod admins;
+pub mod api_keys;
 pub mod audit;
+pub mod health;
+pub mod permissions;
 pub mod servers;
 pub mod settings;
+pub mod stats;
 pub mod users;

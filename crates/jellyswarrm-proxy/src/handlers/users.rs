@@ -8,6 +8,7 @@ use tracing::{debug, error, info, warn};
 use crate::{
     handlers::common::execute_json_request,
     models::{AuthenticateRequest, AuthenticateResponse, Authorization, SyncPlayUserAccessType},
+    rate_limiter::extract_client_ip,
     request_preprocessing::preprocess_request,
     url_helper::join_server_url,
     AppState,
@@ -106,6 +107,18 @@ pub async fn handle_authenticate_by_name(
     headers: HeaderMap,
     Json(payload): Json<AuthenticateRequest>,
 ) -> Result<Json<AuthenticateResponse>, StatusCode> {
+    // Track auth attempt for statistics
+    state.statistics.counters().increment_auth_attempts();
+
+    // Rate limiting check (use headers for client IP, no direct socket info available)
+    if let Some(client_ip) = extract_client_ip(&headers, None) {
+        if !state.rate_limiter.check(client_ip).await {
+            state.statistics.counters().increment_rate_limited();
+            warn!("Rate limit exceeded for authentication from IP: {}", client_ip);
+            return Err(StatusCode::TOO_MANY_REQUESTS);
+        }
+    }
+
     let mut servers = state
         .server_storage
         .list_servers()
@@ -122,12 +135,13 @@ pub async fn handle_authenticate_by_name(
             "No valid 'Authorization' header found in authentication request! Headers: {:?}",
             headers
         );
+        state.statistics.counters().increment_auth_failures();
         StatusCode::BAD_REQUEST
     })?;
 
     info!(
         "Got login request with authentication header: {}",
-        authentication.to_header_value()
+        authentication.to_redacted_header_value()
     );
 
     info!(

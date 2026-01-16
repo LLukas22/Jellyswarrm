@@ -31,27 +31,40 @@ use axum_login::{
 };
 
 mod admin_storage;
+mod api_keys;
 mod audit_service;
 mod config;
+mod csrf;
 mod encryption;
+mod error;
 mod federated_users;
+mod filters;
 mod handlers;
+mod health_monitor;
 mod media_storage_service;
 mod models;
 mod processors;
+mod rate_limiter;
 mod request_preprocessing;
 mod server_storage;
 mod session_storage;
+mod statistics_service;
 mod ui;
 mod url_helper;
 mod user_authorization_service;
+mod user_permissions;
 
 use admin_storage::AdminStorageService;
+use api_keys::ApiKeyService;
 use audit_service::AuditService;
 use federated_users::FederatedUserService;
+use health_monitor::HealthMonitorService;
 use media_storage_service::MediaStorageService;
+use rate_limiter::AuthRateLimiter;
 use server_storage::ServerStorageService;
+use statistics_service::StatisticsService;
 use user_authorization_service::UserAuthorizationService;
+use user_permissions::UserPermissionsService;
 
 use crate::{
     config::{AppConfig, MIGRATOR},
@@ -77,7 +90,12 @@ pub struct AppState {
     pub server_storage: Arc<ServerStorageService>,
     pub media_storage: Arc<MediaStorageService>,
     pub admin_storage: Arc<AdminStorageService>,
-    pub audit_service: Arc<AuditService>,
+    pub audit: Arc<AuditService>,
+    pub api_keys: Arc<ApiKeyService>,
+    pub health_monitor: Arc<HealthMonitorService>,
+    pub statistics: Arc<StatisticsService>,
+    pub user_permissions: Arc<UserPermissionsService>,
+    pub rate_limiter: Arc<AuthRateLimiter>,
     pub play_sessions: Arc<SessionStorage>,
     pub config: Arc<tokio::sync::RwLock<AppConfig>>,
     pub processors: Arc<JsonProcessors>,
@@ -105,7 +123,12 @@ impl AppState {
             server_storage: data_context.server_storage,
             media_storage: data_context.media_storage,
             admin_storage: data_context.admin_storage,
-            audit_service: data_context.audit_service,
+            audit: data_context.audit,
+            api_keys: data_context.api_keys,
+            health_monitor: data_context.health_monitor,
+            statistics: data_context.statistics,
+            user_permissions: data_context.user_permissions,
+            rate_limiter: data_context.rate_limiter,
             play_sessions: data_context.play_sessions,
             config: data_context.config,
             processors: Arc::new(json_processors),
@@ -159,7 +182,12 @@ pub struct DataContext {
     pub server_storage: Arc<ServerStorageService>,
     pub media_storage: Arc<MediaStorageService>,
     pub admin_storage: Arc<AdminStorageService>,
-    pub audit_service: Arc<AuditService>,
+    pub audit: Arc<AuditService>,
+    pub api_keys: Arc<ApiKeyService>,
+    pub health_monitor: Arc<HealthMonitorService>,
+    pub statistics: Arc<StatisticsService>,
+    pub user_permissions: Arc<UserPermissionsService>,
+    pub rate_limiter: Arc<AuthRateLimiter>,
     pub play_sessions: Arc<SessionStorage>,
     pub config: Arc<tokio::sync::RwLock<AppConfig>>,
 }
@@ -295,6 +323,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let admin_storage = Arc::new(admin_storage);
     let audit_service = Arc::new(audit_service);
 
+    // Initialize additional services
+    let api_keys = Arc::new(ApiKeyService::new(pool.clone()));
+    let health_monitor = Arc::new(HealthMonitorService::new(pool.clone()));
+    let statistics = Arc::new(StatisticsService::new(pool.clone()));
+    let user_permissions = Arc::new(UserPermissionsService::new(pool.clone()));
+    let rate_limiter = Arc::new(AuthRateLimiter::default_auth_limiter());
+    let server_storage_arc = Arc::new(server_storage.clone());
+
     // Initialize first super admin from config if no admins exist
     let config_password_hash: encryption::HashedPassword = (&loaded_config.password).into();
     if let Err(e) = admin_storage
@@ -306,10 +342,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let data_context = DataContext {
         user_authorization: Arc::new(user_authorization.clone()),
-        server_storage: Arc::new(server_storage.clone()),
+        server_storage: server_storage_arc.clone(),
         media_storage: Arc::new(media_storage.clone()),
         admin_storage: admin_storage.clone(),
-        audit_service: audit_service.clone(),
+        audit: audit_service.clone(),
+        api_keys: api_keys.clone(),
+        health_monitor: health_monitor.clone(),
+        statistics: statistics.clone(),
+        user_permissions: user_permissions.clone(),
+        rate_limiter: rate_limiter.clone(),
         play_sessions: Arc::new(SessionStorage::new()),
         config: Arc::new(tokio::sync::RwLock::new(loaded_config.clone())),
     };
@@ -330,6 +371,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .continuously_delete_expired(tokio::time::Duration::from_secs(60)),
     );
 
+    // Start health monitoring background task (check every 60 seconds)
+    let health_task = health_monitor::start_health_monitor(
+        (*health_monitor).clone(),
+        server_storage_arc.clone(),
+        60,
+    );
+    info!("Started health monitoring background task");
+
+    // Start audit log cleanup background task
+    let audit_cleanup_service = audit_service.clone();
+    let audit_cleanup_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(3600)); // Every hour
+        loop {
+            interval.tick().await;
+            // Keep 30 days of audit logs
+            if let Err(e) = audit_cleanup_service.cleanup(30).await {
+                error!("Failed to cleanup audit logs: {}", e);
+            }
+        }
+    });
+    info!("Started audit log cleanup background task");
+
     let key = Key::from(loaded_config.session_key.as_slice());
 
     let session_layer = SessionManagerLayer::new(session_store)
@@ -347,9 +410,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ui_route = loaded_config.ui_route.to_string();
 
-    // TODO: Add rate limiting for authentication endpoints
-    // Recommended: Use tower-governor or similar rate limiting middleware
-    // to prevent brute force attacks (5 requests per 10 seconds per IP)
+    // Rate limiting is implemented via AuthRateLimiter service
+    // and is checked in the authentication handler (handlers/users.rs)
 
     // Security headers
     let security_headers = ServiceBuilder::new()
@@ -618,7 +680,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     axum::serve(listener, app.into_make_service())
-        .with_graceful_shutdown(shutdown_signal(deletion_task.abort_handle()))
+        .with_graceful_shutdown(shutdown_signal(
+            deletion_task.abort_handle(),
+            health_task.abort_handle(),
+            audit_cleanup_task.abort_handle(),
+        ))
         .await?;
 
     deletion_task.await??;
@@ -768,7 +834,11 @@ fn is_hop_by_hop_header(name: &HeaderName) -> bool {
     )
 }
 
-async fn shutdown_signal(deletion_task_abort_handle: AbortHandle) {
+async fn shutdown_signal(
+    deletion_task_abort_handle: AbortHandle,
+    health_task_abort_handle: AbortHandle,
+    audit_cleanup_abort_handle: AbortHandle,
+) {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
             .await
@@ -787,7 +857,15 @@ async fn shutdown_signal(deletion_task_abort_handle: AbortHandle) {
     let terminate = std::future::pending::<()>();
 
     tokio::select! {
-        _ = ctrl_c => { deletion_task_abort_handle.abort() },
-        _ = terminate => { deletion_task_abort_handle.abort() },
+        _ = ctrl_c => {
+            deletion_task_abort_handle.abort();
+            health_task_abort_handle.abort();
+            audit_cleanup_abort_handle.abort();
+        },
+        _ = terminate => {
+            deletion_task_abort_handle.abort();
+            health_task_abort_handle.abort();
+            audit_cleanup_abort_handle.abort();
+        },
     }
 }

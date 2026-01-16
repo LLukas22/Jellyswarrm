@@ -80,7 +80,7 @@ pub async fn get_audit_list(
         ..Default::default()
     };
 
-    let logs = match state.audit_service.query(filter).await {
+    let logs = match state.audit.query(filter).await {
         Ok(logs) => logs,
         Err(e) => {
             error!("Failed to query audit logs: {}", e);
@@ -88,7 +88,7 @@ pub async fn get_audit_list(
         }
     };
 
-    let total_count = match state.audit_service.count().await {
+    let total_count = match state.audit.count().await {
         Ok(count) => count,
         Err(e) => {
             error!("Failed to count audit logs: {}", e);

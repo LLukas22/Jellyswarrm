@@ -1,0 +1,59 @@
+<div class="table-responsive">
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Key Prefix</th>
+                <th>Permissions</th>
+                <th>Created</th>
+                <th>Last Used</th>
+                <th>Expires</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for key in keys %}
+            <tr>
+                <td>{{ key.name }}</td>
+                <td><code>{{ key.key_prefix }}...</code></td>
+                <td>
+                    {% let perms = serde_json::from_str::<Vec<String>>(&key.permissions).unwrap_or_default() %}
+                    {% for perm in perms %}
+                    <span class="badge bg-secondary me-1">{{ perm }}</span>
+                    {% endfor %}
+                </td>
+                <td>{{ key.created_at.format("%Y-%m-%d") }}</td>
+                <td>
+                    {% match key.last_used_at %}
+                    {% when Some with (dt) %}
+                    {{ dt.format("%Y-%m-%d %H:%M") }}
+                    {% when None %}
+                    <span class="text-muted">Never</span>
+                    {% endmatch %}
+                </td>
+                <td>
+                    {% match key.expires_at %}
+                    {% when Some with (dt) %}
+                    {{ dt.format("%Y-%m-%d") }}
+                    {% when None %}
+                    <span class="text-muted">Never</span>
+                    {% endmatch %}
+                </td>
+                <td>
+                    <button class="btn btn-sm btn-outline-danger"
+                            hx-delete="{{ ui_route }}/admin/api-keys/{{ key.id }}"
+                            hx-target="#api-keys-list"
+                            hx-confirm="Delete API key '{{ key.name }}'?">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                </td>
+            </tr>
+            {% endfor %}
+            {% if keys.is_empty() %}
+            <tr>
+                <td colspan="7" class="text-muted text-center">No API keys created yet</td>
+            </tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>

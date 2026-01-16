@@ -1,0 +1,16 @@
+<header>
+    <h1><i class="fas fa-heartbeat"></i> Server Health</h1>
+    <h3>Real-time health monitoring for all connected Jellyfin servers.</h3>
+</header>
+
+<hr />
+
+<div style="display: flex; justify-content: flex-end; margin-bottom: 1rem;">
+    <button class="outline" hx-get="/{{ ui_route }}/health/cards" hx-target="#health-cards" hx-swap="innerHTML">
+        <i class="fas fa-sync-alt"></i> Refresh
+    </button>
+</div>
+
+<div id="health-cards" hx-get="/{{ ui_route }}/health/cards" hx-trigger="every 30s">
+    {% include "admin/health_cards.html" %}
+</div>

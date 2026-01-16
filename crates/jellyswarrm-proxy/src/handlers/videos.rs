@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::response::{IntoResponse, Response};
@@ -11,6 +13,14 @@ use crate::{
     config::MediaStreamingMode, request_preprocessing::preprocess_request,
     url_helper::join_server_url, AppState,
 };
+
+/// Regex for extracting video ID from lowercase /videos/ paths
+static VIDEO_ID_LOWERCASE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"/videos/([^/]+)/").expect("valid regex pattern"));
+
+/// Regex for extracting video ID from uppercase /Videos/ paths
+static VIDEO_ID_UPPERCASE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"/Videos/([^/]+)/").expect("valid regex pattern"));
 
 async fn proxy_request(client: &Client, url: url::Url) -> Result<Response, StatusCode> {
     let resp = client.get(url).send().await.map_err(|e| {
@@ -57,9 +67,7 @@ pub async fn get_stream_part(
         .original_request
         .ok_or(StatusCode::BAD_REQUEST)?;
 
-    let re = Regex::new(r"/videos/([^/]+)/").unwrap();
-
-    let id: String = re
+    let id: String = VIDEO_ID_LOWERCASE_RE
         .captures(original_request.url().path())
         .and_then(|cap| cap.get(1))
         .map(|m| m.as_str())
@@ -113,9 +121,7 @@ pub async fn get_video_resource(
         .original_request
         .ok_or(StatusCode::BAD_REQUEST)?;
 
-    let re = Regex::new(r"/Videos/([^/]+)/").unwrap();
-
-    let captures = re
+    let captures = VIDEO_ID_UPPERCASE_RE
         .captures(original_request.url().path())
         .ok_or(StatusCode::NOT_FOUND)?;
 

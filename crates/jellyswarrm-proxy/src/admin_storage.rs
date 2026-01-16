@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use sqlx::{FromRow, SqlitePool};
 use tracing::{error, info};
 
-use crate::encryption::{hash_password, HashedPassword};
+use crate::encryption::{verify_password, HashedPassword};
 
 /// Represents an admin user in the system
 #[derive(Debug, Clone, FromRow)]
@@ -135,31 +135,35 @@ impl AdminStorageService {
     }
 
     /// Authenticate an admin user by username and password
+    ///
+    /// Uses fetch-then-verify pattern to support both Argon2 and legacy SHA-256 hashes.
+    /// Argon2 hashes are uniquely salted, so SQL-level comparison doesn't work.
     pub async fn authenticate(
         &self,
         username: &str,
         password: &str,
     ) -> Result<Option<AdminUser>, sqlx::Error> {
-        let password_hash = hash_password(password);
-
+        // Fetch admin by username only
         let admin = sqlx::query_as::<_, AdminUser>(
             r#"
             SELECT id, username, password_hash, is_super_admin, last_login_at, created_at, updated_at
             FROM admin_users
-            WHERE username = ? AND password_hash = ?
+            WHERE username = ?
             "#,
         )
         .bind(username)
-        .bind(&password_hash)
         .fetch_optional(&self.pool)
         .await?;
 
-        if admin.is_some() {
-            // Update last login time
-            self.update_last_login(username).await?;
+        // Verify password in application code (supports both Argon2 and SHA-256)
+        if let Some(ref admin) = admin {
+            if verify_password(password, &admin.password_hash) {
+                self.update_last_login(username).await?;
+                return Ok(Some(admin.clone()));
+            }
         }
 
-        Ok(admin)
+        Ok(None)
     }
 
     /// Update admin's last login timestamp

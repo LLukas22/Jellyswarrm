@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+
+{% block title %}My Account - Jellyswarrm{% endblock %}
+
+{% block content %}
+<div class="container py-4" style="max-width: 800px;">
+    <h2 class="mb-4"><i class="bi bi-person-circle"></i> My Account</h2>
+
+    {% if message.is_some() %}
+    <div class="alert alert-success">
+        <i class="bi bi-check-circle"></i> {{ message.as_ref().unwrap() }}
+    </div>
+    {% endif %}
+
+    {% if error.is_some() %}
+    <div class="alert alert-danger">
+        <i class="bi bi-exclamation-triangle"></i> {{ error.as_ref().unwrap() }}
+    </div>
+    {% endif %}
+
+    <!-- Account Info -->
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5 class="mb-0">Account Information</h5>
+        </div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-6">
+                    <div class="text-muted small">Username</div>
+                    <div class="fs-5 fw-bold">{{ username }}</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Change Password -->
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5 class="mb-0"><i class="bi bi-key"></i> Change Password</h5>
+        </div>
+        <div class="card-body">
+            <form method="post" action="{{ ui_route }}/account/password">
+                <div class="mb-3">
+                    <label class="form-label">Current Password</label>
+                    <input type="password" name="current_password" class="form-control" required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">New Password</label>
+                    <input type="password" name="new_password" class="form-control" required minlength="8">
+                    <div class="form-text">Minimum 8 characters</div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Confirm New Password</label>
+                    <input type="password" name="confirm_password" class="form-control" required>
+                </div>
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-check-lg"></i> Change Password
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Active Sessions -->
+    <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h5 class="mb-0"><i class="bi bi-display"></i> Active Sessions</h5>
+            {% if !sessions.is_empty() %}
+            <form method="post" action="{{ ui_route }}/account/sessions/revoke-all" style="display:inline;">
+                <button type="submit" class="btn btn-sm btn-outline-danger"
+                        onclick="return confirm('Revoke all sessions? You will need to re-authenticate on all devices.')">
+                    <i class="bi bi-x-circle"></i> Revoke All
+                </button>
+            </form>
+            {% endif %}
+        </div>
+        <div class="card-body">
+            {% if sessions.is_empty() %}
+            <p class="text-muted mb-0">No active sessions</p>
+            {% else %}
+            <div class="table-responsive">
+                <table class="table table-sm">
+                    <thead>
+                        <tr>
+                            <th>Server</th>
+                            <th>Device</th>
+                            <th>Created</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for session in sessions %}
+                        <tr>
+                            <td>{{ session.server_name }}</td>
+                            <td>
+                                {{ session.device }}
+                                <div class="text-muted small">{{ session.device_id }}</div>
+                            </td>
+                            <td>{{ session.created_at }}</td>
+                            <td>
+                                {% if session.is_current %}
+                                <span class="badge bg-primary">Current</span>
+                                {% else %}
+                                <form method="post" action="{{ ui_route }}/account/sessions/{{ session.id }}/revoke" style="display:inline;">
+                                    <button type="submit" class="btn btn-sm btn-outline-danger"
+                                            onclick="return confirm('Revoke this session?')">
+                                        <i class="bi bi-x-lg"></i> Revoke
+                                    </button>
+                                </form>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="mt-4">
+        <a href="{{ ui_route }}/" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left"></i> Back to Home
+        </a>
+    </div>
+</div>
+{% endblock %}

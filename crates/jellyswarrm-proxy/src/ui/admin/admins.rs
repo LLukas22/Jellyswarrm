@@ -162,7 +162,7 @@ pub async fn add_admin(
             );
 
             // Log the action
-            let _ = state.audit_service.log_admin_action(
+            let _ = state.audit.log_admin_action(
                 &user.0.id,
                 &user.0.username,
                 AuditAction::Create,
@@ -225,7 +225,7 @@ pub async fn delete_admin(
             info!("Deleted admin with ID: {}", admin_id);
 
             // Log the action
-            let _ = state.audit_service.log_admin_action(
+            let _ = state.audit.log_admin_action(
                 &user.0.id,
                 &user.0.username,
                 AuditAction::Delete,
@@ -290,7 +290,7 @@ pub async fn change_admin_password(
             info!("Updated password for admin ID: {}", admin_id);
 
             // Log the action
-            let _ = state.audit_service.log_admin_action(
+            let _ = state.audit.log_admin_action(
                 &user.0.id,
                 &user.0.username,
                 AuditAction::PasswordChange,
@@ -342,7 +342,7 @@ pub async fn promote_admin(
             info!("Promoted admin ID: {} to super admin", admin_id);
 
             // Log the action
-            let _ = state.audit_service.log_admin_action(
+            let _ = state.audit.log_admin_action(
                 &user.0.id,
                 &user.0.username,
                 AuditAction::Update,
@@ -399,7 +399,7 @@ pub async fn demote_admin(
             info!("Demoted admin ID: {} from super admin", admin_id);
 
             // Log the action
-            let _ = state.audit_service.log_admin_action(
+            let _ = state.audit.log_admin_action(
                 &user.0.id,
                 &user.0.username,
                 AuditAction::Update,

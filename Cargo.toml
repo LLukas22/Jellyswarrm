@@ -12,6 +12,10 @@ version = "0.2.0"
 [workspace.dependencies]
 aes-gcm = "0.10.3"
 anyhow = "1.0.100"
+argon2 = "0.5"
+
+# Rate limiting
+governor = "0.10.0"
 
 # UI
 askama = { version = "0.14.0" }
@@ -84,6 +88,7 @@ tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
 # Utilities
 url = { version = "2.5.7", features = ["serde"] }
 uuid = { version = "1.19.0", features = ["v4", "serde"] }
+validator = { version = "0.19", features = ["derive"] }
 
 # Dev Dependencies
 wiremock = "0.6.5"
