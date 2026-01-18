@@ -69,17 +69,7 @@ async fn test_nested_route_duplication() {
     // Test lowercase nested path (parent lowercase)
     // IMPORTANT: The macro as implemented duplicates the `nest` call.
     // So Router::new().nest("/Parent", ...).nest("/parent", ...)
-    // But the INNER router is compiled ONCE in the macro logic I saw.
-    // Let's re-read the macro logic to be sure about recursive behavior.
 
-    // If the macro is:
-    /*
-        if method_name == "nest" {
-            if let Some(arg) = method_call.args.get_mut(1) {
-                process_routes(arg);
-            }
-        }
-    */
     // It processes the inner router first.
     // So inner router becomes: Router::new().route("/Child", ...).route("/child", ...)
     // Outer router becomes: Router::new().nest("/Parent", inner).nest("/parent", inner)
