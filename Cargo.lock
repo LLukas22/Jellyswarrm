@@ -1507,11 +1507,16 @@ dependencies = [
 name = "jellyswarrm-macros"
 version = "0.2.0"
 dependencies = [
+ "axum",
  "quote",
  "serde",
  "serde_json",
  "serde_with",
  "syn",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

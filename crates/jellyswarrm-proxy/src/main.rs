@@ -61,6 +61,7 @@ use crate::{
     session_storage::SessionStorage,
     ui::ui_routes,
 };
+use jellyswarrm_macros::lowercase_routes;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -308,178 +309,171 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ui_route = loaded_config.ui_route.to_string();
 
-    let app = Router::new()
-        // UI Management routes
-        .nest(&format!("/{ui_route}"), ui_routes())
-        .route("/", get(index_handler))
-        .route(
-            "/QuickConnect/Enabled",
-            get(handlers::quick_connect::handle_quick_connect),
-        )
-        .route(
-            "/Branding/Configuration",
-            get(handlers::branding::handle_branding),
-        )
-        // User authentication and profile routes
-        .nest(
-            "/Users",
-            Router::new()
-                .route(
-                    "/authenticatebyname",
-                    post(handlers::users::handle_authenticate_by_name),
-                )
-                .route(
-                    "/AuthenticateByName",
-                    post(handlers::users::handle_authenticate_by_name),
-                )
-                .route("/Me", get(handlers::users::handle_get_me))
-                .route("/{user_id}", get(handlers::users::handle_get_user_by_id))
-                .route(
-                    "/{user_id}/Views",
-                    get(handlers::federated::get_items_from_all_servers),
-                )
-                .route(
-                    "/{user_id}/Items",
-                    get(handlers::federated::get_items_from_all_servers_if_not_restricted),
-                )
-                .route(
-                    "/{user_id}/Items/Resume",
-                    get(handlers::federated::get_items_from_all_servers),
-                )
-                .route(
-                    "/{user_id}/Items/Latest",
-                    get(handlers::federated::get_items_from_all_servers_if_not_restricted),
-                )
-                .route("/{user_id}/Items/{item_id}", get(handlers::items::get_item))
-                .route(
-                    "/{user_id}/Items/{item_id}/SpecialFeatures",
-                    get(handlers::items::get_items_list),
-                ),
-        )
-        .route(
-            "/UserViews",
-            get(handlers::federated::get_items_from_all_servers),
-        )
-        // System info routes
-        .nest(
-            "/System",
-            Router::new()
-                .route("/Info", get(handlers::system::info))
-                .route("/Info/Public", get(handlers::system::info_public)),
-        )
-        .route("/system/info/public", get(handlers::system::info_public))
-        // Item routes (non-user specific)
-        .nest(
-            "/Items",
-            Router::new()
-                .route(
-                    "/",
-                    get(handlers::federated::get_items_from_all_servers_if_not_restricted),
-                )
-                .route(
-                    "/Suggestions",
-                    get(handlers::federated::get_items_from_all_servers_if_not_restricted),
-                )
-                .route(
-                    "/Latest",
-                    get(handlers::federated::get_items_from_all_servers_if_not_restricted),
-                )
-                .route("/{item_id}", get(handlers::items::get_item))
-                .route("/{item_id}/Similar", get(handlers::items::get_items))
-                .route("/{item_id}/LocalTrailers", get(handlers::items::get_items))
-                .route(
-                    "/{item_id}/SpecialFeatures",
-                    get(handlers::items::get_items),
-                )
-                .route(
-                    "/{item_id}/PlaybackInfo",
-                    post(handlers::items::post_playback_info),
-                ),
-        )
-        .route("/MediaSegments/{item_id}", get(handlers::items::get_items))
-        // Show-specific routes
-        .nest(
-            "/Shows",
-            Router::new()
-                .route("/{item_id}/Seasons", get(handlers::items::get_items))
-                .route("/{item_id}/Episodes", get(handlers::items::get_items))
-                .route(
-                    "/NextUp",
-                    get(handlers::federated::get_items_from_all_servers_if_not_restricted),
-                ),
-        )
-        .nest(
-            "/LiveTv",
-            Router::new()
-                .route(
-                    "/Channels",
-                    get(handlers::federated::get_items_from_all_servers),
-                )
-                .route("/Channels/{item_id}", get(handlers::items::get_item))
-                .route(
-                    "/Programs",
-                    get(handlers::federated::get_items_from_all_servers),
-                )
-                .route(
-                    "/Programs/Recommended",
-                    get(handlers::federated::get_items_from_all_servers),
-                )
-                .route("/Programs/{item_id}", get(handlers::items::get_item))
-                .route(
-                    "/Recordings",
-                    get(handlers::federated::get_items_from_all_servers),
-                )
-                .route(
-                    "/Recordings/Folders",
-                    get(handlers::federated::get_items_from_all_servers),
-                )
-                .route("/Recordings/{item_id}", get(handlers::items::get_item))
-                .route(
-                    "/LiveRecordings/{recordingId}/stream",
-                    get(handlers::videos::get_stream),
-                )
-                .route(
-                    "/LiveStreamFiles/{streamId}/stream.{container}",
-                    get(handlers::videos::get_stream),
-                ),
-        )
-        // Video streaming routes
-        .nest(
-            "/Videos",
-            Router::new()
-                .route("/{stream_id}/Trickplay/{*path}", get(proxy_handler))
-                .route("/{item_id}/stream", get(handlers::videos::get_stream))
-                .route("/{item_id}/stream.mkv", get(handlers::videos::get_stream))
-                .route("/{item_id}/stream.mp4", get(handlers::videos::get_stream))
-                .route(
-                    "/{stream_id}/{item_id}/{*path}",
-                    get(handlers::videos::get_video_resource),
-                ),
-        )
-        .route(
-            "/videos/{stream_id}/{*path}",
-            get(handlers::videos::get_stream_part),
-        )
-        // Persons
-        .nest(
-            "/Persons",
-            Router::new().route("/", get(handlers::federated::get_items_from_all_servers)),
-        )
-        // Artists
-        .nest(
-            "/Artists",
-            Router::new().route("/", get(handlers::federated::get_items_from_all_servers)),
-        )
-        .route("/{*path}", any(proxy_handler))
-        .fallback(proxy_handler)
-        .layer(
-            ServiceBuilder::new()
-                .layer(TraceLayer::new_for_http())
-                .layer(CorsLayer::permissive()),
-        )
-        .layer(MessagesManagerLayer)
-        .layer(auth_layer)
-        .with_state(app_state);
+    let app = lowercase_routes! {
+        Router::new()
+            // UI Management routes
+            .nest(&format!("/{ui_route}"), ui_routes())
+            .route("/", get(index_handler))
+            .route(
+                "/QuickConnect/Enabled",
+                get(handlers::quick_connect::handle_quick_connect),
+            )
+            .route(
+                "/Branding/Configuration",
+                get(handlers::branding::handle_branding),
+            )
+            // User authentication and profile routes
+            .nest(
+                "/Users",
+                Router::new()
+                    .route(
+                        "/AuthenticateByName",
+                        post(handlers::users::handle_authenticate_by_name),
+                    )
+                    .route("/Me", get(handlers::users::handle_get_me))
+                    .route("/{user_id}", get(handlers::users::handle_get_user_by_id))
+                    .route(
+                        "/{user_id}/Views",
+                        get(handlers::federated::get_items_from_all_servers),
+                    )
+                    .route(
+                        "/{user_id}/Items",
+                        get(handlers::federated::get_items_from_all_servers_if_not_restricted),
+                    )
+                    .route(
+                        "/{user_id}/Items/Resume",
+                        get(handlers::federated::get_items_from_all_servers),
+                    )
+                    .route(
+                        "/{user_id}/Items/Latest",
+                        get(handlers::federated::get_items_from_all_servers_if_not_restricted),
+                    )
+                    .route("/{user_id}/Items/{item_id}", get(handlers::items::get_item))
+                    .route(
+                        "/{user_id}/Items/{item_id}/SpecialFeatures",
+                        get(handlers::items::get_items_list),
+                    ),
+            )
+            .route(
+                "/UserViews",
+                get(handlers::federated::get_items_from_all_servers),
+            )
+            // System info routes
+            .nest(
+                "/System",
+                Router::new()
+                    .route("/Info", get(handlers::system::info))
+                    .route("/Info/Public", get(handlers::system::info_public)),
+            )
+            // Item routes (non-user specific)
+            .nest(
+                "/Items",
+                Router::new()
+                    .route(
+                        "/",
+                        get(handlers::federated::get_items_from_all_servers_if_not_restricted),
+                    )
+                    .route(
+                        "/Suggestions",
+                        get(handlers::federated::get_items_from_all_servers_if_not_restricted),
+                    )
+                    .route(
+                        "/Latest",
+                        get(handlers::federated::get_items_from_all_servers_if_not_restricted),
+                    )
+                    .route("/{item_id}", get(handlers::items::get_item))
+                    .route("/{item_id}/Similar", get(handlers::items::get_items))
+                    .route("/{item_id}/LocalTrailers", get(handlers::items::get_items))
+                    .route(
+                        "/{item_id}/SpecialFeatures",
+                        get(handlers::items::get_items),
+                    )
+                    .route(
+                        "/{item_id}/PlaybackInfo",
+                        post(handlers::items::post_playback_info),
+                    ),
+            )
+            .route("/MediaSegments/{item_id}", get(handlers::items::get_items))
+            // Show-specific routes
+            .nest(
+                "/Shows",
+                Router::new()
+                    .route("/{item_id}/Seasons", get(handlers::items::get_items))
+                    .route("/{item_id}/Episodes", get(handlers::items::get_items))
+                    .route(
+                        "/NextUp",
+                        get(handlers::federated::get_items_from_all_servers_if_not_restricted),
+                    ),
+            )
+            .nest(
+                "/LiveTv",
+                Router::new()
+                    .route(
+                        "/Channels",
+                        get(handlers::federated::get_items_from_all_servers),
+                    )
+                    .route("/Channels/{item_id}", get(handlers::items::get_item))
+                    .route(
+                        "/Programs",
+                        get(handlers::federated::get_items_from_all_servers),
+                    )
+                    .route(
+                        "/Programs/Recommended",
+                        get(handlers::federated::get_items_from_all_servers),
+                    )
+                    .route("/Programs/{item_id}", get(handlers::items::get_item))
+                    .route(
+                        "/Recordings",
+                        get(handlers::federated::get_items_from_all_servers),
+                    )
+                    .route(
+                        "/Recordings/Folders",
+                        get(handlers::federated::get_items_from_all_servers),
+                    )
+                    .route("/Recordings/{item_id}", get(handlers::items::get_item))
+                    .route(
+                        "/LiveRecordings/{recordingId}/stream",
+                        get(handlers::videos::get_stream),
+                    )
+                    .route(
+                        "/LiveStreamFiles/{streamId}/stream.{container}",
+                        get(handlers::videos::get_stream),
+                    ),
+            )
+            // Video streaming routes
+            .nest(
+                "/Videos",
+                Router::new()
+                    .route("/{stream_id}/Trickplay/{*path}", get(proxy_handler))
+                    .route("/{item_id}/stream", get(handlers::videos::get_stream))
+                    .route("/{item_id}/stream.mkv", get(handlers::videos::get_stream))
+                    .route("/{item_id}/stream.mp4", get(handlers::videos::get_stream))
+                    .route(
+                        "/{stream_id}/{*path}",
+                        get(handlers::videos::get_video_resource),
+                    ),
+            )
+            // Persons
+            .nest(
+                "/Persons",
+                Router::new().route("/", get(handlers::federated::get_items_from_all_servers)),
+            )
+            // Artists
+            .nest(
+                "/Artists",
+                Router::new().route("/", get(handlers::federated::get_items_from_all_servers)),
+            )
+            .route("/{*path}", any(proxy_handler))
+            .fallback(proxy_handler)
+            .layer(
+                ServiceBuilder::new()
+                    .layer(TraceLayer::new_for_http())
+                    .layer(CorsLayer::permissive()),
+            )
+            .layer(MessagesManagerLayer)
+            .layer(auth_layer)
+            .with_state(app_state)
+    };
 
     // Create socket address
     let addr = match format!("{}:{}", loaded_config.host, loaded_config.port).parse::<SocketAddr>()

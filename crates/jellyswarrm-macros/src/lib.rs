@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, Data, DeriveInput, Fields};
+use syn::{parse_macro_input, Data, DeriveInput, Expr, ExprLit, ExprMethodCall, Fields, Lit};
 
 /// A procedural macro that adds serde rename/alias attributes to struct fields
 /// with support for multiple case conversions simultaneously.
@@ -197,4 +197,125 @@ fn snake_to_camel_case(input: &str) -> String {
 
 fn snake_to_kebab_case(input: &str) -> String {
     input.replace('_', "-")
+}
+
+#[proc_macro]
+pub fn lowercase_routes(input: TokenStream) -> TokenStream {
+    let mut expr = parse_macro_input!(input as Expr);
+    process_routes(&mut expr);
+
+    // Extract routes after processing (so we get both original and lowercase)
+    let routes = extract_routes(&expr);
+    let log_stmts = routes.iter().map(|r| {
+        quote! {
+            tracing::debug!("Registered route: {}", #r);
+        }
+    });
+
+    TokenStream::from(quote! {
+        {
+            #(#log_stmts)*
+            #expr
+        }
+    })
+}
+
+fn process_routes(expr: &mut Expr) {
+    if let Expr::MethodCall(method_call) = expr {
+        // Process receiver first
+        process_routes(&mut method_call.receiver);
+
+        let method_name = method_call.method.to_string();
+
+        // If nest, process the inner router
+        if method_name == "nest" {
+            if let Some(arg) = method_call.args.get_mut(1) {
+                process_routes(arg);
+            }
+        }
+
+        if method_name == "route" || method_name == "nest" {
+            let should_duplicate = if let Some(Expr::Lit(ExprLit {
+                lit: Lit::Str(lit_str),
+                ..
+            })) = method_call.args.first()
+            {
+                let path = lit_str.value();
+                path != path.to_lowercase()
+            } else {
+                false
+            };
+
+            if should_duplicate {
+                let original_call = method_call.clone();
+
+                // Create args for the lowercase call
+                let mut new_args = original_call.args.clone();
+                if let Some(Expr::Lit(ExprLit {
+                    lit: Lit::Str(lit_str),
+                    ..
+                })) = new_args.first_mut()
+                {
+                    let path = lit_str.value();
+                    let lower_path = path.to_lowercase();
+                    *lit_str = syn::LitStr::new(&lower_path, lit_str.span());
+                }
+
+                // Construct the new MethodCall
+                // The receiver is the original method call (wrapped in Expr)
+                let new_receiver = Box::new(Expr::MethodCall(original_call));
+
+                *expr = Expr::MethodCall(ExprMethodCall {
+                    attrs: vec![],
+                    receiver: new_receiver,
+                    dot_token: method_call.dot_token,
+                    method: method_call.method.clone(),
+                    turbofish: method_call.turbofish.clone(),
+                    paren_token: method_call.paren_token,
+                    args: new_args,
+                });
+            }
+        }
+    }
+}
+
+fn extract_routes(expr: &Expr) -> Vec<String> {
+    if let Expr::MethodCall(method_call) = expr {
+        // Collect from receiver (left side of chain)
+        let mut routes = extract_routes(&method_call.receiver);
+
+        let method_name = method_call.method.to_string();
+
+        if method_name == "route" {
+            // .route("/path", ...)
+            if let Some(Expr::Lit(ExprLit {
+                lit: Lit::Str(lit_str),
+                ..
+            })) = method_call.args.first()
+            {
+                routes.push(lit_str.value());
+            }
+        } else if method_name == "nest" {
+            // .nest("/path", inner_router)
+            if let Some(Expr::Lit(ExprLit {
+                lit: Lit::Str(lit_str),
+                ..
+            })) = method_call.args.first()
+            {
+                let prefix = lit_str.value();
+
+                if let Some(inner_expr) = method_call.args.get(1) {
+                    let inner_routes = extract_routes(inner_expr);
+                    for inner in inner_routes {
+                        routes.push(format!("{}{}", prefix, inner));
+                    }
+                }
+            }
+        }
+
+        return routes;
+    }
+
+    // Not a method call we track
+    Vec::new()
 }

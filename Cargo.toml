@@ -72,7 +72,7 @@ toml = "0.9.8"
 
 # HTTP and Web Framework
 tower = "0.5.2"
-tower-http = { version = "0.6.8", features = ["cors", "trace"] }
+tower-http = { version = "0.6.8", features = ["cors", "trace", "normalize-path"] }
 tower-sessions = { version = "0.14.0", features = ["signed"] }
 tower-sessions-sqlx-store = { version = "0.15.0", features = ["sqlite"] }
 
