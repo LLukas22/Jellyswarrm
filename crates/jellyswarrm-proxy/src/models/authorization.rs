@@ -83,6 +83,20 @@ impl Authorization {
         result
     }
 
+    /// Convert to redacted header string for logging (token masked)
+    pub fn to_redacted_header_value(&self) -> String {
+        let mut result = format!(
+            "MediaBrowser Client=\"{}\", Device=\"{}\", DeviceId=\"{}\", Version=\"{}\"",
+            self.client, self.device, self.device_id, self.version
+        );
+
+        if self.token.is_some() {
+            result.push_str(", Token=\"[REDACTED]\"");
+        }
+
+        result
+    }
+
     /// Convert to header value without "MediaBrowser " prefix
     pub fn to_params_string(&self) -> String {
         let mut result = format!(

@@ -1,0 +1,58 @@
+<div id="messages"></div>
+
+<header>
+    <h1>Audit Log</h1>
+    <h3>Track administrative actions and changes.</h3>
+</header>
+
+<section id="audit-filters">
+    <form hx-get="/{{ ui_route }}/audit/list" hx-target="#audit-list" hx-swap="innerHTML" hx-trigger="change, submit">
+        <div class="grid" style="--pico-grid-gap:1rem;">
+            <label>
+                Actor Type
+                <select name="actor_type">
+                    <option value="">All</option>
+                    <option value="admin">Admin</option>
+                    <option value="user">User</option>
+                    <option value="system">System</option>
+                </select>
+            </label>
+            <label>
+                Action
+                <select name="action">
+                    <option value="">All</option>
+                    <option value="create">Create</option>
+                    <option value="update">Update</option>
+                    <option value="delete">Delete</option>
+                    <option value="login">Login</option>
+                    <option value="logout">Logout</option>
+                    <option value="password_change">Password Change</option>
+                    <option value="session_reset">Session Reset</option>
+                </select>
+            </label>
+            <label>
+                Resource Type
+                <select name="resource_type">
+                    <option value="">All</option>
+                    <option value="user">User</option>
+                    <option value="server">Server</option>
+                    <option value="mapping">Mapping</option>
+                    <option value="admin">Admin</option>
+                    <option value="settings">Settings</option>
+                    <option value="session">Session</option>
+                </select>
+            </label>
+            <div style="display:flex; align-items:flex-end;">
+                <button type="submit" class="secondary">
+                    <i class="fas fa-filter"></i> Filter
+                </button>
+            </div>
+        </div>
+    </form>
+</section>
+
+<hr />
+
+<section id="audit-list" hx-get="/{{ ui_route }}/audit/list" hx-trigger="load">
+    <p>Loading audit logs...</p>
+</section>

@@ -1,0 +1,53 @@
+<div class="card">
+    <div class="card-header">
+        <h5 class="mb-0">Permissions for {{ user.original_username }}</h5>
+    </div>
+    <div class="card-body">
+        <form method="post" action="{{ ui_route }}/admin/permissions" class="mb-4">
+            <input type="hidden" name="user_id" value="{{ user.id }}">
+            <div class="row">
+                <div class="col-md-5">
+                    <select name="server_id" class="form-select" required>
+                        <option value="">Select server...</option>
+                        {% for server in servers %}
+                        <option value="{{ server.id }}">{{ server.name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-4">
+                    <select name="permission_type" class="form-select">
+                        <option value="allow">Allow</option>
+                        <option value="deny">Deny</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <button type="submit" class="btn btn-primary w-100">
+                        <i class="bi bi-plus-lg"></i> Add
+                    </button>
+                </div>
+            </div>
+        </form>
+
+        {% if permissions.is_empty() %}
+        <p class="text-muted">No explicit permissions set. User can access all servers by default.</p>
+        {% else %}
+        <ul class="list-group">
+            {% for perm in permissions %}
+            <li class="list-group-item d-flex justify-content-between align-items-center">
+                <span>
+                    <strong>{{ perm.server_name }}</strong>
+                    <span class="badge {% if perm.permission_type == "deny" %}bg-danger{% else %}bg-success{% endif %} ms-2">
+                        {{ perm.permission_type }}
+                    </span>
+                </span>
+                <button class="btn btn-sm btn-outline-danger"
+                        hx-delete="{{ ui_route }}/admin/permissions/{{ user.id }}/{{ perm.server_id }}"
+                        hx-target="closest .card">
+                    <i class="bi bi-trash"></i>
+                </button>
+            </li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+    </div>
+</div>

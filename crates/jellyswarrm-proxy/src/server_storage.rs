@@ -41,14 +41,6 @@ impl ServerStorageService {
         url: &str,
         priority: i32,
     ) -> Result<i64, sqlx::Error> {
-        // Validate URL
-        if Url::parse(url).is_err() {
-            return Err(sqlx::Error::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Invalid URL format",
-            )));
-        }
-
         let now = chrono::Utc::now();
 
         let result = sqlx::query(

@@ -3,7 +3,7 @@ use axum::extract::{OriginalUri, Request};
 use anyhow::Result;
 use axum::http;
 use http_body_util::BodyExt;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 use crate::models::Authorization;
 use crate::processors::analyze_json;
@@ -236,17 +236,40 @@ pub async fn extract_request_infos(
 }
 
 pub async fn preprocess_request(req: Request, state: &AppState) -> Result<PreprocessedRequest> {
-    debug!("Preprocessing request: {:?}", req.uri());
+    let method = req.method().clone();
+    let uri = req.uri().clone();
+    info!("[REQUEST] {} {}", method, uri);
+
     let (mut request, auth, user, sessions, request_body_result) =
         extract_request_infos(req, state).await?;
     let original_request = request.try_clone();
 
+    // Log user info
+    if let Some(ref u) = user {
+        info!("[AUTH] User identified: {} (id: {})", u.original_username, u.id);
+    } else {
+        info!("[AUTH] No user identified for request");
+    }
+
+    // Log session count
+    if let Some(ref s) = sessions {
+        info!("[AUTH] Found {} active session(s) for user", s.len());
+    }
+
     let (server, session) =
         resolve_server(&sessions, &request_body_result, state, &request).await?;
 
+    info!("[ROUTE] Request routed to server: {} ({})", server.name, server.url);
+
     let new_auth = remap_authorization(&auth, &session).await?;
 
+    if new_auth.is_some() {
+        info!("[AUTH] Token remapped for backend server");
+    }
+
     apply_to_request(&mut request, &server, &session, &new_auth, state).await;
+
+    info!("[PROXY] Forwarding to: {}", request.url());
 
     Ok(PreprocessedRequest {
         request,

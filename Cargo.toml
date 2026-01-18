@@ -12,12 +12,16 @@ version = "0.2.0"
 [workspace.dependencies]
 aes-gcm = "0.10.3"
 anyhow = "1.0.100"
+argon2 = "0.5"
 
-# UI 
+# Rate limiting
+governor = "0.10.0"
+
+# UI
 askama = { version = "0.14.0" }
 async-recursion = "1.1.1"
 async-trait = "0.1.89"
-axum = { version = "0.8.8", features = ["macros"] }
+axum = { version = "0.8.8", features = ["macros", "ws"] }
 axum-login = "0.18.0"
 axum-messages = "0.8.0"
 base64 = "0.22.1"
@@ -72,7 +76,11 @@ toml = "0.9.8"
 
 # HTTP and Web Framework
 tower = "0.5.2"
-tower-http = { version = "0.6.8", features = ["cors", "trace"] }
+tower-http = { version = "0.6.8", features = ["cors", "trace", "set-header"] }
+
+# WebSocket Support
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+futures-channel = "0.3"
 tower-sessions = { version = "0.14.0", features = ["signed"] }
 tower-sessions-sqlx-store = { version = "0.15.0", features = ["sqlite"] }
 
@@ -84,6 +92,7 @@ tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
 # Utilities
 url = { version = "2.5.7", features = ["serde"] }
 uuid = { version = "1.19.0", features = ["v4", "serde"] }
+validator = { version = "0.19", features = ["derive"] }
 
 # Dev Dependencies
 wiremock = "0.6.5"

@@ -318,6 +318,14 @@ impl ItemsResponseVariants {
             ItemsResponseVariants::Bare(v) => v.get(index),
         }
     }
+
+    /// Return a slice of all items for batch processing
+    pub fn items_slice(&self) -> &[MediaItem] {
+        match self {
+            ItemsResponseVariants::WithCount(w) => &w.items,
+            ItemsResponseVariants::Bare(v) => v,
+        }
+    }
 }
 
 #[skip_serializing_none]

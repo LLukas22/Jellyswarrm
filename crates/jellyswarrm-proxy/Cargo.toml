@@ -61,6 +61,9 @@ aes-gcm = { workspace = true }
 serde_with = { workspace = true }
 jellyfin-api = { workspace = true }
 futures-util = { workspace = true }
+governor = { workspace = true }
+validator = { workspace = true }
+tokio-tungstenite = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

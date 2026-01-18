@@ -1,0 +1,116 @@
+<header>
+    <h1><i class="fas fa-shield-alt"></i> User Permissions</h1>
+    <h3>Control which servers users can access.</h3>
+</header>
+
+<hr />
+
+<article style="border-left: 4px solid var(--pico-primary);">
+    <p><i class="fas fa-info-circle"></i> By default, users can access all servers they have credentials for. Use this page to explicitly allow or deny access to specific servers.</p>
+</article>
+
+<h2>Users</h2>
+<figure>
+    <table>
+        <thead>
+            <tr>
+                <th>Username</th>
+                <th>Permissions</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for uwp in users %}
+            <tr>
+                <td>
+                    <strong>{{ uwp.user.original_username }}</strong>
+                    <br><small style="color: var(--pico-muted-color);">{{ uwp.user.id }}</small>
+                </td>
+                <td>
+                    {% if uwp.permissions.is_empty() %}
+                    <mark style="background: var(--pico-ins-color);">All servers (default)</mark>
+                    {% else %}
+                    {% for perm in uwp.permissions %}
+                    <mark style="background: {% if perm.permission_type == "deny" %}var(--pico-del-color){% else %}var(--pico-ins-color){% endif %}; margin-right: 0.25rem;">
+                        {{ perm.server_name }}: {% if perm.permission_type == "deny" %}Denied{% else %}Allowed{% endif %}
+                    </mark>
+                    {% endfor %}
+                    {% endif %}
+                </td>
+                <td>
+                    <button class="outline secondary"
+                            onclick="document.getElementById('perm-dialog-{{ loop.index }}').showModal()">
+                        <i class="fas fa-edit"></i> Edit
+                    </button>
+                </td>
+            </tr>
+            {% endfor %}
+
+            {% if users.is_empty() %}
+            <tr>
+                <td colspan="3" style="text-align: center; color: var(--pico-muted-color);">No users found</td>
+            </tr>
+            {% endif %}
+        </tbody>
+    </table>
+</figure>
+
+<!-- Permission dialogs for each user -->
+{% for uwp in users %}
+<dialog id="perm-dialog-{{ loop.index }}">
+    <article>
+        <header>
+            <button aria-label="Close" rel="prev" onclick="document.getElementById('perm-dialog-{{ loop.index }}').close()"></button>
+            <h3>Permissions: {{ uwp.user.original_username }}</h3>
+        </header>
+
+        <form hx-post="/{{ ui_route }}/permissions" hx-target="body">
+            <input type="hidden" name="user_id" value="{{ uwp.user.id }}">
+
+            <label>Server
+                <select name="server_id" required>
+                    {% for server in servers %}
+                    <option value="{{ server.id }}">{{ server.name }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+
+            <label>Permission
+                <select name="permission_type">
+                    <option value="allow">Allow Access</option>
+                    <option value="deny">Deny Access</option>
+                </select>
+            </label>
+
+            <button type="submit"><i class="fas fa-check"></i> Set Permission</button>
+        </form>
+
+        {% if !uwp.permissions.is_empty() %}
+        <hr />
+        <h4>Current Permissions</h4>
+        <ul>
+            {% for perm in uwp.permissions %}
+            <li style="display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0;">
+                <span>
+                    {{ perm.server_name }}:
+                    <mark style="background: {% if perm.permission_type == "deny" %}var(--pico-del-color){% else %}var(--pico-ins-color){% endif %};">
+                        {{ perm.permission_type }}
+                    </mark>
+                </span>
+                <button class="outline secondary"
+                        hx-delete="/{{ ui_route }}/permissions/{{ uwp.user.id }}/{{ perm.server_id }}"
+                        hx-target="body"
+                        style="width: auto; margin: 0;">
+                    <i class="fas fa-trash"></i>
+                </button>
+            </li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+
+        <footer>
+            <button class="secondary" onclick="document.getElementById('perm-dialog-{{ loop.index }}').close()">Close</button>
+        </footer>
+    </article>
+</dialog>
+{% endfor %}

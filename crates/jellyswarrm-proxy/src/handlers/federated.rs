@@ -4,13 +4,14 @@ use axum::{
 };
 use hyper::StatusCode;
 use regex::Regex;
+use std::collections::BTreeMap;
 use std::sync::LazyLock;
 use tokio::task::JoinSet;
-use tracing::{debug, error, trace};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::{
     handlers::{
-        common::{execute_json_request, process_media_item},
+        common::{execute_json_request, extract_all_ids_from_items, process_media_item},
         items::get_items,
     },
     models::enums::{BaseItemKind, CollectionType},
@@ -41,21 +42,36 @@ pub async fn get_items_from_all_servers(
     State(state): State<AppState>,
     req: Request,
 ) -> Result<Json<crate::models::ItemsResponseVariants>, StatusCode> {
-    let (original_request, _, _, sessions, _) =
+    let uri = req.uri().clone();
+    info!("[FEDERATED] Fetching items from all servers for: {}", uri);
+
+    let (original_request, _, user, sessions, _) =
         extract_request_infos(req, &state).await.map_err(|e| {
-            error!("Failed to preprocess request: {}", e);
+            error!("[FEDERATED] Failed to preprocess request: {}", e);
             StatusCode::BAD_REQUEST
         })?;
 
-    let sessions = sessions.ok_or(StatusCode::UNAUTHORIZED)?;
+    if let Some(ref u) = user {
+        info!("[FEDERATED] User: {} ({})", u.original_username, u.id);
+    }
+
+    let sessions = sessions.ok_or_else(|| {
+        warn!("[FEDERATED] No sessions found - returning 401");
+        StatusCode::UNAUTHORIZED
+    })?;
+
     if sessions.is_empty() {
+        warn!("[FEDERATED] Sessions list is empty - returning 401");
         return Err(StatusCode::UNAUTHORIZED);
     }
+
+    info!("[FEDERATED] Querying {} backend server(s) in parallel", sessions.len());
 
     // Create JoinSet for parallel execution
     let mut join_set = JoinSet::new();
 
     for (index, (session, server)) in sessions.into_iter().enumerate() {
+        info!("[FEDERATED] Adding server to query: {} ({})", server.name, server.url);
         let request = match original_request.try_clone() {
             Some(req) => req,
             None => {
@@ -89,6 +105,26 @@ pub async fn get_items_from_all_servers(
             {
                 Ok(mut items_response) => {
                     let server_id = { state_clone.config.read().await.server_id.clone() };
+                    let server_url = server_clone.url.as_str();
+
+                    // Pre-warm the media mapping cache with all IDs from items
+                    // This reduces DB queries from O(n*m) to O(1) batch query
+                    let items_slice = items_response.items_slice();
+                    let all_ids = extract_all_ids_from_items(items_slice);
+                    if !all_ids.is_empty() {
+                        if let Err(e) = state_clone
+                            .media_storage
+                            .prewarm_cache_for_ids(&all_ids, server_url)
+                            .await
+                        {
+                            debug!(
+                                "Failed to prewarm cache for server '{}': {:?}",
+                                server_clone.name, e
+                            );
+                            // Continue anyway - individual lookups will still work
+                        }
+                    }
+
                     for item in items_response.iter_mut_items() {
                         match process_media_item(
                             item.clone(),
@@ -111,9 +147,9 @@ pub async fn get_items_from_all_servers(
                     }
 
                     let item_count = items_response.len();
-                    debug!(
-                        "Successfully retrieved {} items from server: {}",
-                        item_count, server_clone.name
+                    info!(
+                        "[FEDERATED] Server '{}' returned {} items",
+                        server_clone.name, item_count
                     );
                     trace!(
                         "Items from server '{}': {}",
@@ -135,29 +171,27 @@ pub async fn get_items_from_all_servers(
         });
     }
 
-    // Wait for all tasks to complete and collect results with their original indices
-    let mut indexed_results: Vec<(usize, Option<crate::models::ItemsResponseVariants>)> =
-        Vec::new();
+    // Use BTreeMap for automatic ordering (avoids manual sorting)
+    let mut indexed_results: BTreeMap<usize, crate::models::ItemsResponseVariants> =
+        BTreeMap::new();
     while let Some(result) = join_set.join_next().await {
         match result {
-            Ok((index, items)) => indexed_results.push((index, items)),
+            Ok((index, Some(items))) => {
+                indexed_results.insert(index, items);
+            }
+            Ok((_, None)) => {} // Skip failed requests
             Err(e) => error!("Task failed: {:?}", e),
         }
     }
 
-    // Sort results by original server order
-    indexed_results.sort_by_key(|(index, _)| *index);
-
-    // Extract items in original server order
-    let mut server_items: Vec<crate::models::ItemsResponseVariants> = Vec::new();
-    for (_, items) in indexed_results {
-        if let Some(items) = items {
-            server_items.push(items);
-        }
-    }
+    // Extract items in original server order (already sorted by BTreeMap)
+    let server_items: Vec<crate::models::ItemsResponseVariants> =
+        indexed_results.into_values().collect();
 
     // Interleave items from all servers with Live TV filtering
-    let mut interleaved_items = Vec::new();
+    // Pre-allocate capacity to avoid reallocations
+    let estimated_capacity = server_items.iter().map(|items| items.len()).sum::<usize>();
+    let mut interleaved_items = Vec::with_capacity(estimated_capacity);
     let mut live_tv_count = 0;
     let max_items = server_items
         .iter()
@@ -169,24 +203,29 @@ pub async fn get_items_from_all_servers(
         for server_item_list in &server_items {
             if let Some(item) = server_item_list.get(i) {
                 // Skip additional Live TV items
-                if let Some(collectiontype) = &item.collection_type {
+                let should_skip = if let Some(collectiontype) = &item.collection_type {
                     if *collectiontype == CollectionType::LiveTv
                         && item.item_type == BaseItemKind::UserView
                     {
                         live_tv_count += 1;
-                        if live_tv_count > 1 {
-                            continue;
-                        }
+                        live_tv_count > 1
+                    } else {
+                        false
                     }
+                } else {
+                    false
+                };
+
+                if !should_skip {
+                    interleaved_items.push(item.clone());
                 }
-                interleaved_items.push(item.clone());
             }
         }
     }
 
     let count = interleaved_items.len();
-    debug!(
-        "Returning {} interleaved items from {} servers",
+    info!(
+        "[FEDERATED] Returning {} total items (merged from {} server responses)",
         count,
         server_items.len()
     );

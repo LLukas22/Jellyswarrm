@@ -1,0 +1,134 @@
+<header>
+    <h1><i class="fas fa-chart-line"></i> Statistics Dashboard</h1>
+    <h3>Overview of system usage and performance metrics.</h3>
+</header>
+
+<hr />
+
+<!-- System Overview Cards -->
+<div class="grid" style="--pico-grid-gap: 1rem;">
+    <article style="text-align: center;">
+        <strong style="font-size: 2rem; color: var(--pico-primary);">{{ system_stats.total_users }}</strong>
+        <br><small>Total Users</small>
+    </article>
+    <article style="text-align: center;">
+        <strong style="font-size: 2rem; color: var(--pico-ins-color);">{{ system_stats.total_servers }}</strong>
+        <br><small>Servers</small>
+    </article>
+    <article style="text-align: center;">
+        <strong style="font-size: 2rem; color: var(--pico-secondary);">{{ system_stats.total_sessions }}</strong>
+        <br><small>Active Sessions</small>
+    </article>
+    <article style="text-align: center;">
+        <strong style="font-size: 2rem; color: var(--pico-mark-background-color);">{{ system_stats.total_media_mappings }}</strong>
+        <br><small>Media Mappings</small>
+    </article>
+</div>
+
+<hr />
+
+<!-- Realtime Metrics -->
+<h2>Realtime Metrics</h2>
+<div class="grid" style="--pico-grid-gap: 1rem;">
+    <div>
+        <small style="color: var(--pico-muted-color);">Total Requests</small>
+        <strong style="display: block; font-size: 1.5rem;">{{ system_stats.realtime.total_requests }}</strong>
+    </div>
+    <div>
+        <small style="color: var(--pico-muted-color);">Active Streams</small>
+        <strong style="display: block; font-size: 1.5rem;">{{ system_stats.realtime.active_streams }}</strong>
+    </div>
+    <div>
+        <small style="color: var(--pico-muted-color);">Auth Attempts</small>
+        <strong style="display: block; font-size: 1.5rem;">{{ system_stats.realtime.auth_attempts }}</strong>
+    </div>
+    <div>
+        <small style="color: var(--pico-muted-color);">Auth Failures</small>
+        <strong style="display: block; font-size: 1.5rem; color: var(--pico-del-color);">{{ system_stats.realtime.auth_failures }}</strong>
+    </div>
+    <div>
+        <small style="color: var(--pico-muted-color);">Rate Limited</small>
+        <strong style="display: block; font-size: 1.5rem; color: var(--pico-mark-background-color);">{{ system_stats.realtime.rate_limited_requests }}</strong>
+    </div>
+</div>
+
+<hr />
+
+<div class="grid">
+    <!-- Per-Server Stats -->
+    <section>
+        <h2>Per-Server Statistics</h2>
+        <figure>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Server</th>
+                        <th>Users</th>
+                        <th>Sessions</th>
+                        <th>Mappings</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for stat in server_stats %}
+                    <tr>
+                        <td>{{ stat.server_name }}</td>
+                        <td>{{ stat.total_users }}</td>
+                        <td>{{ stat.total_sessions }}</td>
+                        <td>{{ stat.total_mappings }}</td>
+                    </tr>
+                    {% endfor %}
+                    {% if server_stats.is_empty() %}
+                    <tr><td colspan="4" style="text-align: center; color: var(--pico-muted-color);">No servers</td></tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </figure>
+    </section>
+
+    <!-- Top Users -->
+    <section>
+        <h2>Top Users by Sessions</h2>
+        <figure>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Username</th>
+                        <th>Sessions</th>
+                        <th>Mappings</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for user in top_users %}
+                    <tr>
+                        <td>{{ user.username }}</td>
+                        <td>{{ user.total_sessions }}</td>
+                        <td>{{ user.total_mappings }}</td>
+                    </tr>
+                    {% endfor %}
+                    {% if top_users.is_empty() %}
+                    <tr><td colspan="3" style="text-align: center; color: var(--pico-muted-color);">No users</td></tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </figure>
+    </section>
+</div>
+
+<hr />
+
+<!-- System Info -->
+<h2>System Information</h2>
+<div class="grid" style="--pico-grid-gap: 1rem;">
+    <div>
+        <small style="color: var(--pico-muted-color);">Database Size</small>
+        <strong style="display: block;">{{ (system_stats.database_size_bytes / 1024 / 1024) }} MB</strong>
+    </div>
+    <div>
+        <small style="color: var(--pico-muted-color);">Uptime</small>
+        <strong style="display: block;">{{ system_stats.uptime_seconds / 3600 }}h {{ (system_stats.uptime_seconds % 3600) / 60 }}m</strong>
+    </div>
+    <div>
+        <small style="color: var(--pico-muted-color);">Audit Logs</small>
+        <strong style="display: block;">{{ system_stats.total_audit_logs }}</strong>
+    </div>
+</div>

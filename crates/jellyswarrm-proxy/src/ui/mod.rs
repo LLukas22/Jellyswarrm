@@ -17,6 +17,7 @@ use crate::{
     AppState, Asset,
 };
 
+pub mod account;
 pub mod admin;
 pub mod auth;
 pub mod root;
@@ -132,6 +133,55 @@ pub fn ui_routes() -> axum::Router<AppState> {
         .route("/settings/form", get(admin::settings::settings_form))
         .route("/settings/save", post(admin::settings::save_settings))
         .route("/settings/reload", post(admin::settings::reload_config))
+        // Admin management
+        .route("/admins", get(admin::admins::admins_page))
+        .route("/admins", post(admin::admins::add_admin))
+        .route("/admins/list", get(admin::admins::get_admin_list))
+        .route(
+            "/admins/{id}",
+            axum::routing::delete(admin::admins::delete_admin),
+        )
+        .route(
+            "/admins/{id}/password",
+            post(admin::admins::change_admin_password),
+        )
+        .route(
+            "/admins/{id}/promote",
+            post(admin::admins::promote_admin),
+        )
+        .route(
+            "/admins/{id}/demote",
+            post(admin::admins::demote_admin),
+        )
+        // Audit logs
+        .route("/audit", get(admin::audit::audit_page))
+        .route("/audit/list", get(admin::audit::get_audit_list))
+        // Health monitoring
+        .route("/health", get(admin::health::get_health_dashboard))
+        .route("/health/cards", get(admin::health::get_health_cards))
+        .route("/api/health", get(admin::health::get_health_json))
+        // Statistics
+        .route("/stats", get(admin::stats::get_stats_dashboard))
+        .route("/api/stats", get(admin::stats::get_stats_json))
+        .route("/api/stats/servers", get(admin::stats::get_server_stats_json))
+        // API Keys
+        .route("/api-keys", get(admin::api_keys::get_api_keys_page))
+        .route("/api-keys", post(admin::api_keys::create_api_key))
+        .route(
+            "/api-keys/{id}",
+            axum::routing::delete(admin::api_keys::delete_api_key),
+        )
+        // User Permissions
+        .route("/permissions", get(admin::permissions::get_permissions_page))
+        .route("/permissions", post(admin::permissions::set_permission))
+        .route(
+            "/permissions/{user_id}",
+            get(admin::permissions::get_user_permissions),
+        )
+        .route(
+            "/permissions/{user_id}/{server_id}",
+            axum::routing::delete(admin::permissions::remove_permission),
+        )
         .route_layer(middleware::from_fn(require_admin));
 
     Router::new()
@@ -171,6 +221,17 @@ pub fn ui_routes() -> axum::Router<AppState> {
         .route(
             "/servers/{id}/status",
             get(server_status::check_server_status),
+        )
+        // Account self-service
+        .route("/account", get(account::get_account_page))
+        .route("/account/password", post(account::change_password))
+        .route(
+            "/account/sessions/{id}/revoke",
+            post(account::revoke_session),
+        )
+        .route(
+            "/account/sessions/revoke-all",
+            post(account::revoke_all_sessions),
         )
         .merge(admin_routes)
         .route_layer(login_required!(Backend, login_url = "/ui/login"))

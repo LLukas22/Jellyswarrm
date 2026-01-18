@@ -2,7 +2,8 @@ use sqlx::{FromRow, Row, SqlitePool};
 use tracing::{error, info, warn};
 
 use crate::encryption::{
-    decrypt_password, encrypt_password, EncryptedPassword, HashedPassword, Password,
+    decrypt_password, encrypt_password, verify_password, EncryptedPassword, HashedPassword,
+    Password,
 };
 use crate::models::{generate_token, Authorization};
 use crate::server_storage::Server;
@@ -262,29 +263,39 @@ impl UserAuthorizationService {
     }
 
     /// Get user by credentials
+    ///
+    /// Uses fetch-then-verify pattern to support both Argon2 and legacy SHA-256 hashes.
+    /// Argon2 hashes are uniquely salted, so SQL-level comparison doesn't work.
     pub async fn get_user_by_credentials(
         &self,
         username: &str,
         password: &Password,
     ) -> Result<Option<User>, sqlx::Error> {
-        let password_hash: HashedPassword = password.into();
-
+        // Fetch user by username only
         let user = sqlx::query_as::<_, User>(
             r#"
             SELECT id, virtual_key, original_username, original_password_hash, created_at, updated_at
-            FROM users 
-            WHERE original_username = ? AND original_password_hash = ?
+            FROM users
+            WHERE original_username = ?
             "#,
         )
         .bind(username)
-        .bind(&password_hash)
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(user)
+        // Verify password in application code (supports both Argon2 and SHA-256)
+        if let Some(ref user) = user {
+            if verify_password(password.as_str(), user.original_password_hash.as_str()) {
+                return Ok(Some(user.clone()));
+            }
+        }
+
+        Ok(None)
     }
 
     /// Add or update server mapping for a user
+    ///
+    /// Requires a master password for encryption. Never stores passwords in plaintext.
     pub async fn add_server_mapping(
         &self,
         user_id: &str,
@@ -295,17 +306,18 @@ impl UserAuthorizationService {
     ) -> Result<i64, sqlx::Error> {
         let now = chrono::Utc::now();
 
-        let final_password = if let Some(master) = master_password {
-            match encrypt_password(mapped_password, master) {
-                Ok(encrypted) => encrypted,
-                Err(e) => {
-                    warn!("Failed to encrypt password: {}. Storing as plaintext.", e);
-                    EncryptedPassword::from_raw(mapped_password.as_str().into())
-                }
+        // Encrypt password - fail if encryption is not possible (never store plaintext)
+        let final_password = match master_password {
+            Some(master) => encrypt_password(mapped_password, master).map_err(|e| {
+                error!("Failed to encrypt server mapping password: {}", e);
+                sqlx::Error::Protocol(format!("Password encryption failed: {}", e))
+            })?,
+            None => {
+                error!("No master password provided for server mapping encryption");
+                return Err(sqlx::Error::Protocol(
+                    "Master password required for server mapping".to_string(),
+                ));
             }
-        } else {
-            warn!("No encryption password provided. Storing as plaintext!");
-            EncryptedPassword::from_raw(mapped_password.as_str().into())
         };
 
         let result = sqlx::query(
@@ -778,6 +790,21 @@ impl UserAuthorizationService {
             .collect())
     }
 
+    /// List all server mappings for all users (bulk fetch to avoid N+1 queries)
+    pub async fn list_all_server_mappings(&self) -> Result<Vec<ServerMapping>, sqlx::Error> {
+        let mappings = sqlx::query_as::<_, ServerMapping>(
+            r#"
+            SELECT id, user_id, server_url, mapped_username, mapped_password, created_at, updated_at
+            FROM server_mappings
+            ORDER BY user_id, server_url
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(mappings)
+    }
+
     /// Delete all authorization sessions for a given user.
     pub async fn delete_all_sessions_for_user(&self, user_id: &str) -> Result<u64, sqlx::Error> {
         let res = sqlx::query("DELETE FROM authorization_sessions WHERE user_id = ?")
@@ -816,6 +843,41 @@ impl UserAuthorizationService {
             .collect();
 
         Ok(servers)
+    }
+
+    /// Revoke a specific session for a user
+    pub async fn revoke_user_session(&self, user_id: &str, session_id: i64) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query(
+            "DELETE FROM authorization_sessions WHERE id = ? AND user_id = ?",
+        )
+        .bind(session_id)
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?;
+
+        if result.rows_affected() > 0 {
+            info!("Revoked session {} for user {}", session_id, user_id);
+        }
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Revoke all sessions for a user
+    pub async fn revoke_all_user_sessions(&self, user_id: &str) -> Result<u64, sqlx::Error> {
+        let result = sqlx::query("DELETE FROM authorization_sessions WHERE user_id = ?")
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+
+        if result.rows_affected() > 0 {
+            info!(
+                "Revoked {} sessions for user {}",
+                result.rows_affected(),
+                user_id
+            );
+        }
+
+        Ok(result.rows_affected())
     }
 }
 
@@ -926,7 +988,7 @@ mod tests {
                 "http://localhost:8096",
                 "mappeduser",
                 &"mappedpass".into(),
-                None,
+                Some(&HashedPassword::from_password("testmaster")),
             )
             .await
             .unwrap();
@@ -1069,7 +1131,7 @@ mod tests {
                 "http://localhost:8096",
                 "mappeduser",
                 &"mappedpass".into(),
-                None,
+                Some(&HashedPassword::from_password("testmaster")),
             )
             .await
             .unwrap();
@@ -1163,7 +1225,7 @@ mod tests {
                 "http://localhost:8096",
                 "mappeduser",
                 &"mappedpass".into(),
-                None,
+                Some(&HashedPassword::from_password("testmaster")),
             )
             .await
             .unwrap();
@@ -1278,7 +1340,7 @@ mod tests {
                 "http://localhost:8096",
                 "mappeduser1",
                 &"mappedpass1".into(),
-                None,
+                Some(&HashedPassword::from_password("testmaster")),
             )
             .await
             .unwrap();
@@ -1289,7 +1351,7 @@ mod tests {
                 "http://localhost:8097",
                 "mappeduser2",
                 &"mappedpass2".into(),
-                None,
+                Some(&HashedPassword::from_password("testmaster")),
             )
             .await
             .unwrap();
@@ -1404,7 +1466,7 @@ mod tests {
                 "http://localhost:8096",
                 "mappeduser",
                 &"mappedpass".into(),
-                None,
+                Some(&HashedPassword::from_password("testmaster")),
             )
             .await
             .unwrap();
@@ -1507,7 +1569,7 @@ mod tests {
         // Add mappings for both servers
         for url in ["http://localhost:8096", "http://localhost:8097"] {
             service
-                .add_server_mapping(&user.id, url, "mappeduser", &"mappedpass".into(), None)
+                .add_server_mapping(&user.id, url, "mappeduser", &"mappedpass".into(), Some(&HashedPassword::from_password("testmaster")))
                 .await
                 .unwrap();
         }

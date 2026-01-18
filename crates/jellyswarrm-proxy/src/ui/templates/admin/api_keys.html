@@ -1,0 +1,52 @@
+<header>
+    <h1><i class="fas fa-key"></i> API Keys</h1>
+    <h3>Manage API keys for programmatic access.</h3>
+</header>
+
+<hr />
+
+{% if new_key.is_some() %}
+<article style="border-left: 4px solid var(--pico-ins-color);">
+    <header>
+        <strong><i class="fas fa-check-circle"></i> API Key Created: {{ new_key_name.as_ref().unwrap() }}</strong>
+    </header>
+    <p>Copy this key now. You won't be able to see it again!</p>
+    <div class="grid" style="--pico-grid-gap: 0.5rem;">
+        <input type="text" value="{{ new_key.as_ref().unwrap() }}" id="new-key-input" readonly style="font-family: monospace;">
+        <button class="outline" onclick="navigator.clipboard.writeText(document.getElementById('new-key-input').value); alert('Copied!');" style="width: auto;">
+            <i class="fas fa-copy"></i> Copy
+        </button>
+    </div>
+</article>
+{% endif %}
+
+<h2>Create New API Key</h2>
+<form hx-post="/{{ ui_route }}/api-keys" hx-target="body">
+    <div class="grid">
+        <label>Name
+            <input type="text" name="name" placeholder="My API Key" required>
+        </label>
+        <label>Expires (days)
+            <input type="number" name="expires_in_days" placeholder="Never" min="1">
+        </label>
+    </div>
+    <fieldset>
+        <legend>Permissions</legend>
+        <label><input type="checkbox" name="permissions" value="read:users"> Read Users</label>
+        <label><input type="checkbox" name="permissions" value="write:users"> Write Users</label>
+        <label><input type="checkbox" name="permissions" value="read:servers"> Read Servers</label>
+        <label><input type="checkbox" name="permissions" value="write:servers"> Write Servers</label>
+        <label><input type="checkbox" name="permissions" value="read:stats"> Read Statistics</label>
+        <label><input type="checkbox" name="permissions" value="read:health"> Read Health</label>
+        <label><input type="checkbox" name="permissions" value="read:audit"> Read Audit Logs</label>
+        <label><input type="checkbox" name="permissions" value="admin:full"> Full Admin Access</label>
+    </fieldset>
+    <button type="submit"><i class="fas fa-plus"></i> Create API Key</button>
+</form>
+
+<hr />
+
+<h2>Existing API Keys</h2>
+<div id="api-keys-list">
+    {% include "admin/api_keys_list.html" %}
+</div>

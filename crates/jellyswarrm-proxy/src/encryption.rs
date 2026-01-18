@@ -2,6 +2,8 @@
 //!
 //! This module provides functions to encrypt and decrypt server mapping passwords
 //! using the user's master password with AES-GCM encryption.
+//!
+//! Password hashing uses SHA-256 for deterministic comparison.
 
 use aes_gcm::{
     aead::{Aead, KeyInit},
@@ -53,10 +55,17 @@ impl From<&str> for Password {
 }
 
 /// Hash a password using SHA-256
+///
+/// Returns a deterministic 64-character hex string
 pub fn hash_password(password: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(password.as_bytes());
     hex::encode(hasher.finalize())
+}
+
+/// Verify password against stored hash using SHA-256
+pub fn verify_password(password: &str, stored_hash: &str) -> bool {
+    hash_password(password) == stored_hash
 }
 
 /// A wrapper type for hashed passwords.
@@ -74,12 +83,14 @@ impl HashedPassword {
         self.0
     }
 
+    /// Create a new hashed password from plaintext (uses SHA-256)
     pub fn from_password(password: &str) -> Self {
         Self(hash_password(password))
     }
 
+    /// Verify a plaintext password against this hash
     pub fn verify(&self, password: &str) -> bool {
-        self.0 == hash_password(password)
+        verify_password(password, &self.0)
     }
 
     pub fn from_hashed(hashed: String) -> Self {
@@ -289,5 +300,29 @@ mod tests {
         let decrypted = decrypt_password(&encrypted, &master_password).unwrap();
 
         assert_eq!(password, decrypted);
+    }
+
+    #[test]
+    fn test_sha256_password_hashing() {
+        let password = "test_password_123";
+        let hashed = HashedPassword::from_password(password);
+
+        // Verify SHA-256 format (64 hex chars)
+        assert_eq!(hashed.as_str().len(), 64);
+
+        // Verify correct password works
+        assert!(hashed.verify(password));
+
+        // Verify wrong password fails
+        assert!(!hashed.verify("wrong_password"));
+    }
+
+    #[test]
+    fn test_verify_password_function() {
+        let password = "test123";
+
+        let sha256_hash = hash_password(password);
+        assert!(verify_password(password, &sha256_hash));
+        assert!(!verify_password("wrong", &sha256_hash));
     }
 }

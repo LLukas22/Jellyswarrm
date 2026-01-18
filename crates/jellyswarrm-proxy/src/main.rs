@@ -1,7 +1,7 @@
 use axum::{
     body::Body,
     extract::{Request, State},
-    http::{HeaderName, StatusCode},
+    http::{self, HeaderName, StatusCode},
     response::{IntoResponse, Response},
     routing::{any, get, post},
     Router,
@@ -15,7 +15,11 @@ use std::{net::SocketAddr, str::FromStr};
 use std::{sync::Arc, time::Duration};
 use tokio::task::AbortHandle;
 use tower::ServiceBuilder;
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::{
+    cors::CorsLayer,
+    set_header::SetResponseHeaderLayer,
+    trace::TraceLayer,
+};
 use tower_sessions::cookie::Key;
 use tower_sessions_sqlx_store::SqliteStore;
 use tracing::{debug, error, info, trace, warn};
@@ -26,24 +30,41 @@ use axum_login::{
     AuthManagerLayerBuilder,
 };
 
+mod admin_storage;
+mod api_keys;
+mod audit_service;
 mod config;
+mod csrf;
 mod encryption;
+mod error;
 mod federated_users;
+mod filters;
 mod handlers;
+mod health_monitor;
 mod media_storage_service;
 mod models;
 mod processors;
+mod rate_limiter;
 mod request_preprocessing;
 mod server_storage;
 mod session_storage;
+mod statistics_service;
 mod ui;
 mod url_helper;
 mod user_authorization_service;
+mod user_permissions;
 
+use admin_storage::AdminStorageService;
+use api_keys::ApiKeyService;
+use audit_service::AuditService;
 use federated_users::FederatedUserService;
+use health_monitor::HealthMonitorService;
 use media_storage_service::MediaStorageService;
+use rate_limiter::AuthRateLimiter;
 use server_storage::ServerStorageService;
+use statistics_service::StatisticsService;
 use user_authorization_service::UserAuthorizationService;
+use user_permissions::UserPermissionsService;
 
 use crate::{
     config::{AppConfig, MIGRATOR},
@@ -68,6 +89,13 @@ pub struct AppState {
     pub user_authorization: Arc<UserAuthorizationService>,
     pub server_storage: Arc<ServerStorageService>,
     pub media_storage: Arc<MediaStorageService>,
+    pub admin_storage: Arc<AdminStorageService>,
+    pub audit: Arc<AuditService>,
+    pub api_keys: Arc<ApiKeyService>,
+    pub health_monitor: Arc<HealthMonitorService>,
+    pub statistics: Arc<StatisticsService>,
+    pub user_permissions: Arc<UserPermissionsService>,
+    pub rate_limiter: Arc<AuthRateLimiter>,
     pub play_sessions: Arc<SessionStorage>,
     pub config: Arc<tokio::sync::RwLock<AppConfig>>,
     pub processors: Arc<JsonProcessors>,
@@ -94,6 +122,13 @@ impl AppState {
             user_authorization: data_context.user_authorization,
             server_storage: data_context.server_storage,
             media_storage: data_context.media_storage,
+            admin_storage: data_context.admin_storage,
+            audit: data_context.audit,
+            api_keys: data_context.api_keys,
+            health_monitor: data_context.health_monitor,
+            statistics: data_context.statistics,
+            user_permissions: data_context.user_permissions,
+            rate_limiter: data_context.rate_limiter,
             play_sessions: data_context.play_sessions,
             config: data_context.config,
             processors: Arc::new(json_processors),
@@ -146,6 +181,13 @@ pub struct DataContext {
     pub user_authorization: Arc<UserAuthorizationService>,
     pub server_storage: Arc<ServerStorageService>,
     pub media_storage: Arc<MediaStorageService>,
+    pub admin_storage: Arc<AdminStorageService>,
+    pub audit: Arc<AuditService>,
+    pub api_keys: Arc<ApiKeyService>,
+    pub health_monitor: Arc<HealthMonitorService>,
+    pub statistics: Arc<StatisticsService>,
+    pub user_permissions: Arc<UserPermissionsService>,
+    pub rate_limiter: Arc<AuthRateLimiter>,
     pub play_sessions: Arc<SessionStorage>,
     pub config: Arc<tokio::sync::RwLock<AppConfig>>,
 }
@@ -192,15 +234,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Resolve database path inside DATA_DIR
     let db_path = DATA_DIR.join("jellyswarrm.db");
     let db_url = format!("sqlite://{}", db_path.to_string_lossy());
-    let options = SqliteConnectOptions::from_str(&db_url)?.create_if_missing(true);
+    let options = SqliteConnectOptions::from_str(&db_url)?
+        .create_if_missing(true)
+        // Reduced busy_timeout: fail faster and let app retry rather than queue for 30s
+        .busy_timeout(Duration::from_secs(5))
+        .optimize_on_close(true, None)
+        // WAL mode allows concurrent reads while writing
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        // NORMAL sync is safe and much faster than FULL
+        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+        // Increase page cache to 64MB (negative = KB)
+        .pragma("cache_size", "-65536")
+        // Enable memory-mapped I/O (256MB)
+        .pragma("mmap_size", "268435456")
+        // Store temp tables in memory
+        .pragma("temp_store", "MEMORY")
+        // WAL autocheckpoint: checkpoint after 1000 pages (default) to prevent WAL bloat
+        .pragma("wal_autocheckpoint", "1000");
 
-    let pool = SqlitePool::connect_with(options).await?;
+    // Create connection pool - SQLite only allows ONE writer at a time!
+    // Too many connections causes severe lock contention.
+    // Use small pool: 1-2 writers + a few readers is optimal for SQLite.
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(4)
+        .min_connections(1)
+        .acquire_timeout(Duration::from_secs(10))
+        .connect_with(options)
+        .await?;
+
+    info!("Database connection pool initialized with WAL mode");
 
     MIGRATOR.run(&pool).await.unwrap_or_else(|e| {
         error!("Failed to run database migrations: {}", e);
         std::process::exit(1);
     });
 
+    // Enable foreign key constraints
     sqlx::query("PRAGMA foreign_keys = ON;")
         .execute(&pool)
         .await?;
@@ -222,6 +291,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize media storage service
     let media_storage = MediaStorageService::new(pool.clone());
+
+    // Initialize admin storage service
+    let admin_storage = AdminStorageService::new(pool.clone());
+
+    // Initialize audit service
+    let audit_service = AuditService::new(pool.clone());
 
     if !loaded_config.preconfigured_servers.is_empty() {
         info!(
@@ -268,10 +343,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    let admin_storage = Arc::new(admin_storage);
+    let audit_service = Arc::new(audit_service);
+
+    // Initialize additional services
+    let api_keys = Arc::new(ApiKeyService::new(pool.clone()));
+    let health_monitor = Arc::new(HealthMonitorService::new(pool.clone()));
+    let statistics = Arc::new(StatisticsService::new(pool.clone()));
+    let user_permissions = Arc::new(UserPermissionsService::new(pool.clone()));
+    let rate_limiter = Arc::new(AuthRateLimiter::default_auth_limiter());
+    let server_storage_arc = Arc::new(server_storage.clone());
+
+    // Initialize first super admin from config if no admins exist
+    let config_password_hash: encryption::HashedPassword = (&loaded_config.password).into();
+    if let Err(e) = admin_storage
+        .init_from_config(&loaded_config.username, &config_password_hash)
+        .await
+    {
+        error!("Failed to initialize admin from config: {}", e);
+    }
+
     let data_context = DataContext {
         user_authorization: Arc::new(user_authorization.clone()),
-        server_storage: Arc::new(server_storage.clone()),
+        server_storage: server_storage_arc.clone(),
         media_storage: Arc::new(media_storage.clone()),
+        admin_storage: admin_storage.clone(),
+        audit: audit_service.clone(),
+        api_keys: api_keys.clone(),
+        health_monitor: health_monitor.clone(),
+        statistics: statistics.clone(),
+        user_permissions: user_permissions.clone(),
+        rate_limiter: rate_limiter.clone(),
         play_sessions: Arc::new(SessionStorage::new()),
         config: Arc::new(tokio::sync::RwLock::new(loaded_config.clone())),
     };
@@ -292,6 +394,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .continuously_delete_expired(tokio::time::Duration::from_secs(60)),
     );
 
+    // Start health monitoring background task (check every 60 seconds)
+    let health_task = health_monitor::start_health_monitor(
+        (*health_monitor).clone(),
+        server_storage_arc.clone(),
+        60,
+    );
+    info!("Started health monitoring background task");
+
+    // Start audit log cleanup background task
+    let audit_cleanup_service = audit_service.clone();
+    let audit_cleanup_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(3600)); // Every hour
+        loop {
+            interval.tick().await;
+            // Keep 30 days of audit logs
+            if let Err(e) = audit_cleanup_service.cleanup(30).await {
+                error!("Failed to cleanup audit logs: {}", e);
+            }
+        }
+    });
+    info!("Started audit log cleanup background task");
+
     let key = Key::from(loaded_config.session_key.as_slice());
 
     let session_layer = SessionManagerLayer::new(session_store)
@@ -303,14 +427,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backend = Backend::new(
         app_state.config.clone(),
         app_state.user_authorization.clone(),
+        app_state.admin_storage.clone(),
     );
     let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
 
     let ui_route = loaded_config.ui_route.to_string();
 
+    // Rate limiting is implemented via AuthRateLimiter service
+    // and is checked in the authentication handler (handlers/users.rs)
+
+    // Security headers
+    let security_headers = ServiceBuilder::new()
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("x-frame-options"),
+            http::HeaderValue::from_static("DENY"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("x-content-type-options"),
+            http::HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("x-xss-protection"),
+            http::HeaderValue::from_static("1; mode=block"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("referrer-policy"),
+            http::HeaderValue::from_static("strict-origin-when-cross-origin"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("content-security-policy"),
+            http::HeaderValue::from_static("default-src 'self' 'unsafe-inline' 'unsafe-eval'; img-src 'self' data: https:; media-src 'self' https:; connect-src 'self' https:"),
+        ));
+
     let app = Router::new()
-        // UI Management routes
-        .nest(&format!("/{ui_route}"), ui_routes())
+        // UI Management routes with security headers
+        .nest(&format!("/{ui_route}"), ui_routes().layer(security_headers))
         .route("/", get(index_handler))
         .route(
             "/QuickConnect/Enabled",
@@ -472,6 +623,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/Artists",
             Router::new().route("/", get(handlers::federated::get_items_from_all_servers)),
         )
+        // WebSocket routes for real-time features (SyncPlay, notifications, etc.)
+        .route("/socket", get(handlers::websocket::websocket_handler))
+        .route("/Socket", get(handlers::websocket::websocket_handler))
+        .route(
+            "/Notifications/WebSocket",
+            get(handlers::websocket::websocket_handler),
+        )
         .route("/{*path}", any(proxy_handler))
         .fallback(proxy_handler)
         .layer(
@@ -552,7 +710,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     axum::serve(listener, app.into_make_service())
-        .with_graceful_shutdown(shutdown_signal(deletion_task.abort_handle()))
+        .with_graceful_shutdown(shutdown_signal(
+            deletion_task.abort_handle(),
+            health_task.abort_handle(),
+            audit_cleanup_task.abort_handle(),
+        ))
         .await?;
 
     deletion_task.await??;
@@ -653,15 +815,17 @@ async fn proxy_handler(
         }
     }
     let response = state.reqwest_client.execute(request).await.map_err(|e| {
-        error!("Failed to execute proxy request: {}", e);
+        error!("[PROXY] Failed to execute request: {}", e);
         StatusCode::BAD_GATEWAY
     })?;
 
     let status = response.status();
-    if !status.is_success() {
+    if status.is_success() {
+        info!("[RESPONSE] {} {} -> {}", status.as_u16(), status.canonical_reason().unwrap_or(""), request_url);
+    } else {
         warn!(
-            "Upstream server returned error status: {} for Request to: {}",
-            status, request_url
+            "[RESPONSE] {} {} -> {}",
+            status.as_u16(), status.canonical_reason().unwrap_or("ERROR"), request_url
         );
     }
     let headers = response.headers().clone();
@@ -702,7 +866,11 @@ fn is_hop_by_hop_header(name: &HeaderName) -> bool {
     )
 }
 
-async fn shutdown_signal(deletion_task_abort_handle: AbortHandle) {
+async fn shutdown_signal(
+    deletion_task_abort_handle: AbortHandle,
+    health_task_abort_handle: AbortHandle,
+    audit_cleanup_abort_handle: AbortHandle,
+) {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
             .await
@@ -721,7 +889,15 @@ async fn shutdown_signal(deletion_task_abort_handle: AbortHandle) {
     let terminate = std::future::pending::<()>();
 
     tokio::select! {
-        _ = ctrl_c => { deletion_task_abort_handle.abort() },
-        _ = terminate => { deletion_task_abort_handle.abort() },
+        _ = ctrl_c => {
+            deletion_task_abort_handle.abort();
+            health_task_abort_handle.abort();
+            audit_cleanup_abort_handle.abort();
+        },
+        _ = terminate => {
+            deletion_task_abort_handle.abort();
+            health_task_abort_handle.abort();
+            audit_cleanup_abort_handle.abort();
+        },
     }
 }

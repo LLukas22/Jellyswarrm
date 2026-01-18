@@ -1,12 +1,19 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use sqlx::{FromRow, Row, SqlitePool};
-use tracing::{debug, error, info, trace};
+use tokio::sync::Semaphore;
+use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
 use crate::models::generate_token;
 use crate::server_storage::Server;
 use moka::future::Cache;
+
+/// Maximum number of retries for database operations
+const MAX_RETRIES: u32 = 3;
+/// Base delay between retries (will be multiplied by attempt number)
+const RETRY_BASE_DELAY_MS: u64 = 100;
 
 #[derive(Debug, Clone, FromRow)]
 pub struct MediaMapping {
@@ -22,6 +29,8 @@ pub struct MediaStorageService {
     pool: SqlitePool,
     original_mapping_cache: Cache<String, MediaMapping>,
     mapping_with_server_cache: Cache<String, (MediaMapping, Server)>,
+    /// Semaphore to serialize write operations - SQLite only allows one writer
+    write_semaphore: Arc<Semaphore>,
 }
 
 impl MediaStorageService {
@@ -36,6 +45,8 @@ impl MediaStorageService {
                 .time_to_live(Duration::from_secs(60 * 30))
                 .max_capacity(10_000)
                 .build(),
+            // Only allow 1 concurrent write to avoid SQLite lock contention
+            write_semaphore: Arc::new(Semaphore::new(1)),
         }
     }
 
@@ -59,57 +70,156 @@ impl MediaStorageService {
         Ok(mapping)
     }
 
+    /// Pre-warm the cache by batch fetching existing mappings for a list of original IDs
+    /// This reduces database round-trips when processing many media items
+    pub async fn prewarm_cache_for_ids(
+        &self,
+        original_media_ids: &[String],
+        server_url: &str,
+    ) -> Result<(), sqlx::Error> {
+        if original_media_ids.is_empty() {
+            return Ok(());
+        }
+
+        // Normalize IDs
+        let normalized_ids: Vec<String> = original_media_ids
+            .iter()
+            .map(|id| Self::normalize_uuid(id))
+            .collect();
+
+        // Check which IDs are not already cached
+        let mut uncached_ids = Vec::new();
+        for id in &normalized_ids {
+            let key = format!("{}|{}", id, server_url);
+            if self.original_mapping_cache.get(&key).await.is_none() {
+                uncached_ids.push(id.clone());
+            }
+        }
+
+        if uncached_ids.is_empty() {
+            debug!("All {} IDs already cached", normalized_ids.len());
+            return Ok(());
+        }
+
+        debug!(
+            "Pre-warming cache: {} IDs uncached out of {}",
+            uncached_ids.len(),
+            normalized_ids.len()
+        );
+
+        // Batch fetch existing mappings (up to 500 at a time to avoid query limits)
+        for chunk in uncached_ids.chunks(500) {
+            let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let query = format!(
+                r#"
+                SELECT id, virtual_media_id, original_media_id, server_url, created_at
+                FROM media_mappings
+                WHERE original_media_id IN ({}) AND server_url = ?
+                "#,
+                placeholders
+            );
+
+            let mut query_builder = sqlx::query_as::<_, MediaMapping>(&query);
+            for id in chunk {
+                query_builder = query_builder.bind(id);
+            }
+            query_builder = query_builder.bind(server_url);
+
+            let mappings = query_builder.fetch_all(&self.pool).await?;
+
+            // Insert fetched mappings into cache
+            for mapping in mappings {
+                let key = format!("{}|{}", mapping.original_media_id, server_url);
+                self.original_mapping_cache
+                    .insert(key, mapping)
+                    .await;
+            }
+        }
+
+        Ok(())
+    }
+
     async fn _get_or_create_media_mapping(
         &self,
         original_media_id: &str,
         server_url: &str,
     ) -> Result<MediaMapping, sqlx::Error> {
         let original_media_id = Self::normalize_uuid(original_media_id);
-
-        // Try to find existing mapping
-        if let Some(mapping) = self
-            .get_media_mapping_by_original(&original_media_id, server_url)
-            .await?
-        {
-            return Ok(mapping);
-        }
-
-        // Create new mapping
         let virtual_media_id = generate_token();
         let now = chrono::Utc::now();
 
-        let inserted = sqlx::query_as::<_, MediaMapping>(
-            r#"
-            INSERT INTO media_mappings (virtual_media_id, original_media_id, server_url, created_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(original_media_id, server_url) DO NOTHING
-            RETURNING id, virtual_media_id, original_media_id, server_url, created_at
-            "#,
-        )
-        .bind(&virtual_media_id)
-        .bind(&original_media_id)
-        .bind(server_url)
-        .bind(now)
-        .fetch_optional(&self.pool)
-        .await?;
+        // Acquire write semaphore to serialize writes - SQLite only allows one writer
+        // Use try_acquire_many with timeout to avoid indefinite blocking
+        for attempt in 0..MAX_RETRIES {
+            // Try to acquire the semaphore with a short timeout
+            let permit = match tokio::time::timeout(
+                Duration::from_millis(500),
+                self.write_semaphore.acquire()
+            ).await {
+                Ok(Ok(permit)) => permit,
+                Ok(Err(_)) => {
+                    // Semaphore closed - shouldn't happen
+                    return Err(sqlx::Error::PoolClosed);
+                }
+                Err(_) => {
+                    // Timeout waiting for semaphore - retry
+                    if attempt < MAX_RETRIES - 1 {
+                        let delay = RETRY_BASE_DELAY_MS * (attempt as u64 + 1);
+                        trace!("Write queue full, waiting {}ms (attempt {}/{})", delay, attempt + 1, MAX_RETRIES);
+                        tokio::time::sleep(Duration::from_millis(delay)).await;
+                        continue;
+                    }
+                    warn!("Write queue timeout after {} attempts", MAX_RETRIES);
+                    return Err(sqlx::Error::PoolTimedOut);
+                }
+            };
 
-        if let Some(row) = inserted {
-            debug!(
-                "Created new media mapping: {} -> {} ({})",
-                &original_media_id, row.virtual_media_id, server_url
-            );
-            return Ok(row);
+            // Execute the upsert while holding the permit
+            let result = sqlx::query_as::<_, MediaMapping>(
+                r#"
+                INSERT INTO media_mappings (virtual_media_id, original_media_id, server_url, created_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(original_media_id, server_url) DO UPDATE SET id = id
+                RETURNING id, virtual_media_id, original_media_id, server_url, created_at
+                "#,
+            )
+            .bind(&virtual_media_id)
+            .bind(&original_media_id)
+            .bind(server_url)
+            .bind(now)
+            .fetch_one(&self.pool)
+            .await;
+
+            // Release permit automatically when dropped
+            drop(permit);
+
+            match result {
+                Ok(mapping) => {
+                    if mapping.virtual_media_id == virtual_media_id {
+                        debug!(
+                            "Created new media mapping: {} -> {} ({})",
+                            &original_media_id, mapping.virtual_media_id, server_url
+                        );
+                    }
+                    return Ok(mapping);
+                }
+                Err(ref e) if e.to_string().contains("database is locked") => {
+                    // Database lock contention - retry with backoff
+                    if attempt < MAX_RETRIES - 1 {
+                        let delay = RETRY_BASE_DELAY_MS * (attempt as u64 + 1);
+                        warn!(
+                            "Database locked, retrying in {}ms (attempt {}/{})",
+                            delay, attempt + 1, MAX_RETRIES
+                        );
+                        tokio::time::sleep(Duration::from_millis(delay)).await;
+                        continue;
+                    }
+                    error!("Database lock contention persisted after {} retries", MAX_RETRIES);
+                }
+                Err(e) => return Err(e),
+            }
         }
 
-        // Conflict path: fetch existing row. Happens if another process created it concurrently
-        if let Some(existing) = self
-            .get_media_mapping_by_original(&original_media_id, server_url)
-            .await?
-        {
-            return Ok(existing);
-        }
-
-        // If we reach here, something went very wrong
         Err(sqlx::Error::RowNotFound)
     }
 

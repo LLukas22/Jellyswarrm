@@ -1,10 +1,19 @@
 use std::collections::HashMap;
 use std::fs;
+use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use hyper::StatusCode;
 use regex::Regex;
 use tracing::{error, info};
+
+/// Regex for extracting line/column info from JSON parse errors
+static JSON_ERROR_POSITION_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"line\s*(\d+)\s*column\s*(\d+)").expect("valid regex pattern"));
+
+/// Regex for extracting video ID from transcoding URLs
+static VIDEO_ID_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"/videos/([^/]+)/").expect("valid regex pattern"));
 
 use crate::models::enums::CollectionType;
 use crate::{
@@ -109,8 +118,7 @@ where
 
             // Extract line/column info and show snippet
             let err_str = parse_error.to_string();
-            let re = Regex::new(r"line\s*(\d+)\s*column\s*(\d+)").unwrap();
-            if let Some(caps) = re.captures(&err_str) {
+            if let Some(caps) = JSON_ERROR_POSITION_RE.captures(&err_str) {
                 if let (Some(line_m), Some(col_m)) = (caps.get(1), caps.get(2)) {
                     if let (Ok(line), Ok(col)) = (
                         line_m.as_str().parse::<usize>(),
@@ -177,6 +185,116 @@ pub async fn get_virtual_id(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
     Ok(mapping.virtual_media_id.clone())
+}
+
+/// Extract all IDs from a media item that need virtual ID resolution
+/// This is used for cache prewarming to reduce database round-trips
+pub fn extract_all_ids_from_item(item: &MediaItem) -> Vec<String> {
+    let mut ids = Vec::new();
+
+    // Main item ID
+    ids.push(item.id.clone());
+
+    // Optional IDs
+    if let Some(ref id) = item.parent_id {
+        ids.push(id.clone());
+    }
+    if let Some(ref id) = item.item_id {
+        ids.push(id.clone());
+    }
+    if let Some(ref id) = item.etag {
+        ids.push(id.clone());
+    }
+    if let Some(ref id) = item.series_id {
+        ids.push(id.clone());
+    }
+    if let Some(ref id) = item.season_id {
+        ids.push(id.clone());
+    }
+    if let Some(ref id) = item.display_preferences_id {
+        ids.push(id.clone());
+    }
+    if let Some(ref id) = item.parent_logo_item_id {
+        ids.push(id.clone());
+    }
+    if let Some(ref id) = item.parent_backdrop_item_id {
+        ids.push(id.clone());
+    }
+    if let Some(ref id) = item.parent_logo_image_tag {
+        ids.push(id.clone());
+    }
+    if let Some(ref id) = item.parent_thumb_item_id {
+        ids.push(id.clone());
+    }
+    if let Some(ref id) = item.parent_thumb_image_tag {
+        ids.push(id.clone());
+    }
+    if let Some(ref id) = item.series_primary_image_tag {
+        ids.push(id.clone());
+    }
+
+    // Image tags (HashMap values)
+    if let Some(ref image_tags) = item.image_tags {
+        for tag_id in image_tags.values() {
+            ids.push(tag_id.clone());
+        }
+    }
+
+    // Backdrop image tags (Vec)
+    if let Some(ref backdrop_tags) = item.backdrop_image_tags {
+        ids.extend(backdrop_tags.iter().cloned());
+    }
+
+    // Parent backdrop image tags (Vec)
+    if let Some(ref parent_backdrop_tags) = item.parent_backdrop_image_tags {
+        ids.extend(parent_backdrop_tags.iter().cloned());
+    }
+
+    // Image blur hashes (nested HashMap - extract keys from inner maps)
+    if let Some(ref blur_hashes) = item.image_blur_hashes {
+        for hash_map in blur_hashes.values() {
+            for hash_id in hash_map.keys() {
+                ids.push(hash_id.clone());
+            }
+        }
+    }
+
+    // Chapter image tags
+    if let Some(ref chapters) = item.chapters {
+        for chapter in chapters {
+            if let Some(ref tag) = chapter.image_tag {
+                ids.push(tag.clone());
+            }
+        }
+    }
+
+    // Trickplay keys
+    if let Some(ref trickplay) = item.trickplay {
+        for id in trickplay.keys() {
+            ids.push(id.clone());
+        }
+    }
+
+    // Media source IDs
+    if let Some(ref media_sources) = item.media_sources {
+        for source in media_sources {
+            ids.push(source.id.clone());
+        }
+    }
+
+    ids
+}
+
+/// Extract all IDs from a list of media items for batch cache prewarming
+pub fn extract_all_ids_from_items(items: &[MediaItem]) -> Vec<String> {
+    let mut all_ids = Vec::new();
+    for item in items {
+        all_ids.extend(extract_all_ids_from_item(item));
+    }
+    // Deduplicate
+    all_ids.sort();
+    all_ids.dedup();
+    all_ids
 }
 
 /// Processes a media item.
@@ -368,8 +486,7 @@ pub async fn track_play_session(
     state: &AppState,
 ) -> Result<(), StatusCode> {
     if let Some(transcoding_url) = &item.transcoding_url {
-        let re = Regex::new(r"/videos/([^/]+)/").unwrap();
-        let id = re
+        let id = VIDEO_ID_RE
             .captures(transcoding_url)
             .and_then(|cap| cap.get(1))
             .map(|m| m.as_str())
