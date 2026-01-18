@@ -79,11 +79,18 @@ fn generate_ui_version_file(workspace_root: &std::path::Path) {
 
     // Get UI version
     let version_output = Command::new("git")
-        .args(["-C", ui_dir.to_str().unwrap(), "describe", "--tags"])
+        .args([
+            "-C",
+            ui_dir.to_str().unwrap(),
+            "describe",
+            "--tags",
+            "--abbrev=0",
+        ])
         .output()
         .expect("Failed to get UI version");
     let ui_version = String::from_utf8_lossy(&version_output.stdout)
         .trim()
+        .trim_start_matches('v')
         .to_string();
 
     // Get UI commit hash
