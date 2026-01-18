@@ -3,16 +3,11 @@
 //! This module provides functions to encrypt and decrypt server mapping passwords
 //! using the user's master password with AES-GCM encryption.
 //!
-//! Password hashing uses Argon2id for new passwords, with backwards compatibility
-//! for legacy SHA-256 hashes.
+//! Password hashing uses SHA-256 for deterministic comparison.
 
 use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
-};
-use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
-    Argon2,
 };
 use base64::{engine::general_purpose, Engine as _};
 use rand::RngCore;
@@ -59,43 +54,18 @@ impl From<&str> for Password {
     }
 }
 
-/// Legacy SHA-256 hash (for verification of old passwords only)
-fn hash_password_sha256(password: &str) -> String {
+/// Hash a password using SHA-256
+///
+/// Returns a deterministic 64-character hex string
+pub fn hash_password(password: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(password.as_bytes());
     hex::encode(hasher.finalize())
 }
 
-/// Hash a password using Argon2id (for new passwords)
-///
-/// This produces a PHC-format string like: $argon2id$v=19$m=19456,t=2,p=1$...
-pub fn hash_password(password: &str) -> String {
-    let salt = SaltString::generate(&mut OsRng);
-    let argon2 = Argon2::default();
-    argon2
-        .hash_password(password.as_bytes(), &salt)
-        .expect("password hashing should not fail")
-        .to_string()
-}
-
-/// Verify password against stored hash (supports both Argon2 and legacy SHA-256)
-///
-/// Detects format automatically:
-/// - Argon2: starts with "$argon2"
-/// - SHA-256: 64 hex characters
+/// Verify password against stored hash using SHA-256
 pub fn verify_password(password: &str, stored_hash: &str) -> bool {
-    if stored_hash.starts_with("$argon2") {
-        // Argon2 format - parse and verify
-        match PasswordHash::new(stored_hash) {
-            Ok(parsed) => Argon2::default()
-                .verify_password(password.as_bytes(), &parsed)
-                .is_ok(),
-            Err(_) => false,
-        }
-    } else {
-        // Legacy SHA-256 format (64 hex chars)
-        hash_password_sha256(password) == stored_hash
-    }
+    hash_password(password) == stored_hash
 }
 
 /// A wrapper type for hashed passwords.
@@ -113,20 +83,14 @@ impl HashedPassword {
         self.0
     }
 
-    /// Create a new hashed password from plaintext (uses Argon2id)
+    /// Create a new hashed password from plaintext (uses SHA-256)
     pub fn from_password(password: &str) -> Self {
         Self(hash_password(password))
     }
 
     /// Verify a plaintext password against this hash
-    /// Supports both Argon2 and legacy SHA-256 formats
     pub fn verify(&self, password: &str) -> bool {
         verify_password(password, &self.0)
-    }
-
-    /// Check if this hash uses the legacy SHA-256 format and should be upgraded
-    pub fn needs_upgrade(&self) -> bool {
-        !self.0.starts_with("$argon2")
     }
 
     pub fn from_hashed(hashed: String) -> Self {
@@ -339,12 +303,12 @@ mod tests {
     }
 
     #[test]
-    fn test_argon2_password_hashing() {
+    fn test_sha256_password_hashing() {
         let password = "test_password_123";
         let hashed = HashedPassword::from_password(password);
 
-        // Verify Argon2 format
-        assert!(hashed.as_str().starts_with("$argon2"));
+        // Verify SHA-256 format (64 hex chars)
+        assert_eq!(hashed.as_str().len(), 64);
 
         // Verify correct password works
         assert!(hashed.verify(password));
@@ -354,44 +318,10 @@ mod tests {
     }
 
     #[test]
-    fn test_legacy_sha256_verification() {
-        // Simulate a legacy SHA-256 hash (64 hex chars)
-        let password = "legacy_password";
-        let legacy_hash = hash_password_sha256(password);
-        let hashed = HashedPassword::from_hashed(legacy_hash);
-
-        // Verify legacy hash works
-        assert!(hashed.verify(password));
-
-        // Verify wrong password fails
-        assert!(!hashed.verify("wrong_password"));
-
-        // Verify it needs upgrade
-        assert!(hashed.needs_upgrade());
-    }
-
-    #[test]
-    fn test_needs_upgrade() {
-        // New Argon2 hash should not need upgrade
-        let new_hash = HashedPassword::from_password("new_password");
-        assert!(!new_hash.needs_upgrade());
-
-        // Legacy SHA-256 hash should need upgrade
-        let legacy_hash = HashedPassword::from_hashed(hash_password_sha256("old_password"));
-        assert!(legacy_hash.needs_upgrade());
-    }
-
-    #[test]
     fn test_verify_password_function() {
         let password = "test123";
 
-        // Test Argon2 verification
-        let argon2_hash = hash_password(password);
-        assert!(verify_password(password, &argon2_hash));
-        assert!(!verify_password("wrong", &argon2_hash));
-
-        // Test SHA-256 verification
-        let sha256_hash = hash_password_sha256(password);
+        let sha256_hash = hash_password(password);
         assert!(verify_password(password, &sha256_hash));
         assert!(!verify_password("wrong", &sha256_hash));
     }

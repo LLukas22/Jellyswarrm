@@ -236,7 +236,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db_url = format!("sqlite://{}", db_path.to_string_lossy());
     let options = SqliteConnectOptions::from_str(&db_url)?
         .create_if_missing(true)
-        .busy_timeout(Duration::from_secs(30))
+        // Reduced busy_timeout: fail faster and let app retry rather than queue for 30s
+        .busy_timeout(Duration::from_secs(5))
         .optimize_on_close(true, None)
         // WAL mode allows concurrent reads while writing
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
@@ -247,13 +248,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Enable memory-mapped I/O (256MB)
         .pragma("mmap_size", "268435456")
         // Store temp tables in memory
-        .pragma("temp_store", "MEMORY");
+        .pragma("temp_store", "MEMORY")
+        // WAL autocheckpoint: checkpoint after 1000 pages (default) to prevent WAL bloat
+        .pragma("wal_autocheckpoint", "1000");
 
-    // Create connection pool with more connections for concurrency
+    // Create connection pool - SQLite only allows ONE writer at a time!
+    // Too many connections causes severe lock contention.
+    // Use small pool: 1-2 writers + a few readers is optimal for SQLite.
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(20)
-        .min_connections(2)
-        .acquire_timeout(Duration::from_secs(30))
+        .max_connections(4)
+        .min_connections(1)
+        .acquire_timeout(Duration::from_secs(10))
         .connect_with(options)
         .await?;
 

@@ -1,12 +1,17 @@
 use std::time::Duration;
 
 use sqlx::{FromRow, Row, SqlitePool};
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
 use crate::models::generate_token;
 use crate::server_storage::Server;
 use moka::future::Cache;
+
+/// Maximum number of retries for database operations
+const MAX_RETRIES: u32 = 3;
+/// Base delay between retries (will be multiplied by attempt number)
+const RETRY_BASE_DELAY_MS: u64 = 50;
 
 #[derive(Debug, Clone, FromRow)]
 pub struct MediaMapping {
@@ -134,51 +139,55 @@ impl MediaStorageService {
         server_url: &str,
     ) -> Result<MediaMapping, sqlx::Error> {
         let original_media_id = Self::normalize_uuid(original_media_id);
-
-        // Try to find existing mapping
-        if let Some(mapping) = self
-            .get_media_mapping_by_original(&original_media_id, server_url)
-            .await?
-        {
-            return Ok(mapping);
-        }
-
-        // Create new mapping
         let virtual_media_id = generate_token();
         let now = chrono::Utc::now();
 
-        let inserted = sqlx::query_as::<_, MediaMapping>(
-            r#"
-            INSERT INTO media_mappings (virtual_media_id, original_media_id, server_url, created_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(original_media_id, server_url) DO NOTHING
-            RETURNING id, virtual_media_id, original_media_id, server_url, created_at
-            "#,
-        )
-        .bind(&virtual_media_id)
-        .bind(&original_media_id)
-        .bind(server_url)
-        .bind(now)
-        .fetch_optional(&self.pool)
-        .await?;
+        // Use a single efficient upsert query with retry logic for lock contention
+        for attempt in 0..MAX_RETRIES {
+            // Try INSERT first, then SELECT if conflict (more efficient than SELECT-then-INSERT)
+            let result = sqlx::query_as::<_, MediaMapping>(
+                r#"
+                INSERT INTO media_mappings (virtual_media_id, original_media_id, server_url, created_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(original_media_id, server_url) DO UPDATE SET id = id
+                RETURNING id, virtual_media_id, original_media_id, server_url, created_at
+                "#,
+            )
+            .bind(&virtual_media_id)
+            .bind(&original_media_id)
+            .bind(server_url)
+            .bind(now)
+            .fetch_one(&self.pool)
+            .await;
 
-        if let Some(row) = inserted {
-            debug!(
-                "Created new media mapping: {} -> {} ({})",
-                &original_media_id, row.virtual_media_id, server_url
-            );
-            return Ok(row);
+            match result {
+                Ok(mapping) => {
+                    if mapping.virtual_media_id == virtual_media_id {
+                        debug!(
+                            "Created new media mapping: {} -> {} ({})",
+                            &original_media_id, mapping.virtual_media_id, server_url
+                        );
+                    }
+                    return Ok(mapping);
+                }
+                Err(ref e) if e.to_string().contains("database is locked") => {
+                    // Database lock contention - retry with exponential backoff
+                    if attempt < MAX_RETRIES - 1 {
+                        let delay = RETRY_BASE_DELAY_MS * (attempt as u64 + 1);
+                        warn!(
+                            "Database locked, retrying media mapping in {}ms (attempt {}/{})",
+                            delay, attempt + 1, MAX_RETRIES
+                        );
+                        tokio::time::sleep(Duration::from_millis(delay)).await;
+                        continue;
+                    }
+                    // On final failure, return a generic error
+                    error!("Database lock contention persisted after {} retries", MAX_RETRIES);
+                }
+                Err(e) => return Err(e),
+            }
         }
 
-        // Conflict path: fetch existing row. Happens if another process created it concurrently
-        if let Some(existing) = self
-            .get_media_mapping_by_original(&original_media_id, server_url)
-            .await?
-        {
-            return Ok(existing);
-        }
-
-        // If we reach here, something went very wrong
         Err(sqlx::Error::RowNotFound)
     }
 

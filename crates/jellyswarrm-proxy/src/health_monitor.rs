@@ -6,9 +6,14 @@ use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, SqlitePool};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::RwLock;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::server_storage::{Server, ServerStorageService};
+
+/// Maximum number of retries for database operations
+const MAX_DB_RETRIES: u32 = 3;
+/// Base delay between retries in milliseconds
+const RETRY_BASE_DELAY_MS: u64 = 100;
 
 /// Health status for a server
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,6 +132,7 @@ impl HealthMonitorService {
     }
 
     /// Check health of all servers and record results
+    /// Staggers database writes to avoid lock contention
     pub async fn check_all_servers(&self, server_storage: &ServerStorageService) {
         let servers = match server_storage.list_servers().await {
             Ok(s) => s,
@@ -138,8 +144,14 @@ impl HealthMonitorService {
 
         let mut health_results = Vec::new();
 
-        for server in &servers {
+        for (i, server) in servers.iter().enumerate() {
             let health = self.check_server_health(server).await;
+
+            // Stagger database writes to avoid lock contention
+            // Each server's health write is offset by 200ms
+            if i > 0 {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
 
             // Record to database
             if let Err(e) = self.record_health(&health).await {
@@ -168,23 +180,43 @@ impl HealthMonitorService {
         *self.current_status.write().await = health_results;
     }
 
-    /// Record health check result to database
+    /// Record health check result to database with retry logic for lock contention
     async fn record_health(&self, health: &ServerHealth) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            r#"
-            INSERT INTO server_health_history (server_id, is_online, response_time_ms, server_version, error_message, checked_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            "#,
-        )
-        .bind(health.server_id)
-        .bind(health.is_online)
-        .bind(health.response_time_ms)
-        .bind(&health.server_version)
-        .bind(&health.error_message)
-        .bind(health.last_checked)
-        .execute(&self.pool)
-        .await?;
+        for attempt in 0..MAX_DB_RETRIES {
+            let result = sqlx::query(
+                r#"
+                INSERT INTO server_health_history (server_id, is_online, response_time_ms, server_version, error_message, checked_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                "#,
+            )
+            .bind(health.server_id)
+            .bind(health.is_online)
+            .bind(health.response_time_ms)
+            .bind(&health.server_version)
+            .bind(&health.error_message)
+            .bind(health.last_checked)
+            .execute(&self.pool)
+            .await;
 
+            match result {
+                Ok(_) => return Ok(()),
+                Err(ref e) if e.to_string().contains("database is locked") => {
+                    if attempt < MAX_DB_RETRIES - 1 {
+                        let delay = RETRY_BASE_DELAY_MS * (attempt as u64 + 1);
+                        debug!(
+                            "Database locked, retrying health record in {}ms (attempt {}/{})",
+                            delay, attempt + 1, MAX_DB_RETRIES
+                        );
+                        tokio::time::sleep(Duration::from_millis(delay)).await;
+                        continue;
+                    }
+                    // On final failure, log but don't fail - health checks are non-critical
+                    warn!("Failed to record health check after {} retries due to database lock", MAX_DB_RETRIES);
+                    return Ok(());
+                }
+                Err(e) => return Err(e),
+            }
+        }
         Ok(())
     }
 
