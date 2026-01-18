@@ -9,7 +9,7 @@ use axum::{
 use axum_login::login_required;
 use hyper::StatusCode;
 use rust_embed::RustEmbed;
-use std::sync::LazyLock;
+use std::{default, sync::LazyLock};
 use tracing::error;
 
 use crate::{
@@ -56,6 +56,15 @@ async fn resource_handler(Path(path): Path<String>) -> impl IntoResponse {
 pub struct JellyfinUiVersion {
     pub version: String,
     pub commit: String,
+}
+
+impl default::Default for JellyfinUiVersion {
+    fn default() -> Self {
+        JellyfinUiVersion {
+            version: "unknown".to_string(),
+            commit: "unknown".to_string(),
+        }
+    }
 }
 
 fn get_jellyfin_ui_version() -> Option<JellyfinUiVersion> {
