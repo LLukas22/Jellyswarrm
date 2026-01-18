@@ -1,6 +1,8 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use sqlx::{FromRow, Row, SqlitePool};
+use tokio::sync::Semaphore;
 use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
@@ -11,7 +13,7 @@ use moka::future::Cache;
 /// Maximum number of retries for database operations
 const MAX_RETRIES: u32 = 3;
 /// Base delay between retries (will be multiplied by attempt number)
-const RETRY_BASE_DELAY_MS: u64 = 50;
+const RETRY_BASE_DELAY_MS: u64 = 100;
 
 #[derive(Debug, Clone, FromRow)]
 pub struct MediaMapping {
@@ -27,6 +29,8 @@ pub struct MediaStorageService {
     pool: SqlitePool,
     original_mapping_cache: Cache<String, MediaMapping>,
     mapping_with_server_cache: Cache<String, (MediaMapping, Server)>,
+    /// Semaphore to serialize write operations - SQLite only allows one writer
+    write_semaphore: Arc<Semaphore>,
 }
 
 impl MediaStorageService {
@@ -41,6 +45,8 @@ impl MediaStorageService {
                 .time_to_live(Duration::from_secs(60 * 30))
                 .max_capacity(10_000)
                 .build(),
+            // Only allow 1 concurrent write to avoid SQLite lock contention
+            write_semaphore: Arc::new(Semaphore::new(1)),
         }
     }
 
@@ -142,9 +148,33 @@ impl MediaStorageService {
         let virtual_media_id = generate_token();
         let now = chrono::Utc::now();
 
-        // Use a single efficient upsert query with retry logic for lock contention
+        // Acquire write semaphore to serialize writes - SQLite only allows one writer
+        // Use try_acquire_many with timeout to avoid indefinite blocking
         for attempt in 0..MAX_RETRIES {
-            // Try INSERT first, then SELECT if conflict (more efficient than SELECT-then-INSERT)
+            // Try to acquire the semaphore with a short timeout
+            let permit = match tokio::time::timeout(
+                Duration::from_millis(500),
+                self.write_semaphore.acquire()
+            ).await {
+                Ok(Ok(permit)) => permit,
+                Ok(Err(_)) => {
+                    // Semaphore closed - shouldn't happen
+                    return Err(sqlx::Error::PoolClosed);
+                }
+                Err(_) => {
+                    // Timeout waiting for semaphore - retry
+                    if attempt < MAX_RETRIES - 1 {
+                        let delay = RETRY_BASE_DELAY_MS * (attempt as u64 + 1);
+                        trace!("Write queue full, waiting {}ms (attempt {}/{})", delay, attempt + 1, MAX_RETRIES);
+                        tokio::time::sleep(Duration::from_millis(delay)).await;
+                        continue;
+                    }
+                    warn!("Write queue timeout after {} attempts", MAX_RETRIES);
+                    return Err(sqlx::Error::PoolTimedOut);
+                }
+            };
+
+            // Execute the upsert while holding the permit
             let result = sqlx::query_as::<_, MediaMapping>(
                 r#"
                 INSERT INTO media_mappings (virtual_media_id, original_media_id, server_url, created_at)
@@ -160,6 +190,9 @@ impl MediaStorageService {
             .fetch_one(&self.pool)
             .await;
 
+            // Release permit automatically when dropped
+            drop(permit);
+
             match result {
                 Ok(mapping) => {
                     if mapping.virtual_media_id == virtual_media_id {
@@ -171,17 +204,16 @@ impl MediaStorageService {
                     return Ok(mapping);
                 }
                 Err(ref e) if e.to_string().contains("database is locked") => {
-                    // Database lock contention - retry with exponential backoff
+                    // Database lock contention - retry with backoff
                     if attempt < MAX_RETRIES - 1 {
                         let delay = RETRY_BASE_DELAY_MS * (attempt as u64 + 1);
                         warn!(
-                            "Database locked, retrying media mapping in {}ms (attempt {}/{})",
+                            "Database locked, retrying in {}ms (attempt {}/{})",
                             delay, attempt + 1, MAX_RETRIES
                         );
                         tokio::time::sleep(Duration::from_millis(delay)).await;
                         continue;
                     }
-                    // On final failure, return a generic error
                     error!("Database lock contention persisted after {} retries", MAX_RETRIES);
                 }
                 Err(e) => return Err(e),
