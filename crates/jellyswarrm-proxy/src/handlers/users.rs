@@ -11,6 +11,7 @@ use crate::{
     rate_limiter::extract_client_ip,
     request_preprocessing::preprocess_request,
     url_helper::join_server_url,
+    validation::{validate_password, validate_username},
     AppState,
 };
 
@@ -109,6 +110,17 @@ pub async fn handle_authenticate_by_name(
 ) -> Result<Json<AuthenticateResponse>, StatusCode> {
     // Track auth attempt for statistics
     state.statistics.counters().increment_auth_attempts();
+
+    // Validate input
+    if let Err(e) = validate_username(&payload.username) {
+        warn!("Invalid username in authentication request: {}", e);
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    if let Err(e) = validate_password(payload.password.as_str()) {
+        warn!("Invalid password in authentication request: {}", e);
+        return Err(StatusCode::BAD_REQUEST);
+    }
 
     // Rate limiting check (use headers for client IP, no direct socket info available)
     if let Some(client_ip) = extract_client_ip(&headers, None) {

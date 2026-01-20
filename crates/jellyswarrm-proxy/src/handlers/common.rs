@@ -297,16 +297,16 @@ pub fn extract_all_ids_from_items(items: &[MediaItem]) -> Vec<String> {
     all_ids
 }
 
-/// Processes a media item.
-/// Replaces the original ids with vitual ids that map back to the original media item and server.
+/// Processes a media item in place.
+/// Replaces the original ids with virtual ids that map back to the original media item and server.
+/// Takes a mutable reference to avoid unnecessary cloning.
 pub async fn process_media_item(
-    item: MediaItem,
+    item: &mut MediaItem,
     state: &AppState,
     server: &Server,
     should_change_name: bool,
     server_id: &str,
-) -> Result<MediaItem, StatusCode> {
-    let mut item = item;
+) -> Result<(), StatusCode> {
 
     let media_storage = &state.media_storage;
 
@@ -463,7 +463,7 @@ pub async fn process_media_item(
         item.server_id = Some(server_id.to_string());
     }
 
-    Ok(item)
+    Ok(())
 }
 
 pub async fn process_media_source(
@@ -497,11 +497,11 @@ pub async fn track_play_session(
         );
         state
             .play_sessions
-            .add_session(PlaybackSession {
-                item_id: id.to_string(),
-                session_id: session_id.to_string(),
-                server: server.clone(),
-            })
+            .add_session(PlaybackSession::new(
+                session_id.to_string(),
+                id.to_string(),
+                server.clone(),
+            ))
             .await;
     }
 

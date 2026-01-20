@@ -126,8 +126,8 @@ pub async fn get_items_from_all_servers(
                     }
 
                     for item in items_response.iter_mut_items() {
-                        match process_media_item(
-                            item.clone(),
+                        if let Err(e) = process_media_item(
+                            item,
                             &state_clone,
                             &server_clone,
                             true, // Change name to include server name
@@ -135,14 +135,11 @@ pub async fn get_items_from_all_servers(
                         )
                         .await
                         {
-                            Ok(processed_item) => *item = processed_item,
-                            Err(e) => {
-                                error!(
-                                    "Failed to process media item from server '{}': {:?}",
-                                    server_clone.name, e
-                                );
-                                return (index, None);
-                            }
+                            error!(
+                                "Failed to process media item from server '{}': {:?}",
+                                server_clone.name, e
+                            );
+                            return (index, None);
                         }
                     }
 

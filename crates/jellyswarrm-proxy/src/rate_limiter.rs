@@ -28,7 +28,12 @@ impl AuthRateLimiter {
     /// * `max_requests` - Maximum number of requests allowed per window
     /// * `window_secs` - Time window in seconds
     pub fn new(max_requests: u32, window_secs: u64) -> Self {
-        let max_requests = NonZeroU32::new(max_requests).unwrap_or(NonZeroU32::new(5).unwrap());
+        // SAFETY: 5 is always non-zero, so this is guaranteed to succeed
+        const DEFAULT_MAX_REQUESTS: NonZeroU32 = match NonZeroU32::new(5) {
+            Some(v) => v,
+            None => unreachable!(),
+        };
+        let max_requests = NonZeroU32::new(max_requests).unwrap_or(DEFAULT_MAX_REQUESTS);
 
         Self {
             limiters: Cache::builder()
@@ -74,7 +79,7 @@ impl AuthRateLimiter {
         }
 
         let quota = Quota::with_period(self.window)
-            .unwrap()
+            .expect("Rate limiter window duration must be non-zero")
             .allow_burst(self.max_requests);
 
         let limiter = Arc::new(RateLimiter::direct(quota));

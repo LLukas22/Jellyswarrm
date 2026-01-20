@@ -1,16 +1,15 @@
-use std::sync::Arc;
 use std::time::Duration;
 
 use sqlx::{FromRow, Row, SqlitePool};
-use tokio::sync::Semaphore;
 use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
+use crate::db_write_guard::DbWriteGuard;
 use crate::models::generate_token;
 use crate::server_storage::Server;
 use moka::future::Cache;
 
-/// Maximum number of retries for database operations
+/// Maximum number of retries for database operations (after lock contention)
 const MAX_RETRIES: u32 = 3;
 /// Base delay between retries (will be multiplied by attempt number)
 const RETRY_BASE_DELAY_MS: u64 = 100;
@@ -29,12 +28,12 @@ pub struct MediaStorageService {
     pool: SqlitePool,
     original_mapping_cache: Cache<String, MediaMapping>,
     mapping_with_server_cache: Cache<String, (MediaMapping, Server)>,
-    /// Semaphore to serialize write operations - SQLite only allows one writer
-    write_semaphore: Arc<Semaphore>,
+    /// Global write guard shared across all services - SQLite only allows one writer
+    write_guard: DbWriteGuard,
 }
 
 impl MediaStorageService {
-    pub fn new(pool: SqlitePool) -> Self {
+    pub fn new(pool: SqlitePool, write_guard: DbWriteGuard) -> Self {
         Self {
             pool,
             original_mapping_cache: Cache::builder()
@@ -45,8 +44,8 @@ impl MediaStorageService {
                 .time_to_live(Duration::from_secs(60 * 30))
                 .max_capacity(10_000)
                 .build(),
-            // Only allow 1 concurrent write to avoid SQLite lock contention
-            write_semaphore: Arc::new(Semaphore::new(1)),
+            // Global write guard shared across all services
+            write_guard,
         }
     }
 
@@ -148,33 +147,11 @@ impl MediaStorageService {
         let virtual_media_id = generate_token();
         let now = chrono::Utc::now();
 
-        // Acquire write semaphore to serialize writes - SQLite only allows one writer
-        // Use try_acquire_many with timeout to avoid indefinite blocking
-        for attempt in 0..MAX_RETRIES {
-            // Try to acquire the semaphore with a short timeout
-            let permit = match tokio::time::timeout(
-                Duration::from_millis(500),
-                self.write_semaphore.acquire()
-            ).await {
-                Ok(Ok(permit)) => permit,
-                Ok(Err(_)) => {
-                    // Semaphore closed - shouldn't happen
-                    return Err(sqlx::Error::PoolClosed);
-                }
-                Err(_) => {
-                    // Timeout waiting for semaphore - retry
-                    if attempt < MAX_RETRIES - 1 {
-                        let delay = RETRY_BASE_DELAY_MS * (attempt as u64 + 1);
-                        trace!("Write queue full, waiting {}ms (attempt {}/{})", delay, attempt + 1, MAX_RETRIES);
-                        tokio::time::sleep(Duration::from_millis(delay)).await;
-                        continue;
-                    }
-                    warn!("Write queue timeout after {} attempts", MAX_RETRIES);
-                    return Err(sqlx::Error::PoolTimedOut);
-                }
-            };
+        // Acquire global write guard - serializes ALL writes across all services
+        let _permit = self.write_guard.acquire_write().await?;
 
-            // Execute the upsert while holding the permit
+        // Execute the upsert while holding the permit (with retry for transient errors)
+        for attempt in 0..MAX_RETRIES {
             let result = sqlx::query_as::<_, MediaMapping>(
                 r#"
                 INSERT INTO media_mappings (virtual_media_id, original_media_id, server_url, created_at)
@@ -190,9 +167,6 @@ impl MediaStorageService {
             .fetch_one(&self.pool)
             .await;
 
-            // Release permit automatically when dropped
-            drop(permit);
-
             match result {
                 Ok(mapping) => {
                     if mapping.virtual_media_id == virtual_media_id {
@@ -204,17 +178,18 @@ impl MediaStorageService {
                     return Ok(mapping);
                 }
                 Err(ref e) if e.to_string().contains("database is locked") => {
-                    // Database lock contention - retry with backoff
+                    // Transient lock error - retry with backoff
                     if attempt < MAX_RETRIES - 1 {
                         let delay = RETRY_BASE_DELAY_MS * (attempt as u64 + 1);
                         warn!(
-                            "Database locked, retrying in {}ms (attempt {}/{})",
+                            "Database locked (transient), retrying in {}ms (attempt {}/{})",
                             delay, attempt + 1, MAX_RETRIES
                         );
                         tokio::time::sleep(Duration::from_millis(delay)).await;
                         continue;
                     }
                     error!("Database lock contention persisted after {} retries", MAX_RETRIES);
+                    return Err(sqlx::Error::PoolTimedOut);
                 }
                 Err(e) => return Err(e),
             }
@@ -342,6 +317,9 @@ impl MediaStorageService {
 
     /// Delete a media mapping
     pub async fn delete_media_mapping(&self, virtual_media_id: &str) -> Result<bool, sqlx::Error> {
+        // Acquire global write guard
+        let _permit = self.write_guard.acquire_write().await?;
+
         let result = sqlx::query(
             r#"
             DELETE FROM media_mappings WHERE virtual_media_id = ?
@@ -380,6 +358,9 @@ impl MediaStorageService {
         &self,
         server_url: &str,
     ) -> Result<u64, sqlx::Error> {
+        // Acquire global write guard
+        let _permit = self.write_guard.acquire_write().await?;
+
         let result = sqlx::query(
             r#"
             DELETE FROM media_mappings WHERE server_url = ?
@@ -412,7 +393,8 @@ mod tests {
     async fn test_media_storage_service() {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         MIGRATOR.run(&pool).await.unwrap();
-        let service = MediaStorageService::new(pool.clone());
+        let write_guard = DbWriteGuard::new();
+        let service = MediaStorageService::new(pool.clone(), write_guard);
 
         // Create media mapping
         let mapping = service
@@ -438,7 +420,8 @@ mod tests {
     async fn test_get_media_mapping_with_server() {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         MIGRATOR.run(&pool).await.unwrap();
-        let service = MediaStorageService::new(pool.clone());
+        let write_guard = DbWriteGuard::new();
+        let service = MediaStorageService::new(pool.clone(), write_guard);
 
         // Create the servers table (normally done by ServerStorageService)
         sqlx::query(
@@ -499,7 +482,8 @@ mod tests {
     async fn test_delete_operations() {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         MIGRATOR.run(&pool).await.unwrap();
-        let service = MediaStorageService::new(pool.clone());
+        let write_guard = DbWriteGuard::new();
+        let service = MediaStorageService::new(pool.clone(), write_guard);
 
         // Create media mapping
         let mapping = service

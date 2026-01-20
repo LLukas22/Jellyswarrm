@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Row, SqlitePool};
-use tracing::info;
+use tracing::{error, info, warn};
 use url::Url;
 
 use crate::encryption::EncryptedPassword;
+use crate::validation::{validate_priority, validate_server_name, validate_server_url};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub struct Server {
@@ -41,6 +42,25 @@ impl ServerStorageService {
         url: &str,
         priority: i32,
     ) -> Result<i64, sqlx::Error> {
+        // Validate inputs
+        if let Err(e) = validate_server_name(name) {
+            warn!("Invalid server name '{}': {}", name, e);
+            return Err(sqlx::Error::Protocol(format!("Invalid server name: {}", e)));
+        }
+
+        if let Err(e) = validate_server_url(url) {
+            warn!("Invalid server URL '{}': {}", url, e);
+            return Err(sqlx::Error::Protocol(format!("Invalid server URL: {}", e)));
+        }
+
+        if let Err(e) = validate_priority(priority) {
+            warn!("Invalid server priority {}: {}", priority, e);
+            return Err(sqlx::Error::Protocol(format!(
+                "Invalid server priority: {}",
+                e
+            )));
+        }
+
         let now = chrono::Utc::now();
 
         let result = sqlx::query(
@@ -180,10 +200,20 @@ impl ServerStorageService {
 
     /// Internal method to convert database row to Server struct
     fn row_to_server(&self, row: sqlx::sqlite::SqliteRow) -> Server {
+        let url_str: String = row.get("url");
+        let url = Url::parse(&url_str).unwrap_or_else(|e| {
+            error!(
+                "Invalid URL stored in database: '{}', error: {}. Using fallback.",
+                url_str, e
+            );
+            // Return a safe fallback URL - this should never happen with validated data
+            Url::parse("http://invalid.local").expect("Fallback URL should always parse")
+        });
+
         Server {
             id: row.get("id"),
             name: row.get("name"),
-            url: Url::parse(row.get("url")).unwrap(),
+            url,
             priority: row.get("priority"),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),

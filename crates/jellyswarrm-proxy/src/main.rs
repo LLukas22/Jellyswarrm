@@ -35,6 +35,7 @@ mod api_keys;
 mod audit_service;
 mod config;
 mod csrf;
+mod db_write_guard;
 mod encryption;
 mod error;
 mod federated_users;
@@ -53,6 +54,7 @@ mod ui;
 mod url_helper;
 mod user_authorization_service;
 mod user_permissions;
+mod validation;
 
 use admin_storage::AdminStorageService;
 use api_keys::ApiKeyService;
@@ -252,17 +254,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // WAL autocheckpoint: checkpoint after 1000 pages (default) to prevent WAL bloat
         .pragma("wal_autocheckpoint", "1000");
 
-    // Create connection pool - SQLite only allows ONE writer at a time!
-    // Too many connections causes severe lock contention.
-    // Use small pool: 1-2 writers + a few readers is optimal for SQLite.
+    // Create connection pool - SQLite in WAL mode allows concurrent reads
+    // but only ONE writer at a time. We use a global write guard to serialize
+    // writes across all services, so we can have more connections for reads.
+    // With proper write serialization, more read connections = better throughput.
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(4)
-        .min_connections(1)
-        .acquire_timeout(Duration::from_secs(10))
+        .max_connections(16)  // More connections for concurrent reads
+        .min_connections(2)
+        .acquire_timeout(Duration::from_secs(30))  // Longer timeout since writes are serialized
         .connect_with(options)
         .await?;
 
-    info!("Database connection pool initialized with WAL mode");
+    info!("Database connection pool initialized with WAL mode (16 connections)");
+
+    // Create global write guard - ALL services must use this for write operations
+    // to prevent SQLite lock contention
+    let write_guard = db_write_guard::DbWriteGuard::new();
+    info!("Global database write guard initialized");
 
     MIGRATOR.run(&pool).await.unwrap_or_else(|e| {
         error!("Failed to run database migrations: {}", e);
@@ -289,8 +297,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize server storage service
     let server_storage = ServerStorageService::new(pool.clone());
 
-    // Initialize media storage service
-    let media_storage = MediaStorageService::new(pool.clone());
+    // Initialize media storage service with global write guard
+    let media_storage = MediaStorageService::new(pool.clone(), write_guard.clone());
 
     // Initialize admin storage service
     let admin_storage = AdminStorageService::new(pool.clone());
@@ -348,7 +356,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize additional services
     let api_keys = Arc::new(ApiKeyService::new(pool.clone()));
-    let health_monitor = Arc::new(HealthMonitorService::new(pool.clone()));
+    let health_monitor = Arc::new(HealthMonitorService::new(pool.clone(), write_guard.clone()));
     let statistics = Arc::new(StatisticsService::new(pool.clone()));
     let user_permissions = Arc::new(UserPermissionsService::new(pool.clone()));
     let rate_limiter = Arc::new(AuthRateLimiter::default_auth_limiter());
@@ -437,6 +445,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // and is checked in the authentication handler (handlers/users.rs)
 
     // Security headers
+    // Note: CSP uses 'unsafe-inline' for style-src because many UI frameworks require it.
+    // script-src uses 'self' only - no unsafe-inline or unsafe-eval for better XSS protection.
+    // For admin UI pages that need inline scripts, they should use script files instead.
     let security_headers = ServiceBuilder::new()
         .layer(SetResponseHeaderLayer::if_not_present(
             HeaderName::from_static("x-frame-options"),
@@ -456,7 +467,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ))
         .layer(SetResponseHeaderLayer::if_not_present(
             HeaderName::from_static("content-security-policy"),
-            http::HeaderValue::from_static("default-src 'self' 'unsafe-inline' 'unsafe-eval'; img-src 'self' data: https:; media-src 'self' https:; connect-src 'self' https:"),
+            // More restrictive CSP:
+            // - default-src 'self': Only allow resources from same origin
+            // - script-src 'self': Scripts must come from same origin (no inline)
+            // - style-src 'self' 'unsafe-inline': Allow inline styles for UI frameworks
+            // - img-src 'self' data: https:: Allow images from self, data URIs, and HTTPS
+            // - media-src 'self' https:: Allow media from self and HTTPS
+            // - connect-src 'self' wss: https:: Allow connections to self, WebSockets, and HTTPS
+            // - frame-ancestors 'none': Prevent framing (clickjacking protection)
+            // - form-action 'self': Forms can only submit to same origin
+            // - base-uri 'self': Restrict base tag to same origin
+            http::HeaderValue::from_static(
+                "default-src 'self'; \
+                 script-src 'self'; \
+                 style-src 'self' 'unsafe-inline'; \
+                 img-src 'self' data: https:; \
+                 media-src 'self' https:; \
+                 connect-src 'self' wss: ws: https:; \
+                 frame-ancestors 'none'; \
+                 form-action 'self'; \
+                 base-uri 'self'"
+            ),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("permissions-policy"),
+            http::HeaderValue::from_static(
+                "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+            ),
         ));
 
     let app = Router::new()

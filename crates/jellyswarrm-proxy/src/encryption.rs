@@ -3,11 +3,15 @@
 //! This module provides functions to encrypt and decrypt server mapping passwords
 //! using the user's master password with AES-GCM encryption.
 //!
-//! Password hashing uses SHA-256 for deterministic comparison.
+//! Password hashing uses Argon2id for secure password storage.
 
 use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
+};
+use argon2::{
+    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+    Argon2,
 };
 use base64::{engine::general_purpose, Engine as _};
 use rand::RngCore;
@@ -54,22 +58,69 @@ impl From<&str> for Password {
     }
 }
 
-/// Hash a password using SHA-256
+/// Hash a password using SHA-256 for encryption key derivation.
 ///
-/// Returns a deterministic 64-character hex string
+/// IMPORTANT: This function is used for deriving encryption keys for server
+/// password mappings. It MUST use SHA-256 (not Argon2) to maintain backward
+/// compatibility with existing encrypted data.
+///
+/// Returns a deterministic 64-character hex string.
 pub fn hash_password(password: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(password.as_bytes());
     hex::encode(hasher.finalize())
 }
 
-/// Verify password against stored hash using SHA-256
-pub fn verify_password(password: &str, stored_hash: &str) -> bool {
-    hash_password(password) == stored_hash
+/// Hash a password using Argon2id for secure storage.
+///
+/// Returns an Argon2 PHC string format hash (includes algorithm, params, salt, and hash).
+/// Use this for storing passwords that need to be verified later.
+pub fn hash_password_argon2(password: &str) -> String {
+    let salt = SaltString::generate(&mut OsRng);
+    let argon2 = Argon2::default();
+
+    argon2
+        .hash_password(password.as_bytes(), &salt)
+        .expect("Failed to hash password")
+        .to_string()
 }
 
-/// A wrapper type for hashed passwords.
-/// This does not contain the plaintext password, only the hashed version.
+/// Verify password against stored hash.
+///
+/// Supports both Argon2 and SHA-256 hashes for backwards compatibility.
+pub fn verify_password(password: &str, stored_hash: &str) -> bool {
+    // Try Argon2 verification first (new format)
+    if let Ok(parsed_hash) = PasswordHash::new(stored_hash) {
+        return Argon2::default()
+            .verify_password(password.as_bytes(), &parsed_hash)
+            .is_ok();
+    }
+
+    // Fallback to SHA-256 for legacy/encryption-key hashes (64 hex chars)
+    if stored_hash.len() == 64 && stored_hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        let mut hasher = Sha256::new();
+        hasher.update(password.as_bytes());
+        let sha256_hash = hex::encode(hasher.finalize());
+        return sha256_hash == stored_hash;
+    }
+
+    false
+}
+
+/// Check if a hash is in the legacy SHA-256 format and needs migration
+pub fn needs_hash_migration(stored_hash: &str) -> bool {
+    // SHA-256 hashes are exactly 64 hex characters
+    stored_hash.len() == 64 && stored_hash.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// A wrapper type for hashed passwords used for encryption key derivation.
+///
+/// IMPORTANT: This type uses SHA-256 hashing because it's used to derive
+/// encryption keys for server password mappings. Changing the hash algorithm
+/// would break decryption of existing data.
+///
+/// For secure password storage (e.g., user authentication), consider using
+/// `hash_password_argon2()` instead.
 #[derive(Clone, PartialEq, Eq, Debug, Hash, sqlx::Type, Serialize, Deserialize)]
 #[sqlx(transparent)]
 pub struct HashedPassword(String);
@@ -83,12 +134,14 @@ impl HashedPassword {
         self.0
     }
 
-    /// Create a new hashed password from plaintext (uses SHA-256)
+    /// Create a new hashed password from plaintext.
+    /// Uses SHA-256 for encryption key derivation compatibility.
     pub fn from_password(password: &str) -> Self {
         Self(hash_password(password))
     }
 
-    /// Verify a plaintext password against this hash
+    /// Verify a plaintext password against this hash.
+    /// Supports both SHA-256 and Argon2 formats.
     pub fn verify(&self, password: &str) -> bool {
         verify_password(password, &self.0)
     }
@@ -309,6 +362,7 @@ mod tests {
 
         // Verify SHA-256 format (64 hex chars)
         assert_eq!(hashed.as_str().len(), 64);
+        assert!(hashed.as_str().chars().all(|c| c.is_ascii_hexdigit()));
 
         // Verify correct password works
         assert!(hashed.verify(password));
@@ -318,11 +372,76 @@ mod tests {
     }
 
     #[test]
+    fn test_argon2_password_hashing() {
+        let password = "test_password_123";
+        let hashed = hash_password_argon2(password);
+
+        // Verify Argon2 format (starts with $argon2)
+        assert!(hashed.starts_with("$argon2"));
+
+        // Verify correct password works
+        assert!(verify_password(password, &hashed));
+
+        // Verify wrong password fails
+        assert!(!verify_password("wrong_password", &hashed));
+    }
+
+    #[test]
     fn test_verify_password_function() {
         let password = "test123";
 
+        // Test SHA-256 hash verification
         let sha256_hash = hash_password(password);
         assert!(verify_password(password, &sha256_hash));
         assert!(!verify_password("wrong", &sha256_hash));
+
+        // Test Argon2 hash verification
+        let argon2_hash = hash_password_argon2(password);
+        assert!(verify_password(password, &argon2_hash));
+        assert!(!verify_password("wrong", &argon2_hash));
+    }
+
+    #[test]
+    fn test_sha256_hash_needs_migration() {
+        let password = "test123";
+        let sha256_hash = hash_password(password);
+
+        // SHA-256 hashes should be identified as needing migration
+        assert!(needs_hash_migration(&sha256_hash));
+    }
+
+    #[test]
+    fn test_argon2_hash_does_not_need_migration() {
+        let password = "test123";
+        let argon2_hash = hash_password_argon2(password);
+
+        // Argon2 hashes should NOT need migration
+        assert!(!needs_hash_migration(&argon2_hash));
+    }
+
+    #[test]
+    fn test_sha256_deterministic() {
+        // SHA-256 should produce the same hash for the same password
+        let password = "same_password";
+        let hash1 = hash_password(password);
+        let hash2 = hash_password(password);
+
+        // Hashes should be identical (deterministic)
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_argon2_unique_hashes() {
+        // Argon2 with random salt should produce different hashes
+        let password = "same_password";
+        let hash1 = hash_password_argon2(password);
+        let hash2 = hash_password_argon2(password);
+
+        // Hashes should be different (different salts)
+        assert_ne!(hash1, hash2);
+
+        // But both should verify correctly
+        assert!(verify_password(password, &hash1));
+        assert!(verify_password(password, &hash2));
     }
 }

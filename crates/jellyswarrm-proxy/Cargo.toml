@@ -58,6 +58,7 @@ async-trait = { workspace = true }
 async-recursion = { workspace = true }
 
 aes-gcm = { workspace = true }
+argon2 = { workspace = true }
 serde_with = { workspace = true }
 jellyfin-api = { workspace = true }
 futures-util = { workspace = true }

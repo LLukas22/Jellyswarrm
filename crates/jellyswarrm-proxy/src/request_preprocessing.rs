@@ -404,29 +404,45 @@ pub fn apply_authorization_header(
     if let Some(auth) = auth {
         match auth {
             JellyfinAuthorization::Authorization(auth) => {
-                request.headers_mut().insert(
-                    reqwest::header::AUTHORIZATION,
-                    reqwest::header::HeaderValue::from_str(&auth.to_header_value()).unwrap(),
-                );
+                if let Ok(header_value) =
+                    reqwest::header::HeaderValue::from_str(&auth.to_header_value())
+                {
+                    request
+                        .headers_mut()
+                        .insert(reqwest::header::AUTHORIZATION, header_value);
+                } else {
+                    error!("Failed to create Authorization header value");
+                }
             }
             // Map XEmbyAuthorization to Authorization header
             JellyfinAuthorization::XEmbyAuthorization(auth) => {
-                request.headers_mut().insert(
-                    reqwest::header::AUTHORIZATION,
-                    reqwest::header::HeaderValue::from_str(&auth.to_header_value()).unwrap(),
-                );
+                if let Ok(header_value) =
+                    reqwest::header::HeaderValue::from_str(&auth.to_header_value())
+                {
+                    request
+                        .headers_mut()
+                        .insert(reqwest::header::AUTHORIZATION, header_value);
+                } else {
+                    error!("Failed to create X-Emby-Authorization header value");
+                }
             }
             JellyfinAuthorization::XMediaBrowser(token) => {
-                request.headers_mut().insert(
-                    "X-MediaBrowser-Token",
-                    reqwest::header::HeaderValue::from_str(token).unwrap(),
-                );
+                if let Ok(header_value) = reqwest::header::HeaderValue::from_str(token) {
+                    request
+                        .headers_mut()
+                        .insert("X-MediaBrowser-Token", header_value);
+                } else {
+                    error!("Failed to create X-MediaBrowser-Token header value");
+                }
             }
             JellyfinAuthorization::XEmbyToken(token) => {
-                request.headers_mut().insert(
-                    "X-Emby-Token",
-                    reqwest::header::HeaderValue::from_str(token).unwrap(),
-                );
+                if let Ok(header_value) = reqwest::header::HeaderValue::from_str(token) {
+                    request
+                        .headers_mut()
+                        .insert("X-Emby-Token", header_value);
+                } else {
+                    error!("Failed to create X-Emby-Token header value");
+                }
             }
             JellyfinAuthorization::ApiKey(_) => {}
         }
@@ -435,10 +451,13 @@ pub fn apply_authorization_header(
 
 pub fn apply_host_header(request: &mut reqwest::Request, server: &Server) {
     if let Some(host) = server.url.host_str() {
-        request.headers_mut().insert(
-            reqwest::header::HOST,
-            reqwest::header::HeaderValue::from_str(host).unwrap(),
-        );
+        if let Ok(header_value) = reqwest::header::HeaderValue::from_str(host) {
+            request
+                .headers_mut()
+                .insert(reqwest::header::HOST, header_value);
+        } else {
+            error!("Failed to create Host header value from: {}", host);
+        }
     }
 }
 
@@ -546,7 +565,7 @@ pub async fn resolve_server(
     }
 
     if let Some(sessions) = sessions {
-        if let Some(request_server) = request_server {
+        if let Some(ref request_server) = request_server {
             if let Some((session, server)) = sessions.iter().find(|(_, server)| {
                 let request_url = request_server.url.as_str().trim_end_matches('/');
                 let server_url = server.url.as_str().trim_end_matches('/');
@@ -557,8 +576,10 @@ pub async fn resolve_server(
             }
         }
 
-        let (session, server) = sessions.first().unwrap();
-        return Ok((server.clone(), Some(session.clone())));
+        if let Some((session, server)) = sessions.first() {
+            return Ok((server.clone(), Some(session.clone())));
+        }
+        // Sessions list was empty, fall through to other resolution methods
     }
 
     if let Some(request_server) = request_server {
@@ -619,14 +640,22 @@ pub async fn get_user_from_request(
 }
 
 pub async fn axum_to_reqwest(req: Request) -> Result<reqwest::Request> {
-    let original_uri = req.extensions().get::<OriginalUri>().unwrap();
+    let original_uri = req
+        .extensions()
+        .get::<OriginalUri>()
+        .ok_or_else(|| anyhow::anyhow!("Missing OriginalUri extension"))?;
+
+    let path_and_query = original_uri
+        .path_and_query()
+        .map(|pq| pq.to_string())
+        .unwrap_or_else(|| "/".to_string());
 
     let uri_with_host = http::uri::Builder::new()
         .scheme("http")
         .authority("localhost")
-        .path_and_query(original_uri.path_and_query().unwrap().to_string())
+        .path_and_query(path_and_query)
         .build()
-        .unwrap();
+        .map_err(|e| anyhow::anyhow!("Failed to build URI: {}", e))?;
 
     // First extract parts and body separately
     let (parts, body) = req.into_parts();
@@ -635,10 +664,10 @@ pub async fn axum_to_reqwest(req: Request) -> Result<reqwest::Request> {
     let mut http_req = http::Request::from_parts(parts, reqwest::Body::from(body_bytes));
     *http_req.uri_mut() = uri_with_host;
 
-    let rewquest_req =
-        reqwest::Request::try_from(http_req).expect("http::Uri to url::Url conversion failed");
+    let reqwest_req = reqwest::Request::try_from(http_req)
+        .map_err(|e| anyhow::anyhow!("Failed to convert http::Request to reqwest::Request: {}", e))?;
 
-    Ok(rewquest_req)
+    Ok(reqwest_req)
 }
 
 fn remove_hop_by_hop_headers(headers: &mut reqwest::header::HeaderMap) {

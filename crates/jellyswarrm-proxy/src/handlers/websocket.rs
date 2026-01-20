@@ -81,62 +81,47 @@ fn extract_auth_from_headers(headers: &HeaderMap) -> Option<JellyfinAuthorizatio
 }
 
 /// Resolve which backend server to connect to and get the real token
+///
+/// This function requires valid authentication - unauthenticated WebSocket
+/// connections are rejected to prevent unauthorized access.
 async fn resolve_backend(
     state: &AppState,
     auth: Option<JellyfinAuthorization>,
 ) -> Option<ResolvedBackend> {
     // Try to find a server based on the user's authorization
-    if let Some(auth) = auth {
-        if let Some(token) = auth.token() {
-            // Look up user sessions by virtual token
-            if let Ok(Some((_user, sessions))) = state
-                .user_authorization
-                .get_user_sessions_by_virtual_token(&token)
-                .await
-            {
-                // Use the first available session's server (usually the highest priority one)
-                if let Some((session, server)) = sessions.into_iter().next() {
-                    debug!(
-                        "Resolved WebSocket to server {} for user session (real token available)",
-                        server.name
-                    );
-                    return Some(ResolvedBackend {
-                        server,
-                        real_token: Some(session.jellyfin_token),
-                    });
-                }
+    let auth = auth?;
+    let token = auth.token()?;
+
+    // Look up user sessions by virtual token
+    match state
+        .user_authorization
+        .get_user_sessions_by_virtual_token(&token)
+        .await
+    {
+        Ok(Some((_user, sessions))) => {
+            // Use the first available session's server (usually the highest priority one)
+            if let Some((session, server)) = sessions.into_iter().next() {
+                debug!(
+                    "Resolved WebSocket to server {} for user session (real token available)",
+                    server.name
+                );
+                return Some(ResolvedBackend {
+                    server,
+                    real_token: Some(session.jellyfin_token),
+                });
             }
+            warn!("User has no active sessions for WebSocket connection");
+            None
+        }
+        Ok(None) => {
+            warn!("Invalid or expired token for WebSocket connection");
+            None
+        }
+        Err(e) => {
+            error!("Error looking up user sessions for WebSocket: {}", e);
+            None
         }
     }
-
-    // Fallback: use the best available server (highest priority, healthy)
-    // Note: Without a session, we don't have a real token
-    if let Ok(Some(server)) = state.server_storage.get_best_server().await {
-        debug!(
-            "Using best available server for WebSocket (no session): {}",
-            server.name
-        );
-        return Some(ResolvedBackend {
-            server,
-            real_token: None,
-        });
-    }
-
-    // Last resort: get any server
-    if let Ok(servers) = state.server_storage.list_servers().await {
-        if let Some(server) = servers.into_iter().next() {
-            debug!(
-                "Using first available server for WebSocket (no session): {}",
-                server.name
-            );
-            return Some(ResolvedBackend {
-                server,
-                real_token: None,
-            });
-        }
-    }
-
-    None
 }
 
 /// Build backend WebSocket URL using the REAL server token
@@ -222,10 +207,36 @@ pub async fn websocket_handler(
         info!("[WEBSOCKET] Auth method: {:?}", std::mem::discriminant(a));
     } else {
         warn!("[WEBSOCKET] No authentication provided for WebSocket connection");
+        // Reject unauthenticated WebSocket connections
+        return axum::response::Response::builder()
+            .status(axum::http::StatusCode::UNAUTHORIZED)
+            .body(axum::body::Body::from("WebSocket authentication required"))
+            .unwrap_or_else(|_| {
+                axum::response::Response::builder()
+                    .status(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(axum::body::Body::empty())
+                    .unwrap()
+            });
     }
 
     if let Some(ref device_id) = query.device_id {
         info!("[WEBSOCKET] Device ID: {}", device_id);
+    }
+
+    // Pre-validate that we can resolve the backend before upgrading
+    // This prevents upgrading and then immediately closing the connection
+    let auth_clone = auth.clone();
+    if resolve_backend(&state, auth_clone).await.is_none() {
+        warn!("[WEBSOCKET] Failed to resolve backend server - invalid or expired token");
+        return axum::response::Response::builder()
+            .status(axum::http::StatusCode::UNAUTHORIZED)
+            .body(axum::body::Body::from("Invalid or expired authentication token"))
+            .unwrap_or_else(|_| {
+                axum::response::Response::builder()
+                    .status(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(axum::body::Body::empty())
+                    .unwrap()
+            });
     }
 
     ws.on_upgrade(move |socket| handle_websocket(socket, state, auth, query))

@@ -8,9 +8,10 @@ use std::{sync::Arc, time::Duration};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
+use crate::db_write_guard::DbWriteGuard;
 use crate::server_storage::{Server, ServerStorageService};
 
-/// Maximum number of retries for database operations
+/// Maximum number of retries for database operations (after acquiring write guard)
 const MAX_DB_RETRIES: u32 = 3;
 /// Base delay between retries in milliseconds
 const RETRY_BASE_DELAY_MS: u64 = 100;
@@ -59,10 +60,12 @@ pub struct HealthMonitorService {
     client: reqwest::Client,
     /// Cache of current health status for all servers
     current_status: Arc<RwLock<Vec<ServerHealth>>>,
+    /// Global write guard shared across all services
+    write_guard: DbWriteGuard,
 }
 
 impl HealthMonitorService {
-    pub fn new(pool: SqlitePool) -> Self {
+    pub fn new(pool: SqlitePool, write_guard: DbWriteGuard) -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .build()
@@ -72,6 +75,7 @@ impl HealthMonitorService {
             pool,
             client,
             current_status: Arc::new(RwLock::new(Vec::new())),
+            write_guard,
         }
     }
 
@@ -180,8 +184,19 @@ impl HealthMonitorService {
         *self.current_status.write().await = health_results;
     }
 
-    /// Record health check result to database with retry logic for lock contention
+    /// Record health check result to database with global write coordination
     async fn record_health(&self, health: &ServerHealth) -> Result<(), sqlx::Error> {
+        // Acquire global write guard - serializes ALL writes across all services
+        let _permit = match self.write_guard.acquire_write().await {
+            Ok(permit) => permit,
+            Err(e) => {
+                // Health checks are non-critical - log warning and continue
+                warn!("Failed to acquire write lock for health record: {}", e);
+                return Ok(());
+            }
+        };
+
+        // Execute with retry for transient errors
         for attempt in 0..MAX_DB_RETRIES {
             let result = sqlx::query(
                 r#"
@@ -204,7 +219,7 @@ impl HealthMonitorService {
                     if attempt < MAX_DB_RETRIES - 1 {
                         let delay = RETRY_BASE_DELAY_MS * (attempt as u64 + 1);
                         debug!(
-                            "Database locked, retrying health record in {}ms (attempt {}/{})",
+                            "Database locked (transient), retrying health record in {}ms (attempt {}/{})",
                             delay, attempt + 1, MAX_DB_RETRIES
                         );
                         tokio::time::sleep(Duration::from_millis(delay)).await;
@@ -296,6 +311,9 @@ impl HealthMonitorService {
 
     /// Cleanup old health history entries
     pub async fn cleanup_old_history(&self, days_to_keep: i64) -> Result<u64, sqlx::Error> {
+        // Acquire global write guard
+        let _permit = self.write_guard.acquire_write().await?;
+
         let result = sqlx::query(
             "DELETE FROM server_health_history WHERE checked_at < datetime('now', ? || ' days')",
         )
@@ -345,7 +363,8 @@ mod tests {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         crate::config::MIGRATOR.run(&pool).await.unwrap();
 
-        let service = HealthMonitorService::new(pool);
+        let write_guard = DbWriteGuard::new();
+        let service = HealthMonitorService::new(pool, write_guard);
 
         let server = Server {
             id: 1,

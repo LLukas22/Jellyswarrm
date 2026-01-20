@@ -31,11 +31,10 @@ pub async fn get_item(
     let server = preprocessed.server;
 
     match execute_json_request::<MediaItem>(&state.reqwest_client, preprocessed.request).await {
-        Ok(media_item) => {
+        Ok(mut media_item) => {
             let server_id = { state.config.read().await.server_id.clone() };
-            Ok(Json(
-                process_media_item(media_item, &state, &server, false, &server_id).await?,
-            ))
+            process_media_item(&mut media_item, &state, &server, false, &server_id).await?;
+            Ok(Json(media_item))
         }
         Err(e) => {
             error!("Failed to get MediaItem: {:?}", e);
@@ -65,9 +64,8 @@ pub async fn get_items(
     {
         Ok(mut response) => {
             let server_id = { state.config.read().await.server_id.clone() };
-            for item in &mut response.iter_mut_items() {
-                *item =
-                    process_media_item(item.clone(), &state, &server, false, &server_id).await?;
+            for item in response.iter_mut_items() {
+                process_media_item(item, &state, &server, false, &server_id).await?;
             }
 
             Ok(Json(response))
@@ -96,8 +94,7 @@ pub async fn get_items_list(
         Ok(mut response) => {
             let server_id = { state.config.read().await.server_id.clone() };
             for item in &mut response {
-                *item =
-                    process_media_item(item.clone(), &state, &server, false, &server_id).await?;
+                process_media_item(item, &state, &server, false, &server_id).await?;
             }
 
             Ok(Json(response))
