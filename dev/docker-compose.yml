@@ -131,6 +131,20 @@ services:
       jellyfin-music:
         condition: service_started
 
+  caddy:
+    image: caddy:latest
+    container_name: jellyswarrm-caddy
+    ports:
+      - "8000:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+    networks:
+      - jellyfin-dev-net
+    depends_on:
+      - jellyfin-movies
+      - jellyfin-tvshows
+      - jellyfin-music
+
 networks:
   jellyfin-dev-net:
     driver: bridge
