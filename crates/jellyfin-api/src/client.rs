@@ -51,11 +51,11 @@ impl std::hash::Hash for JellyfinClient {
 impl JellyfinClient {
     pub fn new(base_url: &str, client_info: ClientInfo) -> Result<Self, Error> {
         let mut url = Url::parse(base_url)?;
-        // Ensure no trailing slash for consistent joining
-        if url.path().ends_with('/') {
+        // Ensure trailing slash for consistent joining
+        if !url.path().ends_with('/') {
             url.path_segments_mut()
                 .map_err(|_| Error::UrlParse(url::ParseError::EmptyHost))?
-                .pop_if_empty();
+                .push("");
         }
 
         let http_client = Client::builder()
