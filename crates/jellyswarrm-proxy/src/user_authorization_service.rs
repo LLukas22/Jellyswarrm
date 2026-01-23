@@ -1,5 +1,5 @@
 use sqlx::{FromRow, Row, SqlitePool};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::encryption::{
     decrypt_password, encrypt_password, EncryptedPassword, HashedPassword, Password,
@@ -75,7 +75,38 @@ pub struct Device {
     pub version: String,
 }
 
+pub fn normalize_decice(value: &str) -> String {
+    value.trim().to_lowercase().replace("+", " ")
+}
+
 impl Device {
+    /// Check if this device matches another device based on client and either device_id or device name or version
+    pub fn matches(&self, other: &Device) -> bool {
+        //1) Try device_id + client
+
+        if normalize_decice(&self.device_id) == normalize_decice(&other.device_id)
+            && normalize_decice(&self.client) == normalize_decice(&other.client)
+        {
+            return true;
+        }
+
+        // 2) Fallback: device (name) + client
+        if normalize_decice(&self.device) == normalize_decice(&other.device)
+            && normalize_decice(&self.client) == normalize_decice(&other.client)
+        {
+            return true;
+        }
+
+        //3) Final fallback: client + version only
+        if normalize_decice(&self.client) == normalize_decice(&other.client)
+            && normalize_decice(&self.version) == normalize_decice(&other.version)
+        {
+            return true;
+        }
+
+        false
+    }
+
     pub fn from_useragent(user_agent: &str) -> Self {
         let (client, version, device) = Self::parse_user_agent(user_agent);
 
@@ -493,7 +524,7 @@ impl UserAuthorizationService {
         user_id: &str,
         device: Option<Device>,
     ) -> Result<Vec<(AuthorizationSession, Server)>, sqlx::Error> {
-        let base_select = String::from(
+        let query = String::from(
             r#"
     SELECT 
         auth.id as auth_id,
@@ -520,64 +551,17 @@ impl UserAuthorizationService {
     JOIN servers s ON RTRIM(auth.server_url, '/') = RTRIM(s.url, '/')
     WHERE auth.user_id = ?
     AND (auth.expires_at IS NULL OR auth.expires_at > ?)
+    ORDER BY s.priority DESC, s.name ASC
 "#,
         );
 
-        let order_by = " ORDER BY s.priority DESC, s.name ASC ";
+        let rows = sqlx::query(&query)
+            .bind(user_id)
+            .bind(chrono::Utc::now())
+            .fetch_all(&self.pool)
+            .await?;
 
-        let rows = if let Some(device) = device {
-            // 1) Try device_id + client
-            let query1 =
-                format!("{base_select} AND auth.device_id = ? AND auth.client = ? {order_by}");
-            let rows1 = sqlx::query(&query1)
-                .bind(user_id)
-                .bind(chrono::Utc::now())
-                .bind(&device.device_id)
-                .bind(&device.client)
-                .fetch_all(&self.pool)
-                .await?;
-
-            if !rows1.is_empty() {
-                rows1
-            } else {
-                // 2) Fallback: device (name) + client
-                let query2 =
-                    format!("{base_select} AND auth.device = ? AND auth.client = ? {order_by}");
-                let rows2 = sqlx::query(&query2)
-                    .bind(user_id)
-                    .bind(chrono::Utc::now())
-                    .bind(&device.device)
-                    .bind(&device.client)
-                    .fetch_all(&self.pool)
-                    .await?;
-
-                if !rows2.is_empty() {
-                    rows2
-                } else {
-                    // 3) Final fallback: client + version only
-                    let query3 = format!(
-                        "{base_select} AND auth.client = ? AND auth.version = ? {order_by}"
-                    );
-                    sqlx::query(&query3)
-                        .bind(user_id)
-                        .bind(chrono::Utc::now())
-                        .bind(&device.client)
-                        .bind(&device.version)
-                        .fetch_all(&self.pool)
-                        .await?
-                }
-            }
-        } else {
-            // No device provided -> just run the base with ORDER BY
-            let query = format!("{base_select}{order_by}");
-            sqlx::query(&query)
-                .bind(user_id)
-                .bind(chrono::Utc::now())
-                .fetch_all(&self.pool)
-                .await?
-        };
-
-        let sessions = rows
+        let sessions: Vec<(AuthorizationSession, Server)> = rows
             .into_iter()
             .map(|row| {
                 let device = Device {
@@ -611,6 +595,18 @@ impl UserAuthorizationService {
                 (auth_session, server)
             })
             .collect();
+
+        debug!("Found {} sessions for user_id: {}", sessions.len(), user_id);
+
+        let sessions = if let Some(device) = device {
+            debug!("Filtering sessions for device: {:?}", device);
+            sessions
+                .into_iter()
+                .filter(|(session, _)| device.matches(&session.device))
+                .collect()
+        } else {
+            sessions
+        };
 
         Ok(sessions)
     }
