@@ -94,8 +94,8 @@ This document outlines the development plan for implementing library merging fun
 ## Phase 4: Federated Query Engine (Week 2-3)
 
 ### 4.1 Merged Library Query Handler
-- [ ] Create `handlers/merged_libraries.rs`
-- [ ] Implement `get_merged_library_items()`:
+- [x] Create `handlers/merged_libraries.rs`
+- [x] Implement `get_merged_library_items()`:
   - Fetch source library configurations
   - Query only specified libraries from each server
   - Aggregate results
@@ -104,16 +104,16 @@ This document outlines the development plan for implementing library merging fun
 - [ ] Add filtering support
 
 ### 4.2 Deduplication Engine
-- [ ] Create `deduplication.rs` module
-- [ ] Implement matching strategies:
+- [x] Create `deduplication.rs` module
+- [x] Implement matching strategies:
   - Provider ID matching (TMDB, IMDB, TVDB)
   - Name + Year fallback matching
-  - Fuzzy matching option
-- [ ] Implement merge strategies:
-  - Keep all versions (show server badges)
-  - Prefer specific server
-  - Highest quality preference
-- [ ] Track duplicate sources for playback selection
+  - (Fuzzy matching - future enhancement)
+- [x] Implement merge strategies:
+  - Keep all versions (show server badges) via `None` strategy
+  - Prefer specific server via priority ordering
+  - (Highest quality preference - future enhancement)
+- [x] Track duplicate sources for playback selection
 
 **Deliverables:**
 - Merged library query handler
@@ -125,8 +125,8 @@ This document outlines the development plan for implementing library merging fun
 ## Phase 5: Admin UI (Week 3)
 
 ### 5.1 Merged Libraries Management Page
-- [ ] Create `ui/admin/merged_libraries.rs` handler
-- [ ] Create `templates/admin/merged_libraries.html`
+- [x] Create `ui/admin/merged_libraries.rs` handler
+- [x] Create `templates/admin/merged_libraries.html`
 - [ ] Implement list view with create/edit/delete
 - [ ] Add source library selector (dropdown per server)
 

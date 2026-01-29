@@ -6,12 +6,13 @@ use hyper::StatusCode;
 use regex::Regex;
 use std::sync::LazyLock;
 use tokio::task::JoinSet;
-use tracing::{debug, error, trace};
+use tracing::{debug, error, info, trace};
 
 use crate::{
     handlers::{
         common::{execute_json_request, process_media_item},
         items::get_items,
+        merged_libraries::get_merged_library_items,
     },
     models::enums::{BaseItemKind, CollectionType},
     request_preprocessing::{apply_to_request, extract_request_infos, JellyfinAuthorization},
@@ -21,14 +22,35 @@ use crate::{
 static SERIES_OR_PARENT_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new("(?i)(seriesid|parentid)").unwrap());
 
+static PARENT_ID_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)parentid=([^&]+)").unwrap());
+
 pub async fn get_items_from_all_servers_if_not_restricted(
     State(state): State<AppState>,
     req: Request,
 ) -> Result<Json<crate::models::ItemsResponseVariants>, StatusCode> {
-    // Extract request information and sessions
-
+    // Check if this is a merged library request
     if let Some(query) = req.uri().query() {
-        // Check if the request is for a specific series or folder
+        if let Some(caps) = PARENT_ID_RE.captures(query) {
+            if let Some(parent_id) = caps.get(1) {
+                let parent_id = parent_id.as_str();
+
+                // Check if this parent ID is a merged library
+                if let Ok(Some(merged_library)) = state
+                    .merged_library_storage
+                    .get_merged_library_by_virtual_id(parent_id)
+                    .await
+                {
+                    info!(
+                        "Request for merged library '{}' ({})",
+                        merged_library.name, merged_library.virtual_id
+                    );
+                    return get_merged_library_items(State(state), req, merged_library).await;
+                }
+            }
+        }
+
+        // Check if the request is for a specific series or folder (non-merged)
         if SERIES_OR_PARENT_RE.is_match(query) {
             return get_items(State(state), req).await;
         }
