@@ -132,6 +132,27 @@ pub fn ui_routes() -> axum::Router<AppState> {
         .route("/settings/form", get(admin::settings::settings_form))
         .route("/settings/save", post(admin::settings::save_settings))
         .route("/settings/reload", post(admin::settings::reload_config))
+        // Merged Libraries
+        .route("/merged-libraries", get(admin::merged_libraries::merged_libraries_page))
+        .route("/merged-libraries", post(admin::merged_libraries::create_merged_library))
+        .route("/merged-libraries/list", get(admin::merged_libraries::get_merged_library_list))
+        .route("/merged-libraries/json", get(admin::merged_libraries::list_merged_libraries_json))
+        .route(
+            "/merged-libraries/{id}",
+            axum::routing::delete(admin::merged_libraries::delete_merged_library),
+        )
+        .route(
+            "/merged-libraries/{id}/json",
+            get(admin::merged_libraries::get_merged_library_json),
+        )
+        .route(
+            "/merged-libraries/{id}/sources",
+            post(admin::merged_libraries::add_source),
+        )
+        .route(
+            "/merged-libraries/{library_id}/sources/{source_id}",
+            axum::routing::delete(admin::merged_libraries::remove_source),
+        )
         .route_layer(middleware::from_fn(require_admin));
 
     Router::new()

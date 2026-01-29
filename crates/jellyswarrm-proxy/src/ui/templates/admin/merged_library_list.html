@@ -1,0 +1,121 @@
+{% if libraries.is_empty() %}
+    <article>
+        <header><h4>No merged libraries configured</h4></header>
+        <p>Create your first merged library to combine content from multiple servers.</p>
+    </article>
+{% else %}
+
+{% for item in libraries %}
+<article style="margin-bottom: 1.5rem;">
+    <header style="display: flex; justify-content: space-between; align-items: center;">
+        <div>
+            <h4 style="margin: 0;">{{ item.library.name }}</h4>
+            <small style="opacity: 0.7;">
+                {{ item.library.collection_type.as_str() }} |
+                Dedup: {{ item.library.dedup_strategy.as_str() }} |
+                {% if item.library.is_global %}Global{% else %}Private{% endif %}
+            </small>
+        </div>
+        <div style="display: flex; gap: 0.5rem;">
+            <button type="button" class="icon-btn"
+                    onclick="document.getElementById('add-source-modal-{{ item.library.id }}').showModal()"
+                    title="Add Source Library">
+                <i class="fas fa-plus" aria-hidden="true"></i>
+            </button>
+            <button type="button" class="icon-btn danger"
+                    hx-delete="/{{ ui_route }}/merged-libraries/{{ item.library.id }}"
+                    hx-confirm="Delete merged library '{{ item.library.name }}'? This will not delete the source content."
+                    hx-target="#library-list" hx-swap="innerHTML"
+                    title="Delete merged library">
+                <i class="fas fa-trash" aria-hidden="true"></i>
+            </button>
+        </div>
+    </header>
+
+    {% if item.sources.is_empty() %}
+    <p style="opacity: 0.7; font-style: italic;">No source libraries added yet. Click + to add source libraries.</p>
+    {% else %}
+    <table aria-label="Source libraries for {{ item.library.name }}">
+        <thead>
+            <tr>
+                <th>Server</th>
+                <th>Library</th>
+                <th>Priority</th>
+                <th style="text-align: center;">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for source in item.sources %}
+            <tr>
+                <td><strong>{{ source.server_name }}</strong></td>
+                <td>
+                    {% match source.source.library_name %}
+                    {% when Some with (name) %}
+                        {{ name }}
+                    {% when None %}
+                        <code>{{ source.source.library_id }}</code>
+                    {% endmatch %}
+                </td>
+                <td>{{ source.source.priority }}</td>
+                <td style="text-align: center;">
+                    <button type="button" class="icon-btn danger"
+                            hx-delete="/{{ ui_route }}/merged-libraries/{{ item.library.id }}/sources/{{ source.source.id }}"
+                            hx-confirm="Remove this source from the merged library?"
+                            hx-target="#library-list" hx-swap="innerHTML"
+                            title="Remove source">
+                        <i class="fas fa-times" aria-hidden="true"></i>
+                    </button>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    <footer style="margin-top: 0.5rem;">
+        <small style="opacity: 0.7;">Virtual ID: <code>{{ item.library.virtual_id }}</code></small>
+    </footer>
+</article>
+
+<!-- Add Source Modal -->
+<dialog id="add-source-modal-{{ item.library.id }}">
+    <article>
+        <header>
+            <button aria-label="Close" rel="prev" onclick="this.closest('dialog').close()"></button>
+            <h3>Add Source Library to {{ item.library.name }}</h3>
+        </header>
+
+        <div id="add-source-error-{{ item.library.id }}"></div>
+
+        <form id="add-source-form-{{ item.library.id }}"
+              hx-post="/{{ ui_route }}/merged-libraries/{{ item.library.id }}/sources"
+              hx-target="#library-list" hx-swap="innerHTML">
+            <label>
+                Server ID
+                <input type="number" name="server_id" required placeholder="Enter server ID">
+                <small>You can find server IDs on the Servers page</small>
+            </label>
+            <label>
+                Library ID
+                <input type="text" name="library_id" required placeholder="Enter Jellyfin library ID (GUID)">
+                <small>The Jellyfin library GUID from the source server</small>
+            </label>
+            <label>
+                Library Name (optional)
+                <input type="text" name="library_name" placeholder="Display name for this source">
+            </label>
+            <label>
+                Priority
+                <input type="number" name="priority" value="0" min="-999" max="999">
+                <small>Higher priority sources are preferred for playback</small>
+            </label>
+        </form>
+        <footer style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+            <button type="button" class="secondary" onclick="this.closest('dialog').close()" style="margin-bottom: 0;">Cancel</button>
+            <button type="submit" form="add-source-form-{{ item.library.id }}" style="margin-bottom: 0;">Add Source</button>
+        </footer>
+    </article>
+</dialog>
+{% endfor %}
+
+{% endif %}

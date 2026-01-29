@@ -1,0 +1,47 @@
+<div id="messages"></div>
+
+<header>
+    <h1>Merged Libraries</h1>
+    <h3>Create virtual libraries that combine content from multiple servers.</h3>
+</header>
+
+<section id="add-library" aria-labelledby="add-library-heading">
+    <h2 id="add-library-heading" style="margin-bottom:.5rem;">Create Merged Library</h2>
+    <form hx-post="/{{ ui_route }}/merged-libraries" hx-target="#library-list" hx-swap="innerHTML" hx-disabled-elt="this" hx-on::after-request="if(event.detail.successful) this.reset()">
+        <div class="grid" style="--pico-grid-gap:1rem;">
+            <label> Name
+                <input type="text" name="name" placeholder="e.g. All Movies" autocomplete="off" required>
+            </label>
+            <label> Collection Type
+                <select name="collection_type" required>
+                    <option value="movies">Movies</option>
+                    <option value="tvshows">TV Shows</option>
+                    <option value="music">Music</option>
+                    <option value="books">Books</option>
+                    <option value="mixed">Mixed</option>
+                </select>
+            </label>
+            <label> Deduplication Strategy
+                <select name="dedup_strategy">
+                    <option value="provider_ids">Provider IDs (TMDB, IMDB, TVDB)</option>
+                    <option value="name_year">Name + Year</option>
+                    <option value="none">None (Show All Copies)</option>
+                </select>
+            </label>
+            <label style="display:flex; align-items:center; gap:.5rem; padding-top:1.5rem;">
+                <input type="checkbox" name="is_global" role="switch">
+                <span>Global (visible to all users)</span>
+            </label>
+            <div style="display:flex; align-items:center; padding-top:1.5rem;">
+                <button type="submit">Create</button>
+            </div>
+        </div>
+    </form>
+    <p style="font-size:.8rem; opacity:.7; margin-top:.5rem;">After creating, add source libraries from your configured servers.</p>
+</section>
+
+<hr />
+
+<section id="library-list" hx-get="/{{ ui_route }}/merged-libraries/list" hx-trigger="load">
+    <p>Loading merged libraries...</p>
+</section>

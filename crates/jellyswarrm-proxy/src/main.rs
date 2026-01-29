@@ -31,6 +31,7 @@ mod encryption;
 mod federated_users;
 mod handlers;
 mod media_storage_service;
+mod merged_library_storage;
 mod models;
 mod processors;
 mod request_preprocessing;
@@ -42,6 +43,7 @@ mod user_authorization_service;
 
 use federated_users::FederatedUserService;
 use media_storage_service::MediaStorageService;
+use merged_library_storage::MergedLibraryStorageService;
 use server_storage::ServerStorageService;
 use user_authorization_service::UserAuthorizationService;
 
@@ -68,6 +70,7 @@ pub struct AppState {
     pub user_authorization: Arc<UserAuthorizationService>,
     pub server_storage: Arc<ServerStorageService>,
     pub media_storage: Arc<MediaStorageService>,
+    pub merged_library_storage: Arc<MergedLibraryStorageService>,
     pub play_sessions: Arc<SessionStorage>,
     pub config: Arc<tokio::sync::RwLock<AppConfig>>,
     pub processors: Arc<JsonProcessors>,
@@ -94,6 +97,7 @@ impl AppState {
             user_authorization: data_context.user_authorization,
             server_storage: data_context.server_storage,
             media_storage: data_context.media_storage,
+            merged_library_storage: data_context.merged_library_storage,
             play_sessions: data_context.play_sessions,
             config: data_context.config,
             processors: Arc::new(json_processors),
@@ -146,6 +150,7 @@ pub struct DataContext {
     pub user_authorization: Arc<UserAuthorizationService>,
     pub server_storage: Arc<ServerStorageService>,
     pub media_storage: Arc<MediaStorageService>,
+    pub merged_library_storage: Arc<MergedLibraryStorageService>,
     pub play_sessions: Arc<SessionStorage>,
     pub config: Arc<tokio::sync::RwLock<AppConfig>>,
 }
@@ -223,6 +228,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize media storage service
     let media_storage = MediaStorageService::new(pool.clone());
 
+    // Initialize merged library storage service
+    let merged_library_storage = MergedLibraryStorageService::new(pool.clone());
+
     if !loaded_config.preconfigured_servers.is_empty() {
         info!(
             "Adding {} preconfigured servers from config",
@@ -272,6 +280,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         user_authorization: Arc::new(user_authorization.clone()),
         server_storage: Arc::new(server_storage.clone()),
         media_storage: Arc::new(media_storage.clone()),
+        merged_library_storage: Arc::new(merged_library_storage.clone()),
         play_sessions: Arc::new(SessionStorage::new()),
         config: Arc::new(tokio::sync::RwLock::new(loaded_config.clone())),
     };
