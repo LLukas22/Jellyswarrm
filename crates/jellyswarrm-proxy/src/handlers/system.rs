@@ -19,8 +19,8 @@ pub async fn info_public(
         id: cfg.server_id.clone(),
         server_name: cfg.server_name.clone(),
         local_address: cfg.public_address.clone(),
-        version: JELLYFIN_UI_VERSION.clone().unwrap_or_default().version,
-        product_name: "Jellyswarrm Proxy".to_string(),
+        version: JELLYFIN_UI_VERSION.clone().unwrap_or_default().version.trim_start_matches('v').to_string(),
+        product_name: "Jellyfin Server".to_string(),
         operating_system: std::env::consts::OS.to_string(),
         startup_wizard_completed: true,
     }))
