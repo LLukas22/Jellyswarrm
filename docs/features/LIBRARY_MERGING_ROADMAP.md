@@ -159,9 +159,13 @@ This document outlines the development plan for implementing library merging fun
 - [ ] Test with Jellyfin TV apps
 
 ### 6.2 Playback Integration
-- [ ] Handle playback requests for deduplicated items
-- [ ] Implement server selection logic
-- [ ] Add "Play from..." option for multi-server items
+- [x] Handle playback requests for deduplicated items (via existing proxy infrastructure)
+- [x] Items use highest-priority source server for playback by default
+- [ ] Add "Play from..." option for multi-server items (future enhancement)
+- [ ] Store multiple source IDs for server selection (future enhancement)
+
+**Note:** Basic playback works through existing virtual ID mapping system.
+The proxy resolves item IDs to their source server automatically.
 
 **Deliverables:**
 - Client compatibility matrix
