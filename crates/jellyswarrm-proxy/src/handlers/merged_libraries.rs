@@ -21,6 +21,7 @@ use crate::{
 };
 
 /// Check if a parent ID corresponds to a merged library
+#[allow(dead_code)]
 pub async fn is_merged_library_request(state: &AppState, parent_id: &str) -> bool {
     state
         .merged_library_storage

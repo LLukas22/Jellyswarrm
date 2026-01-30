@@ -15,6 +15,8 @@ pub struct DeduplicatedItem {
     /// The primary item to display (from highest priority source)
     pub primary: MediaItem,
     /// All source copies of this item (including primary), with server info
+    /// Used for playback routing (Phase 6.2)
+    #[allow(dead_code)]
     pub sources: Vec<ItemSource>,
 }
 
@@ -23,7 +25,8 @@ pub struct DeduplicatedItem {
 pub struct ItemSource {
     /// The original media item
     pub item: MediaItem,
-    /// Server ID this item came from
+    /// Server ID this item came from (used for playback routing)
+    #[allow(dead_code)]
     pub server_id: i64,
     /// Server name for display
     pub server_name: String,

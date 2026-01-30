@@ -150,7 +150,9 @@ This document outlines the development plan for implementing library merging fun
 ## Phase 6: Client Integration (Week 3-4)
 
 ### 6.1 Jellyfin API Compatibility
-- [ ] Ensure merged libraries appear as CollectionFolders
+- [x] Ensure merged libraries appear as CollectionFolders
+- [x] Created `handlers/views.rs` with `get_user_views_with_merged_libraries()`
+- [x] Updated routes for `/Users/{userId}/Views` and `/UserViews`
 - [ ] Test with Jellyfin Web client
 - [ ] Test with Jellyfin Android app
 - [ ] Test with Jellyfin iOS app

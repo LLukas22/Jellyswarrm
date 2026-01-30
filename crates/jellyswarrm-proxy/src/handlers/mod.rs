@@ -8,3 +8,4 @@ pub(crate) mod quick_connect;
 pub(crate) mod system;
 pub(crate) mod users;
 pub(crate) mod videos;
+pub(crate) mod views;

@@ -347,7 +347,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .route("/{user_id}", get(handlers::users::handle_get_user_by_id))
                 .route(
                     "/{user_id}/Views",
-                    get(handlers::federated::get_items_from_all_servers),
+                    get(handlers::views::get_user_views_with_merged_libraries),
                 )
                 .route(
                     "/{user_id}/Items",
@@ -370,7 +370,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/users/public", get(handlers::users::handle_public))
         .route(
             "/UserViews",
-            get(handlers::federated::get_items_from_all_servers),
+            get(handlers::views::get_user_views_with_merged_libraries),
         )
         // System info routes
         .nest(
