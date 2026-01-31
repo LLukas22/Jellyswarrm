@@ -143,6 +143,9 @@ pub async fn add_server(
                 form.name, form.url, server_id
             );
 
+            // Force Update server state
+            state.server_storage.check_servers_health().await;
+
             // Return updated server list
             get_server_list(State(state)).await.into_response()
         }

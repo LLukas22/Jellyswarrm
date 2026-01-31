@@ -198,6 +198,8 @@ impl ServerStorageService {
         .execute(&self.pool)
         .await?;
 
+        self.health_status.write().await.remove(&server_id);
+
         Ok(result.rows_affected() > 0)
     }
 
@@ -226,7 +228,7 @@ impl ServerStorageService {
         });
     }
 
-    async fn check_servers_health(&self) {
+    pub async fn check_servers_health(&self) {
         let servers = match self.list_servers().await {
             Ok(s) => s,
             Err(e) => {

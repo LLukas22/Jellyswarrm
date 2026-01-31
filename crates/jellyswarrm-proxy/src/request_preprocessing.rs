@@ -223,8 +223,23 @@ pub async fn extract_request_infos(
             .user_authorization
             .get_user_sessions(&user.id, device)
             .await?;
-        if !sessions.is_empty() {
-            Some(sessions)
+
+        // filter for online servers only
+        let mut filtered_sessions: Vec<(AuthorizationSession, Server)> =
+            Vec::with_capacity(sessions.len());
+        for (session, server) in sessions {
+            if state
+                .server_storage
+                .server_status(server.id)
+                .await
+                .is_healthy()
+            {
+                filtered_sessions.push((session, server));
+            }
+        }
+
+        if !filtered_sessions.is_empty() {
+            Some(filtered_sessions)
         } else {
             None
         }
