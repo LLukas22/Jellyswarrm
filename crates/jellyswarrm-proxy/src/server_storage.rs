@@ -1,13 +1,16 @@
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Row, SqlitePool};
-use tokio::sync::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use tracing::{error, info};
 use url::Url;
-use futures_util::StreamExt;
 
-use jellyfin_api::{client::{ClientInfo, JellyfinClient}, models::PublicSystemInfo};
+use jellyfin_api::{
+    client::{ClientInfo, JellyfinClient},
+    models::PublicSystemInfo,
+};
 
 use crate::encryption::EncryptedPassword;
 
@@ -232,37 +235,45 @@ impl ServerStorageService {
             }
         };
 
-        let statuses: Vec<(i64, ServerHealthStatus)>  = futures_util::stream::iter(servers.into_iter().map(|server| {
-            let http_client = self.http_client.clone();
-            let client_info = self.client_info.clone();
-            async move {
-                let client = match JellyfinClient::new_with_client(server.url.as_str(), client_info, http_client) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        error!("Failed to create client for server {}: {}", server.name, e);
-                        return (server.id, ServerHealthStatus::Unhealthy(e.to_string()));
-                    }
-                };
+        let statuses: Vec<(i64, ServerHealthStatus)> =
+            futures_util::stream::iter(servers.into_iter().map(|server| {
+                let http_client = self.http_client.clone();
+                let client_info = self.client_info.clone();
+                async move {
+                    let client = match JellyfinClient::new_with_client(
+                        server.url.as_str(),
+                        client_info,
+                        http_client,
+                    ) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            error!("Failed to create client for server {}: {}", server.name, e);
+                            return (server.id, ServerHealthStatus::Unhealthy(e.to_string()));
+                        }
+                    };
 
-                let status = match client.get_public_system_info().await {
-                    Ok(info) => ServerHealthStatus::Healthy(info),
-                    Err(e) => ServerHealthStatus::Unhealthy(e.to_string()),
-                };
+                    let status = match client.get_public_system_info().await {
+                        Ok(info) => ServerHealthStatus::Healthy(info),
+                        Err(e) => ServerHealthStatus::Unhealthy(e.to_string()),
+                    };
 
-                (server.id, status)
-            }
-        }))
-        .buffer_unordered(5)
-        .collect()
-        .await;
+                    (server.id, status)
+                }
+            }))
+            .buffer_unordered(5)
+            .collect()
+            .await;
 
         let mut lock = self.health_status.write().await;
         for (server_id, status) in statuses {
             if let Some(old_status) = lock.get(&server_id) {
                 if *old_status == status {
                     continue; // No change
-                }else {
-                    info!("Server ID {} health status changed: {:?} -> {:?}", server_id, old_status, status);
+                } else {
+                    info!(
+                        "Server ID {} health status changed: {:?} -> {:?}",
+                        server_id, old_status, status
+                    );
                 }
             }
             lock.insert(server_id, status);
@@ -271,7 +282,12 @@ impl ServerStorageService {
 
     pub async fn server_status(&self, server_id: i64) -> ServerHealthStatus {
         let health = self.health_status.read().await;
-        health.get(&server_id).unwrap_or(&ServerHealthStatus::Unhealthy("Unknown Server Status".to_string())).clone()
+        health
+            .get(&server_id)
+            .unwrap_or(&ServerHealthStatus::Unhealthy(
+                "Unknown Server Status".to_string(),
+            ))
+            .clone()
     }
 
     /// Get the best available server (highest priority, healthy, active)
@@ -281,7 +297,7 @@ impl ServerStorageService {
         if servers.is_empty() {
             return Ok(None);
         }
-        
+
         let mut best_healthy = None;
         for server in &servers {
             if self.server_status(server.id).await.is_healthy() {
@@ -289,13 +305,13 @@ impl ServerStorageService {
                 break;
             }
         }
-        
+
         if let Some(server) = best_healthy {
-             Ok(Some(server.clone()))
+            Ok(Some(server.clone()))
         } else {
-             // Fallback to first if exists
-             error!("No healthy servers found, falling back to first available server");
-             Ok(servers.into_iter().next())
+            // Fallback to first if exists
+            error!("No healthy servers found, falling back to first available server");
+            Ok(servers.into_iter().next())
         }
     }
 

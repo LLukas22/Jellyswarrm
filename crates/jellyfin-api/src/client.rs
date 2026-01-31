@@ -69,7 +69,7 @@ impl JellyfinClient {
                 .map_err(|_| Error::UrlParse(url::ParseError::EmptyHost))?
                 .push("");
         }
-        
+
         Ok(Self {
             base_url: url,
             client_info,
