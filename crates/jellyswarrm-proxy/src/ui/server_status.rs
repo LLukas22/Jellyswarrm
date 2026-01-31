@@ -6,7 +6,7 @@ use axum::{
 };
 use tracing::error;
 
-use crate::AppState;
+use crate::{server_storage::ServerHealthStatus, AppState};
 
 #[derive(Template)]
 #[template(path = "admin/server_status.html")]
@@ -22,58 +22,36 @@ pub async fn check_server_status(
 ) -> impl IntoResponse {
     // Get the server details first
     match state.server_storage.get_server_by_id(server_id).await {
-        Ok(Some(server)) => {
-            let client_info = crate::config::CLIENT_INFO.clone();
+        Ok(Some(_)) => match state.server_storage.server_status(server_id).await {
+            ServerHealthStatus::Healthy(info) => {
+                let template = ServerStatusTemplate {
+                    error_message: None,
+                    server_version: info.version,
+                };
 
-            let client = match jellyfin_api::JellyfinClient::new(server.url.as_str(), client_info) {
-                Ok(c) => c,
-                Err(e) => {
-                    let template = ServerStatusTemplate {
-                        error_message: Some(format!("Client error: {}", e)),
-                        server_version: None,
-                    };
-
-                    return match template.render() {
-                        Ok(html) => Html(html).into_response(),
-                        Err(e) => {
-                            error!("Failed to render status template: {}", e);
-                            (StatusCode::INTERNAL_SERVER_ERROR, "Template error").into_response()
-                        }
-                    };
-                }
-            };
-
-            match client.get_public_system_info().await {
-                Ok(info) => {
-                    let template = ServerStatusTemplate {
-                        error_message: None,
-                        server_version: info.version,
-                    };
-
-                    match template.render() {
-                        Ok(html) => Html(html).into_response(),
-                        Err(e) => {
-                            error!("Failed to render status template: {}", e);
-                            (StatusCode::INTERNAL_SERVER_ERROR, "Template error").into_response()
-                        }
-                    }
-                }
-                Err(e) => {
-                    let template = ServerStatusTemplate {
-                        error_message: Some(format!("Error: {}", e)),
-                        server_version: None,
-                    };
-
-                    match template.render() {
-                        Ok(html) => Html(html).into_response(),
-                        Err(e) => {
-                            error!("Failed to render status template: {}", e);
-                            (StatusCode::INTERNAL_SERVER_ERROR, "Template error").into_response()
-                        }
+                match template.render() {
+                    Ok(html) => Html(html).into_response(),
+                    Err(e) => {
+                        error!("Failed to render status template: {}", e);
+                        (StatusCode::INTERNAL_SERVER_ERROR, "Template error").into_response()
                     }
                 }
             }
-        }
+            ServerHealthStatus::Unhealthy(e) => {
+                let template = ServerStatusTemplate {
+                    error_message: Some(format!("Error: {}", e)),
+                    server_version: None,
+                };
+
+                match template.render() {
+                    Ok(html) => Html(html).into_response(),
+                    Err(e) => {
+                        error!("Failed to render status template: {}", e);
+                        (StatusCode::INTERNAL_SERVER_ERROR, "Template error").into_response()
+                    }
+                }
+            }
+        },
         Ok(None) => (
             StatusCode::NOT_FOUND,
             Html("<span style=\"color: #dc3545;\">Server not found</span>"),
