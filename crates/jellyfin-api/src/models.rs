@@ -50,7 +50,7 @@ pub struct NewUserRequest {
     pub password: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PublicSystemInfo {
     #[serde(rename = "LocalAddress")]
     pub local_address: Option<String>,

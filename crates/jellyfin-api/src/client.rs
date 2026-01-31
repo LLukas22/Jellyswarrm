@@ -50,6 +50,18 @@ impl std::hash::Hash for JellyfinClient {
 
 impl JellyfinClient {
     pub fn new(base_url: &str, client_info: ClientInfo) -> Result<Self, Error> {
+        let http_client = Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()?;
+
+        Self::new_with_client(base_url, client_info, http_client)
+    }
+
+    pub fn new_with_client(
+        base_url: &str,
+        client_info: ClientInfo,
+        http_client: Client,
+    ) -> Result<Self, Error> {
         let mut url = Url::parse(base_url)?;
         // Ensure trailing slash for consistent joining
         if !url.path().ends_with('/') {
@@ -57,11 +69,7 @@ impl JellyfinClient {
                 .map_err(|_| Error::UrlParse(url::ParseError::EmptyHost))?
                 .push("");
         }
-
-        let http_client = Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()?;
-
+        
         Ok(Self {
             base_url: url,
             client_info,

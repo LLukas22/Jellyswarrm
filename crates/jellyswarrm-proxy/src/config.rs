@@ -122,6 +122,10 @@ fn default_media_streaming_mode() -> MediaStreamingMode {
     MediaStreamingMode::Redirect
 }
 
+fn default_server_background_check_interval_secs() -> u64 {
+    30
+}
+
 mod base64_serde {
     use super::*;
     use serde::de::Error as DeError;
@@ -204,6 +208,11 @@ define_fallback_deserializer!(
     MediaStreamingMode,
     default_media_streaming_mode
 );
+define_fallback_deserializer!(
+    deserialize_server_background_check_interval_secs,
+    u64,
+    default_server_background_check_interval_secs
+);
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PreconfiguredServer {
@@ -258,6 +267,12 @@ pub struct AppConfig {
         deserialize_with = "deserialize_media_streaming_mode"
     )]
     pub media_streaming_mode: MediaStreamingMode,
+
+    #[serde(
+        default = "default_server_background_check_interval_secs",
+        deserialize_with = "deserialize_server_background_check_interval_secs"
+    )]
+    pub server_background_check_interval_secs: u64,
 }
 
 pub const DEFAULT_CONFIG_FILENAME: &str = "jellyswarrm.toml";
