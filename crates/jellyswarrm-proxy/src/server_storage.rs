@@ -52,8 +52,8 @@ impl ServerHealthStatus {
 pub struct ServerStorageService {
     pool: SqlitePool,
     health_status: Arc<RwLock<HashMap<i64, ServerHealthStatus>>>,
-    http_client: reqwest::Client,
-    client_info: ClientInfo,
+    pub http_client: reqwest::Client,
+    pub client_info: ClientInfo,
 }
 
 impl ServerStorageService {
