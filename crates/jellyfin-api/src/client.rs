@@ -236,6 +236,13 @@ impl JellyfinClient {
             .await
     }
 
+    pub async fn get_branding_configuration(
+        &self,
+    ) -> Result<crate::models::BrandingConfiguration, Error> {
+        self.request(reqwest::Method::GET, "Branding/Configuration", None)
+            .await
+    }
+
     // Admin methods
 
     pub async fn get_users(&self) -> Result<Vec<User>, Error> {
@@ -400,5 +407,37 @@ mod tests {
 
         assert_eq!(folders.len(), 1);
         assert_eq!(folders[0].name, "Movies");
+    }
+
+    #[tokio::test]
+    async fn test_get_branding_configuration() {
+        let mock_server = MockServer::start().await;
+
+        let branding_response = json!({
+            "LoginDisclaimer": "Welcome to Jellyfin",
+            "CustomCss": "body { background: black; }",
+            "SplashscreenEnabled": true
+        });
+
+        Mock::given(method("GET"))
+            .and(path("/Branding/Configuration"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(branding_response))
+            .mount(&mock_server)
+            .await;
+
+        let client_info = ClientInfo::default();
+        let client = JellyfinClient::new(&mock_server.uri(), client_info).unwrap();
+
+        let config = client.get_branding_configuration().await.unwrap();
+
+        assert_eq!(
+            config.login_disclaimer,
+            Some("Welcome to Jellyfin".to_string())
+        );
+        assert_eq!(
+            config.custom_css,
+            Some("body { background: black; }".to_string())
+        );
+        assert_eq!(config.splashscreen_enabled, Some(true));
     }
 }

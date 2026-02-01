@@ -91,3 +91,13 @@ pub struct ItemsResponse {
     #[serde(rename = "TotalRecordCount")]
     pub total_record_count: i32,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrandingConfiguration {
+    #[serde(rename = "LoginDisclaimer")]
+    pub login_disclaimer: Option<String>,
+    #[serde(rename = "CustomCss")]
+    pub custom_css: Option<String>,
+    #[serde(rename = "SplashscreenEnabled")]
+    pub splashscreen_enabled: Option<bool>,
+}
