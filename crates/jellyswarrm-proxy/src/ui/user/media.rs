@@ -5,7 +5,7 @@ use axum::{
     http::{header, StatusCode},
     response::{Html, IntoResponse, Response},
 };
-use jellyfin_api::models::BaseItem;
+use jellyfin_api::models::{BaseItem, IncludeItemTypes};
 use tracing::error;
 
 use crate::{
@@ -115,8 +115,9 @@ pub async fn get_server_libraries(
                             &jellyfin_user.id,
                             Some(&folder.id),
                             true,
-                            Some(vec!["Movie".to_string(), "Series".to_string()]),
+                            Some(vec![IncludeItemTypes::Movie, IncludeItemTypes::Series]),
                             Some(0),
+                            None,
                             None,
                             None,
                             None,
@@ -180,11 +181,12 @@ pub async fn get_library_items(
                 &jellyfin_user.id,
                 Some(&library_id),
                 true,
-                Some(vec!["Movie".to_string(), "Series".to_string()]),
+                Some(vec![IncludeItemTypes::Movie, IncludeItemTypes::Series]),
                 Some(limit),
                 Some(start_index),
                 Some("DateCreated".to_string()),
                 Some("Descending".to_string()),
+                None,
             )
             .await
         {

@@ -1,5 +1,8 @@
 use crate::error::Error;
-use crate::models::{AuthResponse, MediaFoldersResponse, User};
+use crate::models::{
+    AuthResponse, IncludeBaseItemFields, IncludeItemTypes, MediaFoldersResponse, User,
+};
+use moka::ops::compute::Op;
 use reqwest::{header, Client, StatusCode};
 use serde::de::DeserializeOwned;
 use serde_json::json;
@@ -274,23 +277,40 @@ impl JellyfinClient {
         user_id: &str,
         parent_id: Option<&str>,
         recursive: bool,
-        include_item_types: Option<Vec<String>>,
+        include_item_types: Option<Vec<IncludeItemTypes>>,
         limit: Option<i32>,
         start_index: Option<i32>,
         sort_by: Option<String>,
         sort_order: Option<String>,
+        include_fields: Option<Vec<IncludeBaseItemFields>>,
     ) -> Result<crate::models::ItemsResponse, Error> {
         let mut query = vec![
             ("Recursive", recursive.to_string()),
-            ("Fields", "PrimaryImageAspectRatio,CanDelete,BasicSyncInfo,ProductionYear,RunTimeTicks,CommunityRating".to_string()),
+            //("Fields", "PrimaryImageAspectRatio,CanDelete,BasicSyncInfo,ProductionYear,RunTimeTicks,CommunityRating".to_string()),
         ];
+
+        if let Some(include_fields) = include_fields {
+            let fields_str = include_fields
+                .iter()
+                .map(|f| f.to_string())
+                .collect::<Vec<String>>()
+                .join(",");
+            query.push(("Fields", fields_str));
+        }
 
         if let Some(pid) = parent_id {
             query.push(("ParentId", pid.to_string()));
         }
 
         if let Some(types) = include_item_types {
-            query.push(("IncludeItemTypes", types.join(",")));
+            query.push((
+                "IncludeItemTypes",
+                types
+                    .iter()
+                    .map(|f| f.to_string())
+                    .collect::<Vec<String>>()
+                    .join(","),
+            ));
         }
 
         if let Some(l) = limit {
