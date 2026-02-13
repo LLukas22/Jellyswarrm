@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::{error::Error, ClientInfo, JellyfinClient};
 use moka::future::Cache;
+use tracing::info;
 use url::Url;
 
 #[derive(Clone)]
@@ -14,15 +15,13 @@ impl JellyfinClientStorage {
         let cache = Cache::builder()
             .max_capacity(capacity)
             .time_to_idle(ttl)
-            .eviction_listener(|_key, value: Arc<JellyfinClient>, _cause| {
-                if value.get_token().is_some() {
-                    tokio::spawn(async move {
+            .async_eviction_listener(|_key, value: Arc<JellyfinClient>, _cause| Box::pin(async move {
+                    if value.get_token().await.is_some() {
                         if let Err(e) = value.logout().await {
                             tracing::error!("Failed to logout evicted client: {:?}", e);
                         }
-                    });
-                }
-            })
+                    }
+            }))
             .build();
 
         Self { cache }
@@ -34,6 +33,7 @@ impl JellyfinClientStorage {
         client_info: ClientInfo,
         id: Option<&str>,
     ) -> Result<Arc<JellyfinClient>, Error> {
+        info!("Requesting JellyfinClient for URL: {}", base_url);
         let mut url = Url::parse(base_url)?;
         if url.path().ends_with('/') {
             url.path_segments_mut()
@@ -47,6 +47,8 @@ impl JellyfinClientStorage {
         if let Some(client) = self.cache.get(&key).await {
             return Ok(client);
         }
+
+        info!("Creating new JellyfinClient for URL: {}", normalized_url);
 
         let client = Arc::new(JellyfinClient::new(&normalized_url, client_info)?);
         self.cache.insert(key, client.clone()).await;

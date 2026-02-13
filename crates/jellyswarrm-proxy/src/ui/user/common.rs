@@ -49,19 +49,18 @@ pub async fn authenticate_user_on_server(
 
     let admin_password = state.get_admin_password().await;
 
-    info!(
-        "Authenticating user '{}' on server '{}'.",
-        user.username, server.id
-    );
-
     let password = state.user_authorization.decrypt_server_mapping_password(
         &mapping,
         &user.password_hash,
         &admin_password.into(),
     );
 
-    if client.get_token().is_some() {
+    if client.get_token().await.is_some() {
         // Try to validate existing session
+        info!(
+            "Validating existing session for user '{}' on server '{}'.",
+            user.username, server.name
+        );
         match client.get_me().await {
             Ok(jellyfin_user) => {
                 return Ok((client, jellyfin_user, public_info));
@@ -72,6 +71,11 @@ pub async fn authenticate_user_on_server(
             }
         }
     }
+
+    info!(
+        "Authenticating user '{}' on server '{}'.",
+        user.username, server.name
+    );
 
     match client
         .authenticate_by_name(&mapping.mapped_username, password.as_str())
