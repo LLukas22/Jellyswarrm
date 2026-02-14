@@ -329,6 +329,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .route("/websocket", get(handlers::syncplay::websocket))
             .route("/socket", get(handlers::syncplay::websocket))
             .route("/GetUtcTime", get(handlers::syncplay::get_utc_time))
+            //.route("/GetUTCTime", get(handlers::syncplay::get_utc_time))
             .nest(
                 "/SyncPlay",
                 Router::new()

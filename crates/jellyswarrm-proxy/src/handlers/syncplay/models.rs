@@ -28,6 +28,7 @@ pub enum GroupShuffleMode {
     Shuffle,
 }
 
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum GroupRepeatMode {

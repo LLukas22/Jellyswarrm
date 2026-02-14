@@ -104,6 +104,33 @@ impl SyncPlayService {
         }
     }
 
+    fn group_recipients(group: &SyncPlayGroup) -> Vec<String> {
+        group.participants.keys().cloned().collect::<Vec<_>>()
+    }
+
+    fn make_participant(session: &SessionContext, is_buffering: bool) -> GroupParticipant {
+        GroupParticipant {
+            user_name: session.user.original_username.clone(),
+            ping: DEFAULT_PING_MS as u64,
+            is_buffering,
+            ignore_wait: false,
+        }
+    }
+
+    fn send_empty_group_update_to_session_locked(
+        state: &mut SyncPlayState,
+        session_id: &str,
+        update_type: GroupUpdateType,
+    ) {
+        Self::send_group_update_to_sessions_locked(
+            state,
+            vec![session_id.to_string()],
+            Uuid::nil(),
+            update_type,
+            Value::String(String::new()),
+        );
+    }
+
     pub(super) fn send_group_update_to_sessions_locked(
         state: &mut SyncPlayState,
         session_ids: impl IntoIterator<Item = String>,
@@ -137,7 +164,7 @@ impl SyncPlayService {
             command,
             emitted_at: Utc::now(),
         };
-        let recipients = group.participants.keys().cloned().collect::<Vec<_>>();
+        let recipients = Self::group_recipients(group);
         for session_id in recipients {
             Self::send_to_session_locked(state, &session_id, "SyncPlayCommand", &cmd);
         }
@@ -148,7 +175,7 @@ impl SyncPlayService {
         group: &SyncPlayGroup,
         reason: PlayQueueUpdateReason,
     ) {
-        let recipients = group.participants.keys().cloned().collect::<Vec<_>>();
+        let recipients = Self::group_recipients(group);
         Self::send_play_queue_update_to_sessions_locked(state, group, reason, recipients);
     }
 
@@ -186,7 +213,7 @@ impl SyncPlayService {
             state: group.state.clone(),
             reason,
         };
-        let recipients = group.participants.keys().cloned().collect::<Vec<_>>();
+        let recipients = Self::group_recipients(group);
         Self::send_group_update_to_sessions_locked(
             state,
             recipients,
@@ -200,12 +227,10 @@ impl SyncPlayService {
         state: &mut SyncPlayState,
         session_id: &str,
     ) {
-        Self::send_group_update_to_sessions_locked(
+        Self::send_empty_group_update_to_session_locked(
             state,
-            vec![session_id.to_string()],
-            Uuid::nil(),
+            session_id,
             GroupUpdateType::LibraryAccessDenied,
-            Value::String(String::new()),
         );
     }
 
@@ -256,12 +281,7 @@ impl SyncPlayService {
         let mut state = self.state.write().await;
         Self::leave_locked(&mut state, &session.session_id);
 
-        let participant = GroupParticipant {
-            user_name: session.user.original_username.clone(),
-            ping: DEFAULT_PING_MS as u64,
-            is_buffering: false,
-            ignore_wait: false,
-        };
+        let participant = Self::make_participant(session, false);
 
         let group = SyncPlayGroup {
             group_id,
@@ -278,7 +298,9 @@ impl SyncPlayService {
             last_updated_at: Utc::now(),
         };
 
-        state.session_to_group.insert(session.session_id.clone(), group_id);
+        state
+            .session_to_group
+            .insert(session.session_id.clone(), group_id);
         state.groups.insert(group_id, group.clone());
 
         info!(
@@ -305,34 +327,29 @@ impl SyncPlayService {
         Self::leave_locked(&mut state, &session.session_id);
 
         let Some(mut group) = state.groups.remove(&group_id) else {
-            Self::send_group_update_to_sessions_locked(
+            Self::send_empty_group_update_to_session_locked(
                 &mut state,
-                vec![session.session_id.clone()],
-                Uuid::nil(),
+                &session.session_id,
                 GroupUpdateType::GroupDoesNotExist,
-                Value::String(String::new()),
             );
             return;
         };
 
         group.participants.insert(
             session.session_id.clone(),
-            GroupParticipant {
-                user_name: session.user.original_username.clone(),
-                ping: DEFAULT_PING_MS as u64,
-                is_buffering: !group.playlist.is_empty(),
-                ignore_wait: false,
-            },
+            Self::make_participant(session, !group.playlist.is_empty()),
         );
         if !group.playlist.is_empty() {
             group.state = GroupStateType::Waiting;
             group.waiting_resume_playing = group.is_playing;
         }
         group.touch();
-        state.session_to_group.insert(session.session_id.clone(), group_id);
+        state
+            .session_to_group
+            .insert(session.session_id.clone(), group_id);
 
         let username = session.user.original_username.clone();
-        let recipients = group.participants.keys().cloned().collect::<Vec<_>>();
+        let recipients = Self::group_recipients(&group);
         Self::send_group_update_to_sessions_locked(
             &mut state,
             recipients,
@@ -379,7 +396,7 @@ impl SyncPlayService {
                 .unwrap_or_default();
             group.participants.remove(session_id);
             group.touch();
-            let recipients = group.participants.keys().cloned().collect::<Vec<_>>();
+            let recipients = Self::group_recipients(&group);
             Self::send_group_update_to_sessions_locked(
                 state,
                 recipients,
@@ -418,14 +435,9 @@ impl SyncPlayService {
         Self::leave_locked(&mut state, &session.session_id);
     }
 
-    pub(super) async fn list_groups(&self) -> Vec<GroupInfoDto> {
+    pub(super) async fn list_group_snapshots(&self) -> Vec<SyncPlayGroup> {
         let state = self.state.read().await;
-        state.groups.values().map(SyncPlayGroup::to_group_info).collect()
-    }
-
-    pub(super) async fn get_group(&self, group_id: Uuid) -> Option<GroupInfoDto> {
-        let state = self.state.read().await;
-        state.groups.get(&group_id).map(SyncPlayGroup::to_group_info)
+        state.groups.values().cloned().collect()
     }
 
     pub(super) async fn with_group_for_session(
@@ -435,12 +447,10 @@ impl SyncPlayService {
     ) -> bool {
         let mut state = self.state.write().await;
         let Some(group_id) = state.session_to_group.get(&session.session_id).copied() else {
-            Self::send_group_update_to_sessions_locked(
+            Self::send_empty_group_update_to_session_locked(
                 &mut state,
-                vec![session.session_id.clone()],
-                Uuid::nil(),
+                &session.session_id,
                 GroupUpdateType::NotInGroup,
-                Value::String(String::new()),
             );
             return false;
         };
@@ -448,12 +458,10 @@ impl SyncPlayService {
         let mut group = match state.groups.remove(&group_id) {
             Some(g) => g,
             None => {
-                Self::send_group_update_to_sessions_locked(
+                Self::send_empty_group_update_to_session_locked(
                     &mut state,
-                    vec![session.session_id.clone()],
-                    Uuid::nil(),
+                    &session.session_id,
                     GroupUpdateType::NotInGroup,
-                    Value::String(String::new()),
                 );
                 return false;
             }
@@ -486,8 +494,8 @@ impl SyncPlayService {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::models::SyncPlayQueueItem;
+    use super::*;
     use crate::encryption::HashedPassword;
     use chrono::DateTime;
     use tokio::time::{timeout, Duration};
@@ -544,16 +552,27 @@ mod tests {
         assert_eq!(group.participants, vec!["alice".to_string()]);
 
         service.join_group(&s2, group.group_id).await;
-        let joined = service.get_group(group.group_id).await.expect("group missing");
+        let joined = service
+            .get_group_snapshot_by_id(group.group_id)
+            .await
+            .expect("group missing")
+            .to_group_info();
         assert!(joined.participants.contains(&"alice".to_string()));
         assert!(joined.participants.contains(&"bob".to_string()));
 
         service.leave_group(&s1).await;
-        let after_leave = service.get_group(group.group_id).await.expect("group missing");
+        let after_leave = service
+            .get_group_snapshot_by_id(group.group_id)
+            .await
+            .expect("group missing")
+            .to_group_info();
         assert_eq!(after_leave.participants, vec!["bob".to_string()]);
 
         service.leave_group(&s2).await;
-        assert!(service.get_group(group.group_id).await.is_none());
+        assert!(service
+            .get_group_snapshot_by_id(group.group_id)
+            .await
+            .is_none());
     }
 
     #[tokio::test]
@@ -585,7 +604,10 @@ mod tests {
         assert_eq!(g.playlist[1].item_id, "virtual-media-b");
         assert_ne!(g.playlist[0].playlist_item_id, Uuid::nil());
         assert_ne!(g.playlist[1].playlist_item_id, Uuid::nil());
-        assert_ne!(g.playlist[0].playlist_item_id, g.playlist[1].playlist_item_id);
+        assert_ne!(
+            g.playlist[0].playlist_item_id,
+            g.playlist[1].playlist_item_id
+        );
     }
 
     #[tokio::test]
@@ -628,13 +650,19 @@ mod tests {
         let m1 = recv_json(&mut rx).await;
         let m2 = recv_json(&mut rx).await;
         let messages = vec![m1, m2];
-        assert!(messages.iter().any(|m| m["MessageType"] == "SyncPlayCommand"
-            && m["Data"]["Command"] == "Pause"
-            && m["Data"]["PositionTicks"] == 123));
-        assert!(messages.iter().any(|m| m["MessageType"] == "SyncPlayGroupUpdate"
-            && m["Data"]["Type"] == "StateUpdate"));
+        assert!(messages
+            .iter()
+            .any(|m| m["MessageType"] == "SyncPlayCommand"
+                && m["Data"]["Command"] == "Pause"
+                && m["Data"]["PositionTicks"] == 123));
+        assert!(messages.iter().any(
+            |m| m["MessageType"] == "SyncPlayGroupUpdate" && m["Data"]["Type"] == "StateUpdate"
+        ));
 
-        assert!(service.get_group(group.group_id).await.is_some());
+        assert!(service
+            .get_group_snapshot_by_id(group.group_id)
+            .await
+            .is_some());
     }
 
     #[tokio::test]
@@ -667,7 +695,10 @@ mod tests {
         let _ = recv_json(&mut rx).await;
 
         service.unregister_websocket_and_leave(&s1.session_id).await;
-        assert!(service.get_group(group.group_id).await.is_none());
+        assert!(service
+            .get_group_snapshot_by_id(group.group_id)
+            .await
+            .is_none());
     }
 
     #[tokio::test]
@@ -736,14 +767,20 @@ mod tests {
             .iter()
             .find(|m| m["MessageType"] == "SyncPlayCommand" && m["Data"]["Command"] == "Unpause")
             .expect("expected unpause command");
-        let when = DateTime::parse_from_rfc3339(cmd["Data"]["When"].as_str().expect("When missing"))
-            .expect("invalid When timestamp");
+        let when =
+            DateTime::parse_from_rfc3339(cmd["Data"]["When"].as_str().expect("When missing"))
+                .expect("invalid When timestamp");
         let emitted = DateTime::parse_from_rfc3339(
-            cmd["Data"]["EmittedAt"].as_str().expect("EmittedAt missing"),
+            cmd["Data"]["EmittedAt"]
+                .as_str()
+                .expect("EmittedAt missing"),
         )
         .expect("invalid EmittedAt timestamp");
         let delay_ms = (when - emitted).num_milliseconds();
-        assert!(delay_ms >= 500, "expected delayed unpause, got {delay_ms}ms");
+        assert!(
+            delay_ms >= 500,
+            "expected delayed unpause, got {delay_ms}ms"
+        );
     }
 
     #[tokio::test]
@@ -774,9 +811,11 @@ mod tests {
 
         service.join_group(&s2, group.group_id).await;
         let msgs = recv_many(&mut rx2, 8).await;
-        assert!(msgs.iter().any(|m| m["MessageType"] == "SyncPlayGroupUpdate"
-            && m["Data"]["Type"] == "PlayQueue"
-            && m["Data"]["Data"]["Reason"] == "NewPlaylist"));
+        assert!(msgs
+            .iter()
+            .any(|m| m["MessageType"] == "SyncPlayGroupUpdate"
+                && m["Data"]["Type"] == "PlayQueue"
+                && m["Data"]["Data"]["Reason"] == "NewPlaylist"));
 
         let _ = recv_many(&mut rx1, 8).await;
     }

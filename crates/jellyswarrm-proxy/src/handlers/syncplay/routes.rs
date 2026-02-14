@@ -18,74 +18,82 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::{models::Authorization, AppState};
+use crate::{request_preprocessing::resolve_request_identity_from_headers_uri, AppState};
 
 use super::models::*;
 use super::service::{SessionContext, SyncPlayService, DEFAULT_PING_MS};
+
+fn mark_group_waiting(group: &mut SyncPlayGroup, resume_playing: bool) {
+    group.state = GroupStateType::Waiting;
+    group.waiting_resume_playing = resume_playing;
+    for member in group.participants.values_mut() {
+        member.is_buffering = true;
+    }
+}
+
+fn try_send_playlist_correction(
+    group: &SyncPlayGroup,
+    sync_state: &mut super::service::SyncPlayState,
+    expected_playlist_item_id: Uuid,
+    session_id: &str,
+) -> bool {
+    if let Some(current) = group
+        .playing_item_index
+        .and_then(|idx| group.playlist.get(idx))
+    {
+        if current.playlist_item_id != expected_playlist_item_id {
+            SyncPlayService::send_play_queue_update_to_sessions_locked(
+                sync_state,
+                group,
+                PlayQueueUpdateReason::SetCurrentItem,
+                vec![session_id.to_string()],
+            );
+            return true;
+        }
+    }
+    false
+}
+
+async fn deny_library_access(
+    state: &AppState,
+    session: &SessionContext,
+    log_message: &'static str,
+) {
+    warn!(
+        session_id = %session.session_id,
+        user_id = %session.user.id,
+        "{}",
+        log_message
+    );
+    state
+        .syncplay
+        .send_library_access_denied_to_session(&session.session_id)
+        .await;
+}
 
 async fn session_context_from_request(
     state: &AppState,
     headers: &HeaderMap,
     uri: &Uri,
 ) -> Result<SessionContext, StatusCode> {
-    let mut token = None;
-    let mut device_id = None;
+    let identity = resolve_request_identity_from_headers_uri(headers, uri, state)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    if let Some(raw_auth) = headers
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-    {
-        if let Ok(auth) = Authorization::parse(raw_auth) {
-            token = auth.token.clone();
-            device_id = Some(auth.device_id);
-        }
-    }
-
-    if token.is_none() {
-        if let Some(raw_auth) = headers
-            .get("x-emby-authorization")
-            .and_then(|value| value.to_str().ok())
-        {
-            if let Ok(auth) = Authorization::parse_with_legacy(raw_auth, true) {
-                token = auth.token.clone();
-                device_id = Some(auth.device_id);
-            }
-        }
-    }
-
-    if token.is_none() {
-        token = headers
-            .get("x-mediabrowser-token")
-            .or_else(|| headers.get("x-emby-token"))
-            .and_then(|value| value.to_str().ok())
-            .map(ToString::to_string);
-    }
-
-    if token.is_none() {
-        if let Some(query) = uri.query() {
-            let pairs = url::form_urlencoded::parse(query.as_bytes());
-            for (k, v) in pairs {
-                if k.eq_ignore_ascii_case("apikey") || k.eq_ignore_ascii_case("api_key") {
-                    token = Some(v.to_string());
-                    break;
-                }
-            }
-        }
-    }
-
-    let Some(token) = token else {
+    let Some(auth) = identity.auth else {
         return Err(StatusCode::UNAUTHORIZED);
     };
 
-    let user = state
-        .user_authorization
-        .get_user_by_virtual_key(&token)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let Some(token) = auth.token() else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
 
-    let session_id = match device_id {
-        Some(d) if !d.is_empty() => format!("{}:{}", user.id, d),
+    let Some(user) = identity.user else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+
+    let session_id = match identity.device {
+        Some(d) if !d.device_id.is_empty() => format!("{}:{}", user.id, d.device_id),
         _ => format!("{}:token:{}", user.id, token),
     };
 
@@ -256,21 +264,23 @@ pub async fn join_group(
 ) -> Result<StatusCode, StatusCode> {
     let session = session_context_from_request(&state, &headers, &uri).await?;
 
-    if let Some(group) = state.syncplay.get_group_snapshot_by_id(payload.group_id).await {
+    if let Some(group) = state
+        .syncplay
+        .get_group_snapshot_by_id(payload.group_id)
+        .await
+    {
         let queue_item_ids = group
             .playlist
             .iter()
             .map(|item| item.item_id.clone())
             .collect::<Vec<_>>();
         if !user_has_library_access(&state, &session.user.id, &queue_item_ids).await? {
-            warn!(
-                group_id = %payload.group_id,
-                "SyncPlay join denied due to library access"
-            );
-            state
-                .syncplay
-                .send_library_access_denied_to_session(&session.session_id)
-                .await;
+            deny_library_access(
+                &state,
+                &session,
+                "SyncPlay join denied due to library access",
+            )
+            .await;
             return Ok(StatusCode::NO_CONTENT);
         }
     }
@@ -285,9 +295,7 @@ pub async fn leave_group(
     uri: Uri,
 ) -> Result<StatusCode, StatusCode> {
     let session = session_context_from_request(&state, &headers, &uri).await?;
-    info!(
-        "SyncPlay leave requested"
-    );
+    info!("SyncPlay leave requested");
     state.syncplay.leave_group(&session).await;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -297,8 +305,26 @@ pub async fn list_groups(
     headers: HeaderMap,
     uri: Uri,
 ) -> Result<Json<Vec<GroupInfoDto>>, StatusCode> {
-    let _ = session_context_from_request(&state, &headers, &uri).await?;
-    Ok(Json(state.syncplay.list_groups().await))
+    let session = session_context_from_request(&state, &headers, &uri).await?;
+    let groups = state.syncplay.list_group_snapshots().await;
+    let mut visible_groups = Vec::new();
+    for group in groups {
+        let queue_item_ids = group
+            .playlist
+            .iter()
+            .map(|item| item.item_id.clone())
+            .collect::<Vec<_>>();
+        if user_has_library_access(&state, &session.user.id, &queue_item_ids).await? {
+            visible_groups.push(group.to_group_info());
+        }
+    }
+    debug!(
+        session_id = %session.session_id,
+        user_id = %session.user.id,
+        visible_count = visible_groups.len(),
+        "SyncPlay list groups"
+    );
+    Ok(Json(visible_groups))
 }
 
 pub async fn get_group(
@@ -307,13 +333,26 @@ pub async fn get_group(
     uri: Uri,
     Path(group_id): Path<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let _ = session_context_from_request(&state, &headers, &uri).await?;
+    let session = session_context_from_request(&state, &headers, &uri).await?;
     let group_id = Uuid::from_str(&group_id).map_err(|_| StatusCode::NOT_FOUND)?;
-    if let Some(group) = state.syncplay.get_group(group_id).await {
-        Ok((StatusCode::OK, Json(group)).into_response())
-    } else {
-        Ok(StatusCode::NOT_FOUND.into_response())
+    let Some(group) = state.syncplay.get_group_snapshot_by_id(group_id).await else {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    };
+    let queue_item_ids = group
+        .playlist
+        .iter()
+        .map(|item| item.item_id.clone())
+        .collect::<Vec<_>>();
+    if !user_has_library_access(&state, &session.user.id, &queue_item_ids).await? {
+        debug!(
+            session_id = %session.session_id,
+            user_id = %session.user.id,
+            group_id = %group_id,
+            "SyncPlay group lookup denied due to library access"
+        );
+        return Ok(StatusCode::NOT_FOUND.into_response());
     }
+    Ok((StatusCode::OK, Json(group.to_group_info())).into_response())
 }
 
 pub async fn set_new_queue(
@@ -330,14 +369,12 @@ pub async fn set_new_queue(
         .await
     {
         if !group_has_library_access(&state, &group, &payload.playing_queue).await? {
-            warn!(
-                item_count = payload.playing_queue.len(),
-                "SyncPlay SetNewQueue denied due to library access"
-            );
-            state
-                .syncplay
-                .send_library_access_denied_to_session(&session.session_id)
-                .await;
+            deny_library_access(
+                &state,
+                &session,
+                "SyncPlay SetNewQueue denied due to library access",
+            )
+            .await;
             return Ok(StatusCode::NO_CONTENT);
         }
     }
@@ -366,11 +403,7 @@ pub async fn set_new_queue(
             };
             group.start_position_ticks = payload.start_position_ticks;
             group.is_playing = false;
-            group.state = GroupStateType::Waiting;
-            group.waiting_resume_playing = false;
-            for member in group.participants.values_mut() {
-                member.is_buffering = true;
-            }
+            mark_group_waiting(group, true);
             group.touch();
 
             SyncPlayService::send_play_queue_update_locked(
@@ -408,11 +441,7 @@ pub async fn set_playlist_item(
                 );
                 group.playing_item_index = Some(index);
                 group.start_position_ticks = 0;
-                group.state = GroupStateType::Waiting;
-                group.waiting_resume_playing = group.is_playing;
-                for member in group.participants.values_mut() {
-                    member.is_buffering = true;
-                }
+                mark_group_waiting(group, group.is_playing);
                 group.touch();
                 SyncPlayService::send_play_queue_update_locked(
                     sync_state,
@@ -545,14 +574,12 @@ pub async fn queue_items(
         .await
     {
         if !group_has_library_access(&state, &group, &payload.item_ids).await? {
-            warn!(
-                item_count = payload.item_ids.len(),
-                "SyncPlay Queue denied due to library access"
-            );
-            state
-                .syncplay
-                .send_library_access_denied_to_session(&session.session_id)
-                .await;
+            deny_library_access(
+                &state,
+                &session,
+                "SyncPlay Queue denied due to library access",
+            )
+            .await;
             return Ok(StatusCode::NO_CONTENT);
         }
     }
@@ -625,7 +652,16 @@ pub async fn unpause(
                 group,
                 SendCommandType::Unpause,
                 Some(group.start_position_ticks),
-                std::cmp::max(group.participants.values().map(|p| p.ping as i64).max().unwrap_or(DEFAULT_PING_MS) * 2, DEFAULT_PING_MS),
+                std::cmp::max(
+                    group
+                        .participants
+                        .values()
+                        .map(|p| p.ping as i64)
+                        .max()
+                        .unwrap_or(DEFAULT_PING_MS)
+                        * 2,
+                    DEFAULT_PING_MS,
+                ),
             );
             SyncPlayService::send_state_update_locked(sync_state, group, "Unpause");
         })
@@ -681,7 +717,13 @@ pub async fn stop(
             group.waiting_resume_playing = false;
             group.start_position_ticks = 0;
             group.touch();
-            SyncPlayService::send_command_to_group_locked(sync_state, group, SendCommandType::Stop, None, 0);
+            SyncPlayService::send_command_to_group_locked(
+                sync_state,
+                group,
+                SendCommandType::Stop,
+                None,
+                0,
+            );
             SyncPlayService::send_state_update_locked(sync_state, group, "Stop");
         })
         .await;
@@ -704,11 +746,7 @@ pub async fn seek(
                 "SyncPlay seek requested"
             );
             group.start_position_ticks = payload.position_ticks.max(0);
-            group.state = GroupStateType::Waiting;
-            group.waiting_resume_playing = group.is_playing;
-            for member in group.participants.values_mut() {
-                member.is_buffering = true;
-            }
+            mark_group_waiting(group, group.is_playing);
             group.touch();
             SyncPlayService::send_command_to_group_locked(
                 sync_state,
@@ -734,17 +772,13 @@ pub async fn buffering(
     state
         .syncplay
         .with_group_for_session(&session, move |group, sync_state| {
-            if let Some(current) = group.playing_item_index.and_then(|idx| group.playlist.get(idx))
-            {
-                if current.playlist_item_id != payload.playlist_item_id {
-                    SyncPlayService::send_play_queue_update_to_sessions_locked(
-                        sync_state,
-                        group,
-                        PlayQueueUpdateReason::SetCurrentItem,
-                        vec![session_id.clone()],
-                    );
-                    return;
-                }
+            if try_send_playlist_correction(
+                group,
+                sync_state,
+                payload.playlist_item_id,
+                &session_id,
+            ) {
+                return;
             }
             if let Some(member) = group.participants.get_mut(&session_id) {
                 member.is_buffering = true;
@@ -757,8 +791,11 @@ pub async fn buffering(
             );
             group.start_position_ticks = payload.position_ticks.max(0);
             group.is_playing = payload.is_playing;
-            group.state = GroupStateType::Waiting;
-            group.waiting_resume_playing = payload.is_playing;
+            if group.state == GroupStateType::Waiting {
+                group.state = GroupStateType::Waiting;
+            } else {
+                mark_group_waiting(group, payload.is_playing);
+            }
             if payload.when > group.last_updated_at {
                 group.last_updated_at = payload.when;
             }
@@ -780,17 +817,13 @@ pub async fn ready(
     state
         .syncplay
         .with_group_for_session(&session, move |group, sync_state| {
-            if let Some(current) = group.playing_item_index.and_then(|idx| group.playlist.get(idx))
-            {
-                if current.playlist_item_id != payload.playlist_item_id {
-                    SyncPlayService::send_play_queue_update_to_sessions_locked(
-                        sync_state,
-                        group,
-                        PlayQueueUpdateReason::SetCurrentItem,
-                        vec![session_id.clone()],
-                    );
-                    return;
-                }
+            if try_send_playlist_correction(
+                group,
+                sync_state,
+                payload.playlist_item_id,
+                &session_id,
+            ) {
+                return;
             }
             if let Some(member) = group.participants.get_mut(&session_id) {
                 member.is_buffering = false;
@@ -802,7 +835,6 @@ pub async fn ready(
                 "SyncPlay ready update"
             );
             group.start_position_ticks = payload.position_ticks.max(0);
-            group.waiting_resume_playing = payload.is_playing;
             group.state = GroupStateType::Waiting;
             if payload.when > group.last_updated_at {
                 group.last_updated_at = payload.when;
@@ -857,7 +889,12 @@ pub async fn next_item(
                 return;
             }
             let current = playlist_item_id
-                .and_then(|id| group.playlist.iter().position(|item| item.playlist_item_id == id))
+                .and_then(|id| {
+                    group
+                        .playlist
+                        .iter()
+                        .position(|item| item.playlist_item_id == id)
+                })
                 .or(group.playing_item_index)
                 .unwrap_or(0);
             let next = (current + 1) % group.playlist.len();
@@ -869,11 +906,7 @@ pub async fn next_item(
             );
             group.playing_item_index = Some(next);
             group.start_position_ticks = 0;
-            group.state = GroupStateType::Waiting;
-            group.waiting_resume_playing = group.is_playing;
-            for member in group.participants.values_mut() {
-                member.is_buffering = true;
-            }
+            mark_group_waiting(group, group.is_playing);
             group.touch();
             SyncPlayService::send_play_queue_update_locked(
                 sync_state,
@@ -901,7 +934,12 @@ pub async fn previous_item(
                 return;
             }
             let current = playlist_item_id
-                .and_then(|id| group.playlist.iter().position(|item| item.playlist_item_id == id))
+                .and_then(|id| {
+                    group
+                        .playlist
+                        .iter()
+                        .position(|item| item.playlist_item_id == id)
+                })
                 .or(group.playing_item_index)
                 .unwrap_or(0);
             let prev = if current == 0 {
@@ -917,11 +955,7 @@ pub async fn previous_item(
             );
             group.playing_item_index = Some(prev);
             group.start_position_ticks = 0;
-            group.state = GroupStateType::Waiting;
-            group.waiting_resume_playing = group.is_playing;
-            for member in group.participants.values_mut() {
-                member.is_buffering = true;
-            }
+            mark_group_waiting(group, group.is_playing);
             group.touch();
             SyncPlayService::send_play_queue_update_locked(
                 sync_state,
