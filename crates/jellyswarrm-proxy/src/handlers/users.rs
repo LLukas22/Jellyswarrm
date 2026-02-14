@@ -380,8 +380,8 @@ async fn authenticate_on_server(
 
     // Modify admin status (security measure)
     auth_response.user.policy.is_administrator = false;
-    // Disable SyncPlay access
-    auth_response.user.policy.sync_play_access = SyncPlayUserAccessType::None;
+    // SyncPlay is handled by Jellyswarrm itself.
+    auth_response.user.policy.sync_play_access = SyncPlayUserAccessType::CreateAndJoinGroups;
 
     // Generate a unique access token for this authentication
     auth_response.access_token = user.virtual_key.clone();
