@@ -6,9 +6,9 @@ use std::str::FromStr;
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Path, Query, State,
+        FromRequestParts, Path, Query, State,
     },
-    http::{HeaderMap, StatusCode, Uri},
+    http::{request::Parts, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -21,15 +21,7 @@ use uuid::Uuid;
 use crate::{request_preprocessing::resolve_request_identity_from_headers_uri, AppState};
 
 use super::models::*;
-use super::service::{SessionContext, SyncPlayService, DEFAULT_PING_MS};
-
-fn mark_group_waiting(group: &mut SyncPlayGroup, resume_playing: bool) {
-    group.state = GroupStateType::Waiting;
-    group.waiting_resume_playing = resume_playing;
-    for member in group.participants.values_mut() {
-        member.is_buffering = true;
-    }
-}
+use super::service::SessionContext;
 
 fn try_send_playlist_correction(
     group: &SyncPlayGroup,
@@ -42,8 +34,7 @@ fn try_send_playlist_correction(
         .and_then(|idx| group.playlist.get(idx))
     {
         if current.playlist_item_id != expected_playlist_item_id {
-            SyncPlayService::send_play_queue_update_to_sessions_locked(
-                sync_state,
+            sync_state.send_queue_update_to(
                 group,
                 PlayQueueUpdateReason::SetCurrentItem,
                 vec![session_id.to_string()],
@@ -71,33 +62,36 @@ async fn deny_library_access(
         .await;
 }
 
-async fn session_context_from_request(
-    state: &AppState,
-    headers: &HeaderMap,
-    uri: &Uri,
-) -> Result<SessionContext, StatusCode> {
-    let identity = resolve_request_identity_from_headers_uri(headers, uri, state)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+impl FromRequestParts<AppState> for SessionContext {
+    type Rejection = StatusCode;
 
-    let Some(auth) = identity.auth else {
-        return Err(StatusCode::UNAUTHORIZED);
-    };
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let identity = resolve_request_identity_from_headers_uri(&parts.headers, &parts.uri, state)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let Some(token) = auth.token() else {
-        return Err(StatusCode::UNAUTHORIZED);
-    };
+        let Some(auth) = identity.auth else {
+            return Err(StatusCode::UNAUTHORIZED);
+        };
 
-    let Some(user) = identity.user else {
-        return Err(StatusCode::UNAUTHORIZED);
-    };
+        let Some(token) = auth.token() else {
+            return Err(StatusCode::UNAUTHORIZED);
+        };
 
-    let session_id = match identity.device {
-        Some(d) if !d.device_id.is_empty() => format!("{}:{}", user.id, d.device_id),
-        _ => format!("{}:token:{}", user.id, token),
-    };
+        let Some(user) = identity.user else {
+            return Err(StatusCode::UNAUTHORIZED);
+        };
 
-    Ok(SessionContext { user, session_id })
+        let session_id = match identity.device {
+            Some(d) if !d.device_id.is_empty() => format!("{}:{}", user.id, d.device_id),
+            _ => format!("{}:token:{}", user.id, token),
+        };
+
+        Ok(SessionContext { user, session_id })
+    }
 }
 
 fn user_id_from_session_id(session_id: &str) -> Option<&str> {
@@ -232,11 +226,9 @@ async fn handle_ws(state: AppState, session: SessionContext, socket: WebSocket) 
 
 pub async fn websocket(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    uri: Uri,
+    session: SessionContext,
     ws: WebSocketUpgrade,
 ) -> Result<Response, StatusCode> {
-    let session = session_context_from_request(&state, &headers, &uri).await?;
     Ok(ws
         .on_upgrade(move |socket| handle_ws(state, session, socket))
         .into_response())
@@ -244,11 +236,9 @@ pub async fn websocket(
 
 pub async fn create_group(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    uri: Uri,
+    session: SessionContext,
     Json(payload): Json<NewGroupRequestDto>,
 ) -> Result<Json<GroupInfoDto>, StatusCode> {
-    let session = session_context_from_request(&state, &headers, &uri).await?;
     let group = state
         .syncplay
         .create_group(&session, payload.group_name)
@@ -258,23 +248,15 @@ pub async fn create_group(
 
 pub async fn join_group(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    uri: Uri,
+    session: SessionContext,
     Json(payload): Json<JoinGroupRequestDto>,
 ) -> Result<StatusCode, StatusCode> {
-    let session = session_context_from_request(&state, &headers, &uri).await?;
-
     if let Some(group) = state
         .syncplay
         .get_group_snapshot_by_id(payload.group_id)
         .await
     {
-        let queue_item_ids = group
-            .playlist
-            .iter()
-            .map(|item| item.item_id.clone())
-            .collect::<Vec<_>>();
-        if !user_has_library_access(&state, &session.user.id, &queue_item_ids).await? {
+        if !user_has_library_access(&state, &session.user.id, &group.queue_item_ids()).await? {
             deny_library_access(
                 &state,
                 &session,
@@ -291,10 +273,8 @@ pub async fn join_group(
 
 pub async fn leave_group(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    uri: Uri,
+    session: SessionContext,
 ) -> Result<StatusCode, StatusCode> {
-    let session = session_context_from_request(&state, &headers, &uri).await?;
     info!("SyncPlay leave requested");
     state.syncplay.leave_group(&session).await;
     Ok(StatusCode::NO_CONTENT)
@@ -302,19 +282,12 @@ pub async fn leave_group(
 
 pub async fn list_groups(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    uri: Uri,
+    session: SessionContext,
 ) -> Result<Json<Vec<GroupInfoDto>>, StatusCode> {
-    let session = session_context_from_request(&state, &headers, &uri).await?;
     let groups = state.syncplay.list_group_snapshots().await;
     let mut visible_groups = Vec::new();
     for group in groups {
-        let queue_item_ids = group
-            .playlist
-            .iter()
-            .map(|item| item.item_id.clone())
-            .collect::<Vec<_>>();
-        if user_has_library_access(&state, &session.user.id, &queue_item_ids).await? {
+        if user_has_library_access(&state, &session.user.id, &group.queue_item_ids()).await? {
             visible_groups.push(group.to_group_info());
         }
     }
@@ -329,21 +302,14 @@ pub async fn list_groups(
 
 pub async fn get_group(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    uri: Uri,
+    session: SessionContext,
     Path(group_id): Path<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let session = session_context_from_request(&state, &headers, &uri).await?;
     let group_id = Uuid::from_str(&group_id).map_err(|_| StatusCode::NOT_FOUND)?;
     let Some(group) = state.syncplay.get_group_snapshot_by_id(group_id).await else {
         return Ok(StatusCode::NOT_FOUND.into_response());
     };
-    let queue_item_ids = group
-        .playlist
-        .iter()
-        .map(|item| item.item_id.clone())
-        .collect::<Vec<_>>();
-    if !user_has_library_access(&state, &session.user.id, &queue_item_ids).await? {
+    if !user_has_library_access(&state, &session.user.id, &group.queue_item_ids()).await? {
         debug!(
             session_id = %session.session_id,
             user_id = %session.user.id,
@@ -357,12 +323,9 @@ pub async fn get_group(
 
 pub async fn set_new_queue(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    uri: Uri,
+    session: SessionContext,
     Json(payload): Json<PlayRequestDto>,
 ) -> Result<StatusCode, StatusCode> {
-    let session = session_context_from_request(&state, &headers, &uri).await?;
-
     if let Some(group) = state
         .syncplay
         .get_group_snapshot_for_session(&session.session_id)
@@ -403,15 +366,11 @@ pub async fn set_new_queue(
             };
             group.start_position_ticks = payload.start_position_ticks;
             group.is_playing = false;
-            mark_group_waiting(group, true);
+            group.transition_to_waiting(true);
             group.touch();
 
-            SyncPlayService::send_play_queue_update_locked(
-                sync_state,
-                group,
-                PlayQueueUpdateReason::NewPlaylist,
-            );
-            SyncPlayService::send_state_update_locked(sync_state, group, "Play");
+            sync_state.broadcast_queue_update(group, PlayQueueUpdateReason::NewPlaylist);
+            sync_state.broadcast_state_update(group, "Play");
         })
         .await;
 
@@ -420,11 +379,9 @@ pub async fn set_new_queue(
 
 pub async fn set_playlist_item(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    uri: Uri,
+    session: SessionContext,
     Json(payload): Json<SetPlaylistItemRequestDto>,
 ) -> Result<StatusCode, StatusCode> {
-    let session = session_context_from_request(&state, &headers, &uri).await?;
     state
         .syncplay
         .with_group_for_session(&session, move |group, sync_state| {
@@ -441,14 +398,10 @@ pub async fn set_playlist_item(
                 );
                 group.playing_item_index = Some(index);
                 group.start_position_ticks = 0;
-                mark_group_waiting(group, group.is_playing);
+                group.transition_to_waiting(group.is_playing);
                 group.touch();
-                SyncPlayService::send_play_queue_update_locked(
-                    sync_state,
-                    group,
-                    PlayQueueUpdateReason::SetCurrentItem,
-                );
-                SyncPlayService::send_state_update_locked(sync_state, group, "SetPlaylistItem");
+                sync_state.broadcast_queue_update(group, PlayQueueUpdateReason::SetCurrentItem);
+                sync_state.broadcast_state_update(group, "SetPlaylistItem");
             }
         })
         .await;
@@ -457,11 +410,9 @@ pub async fn set_playlist_item(
 
 pub async fn remove_from_playlist(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    uri: Uri,
+    session: SessionContext,
     Json(payload): Json<RemoveFromPlaylistRequestDto>,
 ) -> Result<StatusCode, StatusCode> {
-    let session = session_context_from_request(&state, &headers, &uri).await?;
     state
         .syncplay
         .with_group_for_session(&session, move |group, sync_state| {
@@ -476,12 +427,8 @@ pub async fn remove_from_playlist(
                 group.is_playing = false;
                 group.waiting_resume_playing = false;
                 group.touch();
-                SyncPlayService::send_play_queue_update_locked(
-                    sync_state,
-                    group,
-                    PlayQueueUpdateReason::RemoveItems,
-                );
-                SyncPlayService::send_state_update_locked(sync_state, group, "RemoveFromPlaylist");
+                sync_state.broadcast_queue_update(group, PlayQueueUpdateReason::RemoveItems);
+                sync_state.broadcast_state_update(group, "RemoveFromPlaylist");
                 return;
             }
 
@@ -513,11 +460,7 @@ pub async fn remove_from_playlist(
                 group.waiting_resume_playing = false;
             }
             group.touch();
-            SyncPlayService::send_play_queue_update_locked(
-                sync_state,
-                group,
-                PlayQueueUpdateReason::RemoveItems,
-            );
+            sync_state.broadcast_queue_update(group, PlayQueueUpdateReason::RemoveItems);
         })
         .await;
     Ok(StatusCode::NO_CONTENT)
@@ -525,11 +468,9 @@ pub async fn remove_from_playlist(
 
 pub async fn move_playlist_item(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    uri: Uri,
+    session: SessionContext,
     Json(payload): Json<MovePlaylistItemRequestDto>,
 ) -> Result<StatusCode, StatusCode> {
-    let session = session_context_from_request(&state, &headers, &uri).await?;
     state
         .syncplay
         .with_group_for_session(&session, move |group, sync_state| {
@@ -549,11 +490,7 @@ pub async fn move_playlist_item(
                 let target = payload.new_index.min(group.playlist.len());
                 group.playlist.insert(target, item);
                 group.touch();
-                SyncPlayService::send_play_queue_update_locked(
-                    sync_state,
-                    group,
-                    PlayQueueUpdateReason::MoveItem,
-                );
+                sync_state.broadcast_queue_update(group, PlayQueueUpdateReason::MoveItem);
             }
         })
         .await;
@@ -562,12 +499,9 @@ pub async fn move_playlist_item(
 
 pub async fn queue_items(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    uri: Uri,
+    session: SessionContext,
     Json(payload): Json<QueueRequestDto>,
 ) -> Result<StatusCode, StatusCode> {
-    let session = session_context_from_request(&state, &headers, &uri).await?;
-
     if let Some(group) = state
         .syncplay
         .get_group_snapshot_for_session(&session.session_id)
@@ -617,8 +551,7 @@ pub async fn queue_items(
                 group.playing_item_index = Some(0);
             }
             group.touch();
-            SyncPlayService::send_play_queue_update_locked(
-                sync_state,
+            sync_state.broadcast_queue_update(
                 group,
                 match mode {
                     GroupQueueMode::Queue => PlayQueueUpdateReason::Queue,
@@ -632,10 +565,8 @@ pub async fn queue_items(
 
 pub async fn unpause(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    uri: Uri,
+    session: SessionContext,
 ) -> Result<StatusCode, StatusCode> {
-    let session = session_context_from_request(&state, &headers, &uri).await?;
     state
         .syncplay
         .with_group_for_session(&session, |group, sync_state| {
@@ -647,23 +578,13 @@ pub async fn unpause(
             group.is_playing = true;
             group.waiting_resume_playing = true;
             group.touch();
-            SyncPlayService::send_command_to_group_locked(
-                sync_state,
+            sync_state.broadcast_command(
                 group,
                 SendCommandType::Unpause,
                 Some(group.start_position_ticks),
-                std::cmp::max(
-                    group
-                        .participants
-                        .values()
-                        .map(|p| p.ping as i64)
-                        .max()
-                        .unwrap_or(DEFAULT_PING_MS)
-                        * 2,
-                    DEFAULT_PING_MS,
-                ),
+                group.ping_delay_ms(),
             );
-            SyncPlayService::send_state_update_locked(sync_state, group, "Unpause");
+            sync_state.broadcast_state_update(group, "Unpause");
         })
         .await;
     Ok(StatusCode::NO_CONTENT)
@@ -671,10 +592,8 @@ pub async fn unpause(
 
 pub async fn pause(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    uri: Uri,
+    session: SessionContext,
 ) -> Result<StatusCode, StatusCode> {
-    let session = session_context_from_request(&state, &headers, &uri).await?;
     state
         .syncplay
         .with_group_for_session(&session, |group, sync_state| {
@@ -686,14 +605,13 @@ pub async fn pause(
             group.is_playing = false;
             group.waiting_resume_playing = false;
             group.touch();
-            SyncPlayService::send_command_to_group_locked(
-                sync_state,
+            sync_state.broadcast_command(
                 group,
                 SendCommandType::Pause,
                 Some(group.start_position_ticks),
                 0,
             );
-            SyncPlayService::send_state_update_locked(sync_state, group, "Pause");
+            sync_state.broadcast_state_update(group, "Pause");
         })
         .await;
     Ok(StatusCode::NO_CONTENT)
@@ -701,10 +619,8 @@ pub async fn pause(
 
 pub async fn stop(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    uri: Uri,
+    session: SessionContext,
 ) -> Result<StatusCode, StatusCode> {
-    let session = session_context_from_request(&state, &headers, &uri).await?;
     state
         .syncplay
         .with_group_for_session(&session, |group, sync_state| {
@@ -717,14 +633,8 @@ pub async fn stop(
             group.waiting_resume_playing = false;
             group.start_position_ticks = 0;
             group.touch();
-            SyncPlayService::send_command_to_group_locked(
-                sync_state,
-                group,
-                SendCommandType::Stop,
-                None,
-                0,
-            );
-            SyncPlayService::send_state_update_locked(sync_state, group, "Stop");
+            sync_state.broadcast_command(group, SendCommandType::Stop, None, 0);
+            sync_state.broadcast_state_update(group, "Stop");
         })
         .await;
     Ok(StatusCode::NO_CONTENT)
@@ -732,11 +642,9 @@ pub async fn stop(
 
 pub async fn seek(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    uri: Uri,
+    session: SessionContext,
     Json(payload): Json<SeekRequestDto>,
 ) -> Result<StatusCode, StatusCode> {
-    let session = session_context_from_request(&state, &headers, &uri).await?;
     state
         .syncplay
         .with_group_for_session(&session, move |group, sync_state| {
@@ -746,16 +654,15 @@ pub async fn seek(
                 "SyncPlay seek requested"
             );
             group.start_position_ticks = payload.position_ticks.max(0);
-            mark_group_waiting(group, group.is_playing);
+            group.transition_to_waiting(group.is_playing);
             group.touch();
-            SyncPlayService::send_command_to_group_locked(
-                sync_state,
+            sync_state.broadcast_command(
                 group,
                 SendCommandType::Seek,
                 Some(group.start_position_ticks),
                 0,
             );
-            SyncPlayService::send_state_update_locked(sync_state, group, "Seek");
+            sync_state.broadcast_state_update(group, "Seek");
         })
         .await;
     Ok(StatusCode::NO_CONTENT)
@@ -763,11 +670,9 @@ pub async fn seek(
 
 pub async fn buffering(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    uri: Uri,
+    session: SessionContext,
     Json(payload): Json<BufferRequestDto>,
 ) -> Result<StatusCode, StatusCode> {
-    let session = session_context_from_request(&state, &headers, &uri).await?;
     let session_id = session.session_id.clone();
     state
         .syncplay
@@ -794,13 +699,13 @@ pub async fn buffering(
             if group.state == GroupStateType::Waiting {
                 group.state = GroupStateType::Waiting;
             } else {
-                mark_group_waiting(group, payload.is_playing);
+                group.transition_to_waiting(payload.is_playing);
             }
             if payload.when > group.last_updated_at {
                 group.last_updated_at = payload.when;
             }
             group.touch();
-            SyncPlayService::send_state_update_locked(sync_state, group, "Buffer");
+            sync_state.broadcast_state_update(group, "Buffer");
         })
         .await;
     Ok(StatusCode::NO_CONTENT)
@@ -808,11 +713,9 @@ pub async fn buffering(
 
 pub async fn ready(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    uri: Uri,
+    session: SessionContext,
     Json(payload): Json<BufferRequestDto>,
 ) -> Result<StatusCode, StatusCode> {
-    let session = session_context_from_request(&state, &headers, &uri).await?;
     let session_id = session.session_id.clone();
     state
         .syncplay
@@ -840,7 +743,7 @@ pub async fn ready(
                 group.last_updated_at = payload.when;
             }
             group.touch();
-            SyncPlayService::resolve_waiting_state_locked(sync_state, group, "Ready");
+            sync_state.resolve_waiting(group, "Ready");
         })
         .await;
     Ok(StatusCode::NO_CONTENT)
@@ -848,72 +751,79 @@ pub async fn ready(
 
 pub async fn set_ignore_wait(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    uri: Uri,
+    session: SessionContext,
     Json(payload): Json<IgnoreWaitRequestDto>,
 ) -> Result<StatusCode, StatusCode> {
-    let session = session_context_from_request(&state, &headers, &uri).await?;
     let session_id = session.session_id.clone();
     state
         .syncplay
-        .with_group_for_session(&session, move |group, _| {
+        .with_group_for_session(&session, move |group, sync_state| {
             if let Some(member) = group.participants.get_mut(&session_id) {
                 member.ignore_wait = payload.ignore_wait;
             }
             group.touch();
-        })
-        .await;
-
-    state
-        .syncplay
-        .with_group_for_session(&session, |group, sync_state| {
-            SyncPlayService::resolve_waiting_state_locked(sync_state, group, "IgnoreWait");
+            sync_state.resolve_waiting(group, "IgnoreWait");
         })
         .await;
 
     Ok(StatusCode::NO_CONTENT)
 }
 
+fn navigate_playlist(
+    group: &mut SyncPlayGroup,
+    sync_state: &mut super::service::SyncPlayState,
+    playlist_item_id: Option<Uuid>,
+    direction: isize,
+    queue_reason: PlayQueueUpdateReason,
+    state_reason: &'static str,
+    log_label: &'static str,
+) {
+    if group.playlist.is_empty() {
+        return;
+    }
+    let len = group.playlist.len();
+    let current = playlist_item_id
+        .and_then(|id| {
+            group
+                .playlist
+                .iter()
+                .position(|item| item.playlist_item_id == id)
+        })
+        .or(group.playing_item_index)
+        .unwrap_or(0);
+    let target = ((current as isize + direction).rem_euclid(len as isize)) as usize;
+    info!(
+        group_id = %group.group_id,
+        from_index = current,
+        to_index = target,
+        log_label,
+    );
+    group.playing_item_index = Some(target);
+    group.start_position_ticks = 0;
+    group.transition_to_waiting(group.is_playing);
+    group.touch();
+    sync_state.broadcast_queue_update(group, queue_reason);
+    sync_state.broadcast_state_update(group, state_reason);
+}
+
 pub async fn next_item(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    uri: Uri,
+    session: SessionContext,
     payload: Option<Json<NextItemRequestDto>>,
 ) -> Result<StatusCode, StatusCode> {
-    let session = session_context_from_request(&state, &headers, &uri).await?;
     let playlist_item_id = payload.as_ref().map(|p| p.0.playlist_item_id);
     state
         .syncplay
         .with_group_for_session(&session, move |group, sync_state| {
-            if group.playlist.is_empty() {
-                return;
-            }
-            let current = playlist_item_id
-                .and_then(|id| {
-                    group
-                        .playlist
-                        .iter()
-                        .position(|item| item.playlist_item_id == id)
-                })
-                .or(group.playing_item_index)
-                .unwrap_or(0);
-            let next = (current + 1) % group.playlist.len();
-            info!(
-                group_id = %group.group_id,
-                from_index = current,
-                to_index = next,
-                "SyncPlay next item"
-            );
-            group.playing_item_index = Some(next);
-            group.start_position_ticks = 0;
-            mark_group_waiting(group, group.is_playing);
-            group.touch();
-            SyncPlayService::send_play_queue_update_locked(
-                sync_state,
+            navigate_playlist(
                 group,
+                sync_state,
+                playlist_item_id,
+                1,
                 PlayQueueUpdateReason::NextItem,
+                "NextItem",
+                "SyncPlay next item",
             );
-            SyncPlayService::send_state_update_locked(sync_state, group, "NextItem");
         })
         .await;
     Ok(StatusCode::NO_CONTENT)
@@ -921,48 +831,22 @@ pub async fn next_item(
 
 pub async fn previous_item(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    uri: Uri,
+    session: SessionContext,
     payload: Option<Json<NextItemRequestDto>>,
 ) -> Result<StatusCode, StatusCode> {
-    let session = session_context_from_request(&state, &headers, &uri).await?;
     let playlist_item_id = payload.as_ref().map(|p| p.0.playlist_item_id);
     state
         .syncplay
         .with_group_for_session(&session, move |group, sync_state| {
-            if group.playlist.is_empty() {
-                return;
-            }
-            let current = playlist_item_id
-                .and_then(|id| {
-                    group
-                        .playlist
-                        .iter()
-                        .position(|item| item.playlist_item_id == id)
-                })
-                .or(group.playing_item_index)
-                .unwrap_or(0);
-            let prev = if current == 0 {
-                group.playlist.len() - 1
-            } else {
-                current - 1
-            };
-            info!(
-                group_id = %group.group_id,
-                from_index = current,
-                to_index = prev,
-                "SyncPlay previous item"
-            );
-            group.playing_item_index = Some(prev);
-            group.start_position_ticks = 0;
-            mark_group_waiting(group, group.is_playing);
-            group.touch();
-            SyncPlayService::send_play_queue_update_locked(
-                sync_state,
+            navigate_playlist(
                 group,
+                sync_state,
+                playlist_item_id,
+                -1,
                 PlayQueueUpdateReason::PreviousItem,
+                "PreviousItem",
+                "SyncPlay previous item",
             );
-            SyncPlayService::send_state_update_locked(sync_state, group, "PreviousItem");
         })
         .await;
     Ok(StatusCode::NO_CONTENT)
@@ -970,21 +854,15 @@ pub async fn previous_item(
 
 pub async fn set_repeat_mode(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    uri: Uri,
+    session: SessionContext,
     Json(payload): Json<SetRepeatModeRequestDto>,
 ) -> Result<StatusCode, StatusCode> {
-    let session = session_context_from_request(&state, &headers, &uri).await?;
     state
         .syncplay
         .with_group_for_session(&session, move |group, sync_state| {
             group.repeat_mode = payload.mode;
             group.touch();
-            SyncPlayService::send_play_queue_update_locked(
-                sync_state,
-                group,
-                PlayQueueUpdateReason::RepeatMode,
-            );
+            sync_state.broadcast_queue_update(group, PlayQueueUpdateReason::RepeatMode);
         })
         .await;
     Ok(StatusCode::NO_CONTENT)
@@ -992,21 +870,15 @@ pub async fn set_repeat_mode(
 
 pub async fn set_shuffle_mode(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    uri: Uri,
+    session: SessionContext,
     Json(payload): Json<SetShuffleModeRequestDto>,
 ) -> Result<StatusCode, StatusCode> {
-    let session = session_context_from_request(&state, &headers, &uri).await?;
     state
         .syncplay
         .with_group_for_session(&session, move |group, sync_state| {
             group.shuffle_mode = payload.mode;
             group.touch();
-            SyncPlayService::send_play_queue_update_locked(
-                sync_state,
-                group,
-                PlayQueueUpdateReason::ShuffleMode,
-            );
+            sync_state.broadcast_queue_update(group, PlayQueueUpdateReason::ShuffleMode);
         })
         .await;
     Ok(StatusCode::NO_CONTENT)
@@ -1014,11 +886,9 @@ pub async fn set_shuffle_mode(
 
 pub async fn ping(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    uri: Uri,
+    session: SessionContext,
     Json(payload): Json<PingRequestDto>,
 ) -> Result<StatusCode, StatusCode> {
-    let session = session_context_from_request(&state, &headers, &uri).await?;
     let session_id = session.session_id.clone();
     state
         .syncplay
@@ -1033,12 +903,10 @@ pub async fn ping(
 }
 
 pub async fn get_utc_time(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    uri: Uri,
+    State(_state): State<AppState>,
+    _session: SessionContext,
     Query(_query): Query<HashMap<String, String>>,
 ) -> Result<Json<UtcTimeResponse>, StatusCode> {
-    let _ = session_context_from_request(&state, &headers, &uri).await?;
     let request_reception_time = Utc::now();
     let response_transmission_time = Utc::now();
     debug!("Handled local /GetUtcTime request");

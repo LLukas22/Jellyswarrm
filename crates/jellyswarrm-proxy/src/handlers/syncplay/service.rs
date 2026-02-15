@@ -25,6 +25,159 @@ pub(super) struct SyncPlayState {
     ws_connections: HashMap<String, mpsc::UnboundedSender<String>>,
 }
 
+impl SyncPlayState {
+    /// Send a raw websocket message to a single session.
+    fn send_to_session<T: Serialize>(
+        &mut self,
+        session_id: &str,
+        msg_type: &'static str,
+        data: &T,
+    ) {
+        let Some(tx) = self.ws_connections.get(session_id).cloned() else {
+            return;
+        };
+        let payload = OutboundWebSocketMessage {
+            message_type: msg_type,
+            message_id: Uuid::new_v4(),
+            data,
+        };
+        if let Ok(text) = serde_json::to_string(&payload) {
+            if tx.send(text).is_err() {
+                self.ws_connections.remove(session_id);
+            }
+        }
+    }
+
+    /// Send a group-update envelope to specific sessions.
+    pub(super) fn send_group_update(
+        &mut self,
+        sessions: impl IntoIterator<Item = String>,
+        group_id: Uuid,
+        update_type: GroupUpdateType,
+        data: Value,
+    ) {
+        let msg = GroupUpdateEnvelope {
+            group_id,
+            update_type,
+            data,
+        };
+        for session_id in sessions {
+            self.send_to_session(&session_id, "SyncPlayGroupUpdate", &msg);
+        }
+    }
+
+    /// Broadcast a group-update to all participants in a group.
+    fn broadcast_group_update(
+        &mut self,
+        group: &SyncPlayGroup,
+        update_type: GroupUpdateType,
+        data: Value,
+    ) {
+        let sessions: Vec<_> = group.participants.keys().cloned().collect();
+        self.send_group_update(sessions, group.group_id, update_type, data);
+    }
+
+    /// Send a one-shot notification (empty data) to a single session.
+    pub(super) fn notify_session(&mut self, session_id: &str, update_type: GroupUpdateType) {
+        self.send_group_update(
+            std::iter::once(session_id.to_string()),
+            Uuid::nil(),
+            update_type,
+            Value::String(String::new()),
+        );
+    }
+
+    /// Broadcast a playback command to all group participants.
+    pub(super) fn broadcast_command(
+        &mut self,
+        group: &SyncPlayGroup,
+        command: SendCommandType,
+        position_ticks: Option<i64>,
+        delay_ms: i64,
+    ) {
+        let when = Utc::now() + chrono::Duration::milliseconds(delay_ms.max(0));
+        let cmd = SendCommandEnvelope {
+            group_id: group.group_id,
+            playlist_item_id: group.current_playlist_item_id(),
+            when,
+            position_ticks,
+            command,
+            emitted_at: Utc::now(),
+        };
+        for session_id in group.participants.keys() {
+            self.send_to_session(session_id, "SyncPlayCommand", &cmd);
+        }
+    }
+
+    /// Broadcast a state update to all group participants.
+    pub(super) fn broadcast_state_update(&mut self, group: &SyncPlayGroup, reason: &'static str) {
+        let update = GroupStateUpdate {
+            state: group.state.clone(),
+            reason,
+        };
+        self.broadcast_group_update(
+            group,
+            GroupUpdateType::StateUpdate,
+            serde_json::to_value(update).unwrap_or(Value::Null),
+        );
+    }
+
+    /// Broadcast a play-queue update to all group participants.
+    pub(super) fn broadcast_queue_update(
+        &mut self,
+        group: &SyncPlayGroup,
+        reason: PlayQueueUpdateReason,
+    ) {
+        let sessions: Vec<_> = group.participants.keys().cloned().collect();
+        self.send_queue_update_to(group, reason, sessions);
+    }
+
+    /// Send a play-queue update to specific sessions.
+    pub(super) fn send_queue_update_to(
+        &mut self,
+        group: &SyncPlayGroup,
+        reason: PlayQueueUpdateReason,
+        sessions: Vec<String>,
+    ) {
+        let update = PlayQueueUpdate {
+            reason,
+            last_update: group.last_updated_at,
+            playlist: group.playlist.clone(),
+            playing_item_index: group.playing_item_index.unwrap_or(0),
+            start_position_ticks: group.start_position_ticks,
+            is_playing: group.is_playing,
+            shuffle_mode: group.shuffle_mode,
+            repeat_mode: group.repeat_mode,
+        };
+        self.send_group_update(
+            sessions,
+            group.group_id,
+            GroupUpdateType::PlayQueue,
+            serde_json::to_value(update).unwrap_or(Value::Null),
+        );
+    }
+
+    /// Resolve the Waiting state: if all participants are ready, transition to
+    /// Playing (with delayed unpause) or Paused.
+    pub(super) fn resolve_waiting(&mut self, group: &mut SyncPlayGroup, reason: &'static str) {
+        if group.state != GroupStateType::Waiting || !group.all_ready() {
+            return;
+        }
+        let (cmd, delay_ms) = if group.waiting_resume_playing {
+            group.state = GroupStateType::Playing;
+            group.is_playing = true;
+            (SendCommandType::Unpause, group.ping_delay_ms())
+        } else {
+            group.state = GroupStateType::Paused;
+            group.is_playing = false;
+            (SendCommandType::Pause, 0)
+        };
+        group.touch();
+        self.broadcast_command(group, cmd, Some(group.start_position_ticks), delay_ms);
+        self.broadcast_state_update(group, reason);
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct SyncPlayService {
     state: Arc<RwLock<SyncPlayState>>,
@@ -37,14 +190,6 @@ pub(crate) struct SessionContext {
 }
 
 impl SyncPlayGroup {
-    fn highest_ping_ms(&self) -> i64 {
-        self.participants
-            .values()
-            .map(|p| p.ping as i64)
-            .max()
-            .unwrap_or(DEFAULT_PING_MS)
-    }
-
     fn all_ready(&self) -> bool {
         self.participants
             .values()
@@ -67,7 +212,7 @@ impl SyncPlayService {
         let mut state = self.state.write().await;
         state.ws_connections.insert(session_id.clone(), tx);
         debug!(session_id = %session_id, "Registered SyncPlay websocket");
-        Self::send_to_session_locked(&mut state, &session_id, "ForceKeepAlive", &15_u64);
+        state.send_to_session(&session_id, "ForceKeepAlive", &15_u64);
     }
 
     pub(super) async fn unregister_websocket_and_leave(&self, session_id: &str) {
@@ -79,33 +224,7 @@ impl SyncPlayService {
 
     pub(super) async fn send_keepalive(&self, session_id: &str) {
         let mut state = self.state.write().await;
-        Self::send_to_session_locked(&mut state, session_id, "KeepAlive", &Value::Null);
-    }
-
-    fn send_to_session_locked<T: Serialize>(
-        state: &mut SyncPlayState,
-        session_id: &str,
-        message_type: &'static str,
-        data: &T,
-    ) {
-        let Some(tx) = state.ws_connections.get(session_id).cloned() else {
-            return;
-        };
-
-        let payload = OutboundWebSocketMessage {
-            message_type,
-            message_id: Uuid::new_v4(),
-            data,
-        };
-        if let Ok(text) = serde_json::to_string(&payload) {
-            if tx.send(text).is_err() {
-                state.ws_connections.remove(session_id);
-            }
-        }
-    }
-
-    fn group_recipients(group: &SyncPlayGroup) -> Vec<String> {
-        group.participants.keys().cloned().collect::<Vec<_>>()
+        state.send_to_session(session_id, "KeepAlive", &Value::Null);
     }
 
     fn make_participant(session: &SessionContext, is_buffering: bool) -> GroupParticipant {
@@ -115,161 +234,6 @@ impl SyncPlayService {
             is_buffering,
             ignore_wait: false,
         }
-    }
-
-    fn send_empty_group_update_to_session_locked(
-        state: &mut SyncPlayState,
-        session_id: &str,
-        update_type: GroupUpdateType,
-    ) {
-        Self::send_group_update_to_sessions_locked(
-            state,
-            vec![session_id.to_string()],
-            Uuid::nil(),
-            update_type,
-            Value::String(String::new()),
-        );
-    }
-
-    pub(super) fn send_group_update_to_sessions_locked(
-        state: &mut SyncPlayState,
-        session_ids: impl IntoIterator<Item = String>,
-        group_id: Uuid,
-        update_type: GroupUpdateType,
-        data: Value,
-    ) {
-        let msg = GroupUpdateEnvelope {
-            group_id,
-            update_type,
-            data,
-        };
-        for session_id in session_ids {
-            Self::send_to_session_locked(state, &session_id, "SyncPlayGroupUpdate", &msg);
-        }
-    }
-
-    pub(super) fn send_command_to_group_locked(
-        state: &mut SyncPlayState,
-        group: &SyncPlayGroup,
-        command: SendCommandType,
-        position_ticks: Option<i64>,
-        delay_ms: i64,
-    ) {
-        let when = Utc::now() + chrono::Duration::milliseconds(delay_ms.max(0));
-        let cmd = SendCommandEnvelope {
-            group_id: group.group_id,
-            playlist_item_id: group.current_playlist_item_id(),
-            when,
-            position_ticks,
-            command,
-            emitted_at: Utc::now(),
-        };
-        let recipients = Self::group_recipients(group);
-        for session_id in recipients {
-            Self::send_to_session_locked(state, &session_id, "SyncPlayCommand", &cmd);
-        }
-    }
-
-    pub(super) fn send_play_queue_update_locked(
-        state: &mut SyncPlayState,
-        group: &SyncPlayGroup,
-        reason: PlayQueueUpdateReason,
-    ) {
-        let recipients = Self::group_recipients(group);
-        Self::send_play_queue_update_to_sessions_locked(state, group, reason, recipients);
-    }
-
-    pub(super) fn send_play_queue_update_to_sessions_locked(
-        state: &mut SyncPlayState,
-        group: &SyncPlayGroup,
-        reason: PlayQueueUpdateReason,
-        recipients: Vec<String>,
-    ) {
-        let update = PlayQueueUpdate {
-            reason,
-            last_update: group.last_updated_at,
-            playlist: group.playlist.clone(),
-            playing_item_index: group.playing_item_index.unwrap_or(0),
-            start_position_ticks: group.start_position_ticks,
-            is_playing: group.is_playing,
-            shuffle_mode: group.shuffle_mode,
-            repeat_mode: group.repeat_mode,
-        };
-        Self::send_group_update_to_sessions_locked(
-            state,
-            recipients,
-            group.group_id,
-            GroupUpdateType::PlayQueue,
-            serde_json::to_value(update).unwrap_or(Value::Null),
-        );
-    }
-
-    pub(super) fn send_state_update_locked(
-        state: &mut SyncPlayState,
-        group: &SyncPlayGroup,
-        reason: &'static str,
-    ) {
-        let update = GroupStateUpdate {
-            state: group.state.clone(),
-            reason,
-        };
-        let recipients = Self::group_recipients(group);
-        Self::send_group_update_to_sessions_locked(
-            state,
-            recipients,
-            group.group_id,
-            GroupUpdateType::StateUpdate,
-            serde_json::to_value(update).unwrap_or(Value::Null),
-        );
-    }
-
-    pub(super) fn send_library_access_denied_to_session_locked(
-        state: &mut SyncPlayState,
-        session_id: &str,
-    ) {
-        Self::send_empty_group_update_to_session_locked(
-            state,
-            session_id,
-            GroupUpdateType::LibraryAccessDenied,
-        );
-    }
-
-    pub(super) fn resolve_waiting_state_locked(
-        state: &mut SyncPlayState,
-        group: &mut SyncPlayGroup,
-        reason: &'static str,
-    ) {
-        if group.state != GroupStateType::Waiting || !group.all_ready() {
-            return;
-        }
-
-        if group.waiting_resume_playing {
-            let delay_ms = std::cmp::max(group.highest_ping_ms() * 2, DEFAULT_PING_MS);
-            group.state = GroupStateType::Playing;
-            group.is_playing = true;
-            group.touch();
-            Self::send_command_to_group_locked(
-                state,
-                group,
-                SendCommandType::Unpause,
-                Some(group.start_position_ticks),
-                delay_ms,
-            );
-            Self::send_state_update_locked(state, group, reason);
-            return;
-        }
-
-        group.state = GroupStateType::Paused;
-        group.is_playing = false;
-        group.touch();
-        Self::send_command_to_group_locked(
-            state,
-            group,
-            SendCommandType::Pause,
-            Some(group.start_position_ticks),
-            0,
-        );
-        Self::send_state_update_locked(state, group, reason);
     }
 
     pub(super) async fn create_group(
@@ -311,8 +275,7 @@ impl SyncPlayService {
             "SyncPlay group created"
         );
 
-        Self::send_group_update_to_sessions_locked(
-            &mut state,
+        state.send_group_update(
             vec![session.session_id.clone()],
             group_id,
             GroupUpdateType::GroupJoined,
@@ -327,11 +290,7 @@ impl SyncPlayService {
         Self::leave_locked(&mut state, &session.session_id);
 
         let Some(mut group) = state.groups.remove(&group_id) else {
-            Self::send_empty_group_update_to_session_locked(
-                &mut state,
-                &session.session_id,
-                GroupUpdateType::GroupDoesNotExist,
-            );
+            state.notify_session(&session.session_id, GroupUpdateType::GroupDoesNotExist);
             return;
         };
 
@@ -349,29 +308,20 @@ impl SyncPlayService {
             .insert(session.session_id.clone(), group_id);
 
         let username = session.user.original_username.clone();
-        let recipients = Self::group_recipients(&group);
-        Self::send_group_update_to_sessions_locked(
-            &mut state,
-            recipients,
-            group_id,
-            GroupUpdateType::UserJoined,
-            Value::String(username),
-        );
-        Self::send_group_update_to_sessions_locked(
-            &mut state,
+        state.broadcast_group_update(&group, GroupUpdateType::UserJoined, Value::String(username));
+        state.send_group_update(
             vec![session.session_id.clone()],
             group_id,
             GroupUpdateType::GroupJoined,
             serde_json::to_value(group.to_group_info()).unwrap_or(Value::Null),
         );
-        Self::send_play_queue_update_to_sessions_locked(
-            &mut state,
+        state.send_queue_update_to(
             &group,
             PlayQueueUpdateReason::NewPlaylist,
             vec![session.session_id.clone()],
         );
         if group.state == GroupStateType::Waiting {
-            Self::send_state_update_locked(&mut state, &group, "Buffer");
+            state.broadcast_state_update(&group, "Buffer");
         }
 
         state.groups.insert(group_id, group);
@@ -396,17 +346,13 @@ impl SyncPlayService {
                 .unwrap_or_default();
             group.participants.remove(session_id);
             group.touch();
-            let recipients = Self::group_recipients(&group);
-            Self::send_group_update_to_sessions_locked(
-                state,
-                recipients,
-                group_id,
+            state.broadcast_group_update(
+                &group,
                 GroupUpdateType::UserLeft,
                 Value::String(username.clone()),
             );
-            Self::send_group_update_to_sessions_locked(
-                state,
-                vec![session_id.to_string()],
+            state.send_group_update(
+                std::iter::once(session_id.to_string()),
                 group_id,
                 GroupUpdateType::GroupLeft,
                 Value::String(group_id.to_string()),
@@ -447,22 +393,14 @@ impl SyncPlayService {
     ) -> bool {
         let mut state = self.state.write().await;
         let Some(group_id) = state.session_to_group.get(&session.session_id).copied() else {
-            Self::send_empty_group_update_to_session_locked(
-                &mut state,
-                &session.session_id,
-                GroupUpdateType::NotInGroup,
-            );
+            state.notify_session(&session.session_id, GroupUpdateType::NotInGroup);
             return false;
         };
 
         let mut group = match state.groups.remove(&group_id) {
             Some(g) => g,
             None => {
-                Self::send_empty_group_update_to_session_locked(
-                    &mut state,
-                    &session.session_id,
-                    GroupUpdateType::NotInGroup,
-                );
+                state.notify_session(&session.session_id, GroupUpdateType::NotInGroup);
                 return false;
             }
         };
@@ -488,7 +426,7 @@ impl SyncPlayService {
 
     pub(super) async fn send_library_access_denied_to_session(&self, session_id: &str) {
         let mut state = self.state.write().await;
-        Self::send_library_access_denied_to_session_locked(&mut state, session_id);
+        state.notify_session(session_id, GroupUpdateType::LibraryAccessDenied);
     }
 }
 
@@ -635,14 +573,8 @@ mod tests {
                 g.start_position_ticks = 123;
                 g.state = GroupStateType::Paused;
                 g.touch();
-                SyncPlayService::send_command_to_group_locked(
-                    sync_state,
-                    g,
-                    SendCommandType::Pause,
-                    Some(123),
-                    0,
-                );
-                SyncPlayService::send_state_update_locked(sync_state, g, "Pause");
+                sync_state.broadcast_command(g, SendCommandType::Pause, Some(123), 0);
+                sync_state.broadcast_state_update(g, "Pause");
             })
             .await;
         assert!(ok);
@@ -748,7 +680,7 @@ mod tests {
                     .get_mut(&s1.session_id)
                     .expect("member missing")
                     .is_buffering = false;
-                SyncPlayService::resolve_waiting_state_locked(sync_state, g, "Ready");
+                sync_state.resolve_waiting(g, "Ready");
             })
             .await;
 
@@ -758,7 +690,7 @@ mod tests {
                     .get_mut(&s2.session_id)
                     .expect("member missing")
                     .is_buffering = false;
-                SyncPlayService::resolve_waiting_state_locked(sync_state, g, "Ready");
+                sync_state.resolve_waiting(g, "Ready");
             })
             .await;
 

@@ -244,6 +244,34 @@ impl SyncPlayGroup {
     pub fn touch(&mut self) {
         self.last_updated_at = Utc::now();
     }
+
+    /// Collect all media item IDs from the playlist.
+    pub fn queue_item_ids(&self) -> Vec<String> {
+        self.playlist
+            .iter()
+            .map(|item| item.item_id.clone())
+            .collect()
+    }
+
+    /// Transition the group into the Waiting state, marking all participants as buffering.
+    pub fn transition_to_waiting(&mut self, resume_playing: bool) {
+        self.state = GroupStateType::Waiting;
+        self.waiting_resume_playing = resume_playing;
+        for member in self.participants.values_mut() {
+            member.is_buffering = true;
+        }
+    }
+
+    /// Calculate the playback delay based on the highest participant ping.
+    pub fn ping_delay_ms(&self) -> i64 {
+        let highest = self
+            .participants
+            .values()
+            .map(|p| p.ping as i64)
+            .max()
+            .unwrap_or(super::service::DEFAULT_PING_MS);
+        std::cmp::max(highest * 2, super::service::DEFAULT_PING_MS)
+    }
 }
 
 #[derive(Serialize)]
