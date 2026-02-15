@@ -41,6 +41,7 @@ mod url_helper;
 mod user_authorization_service;
 
 use federated_users::FederatedUserService;
+use handlers::syncplay::SyncPlayService;
 use media_storage_service::MediaStorageService;
 use server_storage::ServerStorageService;
 use user_authorization_service::UserAuthorizationService;
@@ -73,6 +74,7 @@ pub struct AppState {
     pub config: Arc<tokio::sync::RwLock<AppConfig>>,
     pub processors: Arc<JsonProcessors>,
     pub federated_users: Arc<FederatedUserService>,
+    pub syncplay: Arc<SyncPlayService>,
 }
 
 impl AppState {
@@ -99,6 +101,7 @@ impl AppState {
             config: data_context.config,
             processors: Arc::new(json_processors),
             federated_users,
+            syncplay: Arc::new(SyncPlayService::new()),
         }
     }
 
@@ -322,6 +325,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .route(
                 "/Branding/Configuration",
                 get(handlers::branding::handle_branding),
+            )
+            .route("/websocket", get(handlers::syncplay::websocket))
+            .route("/socket", get(handlers::syncplay::websocket))
+            .route("/GetUtcTime", get(handlers::syncplay::get_utc_time))
+            //.route("/GetUTCTime", get(handlers::syncplay::get_utc_time))
+            .nest(
+                "/SyncPlay",
+                Router::new()
+                    .route("/New", post(handlers::syncplay::create_group))
+                    .route("/Join", post(handlers::syncplay::join_group))
+                    .route("/Leave", post(handlers::syncplay::leave_group))
+                    .route("/List", get(handlers::syncplay::list_groups))
+                    .route("/{id}", get(handlers::syncplay::get_group))
+                    .route("/SetNewQueue", post(handlers::syncplay::set_new_queue))
+                    .route("/SetPlaylistItem", post(handlers::syncplay::set_playlist_item))
+                    .route(
+                        "/RemoveFromPlaylist",
+                        post(handlers::syncplay::remove_from_playlist),
+                    )
+                    .route(
+                        "/MovePlaylistItem",
+                        post(handlers::syncplay::move_playlist_item),
+                    )
+                    .route("/Queue", post(handlers::syncplay::queue_items))
+                    .route("/Unpause", post(handlers::syncplay::unpause))
+                    .route("/Pause", post(handlers::syncplay::pause))
+                    .route("/Stop", post(handlers::syncplay::stop))
+                    .route("/Seek", post(handlers::syncplay::seek))
+                    .route("/Buffering", post(handlers::syncplay::buffering))
+                    .route("/Ready", post(handlers::syncplay::ready))
+                    .route("/SetIgnoreWait", post(handlers::syncplay::set_ignore_wait))
+                    .route("/NextItem", post(handlers::syncplay::next_item))
+                    .route("/PreviousItem", post(handlers::syncplay::previous_item))
+                    .route("/SetRepeatMode", post(handlers::syncplay::set_repeat_mode))
+                    .route("/SetShuffleMode", post(handlers::syncplay::set_shuffle_mode))
+                    .route("/Ping", post(handlers::syncplay::ping)),
             )
             // User authentication and profile routes
             .nest(
