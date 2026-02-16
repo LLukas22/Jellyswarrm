@@ -80,8 +80,8 @@ impl JellyfinClient {
         })
     }
 
-    pub fn with_token(&self, token: String) -> &Self {
-        *self.auth_token.blocking_write() = Some(token);
+    pub async fn with_token(&self, token: String) -> &Self {
+        *self.auth_token.write().await = Some(token);
         self
     }
 
@@ -422,7 +422,7 @@ mod tests {
 
         let client_info = ClientInfo::default();
         let client = JellyfinClient::new(&mock_server.uri(), client_info).unwrap();
-        let client = client.with_token("test_token".to_string());
+        let client = client.with_token("test_token".to_string()).await;
 
         let folders = client.get_media_folders(None).await.unwrap();
 

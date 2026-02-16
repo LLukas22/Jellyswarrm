@@ -89,7 +89,7 @@ mod tests {
             .unwrap();
 
         // Simulate authentication (this updates the shared Arc<RwLock>)
-        let _ = client1.with_token("test_token".to_string());
+        let _ = client1.with_token("test_token".to_string()).await;
 
         // 2. Manually invalidate the client to force eviction
         // We need to reconstruct the key used in storage
@@ -131,7 +131,7 @@ mod tests {
             .await
             .unwrap();
 
-        let _ = client.with_token("test_token".to_string());
+        let _ = client.with_token("test_token".to_string()).await;
 
         // Wait for TTL to expire + some buffer
         tokio::time::sleep(Duration::from_millis(200)).await;
