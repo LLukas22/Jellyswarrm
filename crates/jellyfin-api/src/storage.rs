@@ -15,13 +15,15 @@ impl JellyfinClientStorage {
         let cache = Cache::builder()
             .max_capacity(capacity)
             .time_to_idle(ttl)
-            .async_eviction_listener(|_key, value: Arc<JellyfinClient>, _cause| Box::pin(async move {
+            .async_eviction_listener(|_key, value: Arc<JellyfinClient>, _cause| {
+                Box::pin(async move {
                     if value.get_token().await.is_some() {
                         if let Err(e) = value.logout().await {
                             tracing::error!("Failed to logout evicted client: {:?}", e);
                         }
                     }
-            }))
+                })
+            })
             .build();
 
         Self { cache }

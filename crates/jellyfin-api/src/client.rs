@@ -202,7 +202,7 @@ impl JellyfinClient {
                 }
                 _ => e,
             })?;
-        
+
         let mut write_guard = self.auth_token.write().await;
         *write_guard = Some(response.access_token);
         info!("Authenticated user: {}", response.user.name);
