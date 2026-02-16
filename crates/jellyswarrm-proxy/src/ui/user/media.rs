@@ -5,7 +5,7 @@ use axum::{
     http::{header, StatusCode},
     response::{Html, IntoResponse, Response},
 };
-use jellyfin_api::models::BaseItem;
+use jellyfin_api::models::{BaseItem, IncludeItemTypes};
 use tracing::error;
 
 use crate::{
@@ -115,8 +115,9 @@ pub async fn get_server_libraries(
                             &jellyfin_user.id,
                             Some(&folder.id),
                             true,
-                            Some(vec!["Movie".to_string(), "Series".to_string()]),
+                            Some(vec![IncludeItemTypes::Movie, IncludeItemTypes::Series]),
                             Some(0),
+                            None,
                             None,
                             None,
                             None,
@@ -180,11 +181,12 @@ pub async fn get_library_items(
                 &jellyfin_user.id,
                 Some(&library_id),
                 true,
-                Some(vec!["Movie".to_string(), "Series".to_string()]),
+                Some(vec![IncludeItemTypes::Movie, IncludeItemTypes::Series]),
                 Some(limit),
                 Some(start_index),
                 Some("DateCreated".to_string()),
                 Some("Descending".to_string()),
+                None,
             )
             .await
         {
@@ -251,7 +253,7 @@ pub async fn proxy_media_image(
 
     // Fetch image using the client's internal http client would be best, but we can't access it.
     // We can use state.reqwest_client but we need the token.
-    let token = client.get_token().unwrap_or_default();
+    let token = client.get_token().await.unwrap_or_default();
 
     // Build auth header manually since we are using a raw request
     // Or we can add a method to JellyfinClient to fetch raw resource.

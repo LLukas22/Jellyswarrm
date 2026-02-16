@@ -7,7 +7,7 @@ use axum::{
 use hyper::{header::HeaderValue, StatusCode};
 use jellyfin_api::JellyfinClient;
 use serde::Deserialize;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 use crate::{
     encryption::Password,
@@ -268,15 +268,12 @@ pub async fn check_user_server_status(
     };
 
     match authenticate_user_on_server(&state, &user, &server).await {
-        Ok((client, jellyfin_user, public_info)) => {
+        Ok((_client, jellyfin_user, public_info)) => {
             let template = UserServerStatusTemplate {
                 username: Some(jellyfin_user.name),
                 error_message: None,
                 server_version: public_info.version.unwrap_or("unknown".to_string()),
             };
-            if let Err(e) = client.logout().await {
-                warn!("Failed to logout from upstream server: {}", e);
-            }
             match template.render() {
                 Ok(html) => Html(html).into_response(),
                 Err(e) => {

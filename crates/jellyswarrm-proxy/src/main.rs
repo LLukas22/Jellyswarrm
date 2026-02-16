@@ -176,7 +176,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //   RUST_LOG=debug                           - Enable debug for all modules
     //   RUST_LOG=jellyswarrm_proxy=debug         - Enable debug for this app only
     //   RUST_LOG=jellyswarrm_proxy=trace,tower=info - Debug this app, info for tower
-    let default_filter = "jellyswarrm_proxy=info";
+    let default_filter = "jellyswarrm_proxy=info,jellyfin_api=info";
     let env_filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
 

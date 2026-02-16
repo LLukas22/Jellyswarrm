@@ -82,29 +82,35 @@ pub fn normalize_decice(value: &str) -> String {
 impl Device {
     /// Check if this device matches another device based on client and either device_id or device name or version
     pub fn matches(&self, other: &Device) -> bool {
-        //1) Try device_id + client
+        let self_client = normalize_decice(&self.client);
+        let other_client = normalize_decice(&other.client);
 
-        if normalize_decice(&self.device_id) == normalize_decice(&other.device_id)
-            && normalize_decice(&self.client) == normalize_decice(&other.client)
-        {
-            return true;
+        if self_client != other_client {
+            return false;
         }
 
-        // 2) Fallback: device (name) + client
-        if normalize_decice(&self.device) == normalize_decice(&other.device)
-            && normalize_decice(&self.client) == normalize_decice(&other.client)
-        {
-            return true;
+        let self_device_id = normalize_decice(&self.device_id);
+        let other_device_id = normalize_decice(&other.device_id);
+
+        let self_has_known_device_id = Self::has_known_device_id(&self_device_id);
+        let other_has_known_device_id = Self::has_known_device_id(&other_device_id);
+
+        // 1) Strict match when both sides have a known device id.
+        if self_has_known_device_id && other_has_known_device_id {
+            return self_device_id == other_device_id;
         }
 
-        //3) Final fallback: client + version only
-        if normalize_decice(&self.client) == normalize_decice(&other.client)
-            && normalize_decice(&self.version) == normalize_decice(&other.version)
-        {
-            return true;
-        }
+        // 2) Fallback to device name only when at least one side has no usable device id.
+        let self_device = normalize_decice(&self.device);
+        let other_device = normalize_decice(&other.device);
+        !self_device.is_empty() && self_device == other_device
+    }
 
-        false
+    fn has_known_device_id(device_id: &str) -> bool {
+        !device_id.is_empty()
+            && device_id != "unknown-device-id"
+            && device_id != "unknown"
+            && device_id != "n/a"
     }
 
     pub fn from_useragent(user_agent: &str) -> Self {
@@ -326,6 +332,8 @@ impl UserAuthorizationService {
     ) -> Result<i64, sqlx::Error> {
         let now = chrono::Utc::now();
 
+        let existing_mapping = self.get_server_mapping(user_id, server_url).await?;
+
         let final_password = if let Some(master) = master_password {
             match encrypt_password(mapped_password, master) {
                 Ok(encrypted) => encrypted,
@@ -339,11 +347,15 @@ impl UserAuthorizationService {
             EncryptedPassword::from_raw(mapped_password.as_str().into())
         };
 
-        let result = sqlx::query(
+        sqlx::query(
             r#"
-            INSERT OR REPLACE INTO server_mappings 
+            INSERT INTO server_mappings 
             (user_id, server_url, mapped_username, mapped_password, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, server_url) DO UPDATE SET
+                mapped_username = excluded.mapped_username,
+                mapped_password = excluded.mapped_password,
+                updated_at = excluded.updated_at
             "#,
         )
         .bind(user_id)
@@ -355,9 +367,46 @@ impl UserAuthorizationService {
         .execute(&self.pool)
         .await?;
 
-        let mapping_id = result.last_insert_rowid();
+        let mapping_id = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT id
+            FROM server_mappings
+            WHERE user_id = ? AND server_url = ?
+            "#,
+        )
+        .bind(user_id)
+        .bind(server_url)
+        .fetch_one(&self.pool)
+        .await?;
+
+        if let Some(existing_mapping) = existing_mapping {
+            // If the mapped account changed, revoke all sessions for this mapping.
+            // Keeping old tokens after an account switch can cause cross-account drift.
+            if !existing_mapping
+                .mapped_username
+                .trim()
+                .eq_ignore_ascii_case(mapped_username.trim())
+            {
+                let revoked_sessions = sqlx::query(
+                    r#"
+                    DELETE FROM authorization_sessions
+                    WHERE mapping_id = ?
+                    "#,
+                )
+                .bind(existing_mapping.id)
+                .execute(&self.pool)
+                .await?
+                .rows_affected();
+
+                info!(
+                    "Mapped username changed for user {} on server {}. Revoked {} session(s)",
+                    user_id, server_url, revoked_sessions
+                );
+            }
+        }
+
         info!(
-            "Added server mapping for user {} to server {}",
+            "Added or updated server mapping for user {} to server {}",
             user_id, server_url
         );
         Ok(mapping_id)
@@ -961,11 +1010,11 @@ mod tests {
             .unwrap();
         assert_eq!(sessions1.len(), 1, "Should find exact match");
 
-        // Test 2: Fallback to device name + client
+        // Test 2: Fallback to device name + client when device id is unknown
         let query_device2 = Device {
             client: "Switchfin".to_string(),
             device: "Linux".to_string(),
-            device_id: "different-device-id".to_string(),
+            device_id: "unknown-device-id".to_string(),
             version: "0.7.4".to_string(),
         };
         let sessions2 = service
@@ -978,7 +1027,7 @@ mod tests {
             "Should find fallback match by device name + client"
         );
 
-        // Test 3: Final fallback to client + version
+        // Test 3: Do not fallback to client + version anymore
         let query_device3 = Device {
             client: "Switchfin".to_string(),
             device: "Windows".to_string(), // Different device name
@@ -991,8 +1040,8 @@ mod tests {
             .unwrap();
         assert_eq!(
             sessions3.len(),
-            1,
-            "Should find final fallback match by client + version"
+            0,
+            "Should not match by client + version fallback"
         );
 
         // Test 4: No match when client and version are different
@@ -1556,5 +1605,247 @@ mod tests {
             .unwrap()
             .1;
         assert!(sessions_after.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_add_server_mapping_upsert_preserves_mapping_id_and_sessions() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = UserAuthorizationService::new(pool.clone());
+
+        // Create servers table
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS servers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                url TEXT NOT NULL,
+                priority INTEGER NOT NULL DEFAULT 100,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Insert server
+        sqlx::query(
+            r#"
+            INSERT INTO servers (name, url, priority, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind("Server 1")
+        .bind("http://localhost:8096")
+        .bind(100)
+        .bind(chrono::Utc::now())
+        .bind(chrono::Utc::now())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Create user
+        let user = service
+            .get_or_create_user("testuser", &"testpass".into())
+            .await
+            .unwrap();
+
+        // Initial mapping
+        let mapping_id_1 = service
+            .add_server_mapping(
+                &user.id,
+                "http://localhost:8096",
+                "mappeduser",
+                &"mappedpass".into(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Store first session
+        let auth1 = Authorization {
+            client: "Jellyfin Web".to_string(),
+            device: "Firefox".to_string(),
+            device_id: "device-1".to_string(),
+            version: "10.0.0".to_string(),
+            token: None,
+        };
+
+        service
+            .store_authorization_session(
+                &user.id,
+                "http://localhost:8096",
+                &auth1,
+                "token-1".to_string(),
+                "orig-user-1".to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Re-add mapping for same user/server with same mapped account.
+        // Should update in place and preserve sessions.
+        let mapping_id_2 = service
+            .add_server_mapping(
+                &user.id,
+                "http://localhost:8096",
+                "mappeduser",
+                &"mappedpass-updated".into(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            mapping_id_1, mapping_id_2,
+            "Mapping id should remain stable across UPSERT"
+        );
+
+        // Ensure first session is still present after mapping update
+        let sessions_after_update = service
+            .get_user_sessions_by_virtual_token(&user.virtual_key)
+            .await
+            .unwrap()
+            .unwrap()
+            .1;
+        assert_eq!(
+            sessions_after_update.len(),
+            1,
+            "Existing sessions should not be cascade-deleted on mapping update"
+        );
+
+        // Store second session for another device and ensure both exist
+        let auth2 = Authorization {
+            client: "Jellyfin Web".to_string(),
+            device: "Firefox".to_string(),
+            device_id: "device-2".to_string(),
+            version: "10.0.0".to_string(),
+            token: None,
+        };
+
+        service
+            .store_authorization_session(
+                &user.id,
+                "http://localhost:8096",
+                &auth2,
+                "token-2".to_string(),
+                "orig-user-1".to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let final_sessions = service
+            .get_user_sessions_by_virtual_token(&user.virtual_key)
+            .await
+            .unwrap()
+            .unwrap()
+            .1;
+
+        assert_eq!(final_sessions.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_add_server_mapping_username_change_revokes_sessions() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = UserAuthorizationService::new(pool.clone());
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS servers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                url TEXT NOT NULL,
+                priority INTEGER NOT NULL DEFAULT 100,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            r#"
+            INSERT INTO servers (name, url, priority, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind("Server 1")
+        .bind("http://localhost:8096")
+        .bind(100)
+        .bind(chrono::Utc::now())
+        .bind(chrono::Utc::now())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let user = service
+            .get_or_create_user("testuser", &"testpass".into())
+            .await
+            .unwrap();
+
+        service
+            .add_server_mapping(
+                &user.id,
+                "http://localhost:8096",
+                "mappeduser-a",
+                &"mappedpass-a".into(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let auth = Authorization {
+            client: "Jellyfin Web".to_string(),
+            device: "Firefox".to_string(),
+            device_id: "device-1".to_string(),
+            version: "10.0.0".to_string(),
+            token: None,
+        };
+
+        service
+            .store_authorization_session(
+                &user.id,
+                "http://localhost:8096",
+                &auth,
+                "token-1".to_string(),
+                "orig-user-1".to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let sessions_before = service
+            .get_user_sessions_by_virtual_token(&user.virtual_key)
+            .await
+            .unwrap()
+            .unwrap()
+            .1;
+        assert_eq!(sessions_before.len(), 1);
+
+        // Change mapped username -> should revoke old sessions for this mapping.
+        service
+            .add_server_mapping(
+                &user.id,
+                "http://localhost:8096",
+                "mappeduser-b",
+                &"mappedpass-b".into(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let sessions_after = service
+            .get_user_sessions_by_virtual_token(&user.virtual_key)
+            .await
+            .unwrap()
+            .unwrap()
+            .1;
+        assert_eq!(sessions_after.len(), 0);
     }
 }

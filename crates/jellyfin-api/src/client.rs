@@ -1,9 +1,12 @@
 use crate::error::Error;
-use crate::models::{AuthResponse, MediaFoldersResponse, User};
+use crate::models::{
+    AuthResponse, IncludeBaseItemFields, IncludeItemTypes, MediaFoldersResponse, User,
+};
 use reqwest::{header, Client, StatusCode};
 use serde::de::DeserializeOwned;
 use serde_json::json;
-use std::sync::{Arc, RwLock};
+use tokio::sync::RwLock;
+use tracing::info;
 use url::Url;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -25,12 +28,11 @@ impl Default for ClientInfo {
     }
 }
 
-#[derive(Clone)]
 pub struct JellyfinClient {
     base_url: Url,
     client_info: ClientInfo,
     http_client: Client,
-    auth_token: Arc<RwLock<Option<String>>>,
+    auth_token: RwLock<Option<String>>,
 }
 
 impl PartialEq for JellyfinClient {
@@ -74,20 +76,20 @@ impl JellyfinClient {
             base_url: url,
             client_info,
             http_client,
-            auth_token: Arc::new(RwLock::new(None)),
+            auth_token: RwLock::new(None),
         })
     }
 
-    pub fn with_token(&self, token: String) -> &Self {
-        *self.auth_token.write().unwrap() = Some(token);
+    pub async fn with_token(&self, token: String) -> &Self {
+        *self.auth_token.write().await = Some(token);
         self
     }
 
-    pub fn get_token(&self) -> Option<String> {
-        self.auth_token.read().unwrap().clone()
+    pub async fn get_token(&self) -> Option<String> {
+        self.auth_token.read().await.clone()
     }
 
-    fn build_auth_header(&self) -> String {
+    async fn build_auth_header(&self) -> String {
         let mut header = format!(
             "MediaBrowser Client=\"{}\", Device=\"{}\", DeviceId=\"{}\", Version=\"{}\"",
             self.client_info.client,
@@ -96,7 +98,7 @@ impl JellyfinClient {
             self.client_info.version
         );
 
-        if let Some(token) = self.auth_token.read().unwrap().as_ref() {
+        if let Some(token) = self.auth_token.read().await.as_ref() {
             header.push_str(&format!(", Token=\"{}\"", token));
         }
 
@@ -111,7 +113,7 @@ impl JellyfinClient {
         body: Option<&serde_json::Value>,
     ) -> Result<T, Error> {
         let url = self.base_url.join(path)?;
-        let auth_header = self.build_auth_header();
+        let auth_header = self.build_auth_header().await;
 
         let mut request = self
             .http_client
@@ -148,7 +150,7 @@ impl JellyfinClient {
         body: Option<&serde_json::Value>,
     ) -> Result<(), Error> {
         let url = self.base_url.join(path)?;
-        let auth_header = self.build_auth_header();
+        let auth_header = self.build_auth_header().await;
 
         let mut request = self
             .http_client
@@ -201,14 +203,16 @@ impl JellyfinClient {
                 _ => e,
             })?;
 
-        *self.auth_token.write().unwrap() = Some(response.access_token);
+        let mut write_guard = self.auth_token.write().await;
+        *write_guard = Some(response.access_token);
+        info!("Authenticated user: {}", response.user.name);
         Ok(response.user)
     }
 
     pub async fn logout(&self) -> Result<(), Error> {
         self.request_no_content(reqwest::Method::POST, "Sessions/Logout", None)
             .await?;
-        *self.auth_token.write().unwrap() = None;
+        *self.auth_token.write().await = None;
         Ok(())
     }
 
@@ -274,23 +278,40 @@ impl JellyfinClient {
         user_id: &str,
         parent_id: Option<&str>,
         recursive: bool,
-        include_item_types: Option<Vec<String>>,
+        include_item_types: Option<Vec<IncludeItemTypes>>,
         limit: Option<i32>,
         start_index: Option<i32>,
         sort_by: Option<String>,
         sort_order: Option<String>,
+        include_fields: Option<Vec<IncludeBaseItemFields>>,
     ) -> Result<crate::models::ItemsResponse, Error> {
         let mut query = vec![
             ("Recursive", recursive.to_string()),
-            ("Fields", "PrimaryImageAspectRatio,CanDelete,BasicSyncInfo,ProductionYear,RunTimeTicks,CommunityRating".to_string()),
+            //("Fields", "PrimaryImageAspectRatio,CanDelete,BasicSyncInfo,ProductionYear,RunTimeTicks,CommunityRating".to_string()),
         ];
+
+        if let Some(include_fields) = include_fields {
+            let fields_str = include_fields
+                .iter()
+                .map(|f| f.to_string())
+                .collect::<Vec<String>>()
+                .join(",");
+            query.push(("Fields", fields_str));
+        }
 
         if let Some(pid) = parent_id {
             query.push(("ParentId", pid.to_string()));
         }
 
         if let Some(types) = include_item_types {
-            query.push(("IncludeItemTypes", types.join(",")));
+            query.push((
+                "IncludeItemTypes",
+                types
+                    .iter()
+                    .map(|f| f.to_string())
+                    .collect::<Vec<String>>()
+                    .join(","),
+            ));
         }
 
         if let Some(l) = limit {
@@ -312,7 +333,7 @@ impl JellyfinClient {
         let path = format!("Users/{}/Items", user_id);
         let url = self.base_url.join(&path)?;
 
-        let auth_header = self.build_auth_header();
+        let auth_header = self.build_auth_header().await;
 
         let response = self
             .http_client
@@ -375,7 +396,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(user.name, "test_user");
-        assert_eq!(client.get_token().as_deref(), Some("test_token"));
+        assert_eq!(client.get_token().await.as_deref(), Some("test_token"));
     }
 
     #[tokio::test]
@@ -401,7 +422,7 @@ mod tests {
 
         let client_info = ClientInfo::default();
         let client = JellyfinClient::new(&mock_server.uri(), client_info).unwrap();
-        let client = client.with_token("test_token".to_string());
+        let client = client.with_token("test_token".to_string()).await;
 
         let folders = client.get_media_folders(None).await.unwrap();
 
