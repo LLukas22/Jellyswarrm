@@ -191,6 +191,7 @@ pub(super) struct GroupParticipant {
     pub ping: u64,
     pub is_buffering: bool,
     pub ignore_wait: bool,
+    pub last_client_when: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -315,7 +316,7 @@ pub(super) struct PlayQueueUpdate {
     pub reason: PlayQueueUpdateReason,
     pub last_update: DateTime<Utc>,
     pub playlist: Vec<SyncPlayQueueItem>,
-    pub playing_item_index: usize,
+    pub playing_item_index: i64,
     pub start_position_ticks: i64,
     pub is_playing: bool,
     pub shuffle_mode: GroupShuffleMode,
