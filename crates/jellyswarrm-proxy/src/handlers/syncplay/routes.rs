@@ -12,7 +12,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -43,6 +43,25 @@ fn try_send_playlist_correction(
         }
     }
     false
+}
+
+fn sanitize_client_when(when: chrono::DateTime<Utc>) -> chrono::DateTime<Utc> {
+    let now = Utc::now();
+    let max_future = now + Duration::seconds(2);
+    if when > max_future {
+        max_future
+    } else {
+        when
+    }
+}
+
+fn is_stale_client_update(
+    last_client_when: Option<chrono::DateTime<Utc>>,
+    when: chrono::DateTime<Utc>,
+) -> bool {
+    last_client_when
+        .map(|last| when + Duration::milliseconds(500) < last)
+        .unwrap_or(false)
 }
 
 async fn deny_library_access(
@@ -86,7 +105,7 @@ impl FromRequestParts<AppState> for SessionContext {
         };
 
         let session_id = match identity.device {
-            Some(d) if !d.device_id.is_empty() => format!("{}:{}", user.id, d.device_id),
+            Some(d) if !d.device_id.is_empty() => format!("{}:{}:{}", user.id, d.device_id, token),
             _ => format!("{}:token:{}", user.id, token),
         };
 
@@ -239,10 +258,13 @@ pub async fn create_group(
     session: SessionContext,
     Json(payload): Json<NewGroupRequestDto>,
 ) -> Result<Json<GroupInfoDto>, StatusCode> {
-    let group = state
+    let Some(group) = state
         .syncplay
         .create_group(&session, payload.group_name)
-        .await;
+        .await
+    else {
+        return Err(StatusCode::CONFLICT);
+    };
     Ok(Json(group))
 }
 
@@ -267,7 +289,10 @@ pub async fn join_group(
         }
     }
 
-    state.syncplay.join_group(&session, payload.group_id).await;
+    if !state.syncplay.join_group(&session, payload.group_id).await {
+        return Ok(StatusCode::CONFLICT);
+    }
+
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -677,6 +702,7 @@ pub async fn buffering(
     state
         .syncplay
         .with_group_for_session(&session, move |group, sync_state| {
+            let when = sanitize_client_when(payload.when);
             if try_send_playlist_correction(
                 group,
                 sync_state,
@@ -686,6 +712,15 @@ pub async fn buffering(
                 return;
             }
             if let Some(member) = group.participants.get_mut(&session_id) {
+                if is_stale_client_update(member.last_client_when, when) {
+                    debug!(
+                        group_id = %group.group_id,
+                        session_id = %session_id,
+                        "Ignoring stale SyncPlay buffering update"
+                    );
+                    return;
+                }
+                member.last_client_when = Some(when);
                 member.is_buffering = true;
             }
             debug!(
@@ -701,8 +736,8 @@ pub async fn buffering(
             } else {
                 group.transition_to_waiting(payload.is_playing);
             }
-            if payload.when > group.last_updated_at {
-                group.last_updated_at = payload.when;
+            if when > group.last_updated_at {
+                group.last_updated_at = when;
             }
             group.touch();
             sync_state.broadcast_state_update(group, "Buffer");
@@ -720,6 +755,7 @@ pub async fn ready(
     state
         .syncplay
         .with_group_for_session(&session, move |group, sync_state| {
+            let when = sanitize_client_when(payload.when);
             if try_send_playlist_correction(
                 group,
                 sync_state,
@@ -729,6 +765,15 @@ pub async fn ready(
                 return;
             }
             if let Some(member) = group.participants.get_mut(&session_id) {
+                if is_stale_client_update(member.last_client_when, when) {
+                    debug!(
+                        group_id = %group.group_id,
+                        session_id = %session_id,
+                        "Ignoring stale SyncPlay ready update"
+                    );
+                    return;
+                }
+                member.last_client_when = Some(when);
                 member.is_buffering = false;
             }
             debug!(
@@ -739,8 +784,8 @@ pub async fn ready(
             );
             group.start_position_ticks = payload.position_ticks.max(0);
             group.state = GroupStateType::Waiting;
-            if payload.when > group.last_updated_at {
-                group.last_updated_at = payload.when;
+            if when > group.last_updated_at {
+                group.last_updated_at = when;
             }
             group.touch();
             sync_state.resolve_waiting(group, "Ready");
