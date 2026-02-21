@@ -33,6 +33,27 @@
             localStorage.setItem('theme', newTheme);
         }
 
+        function togglePasswordFieldForButton(button) {
+            const wrapper = button.closest('.password-input');
+            const input = wrapper ? wrapper.querySelector('input') : null;
+            if (!input) {
+                return;
+            }
+
+            const icon = button.querySelector('i');
+            if (input.type === 'password') {
+                input.type = 'text';
+                if (icon) {
+                    icon.className = 'fas fa-eye-slash';
+                }
+            } else {
+                input.type = 'password';
+                if (icon) {
+                    icon.className = 'fas fa-eye';
+                }
+            }
+        }
+
         // Load saved theme
         document.addEventListener('DOMContentLoaded', function() {
             const savedTheme = localStorage.getItem('theme');

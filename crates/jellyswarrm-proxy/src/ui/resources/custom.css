@@ -106,6 +106,19 @@ i.danger {
   padding-left: 1rem;
 }
 
+.mapping-card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid var(--pico-muted-border-color, #555);
+  border-left: 4px solid var(--pico-primary-background);
+  border-radius: 0.5rem;
+  background: var(--pico-card-background-color);
+}
+
 /* --- Animations --- */
 .htmx-added {
   animation: fadeInSoft 160ms ease-out, highlightSoft 900ms ease-out;

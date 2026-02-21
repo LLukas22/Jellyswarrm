@@ -55,29 +55,15 @@
                     </div>
 
                     <div style="margin-bottom: 1.5rem;">
-                        <label for="password">
+                        <label>
                             <i class="fas fa-lock" style="margin-right: 0.5rem;"></i>
                             Password
                         </label>
-                        <div style="position: relative;">
-                            <input
-                                name="password"
-                                id="password"
-                                type="password"
-                                placeholder="Enter your password"
-                                autocomplete="current-password"
-                                required
-                                style="padding-right: 3rem;"
-                            />
-                            <button
-                                type="button"
-                                onclick="togglePassword()"
-                                style="position: absolute; right: 0.5rem; top: 0; bottom: 0; background: none; border: none; cursor: pointer; color: var(--pico-muted-color); padding: 0; width: 1.5rem; display: flex; align-items: center; justify-content: center;"
-                                aria-label="Toggle password visibility"
-                            >
-                                <i id="password-toggle-icon" class="fas fa-eye"></i>
-                            </button>
-                        </div>
+                        {% let pw_input_name = "password" %}
+                        {% let pw_input_placeholder = "Enter your password" %}
+                        {% let pw_input_autocomplete = "current-password" %}
+                        {% let pw_input_required = true %}
+                        {% include "components/password_input.html" %}
                     </div>
 
                     <button type="submit" style="width: 100%;">
@@ -109,21 +95,4 @@
             Jellyswarrm Proxy Server
         </p>
     </footer>
-{% endblock %}
-
-{% block scripts %}
-<script>
-    function togglePassword() {
-        const passwordInput = document.getElementById('password');
-        const toggleIcon = document.getElementById('password-toggle-icon');
-        
-        if (passwordInput.type === 'password') {
-            passwordInput.type = 'text';
-            toggleIcon.className = 'fas fa-eye-slash';
-        } else {
-            passwordInput.type = 'password';
-            toggleIcon.className = 'fas fa-eye';
-        }
-    }
-</script>
 {% endblock %}

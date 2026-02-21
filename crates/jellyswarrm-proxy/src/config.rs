@@ -126,6 +126,10 @@ fn default_server_background_check_interval_secs() -> u64 {
     30
 }
 
+fn default_auto_create_users_on_login() -> bool {
+    true
+}
+
 mod base64_serde {
     use super::*;
     use serde::de::Error as DeError;
@@ -213,6 +217,11 @@ define_fallback_deserializer!(
     u64,
     default_server_background_check_interval_secs
 );
+define_fallback_deserializer!(
+    deserialize_auto_create_users_on_login,
+    bool,
+    default_auto_create_users_on_login
+);
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PreconfiguredServer {
@@ -273,6 +282,12 @@ pub struct AppConfig {
         deserialize_with = "deserialize_server_background_check_interval_secs"
     )]
     pub server_background_check_interval_secs: u64,
+
+    #[serde(
+        default = "default_auto_create_users_on_login",
+        deserialize_with = "deserialize_auto_create_users_on_login"
+    )]
+    pub auto_create_users_on_login: bool,
 }
 
 pub const DEFAULT_CONFIG_FILENAME: &str = "jellyswarrm.toml";

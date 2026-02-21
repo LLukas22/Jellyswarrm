@@ -30,9 +30,11 @@
 </div>
 {% endif %}
 
+{% if !users.is_empty() %}
 <div class="filter-bar">
   <input id="user-filter" type="search" placeholder="Filter users" oninput="filterUsers(this.value)">
 </div>
+{% endif %}
 
 {% if users.is_empty() %}
 <div class="empty-state" role="note">
@@ -47,11 +49,12 @@
 {% endif %}
 
 <script>
-  function filterUsers(q) {
-    q = q.toLowerCase().trim();
-    for (const art of document.querySelectorAll('section.user-list > article')) {
-      const name = art.dataset.username.toLowerCase();
-      art.hidden = q && !name.includes(q);
-    }
+function filterUsers(query) {
+  const q = query.toLowerCase().trim();
+  const items = document.querySelectorAll('section.user-list > article[data-username]');
+  for (const item of items) {
+    const username = (item.dataset.username || '').toLowerCase();
+    item.hidden = q.length > 0 && !username.includes(q);
   }
+}
 </script>

@@ -78,7 +78,11 @@
                             </label>
                             <label>
                                 Password
-                                <input type="password" name="password" required>
+                                {% let pw_input_name = "password" %}
+                                {% let pw_input_placeholder = "Password" %}
+                                {% let pw_input_autocomplete = "new-password" %}
+                                {% let pw_input_required = true %}
+                                {% include "components/password_input.html" %}
                             </label>
                         </form>
                         <footer style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
