@@ -32,15 +32,27 @@
         
         <label>
             Current Password
-            <input type="password" name="current_password" required autocomplete="current-password">
+            {% let pw_input_name = "current_password" %}
+            {% let pw_input_placeholder = "Current password" %}
+            {% let pw_input_autocomplete = "current-password" %}
+            {% let pw_input_required = true %}
+            {% include "components/password_input.html" %}
         </label>
         <label>
             New Password
-            <input type="password" name="new_password" required autocomplete="new-password">
+            {% let pw_input_name = "new_password" %}
+            {% let pw_input_placeholder = "New password" %}
+            {% let pw_input_autocomplete = "new-password" %}
+            {% let pw_input_required = true %}
+            {% include "components/password_input.html" %}
         </label>
         <label>
             Confirm New Password
-            <input type="password" name="confirm_password" required autocomplete="new-password">
+            {% let pw_input_name = "confirm_password" %}
+            {% let pw_input_placeholder = "Confirm new password" %}
+            {% let pw_input_autocomplete = "new-password" %}
+            {% let pw_input_required = true %}
+            {% include "components/password_input.html" %}
         </label>
         
         <button type="submit">

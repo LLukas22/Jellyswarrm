@@ -1,26 +1,29 @@
 <header>
     <h1>User Management</h1>
-    <h3>Create users and map credentials to each server.</h3>
-    <h6>Warning: If a mapping is added to a user all existing sessions will be invalidated.</h6>
+    <p>Create users and connect them to server accounts.</p>
 </header>
 
 <hr />
 
 <section id="add-user" aria-labelledby="add-user-heading">
     <h2 id="add-user-heading" style="margin-bottom:.5rem;">Add User</h2>
-    <form hx-post="/{{ ui_route }}/users" hx-target="#user-list" hx-swap="innerHTML" hx-disabled-elt="this", hx-on::after-request="if(event.detail.successful) this.reset()">
-        <div class="grid" style="--pico-grid-gap:1rem;">
+    <form hx-post="/{{ ui_route }}/users" hx-target="#user-list" hx-swap="innerHTML" hx-disabled-elt="this" hx-on::after-request="if(event.detail.successful) this.reset()">
+        <div class="grid" style="--pico-grid-gap:1rem; align-items:end;">
             <label>Username
-                <input type="text" name="username" placeholder="e.g. alice" autocomplete="off" required>
+                <input type="text" name="username" placeholder="e.g. alice" autocomplete="off" required style="margin-bottom:0;">
             </label>
             <label>Password
-                <input type="password" name="password" placeholder="••••••" required>
+                {% let pw_input_name = "password" %}
+                {% let pw_input_placeholder = "••••••" %}
+                {% let pw_input_autocomplete = "new-password" %}
+                {% let pw_input_required = true %}
+                {% include "components/password_input.html" %}
             </label>
-            <div style="display:flex; align-items:center; padding-top:1.5rem;">
-                <button type="submit">Add</button>
-            </div>
+            <label>&nbsp;
+                <button type="submit" style="margin-bottom:0;">Add</button>
+            </label>
         </div>
-        <label style="margin-top: -0.5rem;">
+        <label style="margin-top: 0.25rem; display:inline-flex; align-items:center; gap:0.5rem;">
             <input type="checkbox" name="enable_federation" value="true" checked>
             <span data-tooltip="Automatically creates this user on all connected Jellyfin servers where an admin is configured.">Enable Federation</span>
         </label>
@@ -33,3 +36,16 @@
 <section id="user-list" hx-get="/{{ ui_route }}/users/list" hx-trigger="load">
     <p>Loading users...</p>
 </section>
+
+<script>
+if (!window.__adminPopupBound) {
+    document.body.addEventListener('admin-popup', function (event) {
+        const detail = event.detail;
+        const message = typeof detail === 'string' ? detail : detail?.message;
+        if (message) {
+            window.alert(message);
+        }
+    });
+    window.__adminPopupBound = true;
+}
+</script>

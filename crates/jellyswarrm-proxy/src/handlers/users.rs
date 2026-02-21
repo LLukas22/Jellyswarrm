@@ -6,6 +6,7 @@ use hyper::{HeaderMap, StatusCode};
 use tracing::{debug, error, info, warn};
 
 use crate::{
+    encryption::Password,
     handlers::common::execute_json_request,
     models::{AuthenticateRequest, AuthenticateResponse, Authorization, SyncPlayUserAccessType},
     request_preprocessing::preprocess_request,
@@ -138,12 +139,23 @@ pub async fn handle_authenticate_by_name(
 
     let mut auth_tasks = Vec::with_capacity(servers.len());
 
-    if let Some(user) = state
+    let existing_user = state
         .user_authorization
-        .get_user_by_credentials(&payload.username, &payload.password)
+        .get_user_by_username(&payload.username)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    {
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if existing_user.is_none() && !state.auto_create_users_on_login().await {
+        warn!(
+            "Auto user creation disabled; rejecting login for non-existing local user '{}'",
+            payload.username
+        );
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let is_existing_user = existing_user.is_some();
+
+    if let Some(user) = existing_user {
         let server_mappings = state
             .user_authorization
             .list_server_mappings(&user.id)
@@ -181,28 +193,38 @@ pub async fn handle_authenticate_by_name(
         }
     }
 
-    // also try to authenticate on leftover servers without a mapping
-    let mut leftover_tasks: Vec<_> = servers
-        .into_iter()
-        .map(|server| {
-            let state = state.clone();
-            let authentication = authentication.clone();
-            let payload = payload.clone();
+    if is_existing_user {
+        if !servers.is_empty() {
             info!(
-                "No server mapping found for user '{}' on server '{}'",
-                payload.username, server.name
+                "Skipping {} unmapped servers for existing user '{}' during login",
+                servers.len(),
+                payload.username
             );
+        }
+    } else {
+        // For first-time users we still probe all configured servers so mappings can be created.
+        let mut leftover_tasks: Vec<_> = servers
+            .into_iter()
+            .map(|server| {
+                let state = state.clone();
+                let authentication = authentication.clone();
+                let payload = payload.clone();
+                info!(
+                    "No server mapping found for user '{}' on server '{}'",
+                    payload.username, server.name
+                );
 
-            tokio::spawn(async move {
-                authenticate_on_server(state, authentication, payload, server, None).await
+                tokio::spawn(async move {
+                    authenticate_on_server(state, authentication, payload, server, None).await
+                })
             })
-        })
-        .collect();
+            .collect();
 
-    auth_tasks.append(&mut leftover_tasks);
+        auth_tasks.append(&mut leftover_tasks);
+    }
 
     // Wait for all authentication attempts to complete
-    let mut successful_auths = Vec::new();
+    let mut successful_auths: Vec<SuccessfulServerAuth> = Vec::new();
     let total_servers = auth_tasks.len();
 
     for task in auth_tasks {
@@ -227,15 +249,111 @@ pub async fn handle_authenticate_by_name(
         );
         Err(StatusCode::UNAUTHORIZED)
     } else {
+        let user =
+            resolve_or_create_login_user(&state, &payload.username, &payload.password).await?;
+
+        persist_successful_auths(
+            &state,
+            &user,
+            &payload.password,
+            &authentication,
+            &successful_auths,
+        )
+        .await?;
+
+        let auth_response =
+            decorate_auth_response(&state, &user, &payload.username, &successful_auths[0]).await;
+
         info!(
             "User '{}' successfully authenticated on {} out of {} servers and stored in authorization storage",
             payload.username,
             successful_auths.len(),
             total_servers
         );
-        // Return the first successful authentication (you could also implement priority logic here)
-        Ok(Json(successful_auths[0].clone()))
+        Ok(Json(auth_response))
     }
+}
+
+async fn resolve_or_create_login_user(
+    state: &AppState,
+    username: &str,
+    password: &Password,
+) -> Result<crate::user_authorization_service::User, StatusCode> {
+    state
+        .user_authorization
+        .get_or_create_user(username, password)
+        .await
+        .map_err(|e| {
+            tracing::error!("Error resolving local user for login: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
+async fn persist_successful_auths(
+    state: &AppState,
+    user: &crate::user_authorization_service::User,
+    login_password: &Password,
+    login_authorization: &Authorization,
+    successful_auths: &[SuccessfulServerAuth],
+) -> Result<(), StatusCode> {
+    for successful in successful_auths {
+        state
+            .user_authorization
+            .add_server_mapping(
+                &user.id,
+                successful.server.url.as_str(),
+                &successful.final_username,
+                &successful.final_password,
+                Some(&login_password.clone().into()),
+            )
+            .await
+            .map_err(|e| {
+                tracing::error!("Error updating server mapping after authentication: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+        let mut auth_to_store = login_authorization.clone();
+        auth_to_store.token = Some(successful.auth_response.access_token.clone());
+
+        state
+            .user_authorization
+            .store_authorization_session(
+                &user.id,
+                successful.server.url.as_str(),
+                &auth_to_store,
+                successful.auth_response.access_token.clone(),
+                successful.auth_response.user.id.clone(),
+                None,
+            )
+            .await
+            .map_err(|e| {
+                tracing::error!("Error storing authorization session: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+    }
+
+    Ok(())
+}
+
+async fn decorate_auth_response(
+    state: &AppState,
+    user: &crate::user_authorization_service::User,
+    login_username: &str,
+    successful_auth: &SuccessfulServerAuth,
+) -> AuthenticateResponse {
+    let mut auth_response = successful_auth.auth_response.clone();
+    let server_id = state.config.read().await.server_id.clone();
+    auth_response.server_id = server_id.clone();
+    auth_response.user.server_id = server_id.clone();
+    auth_response.session_info.server_id = server_id;
+    auth_response.session_info.user_id = user.id.clone();
+    auth_response.user.name = login_username.to_string();
+    auth_response.session_info.user_name = login_username.to_string();
+    auth_response.user.policy.is_administrator = false;
+    auth_response.user.policy.sync_play_access = SyncPlayUserAccessType::CreateAndJoinGroups;
+    auth_response.access_token = user.virtual_key.clone();
+    auth_response.user.id = user.id.clone();
+    auth_response
 }
 
 /// Authenticates a user on a specific server
@@ -245,7 +363,7 @@ async fn authenticate_on_server(
     payload: AuthenticateRequest,
     server: crate::server_storage::Server,
     server_mapping: Option<crate::user_authorization_service::ServerMapping>,
-) -> Result<AuthenticateResponse, AuthError> {
+) -> Result<SuccessfulServerAuth, AuthError> {
     let auth_url = join_server_url(&server.url, "/Users/AuthenticateByName");
 
     info!(
@@ -330,91 +448,16 @@ async fn authenticate_on_server(
             AuthError::ParseError(e.to_string())
         })?;
 
-    let mut auth_response = auth_response;
-
-    // We authenticated sucessfully, now we need to get the user or create it
-    let user = state
-        .user_authorization
-        .get_or_create_user(&payload.username, &given_password)
-        .await
-        .map_err(|e| {
-            tracing::error!("Error getting user: {}", e);
-            AuthError::InternalError
-        })?;
-
-    // Update or create server mapping to ensure it's encrypted
-    // This handles creating new mappings and upgrading legacy plaintext mappings
     info!(
-        "Updating server mapping for user '{}' on server '{}'",
+        "Successfully authenticated user '{}' on server '{}'",
         payload.username, server.name
     );
-    state
-        .user_authorization
-        .add_server_mapping(
-            &user.id,
-            server.url.as_str(),
-            &final_username,
-            &final_password,
-            Some(&given_password.into()),
-        )
-        .await
-        .map_err(|e| {
-            tracing::error!("Error updating server mapping: {}", e);
-            AuthError::InternalError
-        })?;
-
-    let auth_token = auth_response.access_token.clone();
-
-    let original_user_id = auth_response.user.id.clone();
-
-    let server_id = state.config.read().await.server_id.clone();
-    auth_response.server_id = server_id.clone();
-    auth_response.user.server_id = server_id.clone();
-    auth_response.session_info.server_id = server_id.clone();
-
-    auth_response.session_info.user_id = user.id.clone();
-
-    // Restore original username in response
-    auth_response.user.name = payload.username.clone();
-    auth_response.session_info.user_name = payload.username.clone();
-
-    // Modify admin status (security measure)
-    auth_response.user.policy.is_administrator = false;
-    // SyncPlay is handled by Jellyswarrm itself.
-    auth_response.user.policy.sync_play_access = SyncPlayUserAccessType::CreateAndJoinGroups;
-
-    // Generate a unique access token for this authentication
-    auth_response.access_token = user.virtual_key.clone();
-
-    // Use our user id as the user ID in the response
-    auth_response.user.id = user.id.clone();
-
-    // Store authorization data with the new access token
-    let mut auth_to_store = authorization.clone();
-    auth_to_store.token = Some(auth_token.clone());
-
-    // Store authorization session
-    state
-        .user_authorization
-        .store_authorization_session(
-            &user.id,
-            server.url.as_str(),
-            &auth_to_store,
-            auth_token.clone(),
-            original_user_id, // Store the original Jellyfin user ID
-            None,             // No expiration for now
-        )
-        .await
-        .map_err(|e| {
-            tracing::error!("Error storing authorization session: {}", e);
-            AuthError::InternalError
-        })?;
-
-    info!(
-        "Successfully authenticated user '{}' on server '{}' and stored authorization data with token: {}",
-        payload.username, server.name, auth_token
-    );
-    Ok(auth_response)
+    Ok(SuccessfulServerAuth {
+        server,
+        auth_response,
+        final_username,
+        final_password,
+    })
 }
 
 /// Extracts authorization header
@@ -465,4 +508,12 @@ enum AuthError {
     InvalidCredentials,
     ParseError(String),
     InternalError,
+}
+
+#[derive(Debug, Clone)]
+struct SuccessfulServerAuth {
+    server: crate::server_storage::Server,
+    auth_response: AuthenticateResponse,
+    final_username: String,
+    final_password: crate::encryption::Password,
 }

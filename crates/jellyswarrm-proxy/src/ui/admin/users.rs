@@ -1,10 +1,11 @@
 use askama::Template;
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
+    http::{header::HeaderValue, StatusCode},
     response::{Html, IntoResponse, Response},
     Form,
 };
+use jellyfin_api::JellyfinClient;
 use serde::Deserialize;
 use std::collections::HashMap;
 use tracing::{error, info};
@@ -28,7 +29,6 @@ pub struct UserWithMappings {
     pub mappings: Vec<(ServerMapping, Server, i64)>, // per mapping session count
     pub available_servers: Vec<Server>,              // servers not yet mapped
     pub total_sessions: i64,
-    pub open_mappings: bool, // controls <details open> in template
 }
 
 #[derive(Template)]
@@ -41,7 +41,7 @@ pub struct UserListTemplate {
 
 #[derive(Template)]
 #[template(path = "admin/user_item.html")]
-pub struct UserItememplate {
+pub struct UserItemTemplate {
     pub uwm: UserWithMappings,
     pub ui_route: String,
 }
@@ -66,7 +66,6 @@ pub async fn create_user_with_mappings(
     state: &AppState,
     user: User,
     servers: &[Server],
-    open_mappings: bool,
 ) -> UserWithMappings {
     // session counts per server_url (normalized)
     let mut session_counts: HashMap<String, i64> = HashMap::new();
@@ -121,7 +120,6 @@ pub async fn create_user_with_mappings(
         mappings: mappings_vec,
         available_servers,
         total_sessions: user_total_sessions,
-        open_mappings,
     }
 }
 
@@ -139,11 +137,7 @@ pub async fn users_page(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
-pub async fn get_user_item(
-    state: &AppState,
-    user_id: &str,
-    open_mappings: bool,
-) -> impl IntoResponse {
+pub async fn get_user_item(state: &AppState, user_id: &str) -> impl IntoResponse {
     let servers = match state.server_storage.list_servers().await {
         Ok(s) => s,
         Err(e) => {
@@ -168,8 +162,8 @@ pub async fn get_user_item(
     };
 
     // Build UserWithMappings and render single item template
-    let uwm = create_user_with_mappings(state, user, &servers, open_mappings).await;
-    let template = UserItememplate {
+    let uwm = create_user_with_mappings(state, user, &servers).await;
+    let template = UserItemTemplate {
         uwm,
         ui_route: state.get_ui_route().await,
     };
@@ -180,6 +174,31 @@ pub async fn get_user_item(
             (StatusCode::INTERNAL_SERVER_ERROR, "Template error").into_response()
         }
     }
+}
+
+fn with_popup(mut response: Response, message: String) -> Response {
+    let payload = serde_json::json!({
+        "admin-popup": {
+            "message": message,
+        }
+    })
+    .to_string();
+
+    match HeaderValue::from_str(&payload) {
+        Ok(value) => {
+            response.headers_mut().insert("HX-Trigger", value);
+        }
+        Err(e) => {
+            error!("Failed to set HX-Trigger popup header: {}", e);
+        }
+    }
+
+    response
+}
+
+async fn user_item_with_popup(state: &AppState, user_id: &str, message: String) -> Response {
+    let response = get_user_item(state, user_id).await.into_response();
+    with_popup(response, message)
 }
 
 async fn get_user_list_impl(
@@ -199,7 +218,7 @@ async fn get_user_list_impl(
         Ok(users) => {
             let mut result = Vec::new();
             for user in users {
-                result.push(create_user_with_mappings(state, user, &servers, false).await);
+                result.push(create_user_with_mappings(state, user, &servers).await);
             }
 
             let template = UserListTemplate {
@@ -238,7 +257,7 @@ pub async fn add_user(State(state): State<AppState>, Form(form): Form<AddUserFor
     }
     match state
         .user_authorization
-        .get_or_create_user(&form.username, &form.password)
+        .create_user(&form.username, &form.password)
         .await
     {
         Ok(user) => {
@@ -258,6 +277,11 @@ pub async fn add_user(State(state): State<AppState>, Form(form): Form<AddUserFor
 
             get_user_list_impl(&state, report).await.into_response()
         }
+        Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => (
+            StatusCode::CONFLICT,
+            Html("<div class=\"alert alert-error\">User already exists</div>"),
+        )
+            .into_response(),
         Err(e) => {
             error!("Failed to create user: {}", e);
             (
@@ -338,11 +362,105 @@ pub async fn add_mapping(
     Form(form): Form<AddMappingForm>,
 ) -> Response {
     if form.mapped_username.trim().is_empty() || form.mapped_password.as_str().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Html("<div class=\"alert alert-error\">Mapping credentials required</div>"),
+        return user_item_with_popup(
+            &state,
+            &form.user_id,
+            "Mapping username and password are required.".to_string(),
         )
-            .into_response();
+        .await;
+    }
+
+    info!(
+        "Validating mapping credentials for local user '{}' on '{}' as mapped user '{}'.",
+        form.user_id, form.server_url, form.mapped_username
+    );
+
+    let all_servers = match state.server_storage.list_servers().await {
+        Ok(servers) => servers,
+        Err(e) => {
+            error!("Failed to list servers while adding mapping: {}", e);
+            return user_item_with_popup(
+                &state,
+                &form.user_id,
+                "Could not load servers while validating this mapping.".to_string(),
+            )
+            .await;
+        }
+    };
+
+    let normalized_target = form.server_url.trim_end_matches('/');
+    let server = match all_servers
+        .into_iter()
+        .find(|s| s.url.as_str().trim_end_matches('/') == normalized_target)
+    {
+        Some(server) => server,
+        None => {
+            return user_item_with_popup(
+                &state,
+                &form.user_id,
+                "Selected server was not found. Please refresh and try again.".to_string(),
+            )
+            .await;
+        }
+    };
+
+    let client = match JellyfinClient::new(server.url.as_str(), crate::config::CLIENT_INFO.clone())
+    {
+        Ok(client) => client,
+        Err(e) => {
+            error!(
+                "Failed to create jellyfin client for {}: {}",
+                server.name, e
+            );
+            return user_item_with_popup(
+                &state,
+                &form.user_id,
+                format!("Failed to connect to selected server '{}'.", server.name),
+            )
+            .await;
+        }
+    };
+
+    match client
+        .authenticate_by_name(&form.mapped_username, form.mapped_password.as_str())
+        .await
+    {
+        Ok(_) => {
+            info!(
+                "Mapping credentials validated for local user '{}' on server '{}' as mapped user '{}'.",
+                form.user_id, server.name, form.mapped_username
+            );
+        }
+        Err(jellyfin_api::error::Error::AuthenticationFailed(_)) => {
+            info!(
+                "Mapping validation failed for local user '{}' on server '{}' as mapped user '{}': invalid credentials.",
+                form.user_id, server.name, form.mapped_username
+            );
+            return user_item_with_popup(
+                &state,
+                &form.user_id,
+                format!(
+                    "Validation failed on server '{}': username or password is incorrect.",
+                    server.name
+                ),
+            )
+            .await;
+        }
+        Err(e) => {
+            error!(
+                "Failed to validate mapping credentials for user '{}' on server '{}': {}",
+                form.user_id, server.name, e
+            );
+            return user_item_with_popup(
+                &state,
+                &form.user_id,
+                format!(
+                    "Could not validate credentials on server '{}': {}",
+                    server.name, e
+                ),
+            )
+            .await;
+        }
     }
 
     let config = state.config.read().await;
@@ -359,21 +477,32 @@ pub async fn add_mapping(
         )
         .await
     {
-        Ok(_id) => {
+        Ok(mapping_id) => {
+            info!(
+                "Saved mapping {} for local user '{}' to server '{}' as mapped user '{}'.",
+                mapping_id, form.user_id, form.server_url, form.mapped_username
+            );
             match state
                 .user_authorization
-                .delete_all_sessions_for_user(&form.user_id)
+                .delete_sessions_for_mapping(mapping_id)
                 .await
             {
-                Ok(_) => info!("Deleted all sessions for user {}", form.user_id),
-                Err(e) => error!("Failed to delete sessions for user {}: {}", form.user_id, e),
+                Ok(deleted) => info!(
+                    "Deleted {} sessions for mapping {} (user {})",
+                    deleted, mapping_id, form.user_id
+                ),
+                Err(e) => error!(
+                    "Failed to delete sessions for mapping {} (user {}): {}",
+                    mapping_id, form.user_id, e
+                ),
             }
-            get_user_item(&state, &form.user_id, true)
-                .await
-                .into_response()
+            get_user_item(&state, &form.user_id).await.into_response()
         }
         Err(e) => {
-            error!("Add mapping error: {}", e);
+            error!(
+                "Failed to save mapping for local user '{}' to server '{}': {}",
+                form.user_id, form.server_url, e
+            );
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Html("<div class=\"alert alert-error\">Failed to add mapping</div>"),
@@ -393,7 +522,7 @@ pub async fn delete_mapping(
         .delete_server_mapping(mapping_id)
         .await
     {
-        Ok(true) => get_user_item(&state, &user_id, true).await.into_response(),
+        Ok(true) => get_user_item(&state, &user_id).await.into_response(),
         Ok(false) => (
             StatusCode::NOT_FOUND,
             Html("<div class=\"alert alert-error\">Mapping not found</div>"),
@@ -420,7 +549,7 @@ pub async fn delete_sessions(
         .delete_all_sessions_for_user(&user_id)
         .await
     {
-        Ok(_) => get_user_item(&state, &user_id, false).await.into_response(),
+        Ok(_) => get_user_item(&state, &user_id).await.into_response(),
         Err(e) => {
             error!("Delete user error: {}", e);
             (

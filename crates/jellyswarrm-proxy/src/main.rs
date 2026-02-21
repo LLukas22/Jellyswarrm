@@ -142,6 +142,11 @@ impl AppState {
         let config = self.config.read().await;
         config.media_streaming_mode
     }
+
+    pub async fn auto_create_users_on_login(&self) -> bool {
+        let config = self.config.read().await;
+        config.auto_create_users_on_login
+    }
 }
 
 #[derive(Clone)]
