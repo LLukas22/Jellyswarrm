@@ -62,9 +62,9 @@ This will automatically:
 This ensures that the user exists everywhere and is ready to use immediately without manual configuration.
 
 #### Automatic Mapping (Login)
-If a user already exists on one or more connected servers, they can log in directly with their existing Jellyfin credentials. Jellyswarrm will automatically create a local user and set up the necessary server mappings.
+If `auto_create_users_on_login` is enabled, users who already exist on one or more connected servers can log in directly with their existing Jellyfin credentials. Jellyswarrm will automatically create a local user and set up the necessary server mappings.
 
-If the same username and password exist on multiple servers, Jellyswarrm will link those accounts together automatically. This provides a smooth experience, giving the user unified access to all linked servers.
+If the same username and password exist on multiple servers, Jellyswarrm will link those accounts together automatically (only while this setting is enabled). This provides a smooth experience, giving the user unified access to all linked servers.
 
 #### Manual Creation
 To manually create a user in Jellyswarrm without federation:

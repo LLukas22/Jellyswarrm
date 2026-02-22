@@ -119,7 +119,7 @@ fn default_ui_route() -> UrlSegment {
 }
 
 fn default_media_streaming_mode() -> MediaStreamingMode {
-    MediaStreamingMode::Redirect
+    MediaStreamingMode::Proxy
 }
 
 fn default_server_background_check_interval_secs() -> u64 {
