@@ -57,6 +57,39 @@
 .badge.danger { background-color: #dc3545; color: white; }
 .badge.secondary { background-color: #6c757d; color: white; }
 
+.release-status {
+  display: inline-flex;
+  align-items: center;
+  gap: .3rem;
+  margin-left: .4rem;
+  padding: .08rem .5rem;
+  border: 1px solid var(--pico-muted-border-color, #666);
+  border-radius: 999px;
+  font-size: .7rem;
+  line-height: 1.4;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.release-status i {
+  font-size: .68rem;
+}
+
+.release-status--checking,
+.release-status--unknown {
+  color: var(--pico-muted-color);
+}
+
+.release-status--latest {
+  color: var(--pico-ins-color, #2e7d32);
+  border-color: var(--pico-ins-color, #2e7d32);
+}
+
+.release-status--update {
+  color: var(--pico-primary, #0d6efd);
+  border-color: var(--pico-primary, #0d6efd);
+}
+
 /* Status Container */
 .status-container {
   display: flex;

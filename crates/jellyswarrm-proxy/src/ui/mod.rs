@@ -19,6 +19,7 @@ use crate::{
 
 pub mod admin;
 pub mod auth;
+pub mod release_status;
 pub mod root;
 pub mod server_status;
 pub mod user;
@@ -137,6 +138,10 @@ pub fn ui_routes() -> axum::Router<AppState> {
     Router::new()
         // Root
         .route("/", get(root::index))
+        .route(
+            "/release-status",
+            get(release_status::jellyswarrm_release_status),
+        )
         .route("/user/servers", get(user::servers::get_user_servers))
         .route(
             "/user/servers/{id}",
