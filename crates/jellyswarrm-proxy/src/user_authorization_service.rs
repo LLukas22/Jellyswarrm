@@ -218,16 +218,44 @@ impl UserAuthorizationService {
         Self { pool }
     }
 
-    /// Create or get a user based on credentials
+    fn normalized_username_key(username: &str) -> String {
+        username.trim().to_string()
+    }
+
+    /// Create or get a user by username.
+    ///
+    /// If the user already exists and the password changed, the stored password hash is updated.
     pub async fn get_or_create_user(
         &self,
         username: &str,
         password: &Password,
     ) -> Result<User, sqlx::Error> {
         let password_hash: HashedPassword = password.into();
+        let username_key = Self::normalized_username_key(username);
 
-        // Try to find existing user
-        if let Some(user) = self.get_user_by_credentials(username, password).await? {
+        if let Some(mut user) = self.get_user_by_username(username).await? {
+            if user.original_password_hash != password_hash {
+                let now = chrono::Utc::now();
+                sqlx::query(
+                    r#"
+                    UPDATE users
+                    SET original_password_hash = ?, updated_at = ?
+                    WHERE id = ?
+                    "#,
+                )
+                .bind(&password_hash)
+                .bind(now)
+                .bind(&user.id)
+                .execute(&self.pool)
+                .await?;
+
+                user.original_password_hash = password_hash;
+                user.updated_at = now;
+                info!(
+                    "Updated password hash for existing user: {}",
+                    user.original_username
+                );
+            }
             return Ok(user);
         }
 
@@ -244,7 +272,7 @@ impl UserAuthorizationService {
         )
         .bind(&user_id)
         .bind(&virtual_key)
-        .bind(username)
+        .bind(&username_key)
         .bind(&password_hash)
         .bind(now)
         .bind(now)
@@ -256,11 +284,64 @@ impl UserAuthorizationService {
         Ok(User {
             id: user_id,
             virtual_key,
-            original_username: username.to_string(),
+            original_username: username_key,
             original_password_hash: password_hash,
             created_at: now,
             updated_at: now,
         })
+    }
+
+    /// Create a new user. Fails if a user with the same normalized username already exists.
+    pub async fn create_user(
+        &self,
+        username: &str,
+        password: &Password,
+    ) -> Result<User, sqlx::Error> {
+        let password_hash: HashedPassword = password.into();
+        let username_key = Self::normalized_username_key(username);
+        let virtual_key = generate_token();
+        let user_id = generate_token();
+        let now = chrono::Utc::now();
+
+        sqlx::query(
+            r#"
+            INSERT INTO users (id, virtual_key, original_username, original_password_hash, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&user_id)
+        .bind(&virtual_key)
+        .bind(&username_key)
+        .bind(&password_hash)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(User {
+            id: user_id,
+            virtual_key,
+            original_username: username_key,
+            original_password_hash: password_hash,
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    /// Get user by username (case-insensitive, trimmed)
+    pub async fn get_user_by_username(&self, username: &str) -> Result<Option<User>, sqlx::Error> {
+        let user = sqlx::query_as::<_, User>(
+            r#"
+            SELECT id, virtual_key, original_username, original_password_hash, created_at, updated_at
+            FROM users
+            WHERE lower(trim(original_username)) = lower(trim(?))
+            "#,
+        )
+        .bind(username)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(user)
     }
 
     /// Get user by virtual key
@@ -310,7 +391,7 @@ impl UserAuthorizationService {
             r#"
             SELECT id, virtual_key, original_username, original_password_hash, created_at, updated_at
             FROM users 
-            WHERE original_username = ? AND original_password_hash = ?
+            WHERE lower(trim(original_username)) = lower(trim(?)) AND original_password_hash = ?
             "#,
         )
         .bind(username)
@@ -832,6 +913,15 @@ impl UserAuthorizationService {
         Ok(res.rows_affected())
     }
 
+    /// Delete authorization sessions for a specific mapping.
+    pub async fn delete_sessions_for_mapping(&self, mapping_id: i64) -> Result<u64, sqlx::Error> {
+        let res = sqlx::query("DELETE FROM authorization_sessions WHERE mapping_id = ?")
+            .bind(mapping_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected())
+    }
+
     /// Get all servers mapped to a user, sorted by priority
     pub async fn get_mapped_servers(&self, user_id: &str) -> Result<Vec<Server>, sqlx::Error> {
         let rows = sqlx::query(
@@ -917,6 +1007,39 @@ mod tests {
         assert_eq!(device.client, "SomeUnknownClient");
         assert_eq!(device.version, "0.0.0");
         assert_eq!(device.device, "Unknown");
+    }
+
+    #[tokio::test]
+    async fn test_get_or_create_user_uses_stable_username_identity() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = UserAuthorizationService::new(pool.clone());
+
+        let first = service
+            .get_or_create_user("testuser", &"password-1".into())
+            .await
+            .unwrap();
+
+        let second = service
+            .get_or_create_user(" TestUser ", &"password-2".into())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            first.id, second.id,
+            "user identity should be username-based"
+        );
+        assert!(
+            second.original_password_hash.verify("password-2"),
+            "stored password hash should be updated to the latest successful login password"
+        );
+
+        let all_users = service.list_users().await.unwrap();
+        assert_eq!(
+            all_users.len(),
+            1,
+            "should not create duplicate local users"
+        );
     }
 
     #[tokio::test]

@@ -26,6 +26,7 @@ pub struct SettingsFormTemplate {
     pub public_address: String,
     pub server_name: String,
     pub include_server_name_in_media: bool,
+    pub auto_create_users_on_login: bool,
     pub ui_route: String,
     pub media_streaming_mode: String,
 }
@@ -50,6 +51,7 @@ pub async fn settings_form(State(state): State<AppState>) -> impl IntoResponse {
         public_address: cfg.public_address,
         server_name: cfg.server_name,
         include_server_name_in_media: cfg.include_server_name_in_media,
+        auto_create_users_on_login: cfg.auto_create_users_on_login,
         ui_route: state.get_ui_route().await,
         media_streaming_mode: cfg.media_streaming_mode.to_string(),
     };
@@ -69,6 +71,8 @@ pub struct SaveForm {
     // When the checkbox is unchecked the field is absent; default to false.
     #[serde(default)]
     pub include_server_name_in_media: bool,
+    #[serde(default)]
+    pub auto_create_users_on_login: bool,
     pub media_streaming_mode: String,
 }
 
@@ -98,6 +102,7 @@ pub async fn save_settings(
         cfg.public_address = form.public_address.trim().to_string();
         cfg.server_name = form.server_name.trim().to_string();
         cfg.include_server_name_in_media = form.include_server_name_in_media;
+        cfg.auto_create_users_on_login = form.auto_create_users_on_login;
         cfg.media_streaming_mode = mode;
         if let Err(e) = save_config(&cfg) {
             error!("Save failed: {}", e);

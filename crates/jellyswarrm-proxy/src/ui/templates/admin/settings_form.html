@@ -23,6 +23,9 @@
     <label>Add Server Names to Media
       <input type="checkbox" role="switch" name="include_server_name_in_media" value="true" {% if include_server_name_in_media %}checked{% endif %}>
     </label>
+    <label>Auto Create Users On Login
+      <input type="checkbox" role="switch" name="auto_create_users_on_login" value="true" {% if auto_create_users_on_login %}checked{% endif %}>
+    </label>
   </fieldset>
   <div style="display:flex; gap:.5rem;">
     <button type="submit">Save</button>
