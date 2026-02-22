@@ -2,7 +2,8 @@ use sqlx::{FromRow, Row, SqlitePool};
 use tracing::{debug, error, info, warn};
 
 use crate::encryption::{
-    decrypt_password, encrypt_password, EncryptedPassword, HashedPassword, Password,
+    decrypt_password, decrypt_password_with_key_material, encrypt_password, EncryptedPassword,
+    HashedPassword, Password,
 };
 use crate::models::{generate_token, Authorization};
 use crate::server_storage::Server;
@@ -499,6 +500,8 @@ impl UserAuthorizationService {
         mapping: &ServerMapping,
         user_password: &HashedPassword,
         admin_password: &HashedPassword,
+        user_password_plain: Option<&Password>,
+        admin_password_plain: Option<&Password>,
     ) -> Password {
         // Try user password first
         if let Ok(decrypted) = decrypt_password(&mapping.mapped_password, user_password) {
@@ -508,6 +511,26 @@ impl UserAuthorizationService {
         // Try admin password
         if let Ok(decrypted) = decrypt_password(&mapping.mapped_password, admin_password) {
             return decrypted;
+        }
+
+        // Backward compatibility: try raw user password key material if available
+        if let Some(user_password_plain) = user_password_plain {
+            if let Ok(decrypted) = decrypt_password_with_key_material(
+                &mapping.mapped_password,
+                user_password_plain.as_str(),
+            ) {
+                return decrypted;
+            }
+        }
+
+        // Backward compatibility: try raw admin password key material if available
+        if let Some(admin_password_plain) = admin_password_plain {
+            if let Ok(decrypted) = decrypt_password_with_key_material(
+                &mapping.mapped_password,
+                admin_password_plain.as_str(),
+            ) {
+                return decrypted;
+            }
         }
 
         // If decryption fails, assume it's plaintext (legacy or fallback)
@@ -816,13 +839,18 @@ impl UserAuthorizationService {
         .fetch_all(&mut *transaction)
         .await?;
 
-        let old_password = old_password.into();
-        let admin_password = admin_password.into();
+        let old_password_hash = old_password.into();
+        let admin_password_hash = admin_password.into();
 
         for mapping in mappings {
             // Decrypt with old credentials
-            let decrypted_password =
-                self.decrypt_server_mapping_password(&mapping, &old_password, &admin_password);
+            let decrypted_password = self.decrypt_server_mapping_password(
+                &mapping,
+                &old_password_hash,
+                &admin_password_hash,
+                Some(old_password),
+                Some(admin_password),
+            );
 
             // Encrypt with new password
             let new_encrypted_password =

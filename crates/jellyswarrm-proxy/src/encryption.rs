@@ -186,6 +186,17 @@ pub fn decrypt_password(
     encrypted_data: &EncryptedPassword,
     master_password: &HashedPassword,
 ) -> Result<Password, EncryptionError> {
+    decrypt_password_with_key_material(encrypted_data, master_password.as_str())
+}
+
+/// Decrypts a password using arbitrary key material.
+///
+/// This is used for backward compatibility with legacy records that may have
+/// been encrypted using raw password strings as key material.
+pub fn decrypt_password_with_key_material(
+    encrypted_data: &EncryptedPassword,
+    key_material: &str,
+) -> Result<Password, EncryptionError> {
     tracing::debug!("Decrypting password with master password");
 
     // Decode the base64 data
@@ -208,8 +219,8 @@ pub fn decrypt_password(
     let (nonce_bytes, ciphertext) = combined.split_at(12);
     let nonce = Nonce::from_slice(nonce_bytes);
 
-    // Derive the same key from the master password
-    let key = derive_key(master_password.as_str());
+    // Derive the same key from the provided key material
+    let key = derive_key(key_material);
     let cipher = Aes256Gcm::new(&key.into());
 
     // Decrypt the ciphertext

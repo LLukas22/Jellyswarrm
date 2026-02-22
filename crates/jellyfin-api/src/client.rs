@@ -179,29 +179,34 @@ impl JellyfinClient {
         }
     }
 
-    pub async fn authenticate_by_name(
+    pub async fn authenticate_by_name_typed<T: DeserializeOwned>(
         &self,
         username: &str,
         password: &str,
-    ) -> Result<User, Error> {
+    ) -> Result<T, Error> {
         let body = json!({
             "Username": username,
             "Pw": password
         });
 
-        let response: AuthResponse = self
-            .request(
-                reqwest::Method::POST,
-                "Users/AuthenticateByName",
-                Some(&body),
-            )
-            .await
-            .map_err(|e| match e {
-                Error::Unauthorized => {
-                    Error::AuthenticationFailed("Invalid credentials".to_string())
-                }
-                _ => e,
-            })?;
+        self.request(
+            reqwest::Method::POST,
+            "Users/AuthenticateByName",
+            Some(&body),
+        )
+        .await
+        .map_err(|e| match e {
+            Error::Unauthorized => Error::AuthenticationFailed("Invalid credentials".to_string()),
+            _ => e,
+        })
+    }
+
+    pub async fn authenticate_by_name(
+        &self,
+        username: &str,
+        password: &str,
+    ) -> Result<User, Error> {
+        let response: AuthResponse = self.authenticate_by_name_typed(username, password).await?;
 
         let mut write_guard = self.auth_token.write().await;
         *write_guard = Some(response.access_token);

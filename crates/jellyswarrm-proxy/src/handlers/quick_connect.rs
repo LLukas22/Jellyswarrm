@@ -1,10 +1,6 @@
 use crate::{
     encryption::HashedPassword,
-    models::{
-        AuthenticateRequest as JellyfinAuthenticateRequest, AuthenticateResponse, Authorization,
-        SyncPlayUserAccessType,
-    },
-    url_helper::join_server_url,
+    models::{AuthenticateResponse, Authorization, SyncPlayUserAccessType},
     AppState,
 };
 use axum::{
@@ -14,6 +10,7 @@ use axum::{
 };
 use chrono::{DateTime, Duration, Utc};
 use hyper::StatusCode;
+use jellyfin_api::{error::Error as JellyfinApiError, ClientInfo, JellyfinClient};
 use jellyswarrm_macros::multi_case_struct;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -74,7 +71,7 @@ impl QuickConnectSession {
 #[derive(Debug, Deserialize)]
 pub struct AuthorizeQuery {
     pub code: String,
-    pub user_id: String,
+    pub user_id: Option<String>,
 }
 
 #[multi_case_struct(pascal, camel)]
@@ -285,23 +282,93 @@ pub async fn handle_quick_connect_initiate(
 pub async fn handle_quick_connect_authorize(
     Query(params): Query<AuthorizeQuery>,
     State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> Result<Json<bool>, StatusCode> {
+    let user_id = resolve_authorize_user_id(&state, &headers, params.user_id).await?;
+
     let success = state
         .quick_connect
         .update_session_by_code(&params.code, |session| {
             session.authenticated = true;
-            session.user_id = Some(params.user_id.clone());
+            session.user_id = Some(user_id.clone());
         });
 
     if success {
         info!(
             "Authorized Quick Connect code {} for user {}",
-            params.code, params.user_id
+            params.code, user_id
         );
         Ok(Json(true))
     } else {
         Err(StatusCode::NOT_FOUND)
     }
+}
+
+async fn resolve_authorize_user_id(
+    state: &AppState,
+    headers: &HeaderMap,
+    user_id: Option<String>,
+) -> Result<String, StatusCode> {
+    if let Some(user_id) = user_id {
+        return Ok(user_id);
+    }
+
+    let token = extract_virtual_token(headers).ok_or_else(|| {
+        warn!("Quick Connect authorize called without userId and without a virtual token");
+        StatusCode::BAD_REQUEST
+    })?;
+
+    let user = state
+        .user_authorization
+        .get_user_by_virtual_key(&token)
+        .await
+        .map_err(|e| {
+            warn!("Failed to resolve user from virtual token: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    Ok(user.id)
+}
+
+fn extract_virtual_token(headers: &HeaderMap) -> Option<String> {
+    if let Some(header) = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+    {
+        if let Ok(auth) = Authorization::parse(header) {
+            if let Some(token) = auth.token {
+                return Some(token);
+            }
+        }
+    }
+
+    if let Some(header) = headers
+        .get("x-emby-authorization")
+        .and_then(|value| value.to_str().ok())
+    {
+        if let Ok(auth) = Authorization::parse_with_legacy(header, true) {
+            if let Some(token) = auth.token {
+                return Some(token);
+            }
+        }
+    }
+
+    if let Some(token) = headers
+        .get("x-emby-token")
+        .and_then(|value| value.to_str().ok())
+    {
+        return Some(token.to_string());
+    }
+
+    if let Some(token) = headers
+        .get("x-mediabrowser-token")
+        .and_then(|value| value.to_str().ok())
+    {
+        return Some(token.to_string());
+    }
+
+    None
 }
 
 pub async fn handle_quick_connect_connect(
@@ -448,8 +515,6 @@ async fn authenticate_with_mapping_on_server(
     server: crate::server_storage::Server,
     server_mapping: crate::user_authorization_service::ServerMapping,
 ) -> Result<AuthenticateResponse, QuickConnectAuthError> {
-    let auth_url = join_server_url(&server.url, "/Users/AuthenticateByName");
-
     let admin_password = state.get_admin_password().await;
     let admin_password_hash: HashedPassword = (&admin_password).into();
 
@@ -457,35 +522,31 @@ async fn authenticate_with_mapping_on_server(
         &server_mapping,
         &user.original_password_hash,
         &admin_password_hash,
+        None,
+        Some(&admin_password),
     );
 
-    let auth_payload = JellyfinAuthenticateRequest {
-        username: server_mapping.mapped_username.clone(),
-        password: mapped_password.clone(),
+    let client_info = ClientInfo {
+        client: authorization.client.clone(),
+        device: authorization.device.clone(),
+        device_id: authorization.device_id.clone(),
+        version: authorization.version.clone(),
     };
 
-    let response = state
-        .reqwest_client
-        .post(auth_url.as_str())
-        .header("Authorization", authorization.to_header_value())
-        .header("Accept", "application/json")
-        .header("Content-Type", "application/json")
-        .json(&auth_payload)
-        .send()
+    let jellyfin_client = JellyfinClient::new_with_client(
+        server.url.as_str(),
+        client_info,
+        state.reqwest_client.clone(),
+    )
+    .map_err(|e| QuickConnectAuthError::Internal(e.to_string()))?;
+
+    let mut auth_response: AuthenticateResponse = jellyfin_client
+        .authenticate_by_name_typed(
+            server_mapping.mapped_username.as_str(),
+            mapped_password.as_str(),
+        )
         .await
-        .map_err(|e| QuickConnectAuthError::Network(e.to_string()))?;
-
-    if !response.status().is_success() {
-        return Err(QuickConnectAuthError::InvalidCredentials);
-    }
-
-    let response_text = response
-        .text()
-        .await
-        .map_err(|e| QuickConnectAuthError::Network(e.to_string()))?;
-
-    let mut auth_response = serde_json::from_str::<AuthenticateResponse>(&response_text)
-        .map_err(|e| QuickConnectAuthError::Parse(e.to_string()))?;
+        .map_err(map_jellyfin_auth_error)?;
 
     state
         .user_authorization
@@ -537,4 +598,105 @@ async fn authenticate_with_mapping_on_server(
     );
 
     Ok(auth_response)
+}
+
+fn map_jellyfin_auth_error(err: JellyfinApiError) -> QuickConnectAuthError {
+    match err {
+        JellyfinApiError::AuthenticationFailed(_) => QuickConnectAuthError::InvalidCredentials,
+        JellyfinApiError::Unauthorized | JellyfinApiError::Forbidden => {
+            QuickConnectAuthError::InvalidCredentials
+        }
+        JellyfinApiError::Serialization(e) => QuickConnectAuthError::Parse(e.to_string()),
+        JellyfinApiError::InvalidResponse(e) => QuickConnectAuthError::Parse(e),
+        JellyfinApiError::Network(e) => QuickConnectAuthError::Network(e.to_string()),
+        JellyfinApiError::ServerError(e) => QuickConnectAuthError::Network(e),
+        JellyfinApiError::UrlParse(e) => QuickConnectAuthError::Internal(e.to_string()),
+        JellyfinApiError::NotFound => QuickConnectAuthError::Internal(
+            "Users/AuthenticateByName endpoint was not found on target server".to_string(),
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hyper::http::HeaderValue;
+
+    #[test]
+    fn quick_connect_session_serializes_to_jellyfin_shape() {
+        let session = QuickConnectSession::new(
+            "secret-1".to_string(),
+            "123456".to_string(),
+            "device-1".to_string(),
+            "Test Device".to_string(),
+            "Test App".to_string(),
+            "1.2.3".to_string(),
+        );
+
+        let value = serde_json::to_value(session).unwrap();
+        let obj = value.as_object().unwrap();
+
+        assert!(obj.contains_key("Authenticated"));
+        assert!(obj.contains_key("Secret"));
+        assert!(obj.contains_key("Code"));
+        assert!(obj.contains_key("DeviceId"));
+        assert!(obj.contains_key("DeviceName"));
+        assert!(obj.contains_key("AppName"));
+        assert!(obj.contains_key("AppVersion"));
+        assert!(obj.contains_key("DateAdded"));
+
+        assert!(!obj.contains_key("UserId"));
+        assert!(!obj.contains_key("ExpiresAt"));
+    }
+
+    #[test]
+    fn quick_connect_dto_accepts_pascal_and_camel_secret() {
+        let pascal: QuickConnectAuthenticateRequest =
+            serde_json::from_str(r#"{"Secret":"abc"}"#).unwrap();
+        let camel: QuickConnectAuthenticateRequest =
+            serde_json::from_str(r#"{"secret":"xyz"}"#).unwrap();
+
+        assert_eq!(pascal.secret, "abc");
+        assert_eq!(camel.secret, "xyz");
+    }
+
+    #[test]
+    fn authorize_query_accepts_pascal_and_camel_user_id() {
+        let camel: AuthorizeQuery =
+            serde_json::from_str(r#"{"code":"123456","userId":"user-1"}"#).unwrap();
+        let pascal: AuthorizeQuery =
+            serde_json::from_str(r#"{"Code":"123456","UserId":"user-2"}"#).unwrap();
+        let missing: AuthorizeQuery = serde_json::from_str(r#"{"code":"123456"}"#).unwrap();
+
+        assert_eq!(camel.code, "123456");
+        assert_eq!(camel.user_id.as_deref(), Some("user-1"));
+        assert_eq!(pascal.user_id.as_deref(), Some("user-2"));
+        assert!(missing.user_id.is_none());
+    }
+
+    #[test]
+    fn extract_virtual_token_supports_auth_and_token_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static(
+                "MediaBrowser Client=\"Jellyfin Web\", Device=\"Firefox\", DeviceId=\"abc\", Version=\"10.10.7\", Token=\"token-1\"",
+            ),
+        );
+        assert_eq!(extract_virtual_token(&headers).as_deref(), Some("token-1"));
+
+        let mut x_emby_token = HeaderMap::new();
+        x_emby_token.insert("x-emby-token", HeaderValue::from_static("token-2"));
+        assert_eq!(
+            extract_virtual_token(&x_emby_token).as_deref(),
+            Some("token-2")
+        );
+
+        let mut media_browser_token = HeaderMap::new();
+        media_browser_token.insert("x-mediabrowser-token", HeaderValue::from_static("token-3"));
+        assert_eq!(
+            extract_virtual_token(&media_browser_token).as_deref(),
+            Some("token-3")
+        );
+    }
 }

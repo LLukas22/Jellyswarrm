@@ -3,7 +3,7 @@ use std::sync::Arc;
 use jellyfin_api::JellyfinClient;
 use tracing::info;
 
-use crate::{config::CLIENT_STORAGE, server_storage::Server, AppState};
+use crate::{config::CLIENT_STORAGE, encryption::HashedPassword, server_storage::Server, AppState};
 
 pub async fn authenticate_user_on_server(
     state: &AppState,
@@ -48,11 +48,14 @@ pub async fn authenticate_user_on_server(
     };
 
     let admin_password = state.get_admin_password().await;
+    let admin_password_hash: HashedPassword = (&admin_password).into();
 
     let password = state.user_authorization.decrypt_server_mapping_password(
         &mapping,
         &user.password_hash,
-        &admin_password.into(),
+        &admin_password_hash,
+        None,
+        Some(&admin_password),
     );
 
     if client.get_token().await.is_some() {
