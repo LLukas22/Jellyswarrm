@@ -147,8 +147,9 @@ impl Default for BaseItemKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum CollectionType {
+    #[default]
     Unknown,
     Movies,
     TvShows,
@@ -211,11 +212,5 @@ impl<'de> Deserialize<'de> for CollectionType {
             "folders" => Ok(CollectionType::Folders),
             _ => Ok(CollectionType::UnknownVariant(s)),
         }
-    }
-}
-
-impl Default for CollectionType {
-    fn default() -> Self {
-        Self::Unknown
     }
 }

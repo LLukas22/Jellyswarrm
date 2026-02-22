@@ -7,7 +7,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     handlers::common::execute_json_request,
-    models::{AuthenticateRequest, AuthenticateResponse, Authorization},
+    models::{AuthenticateRequest, AuthenticateResponse, Authorization, SyncPlayUserAccessType},
     request_preprocessing::preprocess_request,
     url_helper::join_server_url,
     AppState,
@@ -29,6 +29,14 @@ async fn process_user(
     server_user.server_id = state.config.read().await.server_id.clone();
 
     Ok(server_user)
+}
+
+// http://foo:3000/users/public?)
+pub async fn handle_public(
+    _state: State<AppState>,
+) -> Result<Json<Vec<crate::models::User>>, StatusCode> {
+    // For now, return an empty list
+    Ok(Json(vec![]))
 }
 
 pub async fn handle_get_me(
@@ -98,17 +106,6 @@ pub async fn handle_authenticate_by_name(
     headers: HeaderMap,
     Json(payload): Json<AuthenticateRequest>,
 ) -> Result<Json<AuthenticateResponse>, StatusCode> {
-    let auth_headers = extract_auth_header(&headers);
-    let authorization = Authorization::parse(&auth_headers).map_err(|e| {
-        tracing::error!("Failed to parse authorization header: {}", e);
-        StatusCode::BAD_REQUEST
-    })?;
-
-    info!(
-        "Received authentication request for user: {} on device: {:?}",
-        payload.username, authorization
-    );
-
     let mut servers = state
         .server_storage
         .list_servers()
@@ -119,6 +116,19 @@ pub async fn handle_authenticate_by_name(
         tracing::warn!("No servers configured for authentication");
         return Err(StatusCode::NOT_FOUND);
     }
+
+    let authentication = extract_auth_header(&headers).map_err(|_| {
+        error!(
+            "No valid 'Authorization' header found in authentication request! Headers: {:?}",
+            headers
+        );
+        StatusCode::BAD_REQUEST
+    })?;
+
+    info!(
+        "Got login request with authentication header: {}",
+        authentication.to_header_value()
+    );
 
     info!(
         "Attempting authentication for user '{}' across {} servers",
@@ -153,15 +163,13 @@ pub async fn handle_authenticate_by_name(
                     );
                     {
                         let state = state.clone();
-                        let authorization = authorization.clone();
-                        let username = payload.username.clone();
-                        let password = payload.password.clone();
+                        let authentication = authentication.clone();
+                        let payload = payload.clone();
                         auth_tasks.push(tokio::spawn(async move {
                             authenticate_on_server(
                                 state.clone(),
-                                authorization,
-                                username.clone(),
-                                password.clone(),
+                                authentication.clone(),
+                                payload.clone(),
                                 server,
                                 Some(server_mapping),
                             )
@@ -178,16 +186,15 @@ pub async fn handle_authenticate_by_name(
         .into_iter()
         .map(|server| {
             let state = state.clone();
-            let authorization = authorization.clone();
-            let username = payload.username.clone();
-            let password = payload.password.clone();
+            let authentication = authentication.clone();
+            let payload = payload.clone();
             info!(
                 "No server mapping found for user '{}' on server '{}'",
                 payload.username, server.name
             );
 
             tokio::spawn(async move {
-                authenticate_on_server(state, authorization, username, password, server, None).await
+                authenticate_on_server(state, authentication, payload, server, None).await
             })
         })
         .collect();
@@ -232,11 +239,10 @@ pub async fn handle_authenticate_by_name(
 }
 
 /// Authenticates a user on a specific server
-pub async fn authenticate_on_server(
+async fn authenticate_on_server(
     state: AppState,
-    authorization_header: Authorization,
-    username: String,
-    password: String,
+    authorization: Authorization,
+    payload: AuthenticateRequest,
     server: crate::server_storage::Server,
     server_mapping: Option<crate::user_authorization_service::ServerMapping>,
 ) -> Result<AuthenticateResponse, AuthError> {
@@ -244,41 +250,42 @@ pub async fn authenticate_on_server(
 
     info!(
         "Authenticating user '{}' at server '{}' ({})",
-        username, server.name, auth_url
+        payload.username, server.name, auth_url
     );
 
     // Get user mapping for this server
-    let (username, password) = if let Some(mapping) = &server_mapping {
+    let config = state.config.read().await;
+    let admin_password = &config.password;
+
+    let given_password = payload.password.clone();
+
+    let (final_username, final_password) = if let Some(mapping) = &server_mapping {
         (
             mapping.mapped_username.clone(),
-            mapping.mapped_password.clone(),
+            state.user_authorization.decrypt_server_mapping_password(
+                mapping,
+                &given_password.clone().into(),
+                &admin_password.into(),
+            ),
         )
     } else {
-        (username.clone(), password.clone())
+        (payload.username.clone(), payload.password.clone())
     };
 
-    // Extract authorization header or use default
-    // let auth_header = extract_auth_header(&headers);
-    // let authorization = Authorization::parse(&auth_header).unwrap_or_else(|_| Authorization {
-    //     client: "Jellyfin Web".to_string(),
-    //     device: "JellyswarmProxy".to_string(),
-    //     device_id: "jellyswarrm-proxy-001".to_string(),
-    //     version: "10.10.7".to_string(),
-    //     token: None,
-    // });
-    debug!("Using authorization header: {}", authorization_header);
+    // Create authentication payload
+    let auth_payload = AuthenticateRequest {
+        username: final_username.clone(),
+        password: final_password.clone(),
+    };
 
     // Make authentication request
     let response = state
         .reqwest_client
         .post(auth_url.as_str())
-        .header("Authorization", &authorization_header.to_header_value())
+        .header("Authorization", authorization.to_header_value())
         .header("Accept", "application/json")
         .header("Content-Type", "application/json")
-        .json(&AuthenticateRequest {
-            username: username.clone(),
-            password: password.clone(),
-        })
+        .json(&auth_payload)
         .send()
         .await
         .map_err(|e| {
@@ -301,40 +308,60 @@ pub async fn authenticate_on_server(
     }
 
     // Parse response
-    let mut auth_response = response.json::<AuthenticateResponse>().await.map_err(|e| {
+    let response_text = response.text().await.map_err(|e| {
         tracing::error!(
-            "Failed to parse authentication response from {}: {}",
+            "Failed to read authentication response from {}: {}",
             server.name,
             e
         );
-        AuthError::ParseError(e.to_string())
+        AuthError::NetworkError(e.to_string())
     })?;
+
+    tracing::trace!("Raw response from {}: {}", server.name, response_text);
+
+    let auth_response =
+        serde_json::from_str::<AuthenticateResponse>(&response_text).map_err(|e| {
+            tracing::error!(
+                "Failed to parse authentication response from {}: {}. Response body: {}",
+                server.name,
+                e,
+                response_text
+            );
+            AuthError::ParseError(e.to_string())
+        })?;
+
+    let mut auth_response = auth_response;
 
     // We authenticated sucessfully, now we need to get the user or create it
     let user = state
         .user_authorization
-        .get_or_create_user(&username, &password)
+        .get_or_create_user(&payload.username, &given_password)
         .await
         .map_err(|e| {
             tracing::error!("Error getting user: {}", e);
             AuthError::InternalError
         })?;
 
-    // if we dont have a server mapping, we need to create one
-    if server_mapping.is_none() {
-        info!(
-            "Creating server mapping for user '{}' on server '{}'",
-            &username, server.name
-        );
-        state
-            .user_authorization
-            .add_server_mapping(&user.id, server.url.as_str(), &username, &password)
-            .await
-            .map_err(|e| {
-                tracing::error!("Error creating server mapping: {}", e);
-                AuthError::InternalError
-            })?;
-    }
+    // Update or create server mapping to ensure it's encrypted
+    // This handles creating new mappings and upgrading legacy plaintext mappings
+    info!(
+        "Updating server mapping for user '{}' on server '{}'",
+        payload.username, server.name
+    );
+    state
+        .user_authorization
+        .add_server_mapping(
+            &user.id,
+            server.url.as_str(),
+            &final_username,
+            &final_password,
+            Some(&given_password.into()),
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!("Error updating server mapping: {}", e);
+            AuthError::InternalError
+        })?;
 
     let auth_token = auth_response.access_token.clone();
 
@@ -348,11 +375,13 @@ pub async fn authenticate_on_server(
     auth_response.session_info.user_id = user.id.clone();
 
     // Restore original username in response
-    auth_response.user.name = username.clone();
-    auth_response.session_info.user_name = username.clone();
+    auth_response.user.name = payload.username.clone();
+    auth_response.session_info.user_name = payload.username.clone();
 
     // Modify admin status (security measure)
     auth_response.user.policy.is_administrator = false;
+    // SyncPlay is handled by Jellyswarrm itself.
+    auth_response.user.policy.sync_play_access = SyncPlayUserAccessType::CreateAndJoinGroups;
 
     // Generate a unique access token for this authentication
     auth_response.access_token = user.virtual_key.clone();
@@ -361,7 +390,7 @@ pub async fn authenticate_on_server(
     auth_response.user.id = user.id.clone();
 
     // Store authorization data with the new access token
-    let mut auth_to_store = authorization_header.clone();
+    let mut auth_to_store = authorization.clone();
     auth_to_store.token = Some(auth_token.clone());
 
     // Store authorization session
@@ -383,49 +412,55 @@ pub async fn authenticate_on_server(
 
     info!(
         "Successfully authenticated user '{}' on server '{}' and stored authorization data with token: {}",
-        &username, server.name, auth_token
+        payload.username, server.name, auth_token
     );
     Ok(auth_response)
 }
 
-/// Extracts authorization header or provides default
-fn extract_auth_header(headers: &HeaderMap) -> String {
+/// Extracts authorization header
+fn extract_auth_header(headers: &HeaderMap) -> Result<Authorization, AuthError> {
     if let Some(raw_auth) = headers
         .get("authorization")
         .and_then(|value| value.to_str().ok())
     {
         if let Ok(auth) = Authorization::parse(raw_auth) {
             debug!("Extracted 'Authorization' header: {}", raw_auth);
-            auth.to_header_value()
+            Ok(auth)
         } else {
             warn!("Invalid 'Authorization' header format: {}", raw_auth);
-            r#"MediaBrowser Client="Dummy Jellyfin Web", Device="JellyswarmProxy", DeviceId="jellyswarrm-proxy-001", Version="10.10.7""#.to_string()
+            Err(AuthError::ParseError(
+                "Invalid 'Authorization' header format".to_string(),
+            ))
         }
     } else if let Some(raw_auth) = headers
         .get("x-emby-authorization")
         .and_then(|value| value.to_str().ok())
     {
-        if let Ok(auth) = Authorization::parse(raw_auth) {
+        if let Ok(auth) = Authorization::parse_with_legacy(raw_auth, true) {
             debug!("Extracted 'X-Emby-Authorization' header: {}", raw_auth);
-            auth.to_header_value()
+            Ok(auth)
         } else {
             warn!("Invalid 'Authorization' header format: {}", raw_auth);
-            r#"MediaBrowser Client="Dummy Jellyfin Web", Device="JellyswarmProxy", DeviceId="jellyswarrm-proxy-001", Version="10.10.7""#.to_string()
+            Err(AuthError::ParseError(
+                "Invalid 'X-Emby-Authorization' header format".to_string(),
+            ))
         }
     } else {
-        warn!(
-            "No 'Authorization' header found, using dummy header! Headers: {:?}",
+        error!(
+            "No 'Authorization' header found in login request! Headers: {:?}",
             headers
         );
 
-        r#"MediaBrowser Client="Dummy Jellyfin Web", Device="JellyswarmProxy", DeviceId="jellyswarrm-proxy-001", Version="10.10.7""#.to_string()
+        Err(AuthError::ParseError(
+            "No 'Authorization' header found in login request!".to_string(),
+        ))
     }
 }
 
 /// Custom error type for authentication operations
 #[derive(Debug)]
 #[allow(dead_code)]
-pub enum AuthError {
+enum AuthError {
     NetworkError(String),
     InvalidCredentials,
     ParseError(String),

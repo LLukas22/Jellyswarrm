@@ -34,8 +34,7 @@ pub async fn get_item(
         Ok(media_item) => {
             let server_id = { state.config.read().await.server_id.clone() };
             Ok(Json(
-                process_media_item(media_item, &state.media_storage, &server, false, &server_id)
-                    .await?,
+                process_media_item(media_item, &state, &server, false, &server_id).await?,
             ))
         }
         Err(e) => {
@@ -67,14 +66,8 @@ pub async fn get_items(
         Ok(mut response) => {
             let server_id = { state.config.read().await.server_id.clone() };
             for item in &mut response.iter_mut_items() {
-                *item = process_media_item(
-                    item.clone(),
-                    &state.media_storage,
-                    &server,
-                    false,
-                    &server_id,
-                )
-                .await?;
+                *item =
+                    process_media_item(item.clone(), &state, &server, false, &server_id).await?;
             }
 
             Ok(Json(response))
@@ -103,14 +96,8 @@ pub async fn get_items_list(
         Ok(mut response) => {
             let server_id = { state.config.read().await.server_id.clone() };
             for item in &mut response {
-                *item = process_media_item(
-                    item.clone(),
-                    &state.media_storage,
-                    &server,
-                    false,
-                    &server_id,
-                )
-                .await?;
+                *item =
+                    process_media_item(item.clone(), &state, &server, false, &server_id).await?;
             }
 
             Ok(Json(response))

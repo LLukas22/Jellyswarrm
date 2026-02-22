@@ -13,6 +13,57 @@ use crate::url_helper::{contains_id, join_server_url, replace_id};
 use crate::user_authorization_service::{AuthorizationSession, Device, User};
 use crate::AppState;
 
+pub struct RequestIdentity {
+    pub auth: Option<JellyfinAuthorization>,
+    pub user: Option<User>,
+    pub device: Option<Device>,
+}
+
+pub async fn resolve_request_identity_from_headers_uri(
+    headers: &http::HeaderMap,
+    uri: &http::Uri,
+    state: &AppState,
+) -> Result<RequestIdentity> {
+    let path_and_query = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
+    let url = url::Url::parse(&format!("http://localhost{path_and_query}"))?;
+
+    let mut request = reqwest::Request::new(reqwest::Method::GET, url);
+    request.headers_mut().extend(headers.clone());
+
+    let auth = JellyfinAuthorization::from_request(&request);
+    let mut device = auth.as_ref().and_then(|a| a.get_device(request.headers()));
+    if device.is_none() {
+        let query_device_id = request.url().query_pairs().find_map(|(k, v)| {
+            if k.eq_ignore_ascii_case("deviceid") {
+                Some(v.to_string())
+            } else {
+                None
+            }
+        });
+        if let Some(device_id) = query_device_id {
+            let ua_device = request
+                .headers()
+                .get("user-agent")
+                .and_then(|v| v.to_str().ok())
+                .map(Device::from_useragent)
+                .unwrap_or(Device {
+                    client: "Unknown".to_string(),
+                    device: "Unknown".to_string(),
+                    device_id: device_id.clone(),
+                    version: "Unknown".to_string(),
+                });
+
+            device = Some(Device {
+                device_id,
+                ..ua_device
+            });
+        }
+    }
+    let user = get_user_from_request(&request, &auth, state).await?;
+
+    Ok(RequestIdentity { auth, user, device })
+}
+
 // Static configuration for server resolution
 static MEDIA_ID_PATH_TAGS: &[&str] = &[
     "Items",
@@ -46,7 +97,7 @@ static USER_ID_PATH_TAGS: &[&str] = &["Users"];
 
 static USER_ID_QUERY_TAGS: &[&str] = &["UserId"];
 
-static API_KEY_QUERY_TAGS: &[&str] = &["api_key"];
+static API_KEY_QUERY_TAGS: &[&str] = &["api_key", "ApiKey"];
 
 #[derive(Debug, Clone)]
 pub enum JellyfinAuthorization {
@@ -134,7 +185,7 @@ impl JellyfinAuthorization {
         }
 
         if let Some(auth) = req.url().query_pairs().find_map(|(k, v)| {
-            if k == "api_key" {
+            if (k == "api_key") | (k == "ApiKey") {
                 Some(JellyfinAuthorization::ApiKey(v.to_string()))
             } else {
                 None
@@ -223,8 +274,23 @@ pub async fn extract_request_infos(
             .user_authorization
             .get_user_sessions(&user.id, device)
             .await?;
-        if !sessions.is_empty() {
-            Some(sessions)
+
+        // filter for online servers only
+        let mut filtered_sessions: Vec<(AuthorizationSession, Server)> =
+            Vec::with_capacity(sessions.len());
+        for (session, server) in sessions {
+            if state
+                .server_storage
+                .server_status(server.id)
+                .await
+                .is_healthy()
+            {
+                filtered_sessions.push((session, server));
+            }
+        }
+
+        if !filtered_sessions.is_empty() {
+            Some(filtered_sessions)
         } else {
             None
         }
@@ -345,27 +411,48 @@ pub async fn apply_new_target_uri(
 
     // Process media IDs in the query
     for &param_name in MEDIA_ID_QUERY_TAGS {
-        if let Some(idx) = pairs
+        let indices = pairs
             .iter()
-            .position(|(k, _)| k.eq_ignore_ascii_case(param_name))
-        {
-            let param_value = &pairs[idx].1.clone();
-            if let Some(media_mapping) = state
-                .media_storage
-                .get_media_mapping_by_virtual(param_value)
-                .await
-                .unwrap_or_default()
-            {
-                debug!(
-                    "Replacing media ID in query: {} -> {}",
-                    param_value, media_mapping.original_media_id
-                );
-                pairs[idx].1 = media_mapping.original_media_id;
+            .enumerate()
+            .filter_map(|(idx, (k, _))| k.eq_ignore_ascii_case(param_name).then_some(idx))
+            .collect::<Vec<_>>();
+
+        for idx in indices {
+            let original_value = pairs[idx].1.clone();
+            let mut changed = false;
+            let mut resolved_ids = Vec::new();
+
+            for raw_id in original_value.split(',') {
+                let trimmed = raw_id.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+
+                if let Some(media_mapping) = state
+                    .media_storage
+                    .get_media_mapping_by_virtual(trimmed)
+                    .await
+                    .unwrap_or_default()
+                {
+                    debug!(
+                        "Replacing media ID in query: {} -> {}",
+                        trimmed, media_mapping.original_media_id
+                    );
+                    resolved_ids.push(media_mapping.original_media_id);
+                    changed = true;
+                } else {
+                    resolved_ids.push(trimmed.to_string());
+                }
+            }
+
+            if changed {
+                pairs[idx].1 = resolved_ids.join(",");
             }
         }
     }
 
-    let mut new_url = join_server_url(&server.url, orig_url.path());
+    let path = state.remove_prefix_from_path(orig_url.path()).await;
+    let mut new_url = join_server_url(&server.url, path);
     // Clear and set new query
     new_url.query_pairs_mut().clear().extend_pairs(pairs);
 

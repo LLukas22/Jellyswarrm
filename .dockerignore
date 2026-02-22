@@ -6,7 +6,6 @@
 /ui/dist
 
 # Git
-.git
 .gitignore
 .gitattributes
 

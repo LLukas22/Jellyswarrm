@@ -1,7 +1,9 @@
-use sha2::{Digest, Sha256};
 use sqlx::{FromRow, Row, SqlitePool};
-use tracing::info;
+use tracing::{debug, error, info, warn};
 
+use crate::encryption::{
+    decrypt_password, encrypt_password, EncryptedPassword, HashedPassword, Password,
+};
 use crate::models::{generate_token, Authorization};
 use crate::server_storage::Server;
 
@@ -10,7 +12,7 @@ pub struct User {
     pub id: String,
     pub virtual_key: String,
     pub original_username: String,
-    pub original_password_hash: String,
+    pub original_password_hash: HashedPassword,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -21,7 +23,7 @@ pub struct ServerMapping {
     pub user_id: String,
     pub server_url: String,
     pub mapped_username: String,
-    pub mapped_password: String,
+    pub mapped_password: EncryptedPassword,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -73,7 +75,44 @@ pub struct Device {
     pub version: String,
 }
 
+pub fn normalize_decice(value: &str) -> String {
+    value.trim().to_lowercase().replace("+", " ")
+}
+
 impl Device {
+    /// Check if this device matches another device based on client and either device_id or device name or version
+    pub fn matches(&self, other: &Device) -> bool {
+        let self_client = normalize_decice(&self.client);
+        let other_client = normalize_decice(&other.client);
+
+        if self_client != other_client {
+            return false;
+        }
+
+        let self_device_id = normalize_decice(&self.device_id);
+        let other_device_id = normalize_decice(&other.device_id);
+
+        let self_has_known_device_id = Self::has_known_device_id(&self_device_id);
+        let other_has_known_device_id = Self::has_known_device_id(&other_device_id);
+
+        // 1) Strict match when both sides have a known device id.
+        if self_has_known_device_id && other_has_known_device_id {
+            return self_device_id == other_device_id;
+        }
+
+        // 2) Fallback to device name only when at least one side has no usable device id.
+        let self_device = normalize_decice(&self.device);
+        let other_device = normalize_decice(&other.device);
+        !self_device.is_empty() && self_device == other_device
+    }
+
+    fn has_known_device_id(device_id: &str) -> bool {
+        !device_id.is_empty()
+            && device_id != "unknown-device-id"
+            && device_id != "unknown"
+            && device_id != "n/a"
+    }
+
     pub fn from_useragent(user_agent: &str) -> Self {
         let (client, version, device) = Self::parse_user_agent(user_agent);
 
@@ -175,121 +214,17 @@ pub struct UserAuthorizationService {
 }
 
 impl UserAuthorizationService {
-    pub async fn new(pool: SqlitePool) -> Result<Self, sqlx::Error> {
-        // Ensure foreign key constraints are enforced (required for ON DELETE CASCADE in SQLite)
-        sqlx::query("PRAGMA foreign_keys = ON;")
-            .execute(&pool)
-            .await?;
-        // Create users table
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS users (
-                id TEXT PRIMARY KEY,
-                virtual_key TEXT NOT NULL UNIQUE,
-                original_username TEXT NOT NULL,
-                original_password_hash TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(original_username, original_password_hash)
-            )
-            "#,
-        )
-        .execute(&pool)
-        .await?;
-
-        // Create server mappings table
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS server_mappings (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id TEXT NOT NULL,
-                server_url TEXT NOT NULL,
-                mapped_username TEXT NOT NULL,
-                mapped_password TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
-                UNIQUE(user_id, server_url)
-            )
-            "#,
-        )
-        .execute(&pool)
-        .await?;
-
-        // Create authorization sessions table
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS authorization_sessions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id TEXT NOT NULL,
-                mapping_id INTEGER NOT NULL,
-                server_url TEXT NOT NULL,
-                client TEXT NOT NULL,
-                device TEXT NOT NULL,
-                device_id TEXT NOT NULL,
-                version TEXT NOT NULL,
-                jellyfin_token TEXT,
-                original_user_id TEXT NOT NULL,
-                expires_at TIMESTAMP,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
-                FOREIGN KEY (mapping_id) REFERENCES server_mappings (id) ON DELETE CASCADE,
-                UNIQUE(user_id, mapping_id, device_id)
-            )
-            "#,
-        )
-        .execute(&pool)
-        .await?;
-        // Extra index for direct mapping lookups
-        sqlx::query(
-            r#"
-            CREATE INDEX IF NOT EXISTS idx_authorization_sessions_mapping 
-            ON authorization_sessions(mapping_id)
-            "#,
-        )
-        .execute(&pool)
-        .await?;
-
-        // Create indexes for better performance
-        sqlx::query(
-            r#"
-            CREATE INDEX IF NOT EXISTS idx_users_virtual_key 
-            ON users(virtual_key)
-            "#,
-        )
-        .execute(&pool)
-        .await?;
-
-        sqlx::query(
-            r#"
-            CREATE INDEX IF NOT EXISTS idx_server_mappings_user_server 
-            ON server_mappings(user_id, server_url)
-            "#,
-        )
-        .execute(&pool)
-        .await?;
-
-        sqlx::query(
-            r#"
-            CREATE INDEX IF NOT EXISTS idx_authorization_sessions_user_server 
-            ON authorization_sessions(user_id, server_url)
-            "#,
-        )
-        .execute(&pool)
-        .await?;
-
-        info!("User authorization service database initialized");
-        Ok(Self { pool })
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
     }
 
     /// Create or get a user based on credentials
     pub async fn get_or_create_user(
         &self,
         username: &str,
-        password: &str,
+        password: &Password,
     ) -> Result<User, sqlx::Error> {
-        let password_hash = Self::hash_password(password);
+        let password_hash: HashedPassword = password.into();
 
         // Try to find existing user
         if let Some(user) = self.get_user_by_credentials(username, password).await? {
@@ -367,9 +302,9 @@ impl UserAuthorizationService {
     pub async fn get_user_by_credentials(
         &self,
         username: &str,
-        password: &str,
+        password: &Password,
     ) -> Result<Option<User>, sqlx::Error> {
-        let password_hash = Self::hash_password(password);
+        let password_hash: HashedPassword = password.into();
 
         let user = sqlx::query_as::<_, User>(
             r#"
@@ -392,32 +327,114 @@ impl UserAuthorizationService {
         user_id: &str,
         server_url: &str,
         mapped_username: &str,
-        mapped_password: &str,
+        mapped_password: &Password,
+        master_password: Option<&HashedPassword>,
     ) -> Result<i64, sqlx::Error> {
         let now = chrono::Utc::now();
 
-        let result = sqlx::query(
+        let existing_mapping = self.get_server_mapping(user_id, server_url).await?;
+
+        let final_password = if let Some(master) = master_password {
+            match encrypt_password(mapped_password, master) {
+                Ok(encrypted) => encrypted,
+                Err(e) => {
+                    warn!("Failed to encrypt password: {}. Storing as plaintext.", e);
+                    EncryptedPassword::from_raw(mapped_password.as_str().into())
+                }
+            }
+        } else {
+            warn!("No encryption password provided. Storing as plaintext!");
+            EncryptedPassword::from_raw(mapped_password.as_str().into())
+        };
+
+        sqlx::query(
             r#"
-            INSERT OR REPLACE INTO server_mappings 
+            INSERT INTO server_mappings 
             (user_id, server_url, mapped_username, mapped_password, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, server_url) DO UPDATE SET
+                mapped_username = excluded.mapped_username,
+                mapped_password = excluded.mapped_password,
+                updated_at = excluded.updated_at
             "#,
         )
         .bind(user_id)
         .bind(server_url)
         .bind(mapped_username)
-        .bind(mapped_password)
+        .bind(final_password)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
         .await?;
 
-        let mapping_id = result.last_insert_rowid();
+        let mapping_id = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT id
+            FROM server_mappings
+            WHERE user_id = ? AND server_url = ?
+            "#,
+        )
+        .bind(user_id)
+        .bind(server_url)
+        .fetch_one(&self.pool)
+        .await?;
+
+        if let Some(existing_mapping) = existing_mapping {
+            // If the mapped account changed, revoke all sessions for this mapping.
+            // Keeping old tokens after an account switch can cause cross-account drift.
+            if !existing_mapping
+                .mapped_username
+                .trim()
+                .eq_ignore_ascii_case(mapped_username.trim())
+            {
+                let revoked_sessions = sqlx::query(
+                    r#"
+                    DELETE FROM authorization_sessions
+                    WHERE mapping_id = ?
+                    "#,
+                )
+                .bind(existing_mapping.id)
+                .execute(&self.pool)
+                .await?
+                .rows_affected();
+
+                info!(
+                    "Mapped username changed for user {} on server {}. Revoked {} session(s)",
+                    user_id, server_url, revoked_sessions
+                );
+            }
+        }
+
         info!(
-            "Added server mapping for user {} to server {}",
+            "Added or updated server mapping for user {} to server {}",
             user_id, server_url
         );
         Ok(mapping_id)
+    }
+
+    /// Decrypt a server mapping password
+    pub fn decrypt_server_mapping_password(
+        &self,
+        mapping: &ServerMapping,
+        user_password: &HashedPassword,
+        admin_password: &HashedPassword,
+    ) -> Password {
+        // Try user password first
+        if let Ok(decrypted) = decrypt_password(&mapping.mapped_password, user_password) {
+            return decrypted;
+        }
+
+        // Try admin password
+        if let Ok(decrypted) = decrypt_password(&mapping.mapped_password, admin_password) {
+            return decrypted;
+        }
+
+        // If decryption fails, assume it's plaintext (legacy or fallback)
+        warn!(
+            "Failed to decrypt password for mapping {}. Assuming plaintext.",
+            mapping.id
+        );
+        mapping.mapped_password.clone().into_inner().into()
     }
 
     /// Get server mapping
@@ -556,7 +573,7 @@ impl UserAuthorizationService {
         user_id: &str,
         device: Option<Device>,
     ) -> Result<Vec<(AuthorizationSession, Server)>, sqlx::Error> {
-        let base_select = String::from(
+        let query = String::from(
             r#"
     SELECT 
         auth.id as auth_id,
@@ -583,64 +600,17 @@ impl UserAuthorizationService {
     JOIN servers s ON RTRIM(auth.server_url, '/') = RTRIM(s.url, '/')
     WHERE auth.user_id = ?
     AND (auth.expires_at IS NULL OR auth.expires_at > ?)
+    ORDER BY s.priority DESC, s.name ASC
 "#,
         );
 
-        let order_by = " ORDER BY s.priority DESC, s.name ASC ";
+        let rows = sqlx::query(&query)
+            .bind(user_id)
+            .bind(chrono::Utc::now())
+            .fetch_all(&self.pool)
+            .await?;
 
-        let rows = if let Some(device) = device {
-            // 1) Try device_id + client
-            let query1 =
-                format!("{base_select} AND auth.device_id = ? AND auth.client = ? {order_by}");
-            let rows1 = sqlx::query(&query1)
-                .bind(user_id)
-                .bind(chrono::Utc::now())
-                .bind(&device.device_id)
-                .bind(&device.client)
-                .fetch_all(&self.pool)
-                .await?;
-
-            if !rows1.is_empty() {
-                rows1
-            } else {
-                // 2) Fallback: device (name) + client
-                let query2 =
-                    format!("{base_select} AND auth.device = ? AND auth.client = ? {order_by}");
-                let rows2 = sqlx::query(&query2)
-                    .bind(user_id)
-                    .bind(chrono::Utc::now())
-                    .bind(&device.device)
-                    .bind(&device.client)
-                    .fetch_all(&self.pool)
-                    .await?;
-
-                if !rows2.is_empty() {
-                    rows2
-                } else {
-                    // 3) Final fallback: client + version only
-                    let query3 = format!(
-                        "{base_select} AND auth.client = ? AND auth.version = ? {order_by}"
-                    );
-                    sqlx::query(&query3)
-                        .bind(user_id)
-                        .bind(chrono::Utc::now())
-                        .bind(&device.client)
-                        .bind(&device.version)
-                        .fetch_all(&self.pool)
-                        .await?
-                }
-            }
-        } else {
-            // No device provided -> just run the base with ORDER BY
-            let query = format!("{base_select}{order_by}");
-            sqlx::query(&query)
-                .bind(user_id)
-                .bind(chrono::Utc::now())
-                .fetch_all(&self.pool)
-                .await?
-        };
-
-        let sessions = rows
+        let sessions: Vec<(AuthorizationSession, Server)> = rows
             .into_iter()
             .map(|row| {
                 let device = Device {
@@ -675,14 +645,19 @@ impl UserAuthorizationService {
             })
             .collect();
 
-        Ok(sessions)
-    }
+        debug!("Found {} sessions for user_id: {}", sessions.len(), user_id);
 
-    /// Hash a password using SHA-256
-    fn hash_password(password: &str) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(password.as_bytes());
-        hex::encode(hasher.finalize())
+        let sessions = if let Some(device) = device {
+            debug!("Filtering sessions for device: {:?}", device);
+            sessions
+                .into_iter()
+                .filter(|(session, _)| device.matches(&session.device))
+                .collect()
+        } else {
+            sessions
+        };
+
+        Ok(sessions)
     }
 
     /// List all users
@@ -715,6 +690,102 @@ impl UserAuthorizationService {
             .execute(&self.pool)
             .await?;
         Ok(res.rows_affected() > 0)
+    }
+
+    /// Update user password and re-encrypt server mappings
+    pub async fn update_user_password(
+        &self,
+        user_id: &str,
+        old_password: &Password,
+        new_password: &Password,
+        admin_password: &Password,
+    ) -> Result<bool, sqlx::Error> {
+        let mut transaction = self.pool.begin().await?;
+
+        // 1. Update user password hash
+        let password_hash: HashedPassword = new_password.into();
+        let now = chrono::Utc::now();
+
+        let res = sqlx::query(
+            r#"
+            UPDATE users 
+            SET original_password_hash = ?, updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(password_hash)
+        .bind(now)
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await?;
+
+        if res.rows_affected() == 0 {
+            return Ok(false);
+        }
+
+        // 2. Re-encrypt all server mappings
+        let mappings = sqlx::query_as::<_, ServerMapping>(
+            r#"
+            SELECT id, user_id, server_url, mapped_username, mapped_password, created_at, updated_at
+            FROM server_mappings 
+            WHERE user_id = ?
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(&mut *transaction)
+        .await?;
+
+        let old_password = old_password.into();
+        let admin_password = admin_password.into();
+
+        for mapping in mappings {
+            // Decrypt with old credentials
+            let decrypted_password =
+                self.decrypt_server_mapping_password(&mapping, &old_password, &admin_password);
+
+            // Encrypt with new password
+            let new_encrypted_password =
+                match encrypt_password(&decrypted_password, &new_password.into()) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        error!("Failed to encrypt password during update: {}", e);
+                        return Err(sqlx::Error::Protocol(format!("Encryption failed: {}", e)));
+                    }
+                };
+
+            // Update mapping in DB
+            sqlx::query(
+                r#"
+                UPDATE server_mappings
+                SET mapped_password = ?, updated_at = ?
+                WHERE id = ?
+                "#,
+            )
+            .bind(new_encrypted_password)
+            .bind(now)
+            .bind(mapping.id)
+            .execute(&mut *transaction)
+            .await?;
+        }
+
+        transaction.commit().await?;
+
+        Ok(true)
+    }
+
+    /// Verify user password
+    pub async fn verify_user_password(
+        &self,
+        user_id: &str,
+        password: &Password,
+    ) -> Result<bool, sqlx::Error> {
+        let user = self.get_user_by_id(user_id).await?;
+
+        if let Some(user) = user {
+            Ok(user.original_password_hash.verify(password.as_str()))
+        } else {
+            Ok(false)
+        }
     }
 
     /// Get counts of authorization sessions per normalized server URL for a user
@@ -760,10 +831,43 @@ impl UserAuthorizationService {
             .await?;
         Ok(res.rows_affected())
     }
+
+    /// Get all servers mapped to a user, sorted by priority
+    pub async fn get_mapped_servers(&self, user_id: &str) -> Result<Vec<Server>, sqlx::Error> {
+        let rows = sqlx::query(
+            r#"
+            SELECT s.id, s.name, s.url, s.priority, s.created_at, s.updated_at
+            FROM servers s
+            JOIN server_mappings sm ON RTRIM(s.url, '/') = RTRIM(sm.server_url, '/')
+            WHERE sm.user_id = ?
+            ORDER BY s.priority DESC, s.name ASC
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let servers = rows
+            .into_iter()
+            .map(|row| Server {
+                id: row.get("id"),
+                name: row.get("name"),
+                url: url::Url::parse(row.get::<String, _>("url").as_str())
+                    .unwrap_or_else(|_| url::Url::parse("http://invalid-url-in-db").unwrap()),
+                priority: row.get("priority"),
+                created_at: row.get("created_at"),
+                updated_at: row.get("updated_at"),
+            })
+            .collect();
+
+        Ok(servers)
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::config::MIGRATOR;
+
     use super::*;
 
     #[test]
@@ -818,7 +922,8 @@ mod tests {
     #[tokio::test]
     async fn test_device_session_fallback_matching() {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-        let service = UserAuthorizationService::new(pool.clone()).await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = UserAuthorizationService::new(pool.clone());
 
         // Create servers table
         sqlx::query(
@@ -855,7 +960,7 @@ mod tests {
 
         // Create user
         let user = service
-            .get_or_create_user("testuser", "testpass")
+            .get_or_create_user("testuser", &"testpass".into())
             .await
             .unwrap();
 
@@ -865,7 +970,8 @@ mod tests {
                 &user.id,
                 "http://localhost:8096",
                 "mappeduser",
-                "mappedpass",
+                &"mappedpass".into(),
+                None,
             )
             .await
             .unwrap();
@@ -904,11 +1010,11 @@ mod tests {
             .unwrap();
         assert_eq!(sessions1.len(), 1, "Should find exact match");
 
-        // Test 2: Fallback to device name + client
+        // Test 2: Fallback to device name + client when device id is unknown
         let query_device2 = Device {
             client: "Switchfin".to_string(),
             device: "Linux".to_string(),
-            device_id: "different-device-id".to_string(),
+            device_id: "unknown-device-id".to_string(),
             version: "0.7.4".to_string(),
         };
         let sessions2 = service
@@ -921,7 +1027,7 @@ mod tests {
             "Should find fallback match by device name + client"
         );
 
-        // Test 3: Final fallback to client + version
+        // Test 3: Do not fallback to client + version anymore
         let query_device3 = Device {
             client: "Switchfin".to_string(),
             device: "Windows".to_string(), // Different device name
@@ -934,8 +1040,8 @@ mod tests {
             .unwrap();
         assert_eq!(
             sessions3.len(),
-            1,
-            "Should find final fallback match by client + version"
+            0,
+            "Should not match by client + version fallback"
         );
 
         // Test 4: No match when client and version are different
@@ -959,7 +1065,8 @@ mod tests {
     #[tokio::test]
     async fn test_user_authorization_service() {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-        let service = UserAuthorizationService::new(pool.clone()).await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = UserAuthorizationService::new(pool.clone());
 
         // Create the servers table (normally done by ServerStorageService)
         sqlx::query(
@@ -996,7 +1103,7 @@ mod tests {
 
         // Create user
         let user = service
-            .get_or_create_user("testuser", "testpass")
+            .get_or_create_user("testuser", &"testpass".into())
             .await
             .unwrap();
 
@@ -1006,7 +1113,8 @@ mod tests {
                 &user.id,
                 "http://localhost:8096",
                 "mappeduser",
-                "mappedpass",
+                &"mappedpass".into(),
+                None,
             )
             .await
             .unwrap();
@@ -1051,7 +1159,8 @@ mod tests {
     #[tokio::test]
     async fn test_get_user_sessions_by_virtual_token() {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-        let service = UserAuthorizationService::new(pool.clone()).await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = UserAuthorizationService::new(pool.clone());
 
         // Create the servers table (normally done by ServerStorageService)
         sqlx::query(
@@ -1088,7 +1197,7 @@ mod tests {
 
         // Create user
         let user = service
-            .get_or_create_user("testuser", "testpass")
+            .get_or_create_user("testuser", &"testpass".into())
             .await
             .unwrap();
 
@@ -1098,7 +1207,8 @@ mod tests {
                 &user.id,
                 "http://localhost:8096",
                 "mappeduser",
-                "mappedpass",
+                &"mappedpass".into(),
+                None,
             )
             .await
             .unwrap();
@@ -1149,7 +1259,8 @@ mod tests {
     #[tokio::test]
     async fn test_multiple_servers_with_priority() {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-        let service = UserAuthorizationService::new(pool.clone()).await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = UserAuthorizationService::new(pool.clone());
 
         // Create the servers table
         sqlx::query(
@@ -1201,7 +1312,7 @@ mod tests {
 
         // Create user
         let user = service
-            .get_or_create_user("testuser", "testpass")
+            .get_or_create_user("testuser", &"testpass".into())
             .await
             .unwrap();
 
@@ -1211,7 +1322,8 @@ mod tests {
                 &user.id,
                 "http://localhost:8096",
                 "mappeduser1",
-                "mappedpass1",
+                &"mappedpass1".into(),
+                None,
             )
             .await
             .unwrap();
@@ -1221,7 +1333,8 @@ mod tests {
                 &user.id,
                 "http://localhost:8097",
                 "mappeduser2",
-                "mappedpass2",
+                &"mappedpass2".into(),
+                None,
             )
             .await
             .unwrap();
@@ -1287,7 +1400,8 @@ mod tests {
     #[tokio::test]
     async fn test_cascade_delete_sessions_on_mapping_delete() {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-        let service = UserAuthorizationService::new(pool.clone()).await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = UserAuthorizationService::new(pool.clone());
 
         // Create servers table
         sqlx::query(
@@ -1324,7 +1438,7 @@ mod tests {
 
         // Create user
         let user = service
-            .get_or_create_user("testuser", "testpass")
+            .get_or_create_user("testuser", &"testpass".into())
             .await
             .unwrap();
 
@@ -1334,7 +1448,8 @@ mod tests {
                 &user.id,
                 "http://localhost:8096",
                 "mappeduser",
-                "mappedpass",
+                &"mappedpass".into(),
+                None,
             )
             .await
             .unwrap();
@@ -1390,7 +1505,8 @@ mod tests {
     #[tokio::test]
     async fn test_delete_all_sessions_for_user() {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-        let service = UserAuthorizationService::new(pool.clone()).await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = UserAuthorizationService::new(pool.clone());
 
         // Create servers table
         sqlx::query(
@@ -1429,14 +1545,14 @@ mod tests {
 
         // Create user
         let user = service
-            .get_or_create_user("testuser", "testpass")
+            .get_or_create_user("testuser", &"testpass".into())
             .await
             .unwrap();
 
         // Add mappings for both servers
         for url in ["http://localhost:8096", "http://localhost:8097"] {
             service
-                .add_server_mapping(&user.id, url, "mappeduser", "mappedpass")
+                .add_server_mapping(&user.id, url, "mappeduser", &"mappedpass".into(), None)
                 .await
                 .unwrap();
         }
@@ -1489,5 +1605,247 @@ mod tests {
             .unwrap()
             .1;
         assert!(sessions_after.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_add_server_mapping_upsert_preserves_mapping_id_and_sessions() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = UserAuthorizationService::new(pool.clone());
+
+        // Create servers table
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS servers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                url TEXT NOT NULL,
+                priority INTEGER NOT NULL DEFAULT 100,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Insert server
+        sqlx::query(
+            r#"
+            INSERT INTO servers (name, url, priority, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind("Server 1")
+        .bind("http://localhost:8096")
+        .bind(100)
+        .bind(chrono::Utc::now())
+        .bind(chrono::Utc::now())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Create user
+        let user = service
+            .get_or_create_user("testuser", &"testpass".into())
+            .await
+            .unwrap();
+
+        // Initial mapping
+        let mapping_id_1 = service
+            .add_server_mapping(
+                &user.id,
+                "http://localhost:8096",
+                "mappeduser",
+                &"mappedpass".into(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Store first session
+        let auth1 = Authorization {
+            client: "Jellyfin Web".to_string(),
+            device: "Firefox".to_string(),
+            device_id: "device-1".to_string(),
+            version: "10.0.0".to_string(),
+            token: None,
+        };
+
+        service
+            .store_authorization_session(
+                &user.id,
+                "http://localhost:8096",
+                &auth1,
+                "token-1".to_string(),
+                "orig-user-1".to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Re-add mapping for same user/server with same mapped account.
+        // Should update in place and preserve sessions.
+        let mapping_id_2 = service
+            .add_server_mapping(
+                &user.id,
+                "http://localhost:8096",
+                "mappeduser",
+                &"mappedpass-updated".into(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            mapping_id_1, mapping_id_2,
+            "Mapping id should remain stable across UPSERT"
+        );
+
+        // Ensure first session is still present after mapping update
+        let sessions_after_update = service
+            .get_user_sessions_by_virtual_token(&user.virtual_key)
+            .await
+            .unwrap()
+            .unwrap()
+            .1;
+        assert_eq!(
+            sessions_after_update.len(),
+            1,
+            "Existing sessions should not be cascade-deleted on mapping update"
+        );
+
+        // Store second session for another device and ensure both exist
+        let auth2 = Authorization {
+            client: "Jellyfin Web".to_string(),
+            device: "Firefox".to_string(),
+            device_id: "device-2".to_string(),
+            version: "10.0.0".to_string(),
+            token: None,
+        };
+
+        service
+            .store_authorization_session(
+                &user.id,
+                "http://localhost:8096",
+                &auth2,
+                "token-2".to_string(),
+                "orig-user-1".to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let final_sessions = service
+            .get_user_sessions_by_virtual_token(&user.virtual_key)
+            .await
+            .unwrap()
+            .unwrap()
+            .1;
+
+        assert_eq!(final_sessions.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_add_server_mapping_username_change_revokes_sessions() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = UserAuthorizationService::new(pool.clone());
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS servers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                url TEXT NOT NULL,
+                priority INTEGER NOT NULL DEFAULT 100,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            r#"
+            INSERT INTO servers (name, url, priority, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind("Server 1")
+        .bind("http://localhost:8096")
+        .bind(100)
+        .bind(chrono::Utc::now())
+        .bind(chrono::Utc::now())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let user = service
+            .get_or_create_user("testuser", &"testpass".into())
+            .await
+            .unwrap();
+
+        service
+            .add_server_mapping(
+                &user.id,
+                "http://localhost:8096",
+                "mappeduser-a",
+                &"mappedpass-a".into(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let auth = Authorization {
+            client: "Jellyfin Web".to_string(),
+            device: "Firefox".to_string(),
+            device_id: "device-1".to_string(),
+            version: "10.0.0".to_string(),
+            token: None,
+        };
+
+        service
+            .store_authorization_session(
+                &user.id,
+                "http://localhost:8096",
+                &auth,
+                "token-1".to_string(),
+                "orig-user-1".to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let sessions_before = service
+            .get_user_sessions_by_virtual_token(&user.virtual_key)
+            .await
+            .unwrap()
+            .unwrap()
+            .1;
+        assert_eq!(sessions_before.len(), 1);
+
+        // Change mapped username -> should revoke old sessions for this mapping.
+        service
+            .add_server_mapping(
+                &user.id,
+                "http://localhost:8096",
+                "mappeduser-b",
+                &"mappedpass-b".into(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let sessions_after = service
+            .get_user_sessions_by_virtual_token(&user.virtual_key)
+            .await
+            .unwrap()
+            .unwrap()
+            .1;
+        assert_eq!(sessions_after.len(), 0);
     }
 }

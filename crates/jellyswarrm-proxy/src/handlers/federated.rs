@@ -3,8 +3,8 @@ use axum::{
     Json,
 };
 use hyper::StatusCode;
-use once_cell::sync::Lazy;
 use regex::Regex;
+use std::sync::LazyLock;
 use tokio::task::JoinSet;
 use tracing::{debug, error, trace};
 
@@ -18,8 +18,8 @@ use crate::{
     AppState,
 };
 
-static SERIES_OR_PARENT_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new("(?i)(seriesid|parentid)").unwrap());
+static SERIES_OR_PARENT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new("(?i)(seriesid|parentid)").unwrap());
 
 pub async fn get_items_from_all_servers_if_not_restricted(
     State(state): State<AppState>,
@@ -92,7 +92,7 @@ pub async fn get_items_from_all_servers(
                     for item in items_response.iter_mut_items() {
                         match process_media_item(
                             item.clone(),
-                            &state_clone.media_storage,
+                            &state_clone,
                             &server_clone,
                             true, // Change name to include server name
                             &server_id,

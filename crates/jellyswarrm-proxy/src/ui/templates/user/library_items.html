@@ -1,0 +1,25 @@
+{% for item in items %}
+<article class="media-card">
+    {% if let Some(tags) = item.image_tags %}
+        {% if tags.contains_key("Primary") %}
+        <img src="/{{ ui_route }}/user/media/image/{{ server_id }}/{{ item.id }}" loading="lazy" alt="{{ item.name }}">
+        {% else %}
+        <div class="placeholder-image"><i class="fas fa-film"></i></div>
+        {% endif %}
+    {% else %}
+    <div class="placeholder-image"><i class="fas fa-film"></i></div>
+    {% endif %}
+    <footer title="{{ item.name }}">
+        {{ item.name }}
+    </footer>
+</article>
+{% endfor %}
+
+{% if let Some(page) = next_page %}
+<div class="load-more-sentinel"
+     hx-get="/{{ ui_route }}/user/media/server/{{ server_id }}/library/{{ library_id }}/items?page={{ page }}"
+     hx-trigger="revealed"
+     hx-swap="outerHTML">
+    <div aria-busy="true" style="min-width: 100px; height: 100%; display: flex; align-items: center; justify-content: center;">Loading...</div>
+</div>
+{% endif %}

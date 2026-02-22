@@ -30,9 +30,10 @@ The table below lists all available configuration options:
 | `password` | `jellyswarrm` | `JELLYSWARRM_PASSWORD` | Default admin password (⚠️ change this in production). |
 | `session_key` | *Generated 64-byte key* | `JELLYSWARRM_SESSION_KEY` | Base64-encoded session encryption key. |
 | `timeout` | `20` | `JELLYSWARRM_TIMEOUT` | Request timeout in seconds. |
+| `ui_route` | `ui` | `JELLYSWARRM_UI_ROUTE` | URL path segment for accessing the web UI (e.g., `/ui`). |
+| `url_prefix` | *(none)* | `JELLYSWARRM_URL_PREFIX` | Optional URL prefix for all routes (useful for reverse proxy setups). |
 
 ---
 
-### Notes  
-- The `server_id` is automatically generated with a UUID, prefixed by `"jellyswarrm"`.  
+### Notes
 - The `session_key` is generated as a secure 64-byte key if not specified, and is stored in the config file for reuse.  

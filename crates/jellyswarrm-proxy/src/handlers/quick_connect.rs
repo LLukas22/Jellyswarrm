@@ -1,6 +1,10 @@
 use crate::{
-    handlers::users::authenticate_on_server,
-    models::{AuthenticateResponse, Authorization},
+    encryption::HashedPassword,
+    models::{
+        AuthenticateRequest as JellyfinAuthenticateRequest, AuthenticateResponse, Authorization,
+        SyncPlayUserAccessType,
+    },
+    url_helper::join_server_url,
     AppState,
 };
 use axum::{
@@ -8,17 +12,18 @@ use axum::{
     http::HeaderMap,
     Json,
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use hyper::StatusCode;
 use jellyswarrm_macros::multi_case_struct;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use tracing::{info, warn};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-// Types for Quick Connect
 #[multi_case_struct(pascal, camel)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuickConnectSession {
@@ -56,7 +61,7 @@ impl QuickConnectSession {
             app_version,
             date_added: now,
             user_id: None,
-            expires_at: now + chrono::Duration::minutes(10), // Sessions expire after 10 minutes
+            expires_at: now + Duration::minutes(10),
         }
     }
 
@@ -80,11 +85,10 @@ pub struct ConnectQuery {
 
 #[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-pub struct AuthenticateRequest {
+pub struct QuickConnectAuthenticateRequest {
     pub secret: String,
 }
 
-// In-memory storage for Quick Connect sessions
 pub struct QuickConnectStorage {
     sessions: Arc<Mutex<HashMap<String, QuickConnectSession>>>,
 }
@@ -102,32 +106,30 @@ impl QuickConnectStorage {
         }
     }
 
-    /// Store a new session, indexed by both secret and code
     pub fn store_session(&self, session: QuickConnectSession) {
         let mut sessions = self.sessions.lock().unwrap();
         sessions.insert(session.secret.clone(), session.clone());
         sessions.insert(session.code.clone(), session);
     }
 
-    /// Get session by secret or code, automatically cleaning up expired sessions
     pub fn get_session(&self, key: &str) -> Option<QuickConnectSession> {
         let mut sessions = self.sessions.lock().unwrap();
 
         if let Some(session) = sessions.get(key) {
             if session.is_expired() {
-                // Clean up expired session
                 let secret = session.secret.clone();
                 let code = session.code.clone();
                 sessions.remove(&secret);
                 sessions.remove(&code);
                 return None;
             }
+
             return Some(session.clone());
         }
+
         None
     }
 
-    /// Update an existing session (by code), automatically handles dual indexing
     pub fn update_session_by_code(
         &self,
         code: &str,
@@ -137,7 +139,6 @@ impl QuickConnectStorage {
 
         if let Some(session) = sessions.get(code).cloned() {
             if session.is_expired() {
-                // Clean up expired session
                 let secret = session.secret.clone();
                 sessions.remove(&secret);
                 sessions.remove(code);
@@ -147,17 +148,15 @@ impl QuickConnectStorage {
             let mut updated_session = session;
             updater(&mut updated_session);
 
-            // Update both secret and code entries
             let secret = updated_session.secret.clone();
             sessions.insert(secret, updated_session.clone());
             sessions.insert(code.to_string(), updated_session);
-
             return true;
         }
+
         false
     }
 
-    /// Remove a session by secret, also removes the code entry
     pub fn remove_session(&self, secret: &str) -> Option<QuickConnectSession> {
         let mut sessions = self.sessions.lock().unwrap();
 
@@ -165,44 +164,33 @@ impl QuickConnectStorage {
             sessions.remove(&session.code);
             return Some(session);
         }
+
         None
     }
 
-    /// Clean up all expired sessions (can be called periodically)
     pub fn cleanup_expired(&self) -> usize {
         let mut sessions = self.sessions.lock().unwrap();
-        let mut to_remove = Vec::new();
+        let mut expired = Vec::new();
 
-        // Find all expired sessions
-        for (key, session) in sessions.iter() {
+        for session in sessions.values() {
             if session.is_expired() {
-                to_remove.push((key.clone(), session.secret.clone(), session.code.clone()));
+                expired.push((session.secret.clone(), session.code.clone()));
             }
         }
 
-        // Remove expired sessions
-        let count = to_remove.len() / 2; // Each session is stored twice (by secret and code)
-        for (_, secret, code) in to_remove {
-            sessions.remove(&secret);
-            sessions.remove(&code);
+        for (secret, code) in &expired {
+            sessions.remove(secret);
+            sessions.remove(code);
         }
 
-        count
+        expired.len()
     }
 
-    /// Get current session count (for monitoring/debugging)
-    pub fn session_count(&self) -> usize {
-        let sessions = self.sessions.lock().unwrap();
-        sessions.len() / 2 // Each session is stored twice
-    }
-
-    /// Start a background task to periodically clean up expired sessions
     pub fn start_cleanup_task(storage: QuickConnectStorage) {
-        use std::time::Duration;
-        use tokio::time;
+        use std::time::Duration as StdDuration;
 
         tokio::spawn(async move {
-            let mut interval = time::interval(Duration::from_secs(60)); // Clean up every minute
+            let mut interval = tokio::time::interval(StdDuration::from_secs(60));
             loop {
                 interval.tick().await;
                 let cleaned = storage.cleanup_expired();
@@ -223,33 +211,37 @@ impl Clone for QuickConnectStorage {
 }
 
 fn generate_code() -> String {
-    use rand::distributions::Uniform;
-
-    rand::thread_rng()
-        .sample_iter(Uniform::new(0, 10))
-        .take(6)
-        .map(|n| char::from_digit(n, 10).unwrap())
+    let mut rng = rand::rng();
+    (0..6)
+        .map(|_| char::from(b'0' + rng.random_range(0..10) as u8))
         .collect::<String>()
 }
 
 fn parse_client_info(headers: &HeaderMap) -> (String, String, String, String) {
-    if let Some(auth_header) = headers.get("authorization") {
-        if let Ok(auth_str) = auth_header.to_str() {
-            match Authorization::parse(auth_str) {
-                Ok(auth) => {
-                    return (auth.device_id, auth.device, auth.client, auth.version);
-                }
-                Err(e) => {
-                    // Log the error but continue with fallback
-                    warn!("Failed to parse authorization header: {}", e);
-                }
+    if let Some(header) = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+    {
+        match Authorization::parse(header) {
+            Ok(auth) => {
+                return (auth.device_id, auth.device, auth.client, auth.version);
             }
-        } else {
-            warn!("Authorization header contains invalid UTF-8");
+            Err(e) => warn!("Failed to parse Authorization header: {}", e),
         }
     }
 
-    // Fallback values when no valid authorization header is present
+    if let Some(header) = headers
+        .get("x-emby-authorization")
+        .and_then(|value| value.to_str().ok())
+    {
+        match Authorization::parse_with_legacy(header, true) {
+            Ok(auth) => {
+                return (auth.device_id, auth.device, auth.client, auth.version);
+            }
+            Err(e) => warn!("Failed to parse X-Emby-Authorization header: {}", e),
+        }
+    }
+
     (
         Uuid::new_v4().to_string(),
         "Unknown Device".to_string(),
@@ -258,7 +250,10 @@ fn parse_client_info(headers: &HeaderMap) -> (String, String, String, String) {
     )
 }
 
-// POST /QuickConnect/Initiate
+pub async fn handle_quick_connect_enabled() -> Result<Json<bool>, StatusCode> {
+    Ok(Json(true))
+}
+
 pub async fn handle_quick_connect_initiate(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -266,25 +261,27 @@ pub async fn handle_quick_connect_initiate(
     let secret = Uuid::new_v4().to_string();
     let code = generate_code();
     let (device_id, device_name, app_name, app_version) = parse_client_info(&headers);
-    info!("Initiating Quick Connect session: device_id={}, device_name={}, app_name={}, app_version={}", device_id, device_name, app_name, app_version);
+
+    info!(
+        "Initiating Quick Connect session for {} / {} ({})",
+        app_name, device_name, device_id
+    );
 
     let session = QuickConnectSession::new(
         secret.clone(),
-        code.clone(),
+        code,
         device_id,
         device_name,
         app_name,
         app_version,
     );
 
-    // Store session using the new storage API
     state.quick_connect.store_session(session.clone());
-    state.quick_connect.cleanup_expired(); // Clean up expired sessions on each initiation
+    state.quick_connect.cleanup_expired();
 
     Ok(Json(session))
 }
 
-// POST /QuickConnect/Authorize?code={CODE}&userId={UUID}
 pub async fn handle_quick_connect_authorize(
     Query(params): Query<AuthorizeQuery>,
     State(state): State<AppState>,
@@ -294,20 +291,19 @@ pub async fn handle_quick_connect_authorize(
         .update_session_by_code(&params.code, |session| {
             session.authenticated = true;
             session.user_id = Some(params.user_id.clone());
-            info!(
-                "Authorized Quick Connect session `{}` for user_id={}",
-                params.code, params.user_id
-            );
         });
 
     if success {
+        info!(
+            "Authorized Quick Connect code {} for user {}",
+            params.code, params.user_id
+        );
         Ok(Json(true))
     } else {
         Err(StatusCode::NOT_FOUND)
     }
 }
 
-// GET /QuickConnect/Connect?secret={SECRET}
 pub async fn handle_quick_connect_connect(
     Query(params): Query<ConnectQuery>,
     State(state): State<AppState>,
@@ -319,145 +315,226 @@ pub async fn handle_quick_connect_connect(
     }
 }
 
-// POST /Users/AuthenticateWithQuickConnect
 pub async fn handle_authenticate_with_quick_connect(
     State(state): State<AppState>,
-    Json(request): Json<AuthenticateRequest>,
+    Json(request): Json<QuickConnectAuthenticateRequest>,
 ) -> Result<Json<AuthenticateResponse>, StatusCode> {
-    if let Some(session) = state.quick_connect.get_session(&request.secret) {
-        if session.authenticated && session.user_id.is_some() {
-            let user_id = session.user_id.as_ref().unwrap().clone();
-            if let Some(user) = state
-                .user_authorization
-                .get_user_by_id(&user_id)
+    let session = state
+        .quick_connect
+        .get_session(&request.secret)
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let Some(user_id) = session.user_id.clone() else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+
+    if !session.authenticated {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let user = state
+        .user_authorization
+        .get_user_by_id(&user_id)
+        .await
+        .map_err(|e| {
+            warn!("Database error while fetching user {}: {}", user_id, e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    let mut servers = state
+        .server_storage
+        .list_servers()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if servers.is_empty() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let server_mappings = state
+        .user_authorization
+        .list_server_mappings(&user.id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if server_mappings.is_empty() {
+        warn!(
+            "Quick Connect user '{}' has no server mappings",
+            user.original_username
+        );
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let mut auth_tasks = Vec::with_capacity(server_mappings.len());
+
+    let authorization = Authorization {
+        client: session.app_name,
+        device: session.device_name,
+        device_id: session.device_id,
+        version: session.app_version,
+        token: None,
+    };
+
+    for server_mapping in server_mappings {
+        if let Some(pos) = servers.iter().position(|s| {
+            s.url.as_str().trim_end_matches('/') == server_mapping.server_url.trim_end_matches('/')
+        }) {
+            let server = servers.remove(pos);
+            let state = state.clone();
+            let authorization = authorization.clone();
+            let user = user.clone();
+
+            auth_tasks.push(tokio::spawn(async move {
+                authenticate_with_mapping_on_server(
+                    state,
+                    authorization,
+                    user,
+                    server,
+                    server_mapping,
+                )
                 .await
-                .map_err(|e| {
-                    warn!(
-                        "Database error while fetching user by ID {}: {}",
-                        user_id, e
-                    );
-                    StatusCode::INTERNAL_SERVER_ERROR
-                })?
-            {
-                info!(
-                    "Authenticating Quick Connect session for user: {}",
-                    user.original_username
-                );
-
-                let mut servers = state
-                    .server_storage
-                    .list_servers()
-                    .await
-                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-                if servers.is_empty() {
-                    tracing::warn!("No servers configured for authentication");
-                    return Err(StatusCode::NOT_FOUND);
-                }
-
-                let server_mappings = state
-                    .user_authorization
-                    .list_server_mappings(&user.id)
-                    .await
-                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-                if server_mappings.is_empty() {
-                    warn!("User {} has no server mappings!", user.original_username);
-                    return Err(StatusCode::UNAUTHORIZED);
-                }
-
-                let mut auth_tasks = Vec::with_capacity(server_mappings.len());
-
-                let authorization = Authorization {
-                    client: session.app_name.clone(),
-                    device: session.device_name.clone(),
-                    device_id: session.device_id.clone(),
-                    version: session.app_version.clone(),
-                    token: None,
-                };
-
-                for server_mapping in server_mappings {
-                    if let Some(pos) = servers.iter().position(|s| {
-                        s.url.as_str().trim_end_matches('/')
-                            == server_mapping.server_url.trim_end_matches('/')
-                    }) {
-                        let server = servers.remove(pos);
-                        info!(
-                            "Using server mapping for user '{}' on server '{}'",
-                            &user.original_username, server.name
-                        );
-                        {
-                            let state = state.clone();
-                            let authorization = authorization.clone();
-                            let username = user.original_username.clone();
-                            let password = "UNKNOWN".to_string(); // Password is not used in Quick Connect
-                            auth_tasks.push(tokio::spawn(async move {
-                                authenticate_on_server(
-                                    state.clone(),
-                                    authorization,
-                                    username,
-                                    password,
-                                    server,
-                                    Some(server_mapping),
-                                )
-                                .await
-                            }));
-                        }
-                    }
-                }
-
-                // Wait for all authentication attempts to complete
-                let mut successful_auths = Vec::new();
-                let total_servers = auth_tasks.len();
-
-                for task in auth_tasks {
-                    match task.await {
-                        Ok(Ok(auth_response)) => {
-                            info!(
-                                "Successfully authenticated user: {}",
-                                user.original_username
-                            );
-                            successful_auths.push(auth_response);
-                        }
-                        Ok(Err(e)) => {
-                            tracing::debug!("Authentication attempt failed: {:?}", e);
-                        }
-                        Err(join_err) => {
-                            tracing::error!("Authentication task failed: {}", join_err);
-                        }
-                    }
-                }
-
-                state.quick_connect.remove_session(&request.secret);
-
-                if successful_auths.is_empty() {
-                    tracing::warn!(
-                        "All authentication attempts failed for user: {}",
-                        user.original_username
-                    );
-                    Err(StatusCode::UNAUTHORIZED)
-                } else {
-                    info!(
-                    "User '{}' successfully authenticated on {} out of {} servers and stored in authorization storage",
-                    user.original_username,
-                    successful_auths.len(),
-                    total_servers
-                );
-                    // Return the first successful authentication (you could also implement priority logic here)
-                    Ok(Json(successful_auths[0].clone()))
-                }
-            } else {
-                warn!("User ID from Quick Connect session not found: {}", user_id);
-                Err(StatusCode::UNAUTHORIZED)
-            }
+            }));
         } else {
-            Err(StatusCode::UNAUTHORIZED)
+            debug!(
+                "Skipping mapping for unknown server URL {}",
+                server_mapping.server_url
+            );
         }
+    }
+
+    let mut successful_auths = Vec::new();
+
+    for task in auth_tasks {
+        match task.await {
+            Ok(Ok(auth_response)) => successful_auths.push(auth_response),
+            Ok(Err(QuickConnectAuthError::Network(e))) => {
+                debug!("Quick Connect auth request failed: {}", e)
+            }
+            Ok(Err(QuickConnectAuthError::Parse(e))) => {
+                debug!("Quick Connect auth parse failed: {}", e)
+            }
+            Ok(Err(QuickConnectAuthError::Internal(e))) => {
+                debug!("Quick Connect internal auth error: {}", e)
+            }
+            Ok(Err(QuickConnectAuthError::InvalidCredentials)) => {
+                debug!("Quick Connect auth rejected by upstream server")
+            }
+            Err(e) => warn!("Quick Connect auth task failed: {}", e),
+        }
+    }
+
+    state.quick_connect.remove_session(&request.secret);
+
+    if successful_auths.is_empty() {
+        Err(StatusCode::UNAUTHORIZED)
     } else {
-        Err(StatusCode::NOT_FOUND)
+        Ok(Json(successful_auths[0].clone()))
     }
 }
 
-pub async fn handle_quick_connect_enabled() -> Result<Json<bool>, StatusCode> {
-    Ok(Json(true))
+#[derive(Debug)]
+enum QuickConnectAuthError {
+    Network(String),
+    InvalidCredentials,
+    Parse(String),
+    Internal(String),
+}
+
+async fn authenticate_with_mapping_on_server(
+    state: AppState,
+    authorization: Authorization,
+    user: crate::user_authorization_service::User,
+    server: crate::server_storage::Server,
+    server_mapping: crate::user_authorization_service::ServerMapping,
+) -> Result<AuthenticateResponse, QuickConnectAuthError> {
+    let auth_url = join_server_url(&server.url, "/Users/AuthenticateByName");
+
+    let admin_password = state.get_admin_password().await;
+    let admin_password_hash: HashedPassword = (&admin_password).into();
+
+    let mapped_password = state.user_authorization.decrypt_server_mapping_password(
+        &server_mapping,
+        &user.original_password_hash,
+        &admin_password_hash,
+    );
+
+    let auth_payload = JellyfinAuthenticateRequest {
+        username: server_mapping.mapped_username.clone(),
+        password: mapped_password.clone(),
+    };
+
+    let response = state
+        .reqwest_client
+        .post(auth_url.as_str())
+        .header("Authorization", authorization.to_header_value())
+        .header("Accept", "application/json")
+        .header("Content-Type", "application/json")
+        .json(&auth_payload)
+        .send()
+        .await
+        .map_err(|e| QuickConnectAuthError::Network(e.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(QuickConnectAuthError::InvalidCredentials);
+    }
+
+    let response_text = response
+        .text()
+        .await
+        .map_err(|e| QuickConnectAuthError::Network(e.to_string()))?;
+
+    let mut auth_response = serde_json::from_str::<AuthenticateResponse>(&response_text)
+        .map_err(|e| QuickConnectAuthError::Parse(e.to_string()))?;
+
+    state
+        .user_authorization
+        .add_server_mapping(
+            &user.id,
+            server.url.as_str(),
+            &server_mapping.mapped_username,
+            &mapped_password,
+            Some(&user.original_password_hash),
+        )
+        .await
+        .map_err(|e| QuickConnectAuthError::Internal(e.to_string()))?;
+
+    let auth_token = auth_response.access_token.clone();
+    let original_user_id = auth_response.user.id.clone();
+
+    let server_id = state.config.read().await.server_id.clone();
+    auth_response.server_id = server_id.clone();
+    auth_response.user.server_id = server_id.clone();
+    auth_response.session_info.server_id = server_id;
+
+    auth_response.session_info.user_id = user.id.clone();
+    auth_response.user.name = user.original_username.clone();
+    auth_response.session_info.user_name = user.original_username.clone();
+    auth_response.user.policy.is_administrator = false;
+    auth_response.user.policy.sync_play_access = SyncPlayUserAccessType::CreateAndJoinGroups;
+    auth_response.access_token = user.virtual_key.clone();
+    auth_response.user.id = user.id.clone();
+
+    let mut auth_to_store = authorization;
+    auth_to_store.token = Some(auth_token.clone());
+
+    state
+        .user_authorization
+        .store_authorization_session(
+            &user.id,
+            server.url.as_str(),
+            &auth_to_store,
+            auth_token,
+            original_user_id,
+            None,
+        )
+        .await
+        .map_err(|e| QuickConnectAuthError::Internal(e.to_string()))?;
+
+    info!(
+        "Quick Connect authenticated '{}' on server '{}'",
+        user.original_username, server.name
+    );
+
+    Ok(auth_response)
 }

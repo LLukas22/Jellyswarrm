@@ -7,7 +7,7 @@
 
 <section id="add-server" aria-labelledby="add-server-heading">
     <h2 id="add-server-heading" style="margin-bottom:.5rem;">Add Server</h2>
-    <form hx-post="/ui/servers" hx-target="#server-list" hx-swap="innerHTML" hx-disabled-elt="this" hx-on::after-request="if(event.detail.successful) this.reset()">
+    <form hx-post="/{{ ui_route }}/servers" hx-target="#server-list" hx-swap="innerHTML" hx-disabled-elt="this" hx-on::after-request="if(event.detail.successful) this.reset()">
         <div class="grid" style="--pico-grid-gap:1rem;">
             <label> Name
                 <input type="text" name="name" placeholder="e.g. Media Vault" autocomplete="off" required>
@@ -28,6 +28,6 @@
 
 <hr />
 
-<section id="server-list" hx-get="/ui/servers/list" hx-trigger="load">
+<section id="server-list" hx-get="/{{ ui_route }}/servers/list" hx-trigger="load">
     <p>Loading servers...</p>
 </section>
