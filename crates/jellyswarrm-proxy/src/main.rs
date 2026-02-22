@@ -48,6 +48,7 @@ use user_authorization_service::UserAuthorizationService;
 
 use crate::{
     config::{AppConfig, MIGRATOR},
+    handlers::quick_connect::{self, QuickConnectStorage},
     processors::{
         request_analyzer::RequestAnalyzer,
         request_processor::{RequestProcessingContext, RequestProcessor},
@@ -73,6 +74,7 @@ pub struct AppState {
     pub play_sessions: Arc<SessionStorage>,
     pub config: Arc<tokio::sync::RwLock<AppConfig>>,
     pub processors: Arc<JsonProcessors>,
+    pub quick_connect: QuickConnectStorage,
     pub federated_users: Arc<FederatedUserService>,
     pub syncplay: Arc<SyncPlayService>,
 }
@@ -82,6 +84,7 @@ impl AppState {
         reqwest_client: reqwest::Client,
         data_context: DataContext,
         json_processors: JsonProcessors,
+        quick_connect: QuickConnectStorage,
     ) -> Self {
         // Create temporary state to initialize FederatedUserService
         // This is a bit circular but FederatedUserService needs parts of AppState
@@ -100,6 +103,7 @@ impl AppState {
             play_sessions: data_context.play_sessions,
             config: data_context.config,
             processors: Arc::new(json_processors),
+            quick_connect,
             federated_users,
             syncplay: Arc::new(SyncPlayService::new()),
         }
@@ -291,7 +295,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         request_analyzer: RequestAnalyzer::new(data_context.clone()),
     };
 
-    let app_state = AppState::new(reqwest_client, data_context, json_processors);
+    let app_state = AppState::new(
+        reqwest_client,
+        data_context,
+        json_processors,
+        quick_connect::QuickConnectStorage::new(),
+    );
+
+    quick_connect::QuickConnectStorage::start_cleanup_task(app_state.quick_connect.clone());
 
     let session_store = SqliteStore::new(pool);
     session_store.migrate().await?;
@@ -325,7 +336,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .route("/", get(index_handler))
             .route(
                 "/QuickConnect/Enabled",
-                get(handlers::quick_connect::handle_quick_connect),
+                get(handlers::quick_connect::handle_quick_connect_enabled),
+            )
+            .route(
+                "/QuickConnect/Initiate",
+                post(handlers::quick_connect::handle_quick_connect_initiate),
+            )
+            .route(
+                "/QuickConnect/Connect",
+                get(handlers::quick_connect::handle_quick_connect_connect),
+            )
+            .route(
+                "/QuickConnect/Authorize",
+                post(handlers::quick_connect::handle_quick_connect_authorize),
             )
             .route(
                 "/Branding/Configuration",
@@ -374,6 +397,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .route(
                         "/AuthenticateByName",
                         post(handlers::users::handle_authenticate_by_name),
+                    )
+                    .route(
+                        "/AuthenticateWithQuickConnect",
+                        post(handlers::quick_connect::handle_authenticate_with_quick_connect),
                     )
                     .route("/Public", get(handlers::users::handle_public))
                     .route("/Me", get(handlers::users::handle_get_me))

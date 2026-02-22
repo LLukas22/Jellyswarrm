@@ -384,6 +384,8 @@ async fn authenticate_on_server(
                 mapping,
                 &given_password.clone().into(),
                 &admin_password.into(),
+                Some(&given_password),
+                Some(admin_password),
             ),
         )
     } else {
