@@ -1563,6 +1563,7 @@ dependencies = [
  "serde_default",
  "serde_json",
  "serde_with",
+ "sha1",
  "sha2",
  "sqlx",
  "tempfile",
