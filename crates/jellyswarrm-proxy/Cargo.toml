@@ -28,6 +28,7 @@ serde_json = { workspace = true }
 reqwest = { workspace = true }
 sqlx = { workspace = true }
 sha2 = { workspace = true }
+sha1 = { workspace = true }
 hex = { workspace = true }
 chrono = { workspace = true }
 rand = { workspace = true }

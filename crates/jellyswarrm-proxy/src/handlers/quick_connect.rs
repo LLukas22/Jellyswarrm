@@ -14,6 +14,7 @@ use jellyfin_api::{error::Error as JellyfinApiError, ClientInfo, JellyfinClient}
 use jellyswarrm_macros::multi_case_struct;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use sha1::{Digest, Sha1};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -214,15 +215,13 @@ fn generate_code() -> String {
         .collect::<String>()
 }
 
-fn parse_client_info(headers: &HeaderMap) -> (String, String, String, String) {
+fn parse_authorization_from_headers(headers: &HeaderMap) -> Option<Authorization> {
     if let Some(header) = headers
         .get("authorization")
         .and_then(|value| value.to_str().ok())
     {
-        match Authorization::parse(header) {
-            Ok(auth) => {
-                return (auth.device_id, auth.device, auth.client, auth.version);
-            }
+        match Authorization::parse_with_legacy(header, true) {
+            Ok(auth) => return Some(auth),
             Err(e) => warn!("Failed to parse Authorization header: {}", e),
         }
     }
@@ -232,11 +231,17 @@ fn parse_client_info(headers: &HeaderMap) -> (String, String, String, String) {
         .and_then(|value| value.to_str().ok())
     {
         match Authorization::parse_with_legacy(header, true) {
-            Ok(auth) => {
-                return (auth.device_id, auth.device, auth.client, auth.version);
-            }
+            Ok(auth) => return Some(auth),
             Err(e) => warn!("Failed to parse X-Emby-Authorization header: {}", e),
         }
+    }
+
+    None
+}
+
+fn parse_client_info(headers: &HeaderMap) -> (String, String, String, String) {
+    if let Some(auth) = parse_authorization_from_headers(headers) {
+        return (auth.device_id, auth.device, auth.client, auth.version);
     }
 
     (
@@ -245,6 +250,60 @@ fn parse_client_info(headers: &HeaderMap) -> (String, String, String, String) {
         "Unknown App".to_string(),
         "1.0.0".to_string(),
     )
+}
+
+fn is_android_tv_client(client: &str) -> bool {
+    client.to_ascii_lowercase().contains("android tv")
+}
+
+fn normalize_android_tv_user_id(user_id: &str) -> String {
+    Uuid::parse_str(user_id)
+        .map(|id| id.hyphenated().to_string())
+        .unwrap_or_else(|_| user_id.to_string())
+}
+
+fn derive_android_tv_user_device_id(base_device_id: &str, user_id: &str) -> String {
+    let normalized_user_id = normalize_android_tv_user_id(user_id);
+    let mut hasher = Sha1::new();
+    hasher.update(base_device_id.as_bytes());
+    hasher.update(b"+");
+    hasher.update(normalized_user_id.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+fn effective_quick_connect_authorization(
+    headers: &HeaderMap,
+    session: &QuickConnectSession,
+    user_id: &str,
+) -> Authorization {
+    let request_authorization = parse_authorization_from_headers(headers);
+
+    let mut authorization = request_authorization.unwrap_or_else(|| {
+        warn!(
+            "Quick Connect authenticate request missing parseable authorization header, using initiate metadata"
+        );
+        Authorization {
+            client: session.app_name.clone(),
+            device: session.device_name.clone(),
+            device_id: session.device_id.clone(),
+            version: session.app_version.clone(),
+            token: None,
+        }
+    });
+
+    authorization.token = None;
+
+    if is_android_tv_client(&authorization.client) && !authorization.device_id.is_empty() {
+        let original_device_id = authorization.device_id.clone();
+        authorization.device_id =
+            derive_android_tv_user_device_id(&authorization.device_id, user_id);
+        debug!(
+            "Derived Android TV user-scoped device id for Quick Connect: {} -> {}",
+            original_device_id, authorization.device_id
+        );
+    }
+
+    authorization
 }
 
 pub async fn handle_quick_connect_enabled() -> Result<Json<bool>, StatusCode> {
@@ -384,6 +443,7 @@ pub async fn handle_quick_connect_connect(
 
 pub async fn handle_authenticate_with_quick_connect(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<QuickConnectAuthenticateRequest>,
 ) -> Result<Json<AuthenticateResponse>, StatusCode> {
     let session = state
@@ -435,13 +495,7 @@ pub async fn handle_authenticate_with_quick_connect(
 
     let mut auth_tasks = Vec::with_capacity(server_mappings.len());
 
-    let authorization = Authorization {
-        client: session.app_name,
-        device: session.device_name,
-        device_id: session.device_id,
-        version: session.app_version,
-        token: None,
-    };
+    let authorization = effective_quick_connect_authorization(&headers, &session, &user.id);
 
     for server_mapping in server_mappings {
         if let Some(pos) = servers.iter().position(|s| {
@@ -698,5 +752,73 @@ mod tests {
             extract_virtual_token(&media_browser_token).as_deref(),
             Some("token-3")
         );
+    }
+
+    #[test]
+    fn detects_android_tv_clients() {
+        assert!(is_android_tv_client("Jellyfin Android TV"));
+        assert!(is_android_tv_client("Jellyfin Android TV (debug)"));
+        assert!(!is_android_tv_client("Jellyfin Android"));
+        assert!(!is_android_tv_client("Jellyfin Web"));
+    }
+
+    #[test]
+    fn derives_android_tv_device_id_from_uuid_user_id() {
+        let base_device_id = "androidtv-device-123";
+        let simple_user_id = "550e8400e29b41d4a716446655440000";
+        let derived = derive_android_tv_user_device_id(base_device_id, simple_user_id);
+
+        assert_eq!(derived, "7094964e96c0e66e00671463e263fbdffce6b001");
+    }
+
+    #[test]
+    fn quick_connect_uses_android_tv_user_scoped_device_id() {
+        let session = QuickConnectSession::new(
+            "secret-1".to_string(),
+            "123456".to_string(),
+            "session-device".to_string(),
+            "Android TV".to_string(),
+            "Jellyfin Android TV".to_string(),
+            "1.0.0".to_string(),
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static(
+                "MediaBrowser Client=\"Jellyfin Android TV\", Device=\"Chromecast\", DeviceId=\"androidtv-device-123\", Version=\"0.18.0\"",
+            ),
+        );
+
+        let auth = effective_quick_connect_authorization(
+            &headers,
+            &session,
+            "550e8400e29b41d4a716446655440000",
+        );
+
+        assert_eq!(auth.client, "Jellyfin Android TV");
+        assert_eq!(auth.device, "Chromecast");
+        assert_eq!(auth.version, "0.18.0");
+        assert_eq!(auth.device_id, "7094964e96c0e66e00671463e263fbdffce6b001");
+        assert!(auth.token.is_none());
+    }
+
+    #[test]
+    fn quick_connect_falls_back_to_session_metadata_without_headers() {
+        let session = QuickConnectSession::new(
+            "secret-1".to_string(),
+            "123456".to_string(),
+            "session-device".to_string(),
+            "Fallback Device".to_string(),
+            "Unknown App".to_string(),
+            "1.0.0".to_string(),
+        );
+
+        let headers = HeaderMap::new();
+        let auth = effective_quick_connect_authorization(&headers, &session, "user-id");
+
+        assert_eq!(auth.device_id, "session-device");
+        assert_eq!(auth.device, "Fallback Device");
+        assert_eq!(auth.client, "Unknown App");
     }
 }

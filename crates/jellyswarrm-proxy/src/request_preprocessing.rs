@@ -270,10 +270,32 @@ pub async fn extract_request_infos(
     };
 
     let sessions = if let Some(user) = &user {
-        let sessions = state
+        let mut sessions = state
             .user_authorization
-            .get_user_sessions(&user.id, device)
+            .get_user_sessions(&user.id, device.clone())
             .await?;
+
+        // ANDROID TV DEVICE-ID REBIND (intentional behavior):
+        // Android TV can authenticate with a username-derived device ID and then switch to a
+        // user-id-derived device ID on the very next authenticated request. Our normal session
+        // lookup is strict on device ID, so the first request after login may not find a match.
+        // To keep the rest of the pipeline unchanged, we do a one-time Android-TV-only rebind
+        // when strict lookup returns no session, then re-run strict lookup.
+        if sessions.is_empty() {
+            if let Some(device) = &device {
+                let rebound = state
+                    .user_authorization
+                    .rebind_android_tv_device_sessions_if_needed(&user.id, device)
+                    .await?;
+
+                if rebound {
+                    sessions = state
+                        .user_authorization
+                        .get_user_sessions(&user.id, Some(device.clone()))
+                        .await?;
+                }
+            }
+        }
 
         // filter for online servers only
         let mut filtered_sessions: Vec<(AuthorizationSession, Server)> =

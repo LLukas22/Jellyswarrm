@@ -80,6 +80,10 @@ pub fn normalize_decice(value: &str) -> String {
     value.trim().to_lowercase().replace("+", " ")
 }
 
+fn is_android_tv_client(client: &str) -> bool {
+    normalize_decice(client).contains("android tv")
+}
+
 impl Device {
     /// Check if this device matches another device based on client and either device_id or device name or version
     pub fn matches(&self, other: &Device) -> bool {
@@ -107,7 +111,7 @@ impl Device {
         !self_device.is_empty() && self_device == other_device
     }
 
-    fn has_known_device_id(device_id: &str) -> bool {
+    pub(crate) fn has_known_device_id(device_id: &str) -> bool {
         !device_id.is_empty()
             && device_id != "unknown-device-id"
             && device_id != "unknown"
@@ -764,6 +768,114 @@ impl UserAuthorizationService {
         Ok(sessions)
     }
 
+    /// Rebind Android TV authorization sessions to a new device ID when the client rotates
+    /// from username-derived to user-id-derived device IDs after login.
+    ///
+    /// This is intentionally scoped to Android TV clients and is only meant for a one-time
+    /// reconciliation path when strict device matching would otherwise miss existing sessions.
+    pub async fn rebind_android_tv_device_sessions_if_needed(
+        &self,
+        user_id: &str,
+        incoming_device: &Device,
+    ) -> Result<bool, sqlx::Error> {
+        if !is_android_tv_client(&incoming_device.client) {
+            return Ok(false);
+        }
+
+        let incoming_device_id = normalize_decice(&incoming_device.device_id);
+        if !Device::has_known_device_id(&incoming_device_id) {
+            return Ok(false);
+        }
+
+        let incoming_client = normalize_decice(&incoming_device.client);
+        let incoming_name = normalize_decice(&incoming_device.device);
+        if incoming_name.is_empty() {
+            return Ok(false);
+        }
+
+        let sessions = self.get_user_sessions(user_id, None).await?;
+
+        let mut unique_old_device_ids = std::collections::HashSet::new();
+        for (session, _) in sessions {
+            let session_client = normalize_decice(&session.device.client);
+            let session_name = normalize_decice(&session.device.device);
+            let session_device_id = normalize_decice(&session.device.device_id);
+
+            if session_client != incoming_client || session_name != incoming_name {
+                continue;
+            }
+
+            if !Device::has_known_device_id(&session_device_id)
+                || session_device_id == incoming_device_id
+            {
+                continue;
+            }
+
+            unique_old_device_ids.insert(session_device_id);
+        }
+
+        if unique_old_device_ids.len() != 1 {
+            // Ambiguous or no candidate; keep strict behavior and avoid rebinding.
+            return Ok(false);
+        }
+
+        let old_device_id = unique_old_device_ids.into_iter().next().unwrap();
+        let now = chrono::Utc::now();
+
+        let mut tx = self.pool.begin().await?;
+
+        // Remove rows that would violate UNIQUE(user_id, mapping_id, device_id) after update.
+        sqlx::query(
+            r#"
+            DELETE FROM authorization_sessions AS old
+            WHERE old.user_id = ?
+              AND lower(trim(old.client)) = ?
+              AND lower(trim(old.device)) = ?
+              AND lower(trim(old.device_id)) = ?
+              AND EXISTS (
+                  SELECT 1 FROM authorization_sessions AS newer
+                  WHERE newer.user_id = old.user_id
+                    AND newer.mapping_id = old.mapping_id
+                    AND lower(trim(newer.client)) = ?
+                    AND lower(trim(newer.device)) = ?
+                    AND lower(trim(newer.device_id)) = ?
+              )
+            "#,
+        )
+        .bind(user_id)
+        .bind(&incoming_client)
+        .bind(&incoming_name)
+        .bind(&old_device_id)
+        .bind(&incoming_client)
+        .bind(&incoming_name)
+        .bind(&incoming_device_id)
+        .execute(&mut *tx)
+        .await?;
+
+        let updated = sqlx::query(
+            r#"
+            UPDATE authorization_sessions
+            SET device_id = ?, updated_at = ?
+            WHERE user_id = ?
+              AND lower(trim(client)) = ?
+              AND lower(trim(device)) = ?
+              AND lower(trim(device_id)) = ?
+            "#,
+        )
+        .bind(&incoming_device.device_id)
+        .bind(now)
+        .bind(user_id)
+        .bind(&incoming_client)
+        .bind(&incoming_name)
+        .bind(&old_device_id)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+
+        Ok(updated.rows_affected() > 0)
+    }
+
     /// List all users
     pub async fn list_users(&self) -> Result<Vec<User>, sqlx::Error> {
         let users = sqlx::query_as::<_, User>(
@@ -1211,6 +1323,213 @@ mod tests {
             0,
             "Should not find any match when client and version differ"
         );
+    }
+
+    #[tokio::test]
+    async fn test_android_tv_device_id_rebind_after_login_transition() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = UserAuthorizationService::new(pool.clone());
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS servers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                url TEXT NOT NULL,
+                priority INTEGER NOT NULL DEFAULT 100,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            r#"
+            INSERT INTO servers (name, url, priority, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind("Test Server")
+        .bind("http://localhost:8096")
+        .bind(100)
+        .bind(chrono::Utc::now())
+        .bind(chrono::Utc::now())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let user = service
+            .get_or_create_user("androidtv", &"testpass".into())
+            .await
+            .unwrap();
+
+        service
+            .add_server_mapping(
+                &user.id,
+                "http://localhost:8096",
+                "mappeduser",
+                &"mappedpass".into(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let stored_auth = Authorization {
+            client: "Jellyfin Android TV".to_string(),
+            device: "Chromecast".to_string(),
+            device_id: "username-derived-device-id".to_string(),
+            version: "0.18.0".to_string(),
+            token: None,
+        };
+
+        service
+            .store_authorization_session(
+                &user.id,
+                "http://localhost:8096",
+                &stored_auth,
+                "jellyfin-token".to_string(),
+                "original-jellyfin-user-id".to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let incoming_device = Device {
+            client: "Jellyfin Android TV".to_string(),
+            device: "Chromecast".to_string(),
+            device_id: "userid-derived-device-id".to_string(),
+            version: "0.18.0".to_string(),
+        };
+
+        let before = service
+            .get_user_sessions(&user.id, Some(incoming_device.clone()))
+            .await
+            .unwrap();
+        assert!(before.is_empty(), "precondition: strict lookup should miss");
+
+        let rebound = service
+            .rebind_android_tv_device_sessions_if_needed(&user.id, &incoming_device)
+            .await
+            .unwrap();
+        assert!(rebound, "android tv device id should be rebound");
+
+        let after = service
+            .get_user_sessions(&user.id, Some(incoming_device.clone()))
+            .await
+            .unwrap();
+        assert_eq!(after.len(), 1, "strict lookup should succeed after rebind");
+        assert_eq!(after[0].0.device.device_id, incoming_device.device_id);
+    }
+
+    #[tokio::test]
+    async fn test_android_tv_rebind_is_not_applied_to_other_clients() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = UserAuthorizationService::new(pool.clone());
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS servers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                url TEXT NOT NULL,
+                priority INTEGER NOT NULL DEFAULT 100,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            r#"
+            INSERT INTO servers (name, url, priority, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind("Test Server")
+        .bind("http://localhost:8096")
+        .bind(100)
+        .bind(chrono::Utc::now())
+        .bind(chrono::Utc::now())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let user = service
+            .get_or_create_user("webuser", &"testpass".into())
+            .await
+            .unwrap();
+
+        service
+            .add_server_mapping(
+                &user.id,
+                "http://localhost:8096",
+                "mappeduser",
+                &"mappedpass".into(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let stored_auth = Authorization {
+            client: "Jellyfin Web".to_string(),
+            device: "Firefox".to_string(),
+            device_id: "web-old-device-id".to_string(),
+            version: "10.10.7".to_string(),
+            token: None,
+        };
+
+        service
+            .store_authorization_session(
+                &user.id,
+                "http://localhost:8096",
+                &stored_auth,
+                "jellyfin-token".to_string(),
+                "original-jellyfin-user-id".to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let incoming_device = Device {
+            client: "Jellyfin Web".to_string(),
+            device: "Firefox".to_string(),
+            device_id: "web-new-device-id".to_string(),
+            version: "10.10.7".to_string(),
+        };
+
+        let rebound = service
+            .rebind_android_tv_device_sessions_if_needed(&user.id, &incoming_device)
+            .await
+            .unwrap();
+        assert!(!rebound, "non-android clients must not be rebound");
+
+        let old_match = service
+            .get_user_sessions(
+                &user.id,
+                Some(Device {
+                    client: "Jellyfin Web".to_string(),
+                    device: "Firefox".to_string(),
+                    device_id: "web-old-device-id".to_string(),
+                    version: "10.10.7".to_string(),
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(old_match.len(), 1);
+
+        let new_match = service
+            .get_user_sessions(&user.id, Some(incoming_device))
+            .await
+            .unwrap();
+        assert_eq!(new_match.len(), 0);
     }
 
     #[tokio::test]
