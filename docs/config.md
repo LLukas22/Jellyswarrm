@@ -30,10 +30,9 @@ The table below lists all available configuration options:
 | `password` | `jellyswarrm` | `JELLYSWARRM_PASSWORD` | Default admin password (⚠️ change this in production). |
 | `session_key` | *Generated 64-byte key* | `JELLYSWARRM_SESSION_KEY` | Base64-encoded session encryption key. |
 | `timeout` | `20` | `JELLYSWARRM_TIMEOUT` | Request timeout in seconds. |
-| `preconfigured_servers` | `[]` | `JELLYSWARRM_PRECONFIGURED_SERVERS` | Optional list of preconfigured Jellyfin servers (`url`, `name`, `priority`). |
+| `preconfigured_servers` | `[]` | `JELLYSWARRM_PRECONFIGURED_SERVERS` | Optional list of preconfigured Jellyfin servers (`url`, `name`, `priority`, `media_streaming_mode`). |
 | `ui_route` | `ui` | `JELLYSWARRM_UI_ROUTE` | URL path segment for accessing the web UI (e.g., `/ui`). |
 | `url_prefix` | *(none)* | `JELLYSWARRM_URL_PREFIX` | Optional URL prefix for all routes (useful for reverse proxy setups). |
-| `media_streaming_mode` | `Proxy` | `JELLYSWARRM_MEDIA_STREAMING_MODE` | Media streaming mode: `Proxy` or `Redirect` (case-insensitive). |
 | `server_background_check_interval_secs` | `30` | `JELLYSWARRM_SERVER_BACKGROUND_CHECK_INTERVAL_SECS` | Interval in seconds for background server health checks. |
 | `auto_create_users_on_login` | `true` | `JELLYSWARRM_AUTO_CREATE_USERS_ON_LOGIN` | Automatically create local users on successful upstream login. |
 
@@ -41,5 +40,5 @@ The table below lists all available configuration options:
 
 ### Notes
 - The `session_key` is generated as a secure 64-byte key if not specified, and is stored in the config file for reuse.  
-- `media_streaming_mode` accepts `proxy` or `redirect` (case-insensitive).
+- Each server now has its own streaming mode (`Redirect` or `Proxy`). For preconfigured servers, omit `media_streaming_mode` to use the default `Redirect`.
 - Configuration files are resolved from the data directory (`./data` by default), which can be overridden with `JELLYSWARRM_DATA_DIR`.

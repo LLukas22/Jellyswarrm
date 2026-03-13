@@ -16,7 +16,7 @@ use base64::prelude::*;
 
 use crate::encryption::Password;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MediaStreamingMode {
     Redirect,
     Proxy,
@@ -228,6 +228,8 @@ pub struct PreconfiguredServer {
     pub url: String,
     pub name: String,
     pub priority: i32,
+    #[serde(default = "default_media_streaming_mode")]
+    pub media_streaming_mode: MediaStreamingMode,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, DefaultFromSerde)]

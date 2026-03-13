@@ -68,6 +68,7 @@ use jellyswarrm_macros::lowercase_routes;
 #[derive(Clone)]
 pub struct AppState {
     pub reqwest_client: reqwest::Client,
+    pub streaming_reqwest_client: reqwest::Client,
     pub user_authorization: Arc<UserAuthorizationService>,
     pub server_storage: Arc<ServerStorageService>,
     pub media_storage: Arc<MediaStorageService>,
@@ -82,6 +83,7 @@ pub struct AppState {
 impl AppState {
     pub fn new(
         reqwest_client: reqwest::Client,
+        streaming_reqwest_client: reqwest::Client,
         data_context: DataContext,
         json_processors: JsonProcessors,
         quick_connect: QuickConnectStorage,
@@ -97,6 +99,7 @@ impl AppState {
 
         Self {
             reqwest_client,
+            streaming_reqwest_client,
             user_authorization: data_context.user_authorization,
             server_storage: data_context.server_storage,
             media_storage: data_context.media_storage,
@@ -218,12 +221,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .execute(&pool)
         .await?;
 
-    // Create reqwest client
+    // Create reqwest client for regular API traffic.
     let reqwest_client = reqwest::Client::builder()
         .timeout(Duration::from_secs(loaded_config.timeout))
         .build()
         .unwrap_or_else(|e| {
             error!("Failed to create reqwest client: {}", e);
+            std::process::exit(1);
+        });
+
+    // Create a dedicated client for proxied media streams.
+    // Avoid a global request timeout on long-lived responses and disable automatic
+    // response decompression so we forward bytes as-is with less CPU overhead.
+    let streaming_reqwest_client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(loaded_config.timeout))
+        .tcp_nodelay(true)
+        .no_gzip()
+        .no_brotli()
+        .no_deflate()
+        .build()
+        .unwrap_or_else(|e| {
+            error!("Failed to create streaming reqwest client: {}", e);
             std::process::exit(1);
         });
 
@@ -244,7 +262,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         for server in &loaded_config.preconfigured_servers {
             match server_storage
-                .add_server(&server.name, &server.url, server.priority)
+                .add_server(
+                    &server.name,
+                    &server.url,
+                    server.priority,
+                    server.media_streaming_mode,
+                )
                 .await
             {
                 Ok(_) => {
@@ -297,6 +320,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app_state = AppState::new(
         reqwest_client,
+        streaming_reqwest_client,
         data_context,
         json_processors,
         quick_connect::QuickConnectStorage::new(),

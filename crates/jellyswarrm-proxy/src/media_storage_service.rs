@@ -4,6 +4,7 @@ use sqlx::{FromRow, Row, SqlitePool};
 use tracing::{debug, error, info, trace};
 use uuid::Uuid;
 
+use crate::config::MediaStreamingMode;
 use crate::models::generate_token;
 use crate::server_storage::Server;
 use moka::future::Cache;
@@ -192,6 +193,7 @@ impl MediaStorageService {
                 s.name as server_name,
                 s.url as server_url_full,
                 s.priority,
+                s.media_streaming_mode,
                 s.created_at as server_created_at,
                 s.updated_at as server_updated_at
             FROM media_mappings m
@@ -217,6 +219,10 @@ impl MediaStorageService {
                 name: row.get("server_name"),
                 url: url::Url::parse(row.get::<String, _>("server_url_full").as_str()).unwrap(),
                 priority: row.get("priority"),
+                media_streaming_mode: row
+                    .get::<String, _>("media_streaming_mode")
+                    .parse()
+                    .unwrap_or(MediaStreamingMode::Redirect),
                 created_at: row.get("server_created_at"),
                 updated_at: row.get("server_updated_at"),
             };

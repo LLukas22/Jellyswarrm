@@ -10,6 +10,7 @@
             <th>Name</th>
             <th>URL</th>
             <th>Priority</th>
+            <th>Streaming</th>
             <th>Status</th>
             <th style="text-align: center;">Actions</th>
         </tr>
@@ -27,6 +28,16 @@
               name="priority"
               hx-target="#server-list" hx-swap="innerHTML"
               style="width: 130px; min-width: 130px; margin-bottom: 0;">
+            </td>
+            <td style="vertical-align: middle; min-width: 210px;">
+                    <select class="streaming-mode-select"
+                            name="media_streaming_mode"
+                            hx-patch="/{{ ui_route }}/servers/{{ item.server.id }}/media-streaming-mode"
+                            hx-trigger="change"
+                            hx-target="#server-list" hx-swap="innerHTML">
+                        <option value="Redirect" {% if item.is_redirect %}selected{% endif %}>Redirect</option>
+                        <option value="Proxy" {% if item.is_proxy %}selected{% endif %}>Proxy</option>
+                    </select>
             </td>
             <td style="vertical-align: middle;">
                 <div class="status-container">

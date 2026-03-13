@@ -121,6 +121,10 @@ pub fn ui_routes() -> axum::Router<AppState> {
             axum::routing::patch(admin::servers::update_server_priority),
         )
         .route(
+            "/servers/{id}/media-streaming-mode",
+            axum::routing::patch(admin::servers::update_server_media_streaming_mode),
+        )
+        .route(
             "/servers/{id}/admin",
             post(admin::servers::add_server_admin),
         )

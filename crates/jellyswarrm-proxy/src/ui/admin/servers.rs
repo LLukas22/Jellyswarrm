@@ -9,6 +9,7 @@ use serde::Deserialize;
 use tracing::{error, info};
 
 use crate::{
+    config::MediaStreamingMode,
     encryption::{encrypt_password, Password},
     server_storage::Server,
     AppState,
@@ -23,6 +24,8 @@ pub struct ServersPageTemplate {
 pub struct ServerWithAdmin {
     pub server: Server,
     pub has_admin: bool,
+    pub is_redirect: bool,
+    pub is_proxy: bool,
 }
 
 #[derive(Template)]
@@ -37,11 +40,17 @@ pub struct AddServerForm {
     pub name: String,
     pub url: String,
     pub priority: i32,
+    pub media_streaming_mode: String,
 }
 
 #[derive(Deserialize)]
 pub struct UpdatePriorityForm {
     pub priority: i32,
+}
+
+#[derive(Deserialize)]
+pub struct UpdateMediaStreamingModeForm {
+    pub media_streaming_mode: String,
 }
 
 #[derive(Deserialize)]
@@ -61,7 +70,13 @@ async fn render_server_list(state: &AppState) -> Result<String, String> {
                     .await
                     .unwrap_or(None)
                     .is_some();
-                servers_with_admin.push(ServerWithAdmin { server, has_admin });
+                let is_redirect = server.media_streaming_mode == MediaStreamingMode::Redirect;
+                servers_with_admin.push(ServerWithAdmin {
+                    server,
+                    has_admin,
+                    is_redirect,
+                    is_proxy: !is_redirect,
+                });
             }
 
             let template = ServerListTemplate {
@@ -131,10 +146,26 @@ pub async fn add_server(
             .into_response();
     }
 
+    let media_streaming_mode = match form.media_streaming_mode.parse::<MediaStreamingMode>() {
+        Ok(mode) => mode,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Html("<div class=\"alert alert-error\">Invalid streaming mode</div>"),
+            )
+                .into_response()
+        }
+    };
+
     // Try to add the server
     match state
         .server_storage
-        .add_server(form.name.trim(), form.url.trim(), form.priority)
+        .add_server(
+            form.name.trim(),
+            form.url.trim(),
+            form.priority,
+            media_streaming_mode,
+        )
         .await
     {
         Ok(server_id) => {
@@ -165,6 +196,51 @@ pub async fn add_server(
                 Html(format!(
                     "<div class=\"alert alert-error\">{error_message}</div>"
                 )),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Update server media streaming mode
+pub async fn update_server_media_streaming_mode(
+    State(state): State<AppState>,
+    Path(server_id): Path<i64>,
+    Form(form): Form<UpdateMediaStreamingModeForm>,
+) -> Response {
+    let media_streaming_mode = match form.media_streaming_mode.parse::<MediaStreamingMode>() {
+        Ok(mode) => mode,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Html("<div class=\"alert alert-error\">Invalid streaming mode</div>"),
+            )
+                .into_response()
+        }
+    };
+
+    match state
+        .server_storage
+        .update_server_media_streaming_mode(server_id, media_streaming_mode)
+        .await
+    {
+        Ok(true) => {
+            info!(
+                "Updated server {} media streaming mode to {}",
+                server_id, media_streaming_mode
+            );
+            get_server_list(State(state)).await.into_response()
+        }
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Html("<div class=\"alert alert-error\">Server not found</div>"),
+        )
+            .into_response(),
+        Err(e) => {
+            error!("Failed to update server media streaming mode: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("<div class=\"alert alert-error\">Failed to update streaming mode</div>"),
             )
                 .into_response()
         }

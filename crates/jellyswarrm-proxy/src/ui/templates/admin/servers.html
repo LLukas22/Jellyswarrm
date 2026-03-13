@@ -6,24 +6,42 @@
 </header>
 
 <section id="add-server" aria-labelledby="add-server-heading">
-    <h2 id="add-server-heading" style="margin-bottom:.5rem;">Add Server</h2>
+    <h2 id="add-server-heading" class="section-heading-tight">Add Server</h2>
     <form hx-post="/{{ ui_route }}/servers" hx-target="#server-list" hx-swap="innerHTML" hx-disabled-elt="this" hx-on::after-request="if(event.detail.successful) this.reset()">
-        <div class="grid" style="--pico-grid-gap:1rem;">
-            <label> Name
+        <div class="server-form-grid">
+            <label class="form-field"> <span class="field-label">Name</span>
                 <input type="text" name="name" placeholder="e.g. Media Vault" autocomplete="off" required>
             </label>
-            <label> URL
+            <label class="form-field"> <span class="field-label">URL</span>
                 <input type="url" name="url" placeholder="http://192.168.0.10:8096" inputmode="url" required>
             </label>
-            <label> Priority
+            <label class="form-field"> <span class="field-label">Priority
+                <span class="info-hint" tabindex="0"
+                      title="Higher numbers mean this server is preferred more strongly by the routing logic."
+                      aria-label="Priority help">
+                    <i class="fas fa-circle-info" aria-hidden="true"></i>
+                </span>
+            </span>
                 <input type="number" name="priority" value="100" min="1" max="999" required>
             </label>
-            <div style="display:flex; align-items:center; padding-top:1.5rem;">
-                <button type="submit">Add</button>
+            <label class="form-field"> <span class="field-label">Streaming
+                <span class="info-hint" tabindex="0"
+                      title="Choose how clients reach this Jellyfin server. Redirect sends clients directly to the backend server for best performance, but the client must be able to reach it. Proxy tunnels media through Jellyswarrm, which simplifies access but increases bandwidth and CPU usage on this server."
+                      aria-label="Streaming mode help">
+                    <i class="fas fa-circle-info" aria-hidden="true"></i>
+                </span>
+            </span>
+                <select class="streaming-mode-select" name="media_streaming_mode" required>
+                    <option value="Redirect" selected>Redirect</option>
+                    <option value="Proxy">Proxy</option>
+                </select>
+            </label>
+            <div class="server-form-submit">
+                <span class="field-label field-label-placeholder" aria-hidden="true">Add</span>
+                <button type="submit" class="server-form-button">Add Server</button>
             </div>
         </div>
     </form>
-    <p style="font-size:.8rem; opacity:.7; margin-top:.5rem;">Higher numbers imply higher importance in routing logic for e.g. styling.</p>
 </section>
 
 <hr />
