@@ -12,6 +12,7 @@ use jellyfin_api::{
     models::PublicSystemInfo,
 };
 
+use crate::config::MediaStreamingMode;
 use crate::encryption::EncryptedPassword;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
@@ -20,6 +21,7 @@ pub struct Server {
     pub name: String,
     pub url: Url,
     pub priority: i32,
+    pub media_streaming_mode: MediaStreamingMode,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -75,6 +77,7 @@ impl ServerStorageService {
         name: &str,
         url: &str,
         priority: i32,
+        media_streaming_mode: MediaStreamingMode,
     ) -> Result<i64, sqlx::Error> {
         // Validate URL
         if Url::parse(url).is_err() {
@@ -88,13 +91,14 @@ impl ServerStorageService {
 
         let result = sqlx::query(
             r#"
-            INSERT INTO servers (name, url, priority, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO servers (name, url, priority, media_streaming_mode, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(name)
         .bind(url)
         .bind(priority)
+        .bind(media_streaming_mode.to_string())
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -111,7 +115,7 @@ impl ServerStorageService {
     pub async fn get_server_by_name(&self, name: &str) -> Result<Option<Server>, sqlx::Error> {
         let row = sqlx::query(
             r#"
-            SELECT id, name, url, priority, created_at, updated_at
+            SELECT id, name, url, priority, media_streaming_mode, created_at, updated_at
             FROM servers 
             WHERE name = ?
             "#,
@@ -130,7 +134,7 @@ impl ServerStorageService {
     pub async fn get_server_by_id(&self, id: i64) -> Result<Option<Server>, sqlx::Error> {
         let row = sqlx::query(
             r#"
-            SELECT id, name, url, priority, created_at, updated_at
+            SELECT id, name, url, priority, media_streaming_mode, created_at, updated_at
             FROM servers 
             WHERE id = ?
             "#,
@@ -149,7 +153,7 @@ impl ServerStorageService {
     pub async fn list_servers(&self) -> Result<Vec<Server>, sqlx::Error> {
         let rows = sqlx::query(
             r#"
-            SELECT id, name, url, priority, created_at, updated_at
+            SELECT id, name, url, priority, media_streaming_mode, created_at, updated_at
             FROM servers 
             ORDER BY priority DESC, name ASC
             "#,
@@ -179,6 +183,29 @@ impl ServerStorageService {
             "#,
         )
         .bind(new_priority)
+        .bind(now)
+        .bind(server_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn update_server_media_streaming_mode(
+        &self,
+        server_id: i64,
+        media_streaming_mode: MediaStreamingMode,
+    ) -> Result<bool, sqlx::Error> {
+        let now = chrono::Utc::now();
+
+        let result = sqlx::query(
+            r#"
+            UPDATE servers
+            SET media_streaming_mode = ?, updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(media_streaming_mode.to_string())
         .bind(now)
         .bind(server_id)
         .execute(&self.pool)
@@ -324,6 +351,10 @@ impl ServerStorageService {
             name: row.get("name"),
             url: Url::parse(row.get("url")).unwrap(),
             priority: row.get("priority"),
+            media_streaming_mode: row
+                .get::<String, _>("media_streaming_mode")
+                .parse()
+                .unwrap_or(MediaStreamingMode::Redirect),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
         }
@@ -404,7 +435,12 @@ mod tests {
 
         // Test adding a server
         let server_id = service
-            .add_server("test-server", "http://localhost:8096", 100)
+            .add_server(
+                "test-server",
+                "http://localhost:8096",
+                100,
+                MediaStreamingMode::Redirect,
+            )
             .await
             .unwrap();
 
@@ -416,6 +452,7 @@ mod tests {
         assert_eq!(server.name, "test-server");
         assert_eq!(server.url, Url::parse("http://localhost:8096").unwrap());
         assert_eq!(server.priority, 100);
+        assert_eq!(server.media_streaming_mode, MediaStreamingMode::Redirect);
 
         // Test listing servers
         let servers = service.list_servers().await.unwrap();
@@ -427,5 +464,14 @@ mod tests {
             .await
             .unwrap();
         assert!(updated);
+
+        let updated = service
+            .update_server_media_streaming_mode(server_id, MediaStreamingMode::Proxy)
+            .await
+            .unwrap();
+        assert!(updated);
+
+        let server = service.get_server_by_id(server_id).await.unwrap().unwrap();
+        assert_eq!(server.media_streaming_mode, MediaStreamingMode::Proxy);
     }
 }

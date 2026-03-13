@@ -1,6 +1,7 @@
 use sqlx::{FromRow, Row, SqlitePool};
 use tracing::{debug, error, info, warn};
 
+use crate::config::MediaStreamingMode;
 use crate::encryption::{
     decrypt_password, decrypt_password_with_key_material, encrypt_password, EncryptedPassword,
     HashedPassword, Password,
@@ -702,6 +703,7 @@ impl UserAuthorizationService {
         s.name as server_name,
         s.url as server_url_full,
         s.priority,
+        s.media_streaming_mode,
         s.created_at as server_created_at,
         s.updated_at as server_updated_at
     FROM authorization_sessions auth
@@ -745,6 +747,10 @@ impl UserAuthorizationService {
                     name: row.get("server_name"),
                     url: url::Url::parse(row.get::<String, _>("server_url_full").as_str()).unwrap(),
                     priority: row.get("priority"),
+                    media_streaming_mode: row
+                        .get::<String, _>("media_streaming_mode")
+                        .parse()
+                        .unwrap_or(MediaStreamingMode::Redirect),
                     created_at: row.get("server_created_at"),
                     updated_at: row.get("server_updated_at"),
                 };
@@ -1066,7 +1072,7 @@ impl UserAuthorizationService {
     pub async fn get_mapped_servers(&self, user_id: &str) -> Result<Vec<Server>, sqlx::Error> {
         let rows = sqlx::query(
             r#"
-            SELECT s.id, s.name, s.url, s.priority, s.created_at, s.updated_at
+            SELECT s.id, s.name, s.url, s.priority, s.media_streaming_mode, s.created_at, s.updated_at
             FROM servers s
             JOIN server_mappings sm ON RTRIM(s.url, '/') = RTRIM(sm.server_url, '/')
             WHERE sm.user_id = ?
@@ -1085,6 +1091,10 @@ impl UserAuthorizationService {
                 url: url::Url::parse(row.get::<String, _>("url").as_str())
                     .unwrap_or_else(|_| url::Url::parse("http://invalid-url-in-db").unwrap()),
                 priority: row.get("priority"),
+                media_streaming_mode: row
+                    .get::<String, _>("media_streaming_mode")
+                    .parse()
+                    .unwrap_or(MediaStreamingMode::Redirect),
                 created_at: row.get("created_at"),
                 updated_at: row.get("updated_at"),
             })

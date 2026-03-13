@@ -23,10 +23,11 @@ To connect your Jellyfin servers to Jellyswarrm, follow these steps:
    - **Server Name** – A friendly display name for the server.  
    - **Jellyfin URL** – The full URL to your Jellyfin server (e.g. `http://jellyfin.example.com`).  
    - **Priority** – Determines which server takes precedence for tasks not handled by the proxy (such as theming/styling). Higher numbers = higher priority.  
+   - **Streaming** – Choose `Redirect` when clients can reach that Jellyfin server directly, or `Proxy` when the stream must pass through Jellyswarrm.  
 
 5. Click **Add** to save the server.  
 
-To remove a server, simply click the **Delete** button next to the one you want to remove.  
+You can change the streaming mode for an existing server directly from the server list. To remove a server, simply click the **Delete** button next to the one you want to remove.  
 
 #### Federarated Servers
 

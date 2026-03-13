@@ -1,19 +1,47 @@
 use axum::body::Body;
 use axum::extract::{Request, State};
+use axum::http::{HeaderMap, HeaderName};
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
 use hyper::StatusCode;
-use regex::Regex;
-use reqwest::Client;
 use tracing::{error, info};
 
 use crate::{
-    config::MediaStreamingMode, request_preprocessing::preprocess_request,
-    url_helper::join_server_url, AppState,
+    config::MediaStreamingMode,
+    request_preprocessing::{apply_to_request, preprocess_request, remap_authorization},
+    server_storage::Server,
+    user_authorization_service::AuthorizationSession,
+    AppState,
 };
 
-async fn proxy_request(client: &Client, url: url::Url) -> Result<Response, StatusCode> {
-    let resp = client.get(url).send().await.map_err(|e| {
+fn strip_hop_by_hop_headers(headers: &mut HeaderMap) {
+    headers.remove(hyper::header::CONNECTION);
+    headers.remove(HeaderName::from_static("keep-alive"));
+    headers.remove(hyper::header::PROXY_AUTHENTICATE);
+    headers.remove(hyper::header::PROXY_AUTHORIZATION);
+    headers.remove(hyper::header::TE);
+    headers.remove(hyper::header::TRAILER);
+    headers.remove(hyper::header::TRANSFER_ENCODING);
+    headers.remove(hyper::header::UPGRADE);
+}
+
+fn extract_video_id(path: &str) -> Option<&str> {
+    let mut segments = path.trim_matches('/').split('/');
+
+    while let Some(segment) = segments.next() {
+        if segment.eq_ignore_ascii_case("Videos") {
+            return segments.next().filter(|segment| !segment.is_empty());
+        }
+    }
+
+    None
+}
+
+async fn proxy_request(
+    client: &reqwest::Client,
+    request: reqwest::Request,
+) -> Result<Response, StatusCode> {
+    let resp = client.execute(request).await.map_err(|e| {
         error!("Proxy request failed: {}", e);
         StatusCode::BAD_GATEWAY
     })?;
@@ -21,10 +49,8 @@ async fn proxy_request(client: &Client, url: url::Url) -> Result<Response, Statu
     let status = resp.status();
     let mut headers = resp.headers().clone();
 
-    // Remove headers that might conflict or are connection-specific
-    // We let Axum/Hyper handle the transfer encoding for the outgoing response
-    headers.remove(hyper::header::TRANSFER_ENCODING);
-    headers.remove(hyper::header::CONNECTION);
+    // Drop hop-by-hop headers; Hyper will manage connection semantics downstream.
+    strip_hop_by_hop_headers(&mut headers);
 
     // Create a stream that yields chunks as they are received from the upstream server
     let stream = resp
@@ -43,6 +69,22 @@ async fn proxy_request(client: &Client, url: url::Url) -> Result<Response, Statu
     Ok(response)
 }
 
+fn session_matches_server(session: &AuthorizationSession, server: &Server) -> bool {
+    session.server_url.trim_end_matches('/') == server.url.as_str().trim_end_matches('/')
+}
+
+fn session_for_server(
+    sessions: &Option<Vec<(AuthorizationSession, Server)>>,
+    server: &Server,
+) -> Option<AuthorizationSession> {
+    sessions.as_ref().and_then(|sessions| {
+        sessions
+            .iter()
+            .find(|(session, _)| session_matches_server(session, server))
+            .map(|(session, _)| session.clone())
+    })
+}
+
 //http://localhost:3000/Videos/82fe5aab-29ff-9630-05c2-da1a5a640428/82fe5aab29ff963005c2da1a5a640428/Attachments/5
 //http://localhost:3000/Videos/71bda5a4-267a-1a6c-49ce-8536d36628d8/71bda5a4267a1a6c49ce8536d36628d8/Subtitles/3/0/Stream.js?api_key=4543ddacf7544d258444677c680d81a5
 pub async fn get_video_resource(
@@ -58,13 +100,7 @@ pub async fn get_video_resource(
         .original_request
         .ok_or(StatusCode::BAD_REQUEST)?;
 
-    let re = Regex::new(r"/(?i)Videos/([^/]+)/").unwrap();
-
-    let captures = re
-        .captures(original_request.url().path())
-        .ok_or(StatusCode::NOT_FOUND)?;
-
-    let id = captures.get(1).map_or("", |m| m.as_str());
+    let id = extract_video_id(original_request.url().path()).ok_or(StatusCode::NOT_FOUND)?;
 
     let server = if let Some(session) = state.play_sessions.get_session_by_item_id(id).await {
         info!(
@@ -77,21 +113,32 @@ pub async fn get_video_resource(
         return Err(StatusCode::NOT_FOUND);
     };
 
-    // Get the original path and query
-    let orig_url = original_request.url().clone();
-    let path = state.remove_prefix_from_path(orig_url.path()).await;
-    let mut new_url = join_server_url(&server.url, path);
-    new_url.set_query(orig_url.query());
+    let mut upstream_request = original_request;
+    let session = session_for_server(&preprocessed.sessions, &server).or_else(|| {
+        preprocessed
+            .session
+            .clone()
+            .filter(|session| session_matches_server(session, &server))
+    });
+    let new_auth = remap_authorization(&preprocessed.auth, &session)
+        .await
+        .map_err(|e| {
+            error!("Failed to remap authorization for resource request: {}", e);
+            StatusCode::BAD_REQUEST
+        })?;
 
-    let mode = state.config.read().await.media_streaming_mode;
-    match mode {
+    apply_to_request(&mut upstream_request, &server, &session, &new_auth, &state).await;
+
+    let url = upstream_request.url().clone();
+
+    match server.media_streaming_mode {
         MediaStreamingMode::Redirect => {
-            info!("Redirecting HLS stream to: {}", new_url);
-            Ok(axum::response::Redirect::temporary(new_url.as_ref()).into_response())
+            info!("Redirecting HLS stream to: {}", url);
+            Ok(axum::response::Redirect::temporary(url.as_ref()).into_response())
         }
         MediaStreamingMode::Proxy => {
-            info!("Proxying HLS stream from: {}", new_url);
-            proxy_request(&state.reqwest_client, new_url).await
+            info!("Proxying HLS stream from: {}", url);
+            proxy_request(&state.streaming_reqwest_client, upstream_request).await
         }
     }
 }
@@ -105,17 +152,18 @@ pub async fn get_stream(
         StatusCode::BAD_REQUEST
     })?;
 
-    let url = preprocessed.request.url().clone();
+    let server = preprocessed.server;
+    let request = preprocessed.request;
+    let url = request.url().clone();
 
-    let mode = state.config.read().await.media_streaming_mode;
-    match mode {
+    match server.media_streaming_mode {
         MediaStreamingMode::Redirect => {
             info!("Redirecting MKV stream to: {}", url);
             Ok(axum::response::Redirect::temporary(url.as_ref()).into_response())
         }
         MediaStreamingMode::Proxy => {
             info!("Proxying MKV stream from: {}", url);
-            proxy_request(&state.reqwest_client, url).await
+            proxy_request(&state.streaming_reqwest_client, request).await
         }
     }
 }
