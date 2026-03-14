@@ -210,6 +210,8 @@ pub(super) struct SyncPlayGroup {
     pub playlist: Vec<SyncPlayQueueItem>,
     pub playing_item_index: Option<usize>,
     pub start_position_ticks: i64,
+    pub pending_position_ticks: Option<i64>,
+    pub position_base_when: DateTime<Utc>,
     pub is_playing: bool,
     pub shuffle_mode: GroupShuffleMode,
     pub repeat_mode: GroupRepeatMode,
@@ -244,6 +246,36 @@ impl SyncPlayGroup {
 
     pub fn touch(&mut self) {
         self.last_updated_at = Utc::now();
+    }
+
+    pub fn set_position(&mut self, position_ticks: i64, when: DateTime<Utc>) {
+        self.start_position_ticks = position_ticks.max(0);
+        self.position_base_when = when;
+    }
+
+    pub fn estimated_position_ticks(&self, now: DateTime<Utc>) -> i64 {
+        let base = self
+            .pending_position_ticks
+            .unwrap_or(self.start_position_ticks)
+            .max(0);
+        if self.state != GroupStateType::Playing
+            || !self.is_playing
+            || self.pending_position_ticks.is_some()
+        {
+            return base;
+        }
+
+        let elapsed_ms = now
+            .signed_duration_since(self.position_base_when)
+            .num_milliseconds()
+            .max(0);
+        base.saturating_add(elapsed_ms.saturating_mul(10_000))
+    }
+
+    pub fn freeze_at_estimated_position(&mut self, now: DateTime<Utc>) -> i64 {
+        let position_ticks = self.estimated_position_ticks(now);
+        self.set_position(position_ticks, now);
+        position_ticks
     }
 
     /// Collect all media item IDs from the playlist.

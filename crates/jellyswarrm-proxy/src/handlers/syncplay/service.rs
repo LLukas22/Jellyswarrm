@@ -169,6 +169,7 @@ impl SyncPlayState {
         if group.state != GroupStateType::Waiting || !group.all_ready() {
             return;
         }
+        let now = Utc::now();
         let (cmd, delay_ms) = if group.waiting_resume_playing {
             group.state = GroupStateType::Playing;
             group.is_playing = true;
@@ -178,6 +179,14 @@ impl SyncPlayState {
             group.is_playing = false;
             (SendCommandType::Pause, 0)
         };
+        if let Some(position_ticks) = group.pending_position_ticks.take() {
+            group.set_position(position_ticks, now);
+        }
+        if group.is_playing {
+            group.position_base_when = now + chrono::Duration::milliseconds(delay_ms.max(0));
+        } else {
+            group.position_base_when = now;
+        }
         group.touch();
         self.broadcast_command(group, cmd, Some(group.start_position_ticks), delay_ms);
         self.broadcast_state_update(group, reason);
@@ -265,6 +274,8 @@ impl SyncPlayService {
             playlist: Vec::new(),
             playing_item_index: None,
             start_position_ticks: 0,
+            pending_position_ticks: None,
+            position_base_when: Utc::now(),
             is_playing: false,
             shuffle_mode: super::models::GroupShuffleMode::Sorted,
             repeat_mode: super::models::GroupRepeatMode::RepeatNone,
@@ -312,8 +323,12 @@ impl SyncPlayService {
             Self::make_participant(session, !group.playlist.is_empty()),
         );
         if !group.playlist.is_empty() {
+            let now = Utc::now();
+            let resume_playing = group.is_playing;
+            let position_ticks = group.freeze_at_estimated_position(now);
+            group.pending_position_ticks = Some(position_ticks);
             group.state = GroupStateType::Waiting;
-            group.waiting_resume_playing = group.is_playing;
+            group.waiting_resume_playing = resume_playing;
         }
         group.touch();
         state
@@ -333,6 +348,14 @@ impl SyncPlayService {
             vec![session.session_id.clone()],
         );
         if group.state == GroupStateType::Waiting {
+            if group.waiting_resume_playing {
+                state.broadcast_command(
+                    &group,
+                    SendCommandType::Pause,
+                    Some(group.start_position_ticks),
+                    0,
+                );
+            }
             state.broadcast_state_update(&group, "Buffer");
         }
 
