@@ -389,13 +389,27 @@ pub async fn set_new_queue(
             } else {
                 Some(payload.playing_item_position.min(group.playlist.len() - 1))
             };
-            group.start_position_ticks = payload.start_position_ticks;
+            let now = Utc::now();
+            group.set_position(payload.start_position_ticks, now);
+            group.pending_position_ticks = Some(group.start_position_ticks);
             group.is_playing = false;
-            group.transition_to_waiting(true);
+            if group.playlist.is_empty() {
+                group.state = GroupStateType::Idle;
+                group.set_position(0, now);
+                group.pending_position_ticks = None;
+                group.waiting_resume_playing = false;
+            } else {
+                group.transition_to_waiting(true);
+            }
             group.touch();
 
             sync_state.broadcast_queue_update(group, PlayQueueUpdateReason::NewPlaylist);
-            sync_state.broadcast_state_update(group, "Play");
+            if group.playlist.is_empty() {
+                sync_state.broadcast_command(group, SendCommandType::Stop, None, 0);
+                sync_state.broadcast_state_update(group, "Stop");
+            } else {
+                sync_state.broadcast_state_update(group, "Play");
+            }
         })
         .await;
 
@@ -422,7 +436,8 @@ pub async fn set_playlist_item(
                     "SyncPlay set current playlist item"
                 );
                 group.playing_item_index = Some(index);
-                group.start_position_ticks = 0;
+                group.set_position(0, Utc::now());
+                group.pending_position_ticks = Some(0);
                 group.transition_to_waiting(group.is_playing);
                 group.touch();
                 sync_state.broadcast_queue_update(group, PlayQueueUpdateReason::SetCurrentItem);
@@ -451,8 +466,11 @@ pub async fn remove_from_playlist(
                 group.state = GroupStateType::Idle;
                 group.is_playing = false;
                 group.waiting_resume_playing = false;
+                group.set_position(0, Utc::now());
+                group.pending_position_ticks = None;
                 group.touch();
                 sync_state.broadcast_queue_update(group, PlayQueueUpdateReason::RemoveItems);
+                sync_state.broadcast_command(group, SendCommandType::Stop, None, 0);
                 sync_state.broadcast_state_update(group, "RemoveFromPlaylist");
                 return;
             }
@@ -483,9 +501,15 @@ pub async fn remove_from_playlist(
                 group.state = GroupStateType::Idle;
                 group.is_playing = false;
                 group.waiting_resume_playing = false;
+                group.set_position(0, Utc::now());
+                group.pending_position_ticks = None;
             }
             group.touch();
             sync_state.broadcast_queue_update(group, PlayQueueUpdateReason::RemoveItems);
+            if group.playlist.is_empty() {
+                sync_state.broadcast_command(group, SendCommandType::Stop, None, 0);
+                sync_state.broadcast_state_update(group, "Stop");
+            }
         })
         .await;
     Ok(StatusCode::NO_CONTENT)
@@ -511,9 +535,19 @@ pub async fn move_playlist_item(
                     to_index = payload.new_index,
                     "SyncPlay move playlist item"
                 );
+                let current_item_id = group
+                    .playing_item_index
+                    .and_then(|index| group.playlist.get(index))
+                    .map(|item| item.playlist_item_id);
                 let item = group.playlist.remove(current_index);
                 let target = payload.new_index.min(group.playlist.len());
                 group.playlist.insert(target, item);
+                if let Some(current_item_id) = current_item_id {
+                    group.playing_item_index = group
+                        .playlist
+                        .iter()
+                        .position(|item| item.playlist_item_id == current_item_id);
+                }
                 group.touch();
                 sync_state.broadcast_queue_update(group, PlayQueueUpdateReason::MoveItem);
             }
@@ -599,15 +633,18 @@ pub async fn unpause(
                 group_id = %group.group_id,
                 "SyncPlay unpause requested"
             );
+            let delay_ms = group.ping_delay_ms();
             group.state = GroupStateType::Playing;
             group.is_playing = true;
             group.waiting_resume_playing = true;
+            group.pending_position_ticks = None;
+            group.position_base_when = Utc::now() + Duration::milliseconds(delay_ms.max(0));
             group.touch();
             sync_state.broadcast_command(
                 group,
                 SendCommandType::Unpause,
                 Some(group.start_position_ticks),
-                group.ping_delay_ms(),
+                delay_ms,
             );
             sync_state.broadcast_state_update(group, "Unpause");
         })
@@ -626,16 +663,14 @@ pub async fn pause(
                 group_id = %group.group_id,
                 "SyncPlay pause requested"
             );
+            let now = Utc::now();
+            let position_ticks = group.freeze_at_estimated_position(now);
             group.state = GroupStateType::Paused;
             group.is_playing = false;
             group.waiting_resume_playing = false;
+            group.pending_position_ticks = None;
             group.touch();
-            sync_state.broadcast_command(
-                group,
-                SendCommandType::Pause,
-                Some(group.start_position_ticks),
-                0,
-            );
+            sync_state.broadcast_command(group, SendCommandType::Pause, Some(position_ticks), 0);
             sync_state.broadcast_state_update(group, "Pause");
         })
         .await;
@@ -656,7 +691,8 @@ pub async fn stop(
             group.state = GroupStateType::Idle;
             group.is_playing = false;
             group.waiting_resume_playing = false;
-            group.start_position_ticks = 0;
+            group.set_position(0, Utc::now());
+            group.pending_position_ticks = None;
             group.touch();
             sync_state.broadcast_command(group, SendCommandType::Stop, None, 0);
             sync_state.broadcast_state_update(group, "Stop");
@@ -678,7 +714,8 @@ pub async fn seek(
                 position_ticks = payload.position_ticks,
                 "SyncPlay seek requested"
             );
-            group.start_position_ticks = payload.position_ticks.max(0);
+            group.set_position(payload.position_ticks.max(0), Utc::now());
+            group.pending_position_ticks = Some(group.start_position_ticks);
             group.transition_to_waiting(group.is_playing);
             group.touch();
             sync_state.broadcast_command(
@@ -729,12 +766,18 @@ pub async fn buffering(
                 position_ticks = payload.position_ticks,
                 "SyncPlay buffering update"
             );
-            group.start_position_ticks = payload.position_ticks.max(0);
+            if group.pending_position_ticks.is_none() && group.state != GroupStateType::Waiting {
+                let position_ticks = group.freeze_at_estimated_position(when);
+                group.pending_position_ticks = Some(position_ticks);
+            }
             group.is_playing = payload.is_playing;
             if group.state == GroupStateType::Waiting {
-                group.state = GroupStateType::Waiting;
+                if group.pending_position_ticks.is_none() {
+                    group.pending_position_ticks = Some(group.start_position_ticks);
+                }
             } else {
-                group.transition_to_waiting(payload.is_playing);
+                group.state = GroupStateType::Waiting;
+                group.waiting_resume_playing = payload.is_playing;
             }
             if when > group.last_updated_at {
                 group.last_updated_at = when;
@@ -782,8 +825,18 @@ pub async fn ready(
                 position_ticks = payload.position_ticks,
                 "SyncPlay ready update"
             );
-            group.start_position_ticks = payload.position_ticks.max(0);
+            if group.pending_position_ticks.is_none() && group.state != GroupStateType::Waiting {
+                group.is_playing = payload.is_playing;
+                if when > group.last_updated_at {
+                    group.last_updated_at = when;
+                }
+                group.touch();
+                return;
+            }
             group.state = GroupStateType::Waiting;
+            if group.pending_position_ticks.is_none() {
+                group.pending_position_ticks = Some(group.start_position_ticks);
+            }
             if when > group.last_updated_at {
                 group.last_updated_at = when;
             }
@@ -844,7 +897,8 @@ fn navigate_playlist(
         log_label,
     );
     group.playing_item_index = Some(target);
-    group.start_position_ticks = 0;
+    group.set_position(0, Utc::now());
+    group.pending_position_ticks = Some(0);
     group.transition_to_waiting(group.is_playing);
     group.touch();
     sync_state.broadcast_queue_update(group, queue_reason);
