@@ -67,6 +67,7 @@ futures-util = { workspace = true }
 tokio-test = { workspace = true }
 tempfile = { workspace = true }
 mockall = { workspace = true }
+wiremock = { workspace = true }
 
 [build-dependencies]
 fs_extra = { workspace = true }

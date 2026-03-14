@@ -463,6 +463,32 @@ pub async fn add_mapping(
         }
     }
 
+    let previous_mapping = match state
+        .user_authorization
+        .get_server_mapping(&form.user_id, &form.server_url)
+        .await
+    {
+        Ok(mapping) => mapping,
+        Err(e) => {
+            error!(
+                "Failed to load existing mapping for local user '{}' to server '{}': {}",
+                form.user_id, form.server_url, e
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("<div class=\"alert alert-error\">Failed to inspect existing mapping</div>"),
+            )
+                .into_response();
+        }
+    };
+
+    let mapped_username_changed = previous_mapping.as_ref().is_some_and(|mapping| {
+        !mapping
+            .mapped_username
+            .trim()
+            .eq_ignore_ascii_case(form.mapped_username.trim())
+    });
+
     let config = state.config.read().await;
     let admin_password = &config.password;
 
@@ -482,19 +508,21 @@ pub async fn add_mapping(
                 "Saved mapping {} for local user '{}' to server '{}' as mapped user '{}'.",
                 mapping_id, form.user_id, form.server_url, form.mapped_username
             );
-            match state
-                .user_authorization
-                .delete_sessions_for_mapping(mapping_id)
-                .await
-            {
-                Ok(deleted) => info!(
-                    "Deleted {} sessions for mapping {} (user {})",
-                    deleted, mapping_id, form.user_id
-                ),
-                Err(e) => error!(
-                    "Failed to delete sessions for mapping {} (user {}): {}",
-                    mapping_id, form.user_id, e
-                ),
+            if mapped_username_changed {
+                match state
+                    .user_authorization
+                    .delete_sessions_for_mapping(mapping_id)
+                    .await
+                {
+                    Ok(deleted) => info!(
+                        "Mapped account changed for mapping {} (user {}). Deleted {} affected session(s)",
+                        mapping_id, form.user_id, deleted
+                    ),
+                    Err(e) => error!(
+                        "Failed to delete sessions for changed mapping {} (user {}): {}",
+                        mapping_id, form.user_id, e
+                    ),
+                }
             }
             get_user_item(&state, &form.user_id).await.into_response()
         }

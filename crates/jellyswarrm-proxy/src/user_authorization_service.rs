@@ -467,27 +467,17 @@ impl UserAuthorizationService {
         .await?;
 
         if let Some(existing_mapping) = existing_mapping {
-            // If the mapped account changed, revoke all sessions for this mapping.
-            // Keeping old tokens after an account switch can cause cross-account drift.
             if !existing_mapping
                 .mapped_username
                 .trim()
                 .eq_ignore_ascii_case(mapped_username.trim())
             {
-                let revoked_sessions = sqlx::query(
-                    r#"
-                    DELETE FROM authorization_sessions
-                    WHERE mapping_id = ?
-                    "#,
-                )
-                .bind(existing_mapping.id)
-                .execute(&self.pool)
-                .await?
-                .rows_affected();
-
                 info!(
-                    "Mapped username changed for user {} on server {}. Revoked {} session(s)",
-                    user_id, server_url, revoked_sessions
+                    "Mapped username changed for user {} on server {} from '{}' to '{}'. Sessions were preserved; callers must revoke affected mapping sessions explicitly if needed.",
+                    user_id,
+                    server_url,
+                    existing_mapping.mapped_username,
+                    mapped_username
                 );
             }
         }
@@ -801,8 +791,10 @@ impl UserAuthorizationService {
 
         let sessions = self.get_user_sessions(user_id, None).await?;
 
-        let mut stale_sessions_by_mapping: std::collections::BTreeMap<i64, Vec<AuthorizationSession>> =
-            std::collections::BTreeMap::new();
+        let mut stale_sessions_by_mapping: std::collections::BTreeMap<
+            i64,
+            Vec<AuthorizationSession>,
+        > = std::collections::BTreeMap::new();
         let mut incoming_session_exists_by_mapping = std::collections::BTreeSet::new();
 
         for (session, _) in sessions {
@@ -1574,7 +1566,11 @@ mod tests {
             .get_user_sessions(&user.id, Some(incoming_device.clone()))
             .await
             .unwrap();
-        assert_eq!(after.len(), 1, "collapse should leave one canonical session");
+        assert_eq!(
+            after.len(),
+            1,
+            "collapse should leave one canonical session"
+        );
         assert_eq!(after[0].0.device.device_id, incoming_device.device_id);
 
         let all_sessions = service.get_user_sessions(&user.id, None).await.unwrap();
@@ -1689,10 +1685,17 @@ mod tests {
 
         let user_a_sessions = service.get_user_sessions(&user_a.id, None).await.unwrap();
         assert_eq!(user_a_sessions.len(), 1);
-        assert_eq!(user_a_sessions[0].0.device.device_id, incoming_device.device_id);
+        assert_eq!(
+            user_a_sessions[0].0.device.device_id,
+            incoming_device.device_id
+        );
 
         let user_b_sessions = service.get_user_sessions(&user_b.id, None).await.unwrap();
-        assert_eq!(user_b_sessions.len(), 2, "other users must remain untouched");
+        assert_eq!(
+            user_b_sessions.len(),
+            2,
+            "other users must remain untouched"
+        );
         let user_b_device_ids = user_b_sessions
             .iter()
             .map(|(session, _)| session.device.device_id.as_str())
@@ -2494,7 +2497,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_add_server_mapping_username_change_revokes_sessions() {
+    async fn test_add_server_mapping_username_change_preserves_sessions_until_explicit_revoke() {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         MIGRATOR.run(&pool).await.unwrap();
         let service = UserAuthorizationService::new(pool.clone());
@@ -2574,8 +2577,9 @@ mod tests {
             .1;
         assert_eq!(sessions_before.len(), 1);
 
-        // Change mapped username -> should revoke old sessions for this mapping.
-        service
+        // Change mapped username -> sessions stay until the caller explicitly revokes the
+        // affected mapping.
+        let mapping_id = service
             .add_server_mapping(
                 &user.id,
                 "http://localhost:8096",
@@ -2592,6 +2596,21 @@ mod tests {
             .unwrap()
             .unwrap()
             .1;
-        assert_eq!(sessions_after.len(), 0);
+
+        assert_eq!(sessions_after.len(), 1);
+
+        let deleted = service
+            .delete_sessions_for_mapping(mapping_id)
+            .await
+            .unwrap();
+        assert_eq!(deleted, 1);
+
+        let sessions_after_revoke = service
+            .get_user_sessions_by_virtual_token(&user.virtual_key)
+            .await
+            .unwrap()
+            .unwrap()
+            .1;
+        assert_eq!(sessions_after_revoke.len(), 0);
     }
 }

@@ -674,7 +674,50 @@ fn map_jellyfin_auth_error(err: JellyfinApiError) -> QuickConnectAuthError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        config::{AppConfig, MediaStreamingMode, MIGRATOR},
+        media_storage_service::MediaStorageService,
+        models::{AuthenticateResponse, SessionInfo, SyncPlayUserAccessType, User, UserPolicy},
+        processors::{request_analyzer::RequestAnalyzer, request_processor::RequestProcessor},
+        server_storage::ServerStorageService,
+        session_storage::SessionStorage,
+        user_authorization_service::{Device, UserAuthorizationService},
+        AppState, DataContext, JsonProcessors,
+    };
+    use axum::{extract::Query, Json};
     use hyper::http::HeaderValue;
+    use sqlx::SqlitePool;
+    use std::{collections::HashMap, sync::Arc};
+    use wiremock::{
+        matchers::{method, path},
+        Mock, MockServer, ResponseTemplate,
+    };
+
+    async fn create_test_app_state() -> AppState {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+
+        let data_context = DataContext {
+            user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
+            server_storage: Arc::new(ServerStorageService::new(pool.clone())),
+            media_storage: Arc::new(MediaStorageService::new(pool)),
+            play_sessions: Arc::new(SessionStorage::new()),
+            config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
+        };
+
+        let processors = JsonProcessors {
+            request_processor: RequestProcessor::new(data_context.clone()),
+            request_analyzer: RequestAnalyzer::new(data_context.clone()),
+        };
+
+        AppState::new(
+            reqwest::Client::new(),
+            reqwest::Client::new(),
+            data_context,
+            processors,
+            QuickConnectStorage::new(),
+        )
+    }
 
     #[test]
     fn quick_connect_session_serializes_to_jellyfin_shape() {
@@ -820,5 +863,164 @@ mod tests {
         assert_eq!(auth.device_id, "session-device");
         assert_eq!(auth.device, "Fallback Device");
         assert_eq!(auth.client, "Unknown App");
+    }
+
+    #[tokio::test]
+    async fn quick_connect_authentication_preserves_existing_web_session() {
+        let state = create_test_app_state().await;
+        let upstream = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/Users/AuthenticateByName"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(AuthenticateResponse {
+                    user: User {
+                        name: "mappeduser".to_string(),
+                        server_id: "upstream-server".to_string(),
+                        id: "upstream-user-id".to_string(),
+                        policy: UserPolicy {
+                            is_administrator: false,
+                            sync_play_access: SyncPlayUserAccessType::None,
+                            extra: HashMap::new(),
+                        },
+                        extra: HashMap::new(),
+                    },
+                    session_info: SessionInfo {
+                        user_id: "upstream-user-id".to_string(),
+                        user_name: "mappeduser".to_string(),
+                        server_id: "upstream-server".to_string(),
+                        extra: HashMap::new(),
+                    },
+                    access_token: "tv-upstream-token".to_string(),
+                    server_id: "upstream-server".to_string(),
+                }),
+            )
+            .mount(&upstream)
+            .await;
+
+        state
+            .server_storage
+            .add_server("Upstream", &upstream.uri(), 100, MediaStreamingMode::Proxy)
+            .await
+            .unwrap();
+
+        let user = state
+            .user_authorization
+            .get_or_create_user("MyUser", &"local-pass".into())
+            .await
+            .unwrap();
+
+        state
+            .user_authorization
+            .add_server_mapping(
+                &user.id,
+                &upstream.uri(),
+                "mappeduser",
+                &"mappedpass".into(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let existing_web_auth = Authorization {
+            client: "Jellyfin Web".to_string(),
+            device: "Firefox".to_string(),
+            device_id: "web-device-id".to_string(),
+            version: "10.10.7".to_string(),
+            token: None,
+        };
+
+        state
+            .user_authorization
+            .store_authorization_session(
+                &user.id,
+                &upstream.uri(),
+                &existing_web_auth,
+                "web-upstream-token".to_string(),
+                "upstream-user-id".to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let quick_connect_session = QuickConnectSession::new(
+            "secret-1".to_string(),
+            "123456".to_string(),
+            "androidtv-base-device-id".to_string(),
+            "Chromecast".to_string(),
+            "Jellyfin Android TV".to_string(),
+            "0.19.7".to_string(),
+        );
+        state.quick_connect.store_session(quick_connect_session);
+
+        let mut browser_headers = HeaderMap::new();
+        browser_headers.insert(
+            "authorization",
+            HeaderValue::from_str(&format!(
+                "MediaBrowser Client=\"Jellyfin Web\", Device=\"Firefox\", DeviceId=\"web-device-id\", Version=\"10.10.7\", Token=\"{}\"",
+                user.virtual_key
+            ))
+            .unwrap(),
+        );
+
+        let authorize_result = handle_quick_connect_authorize(
+            Query(AuthorizeQuery {
+                code: "123456".to_string(),
+                user_id: None,
+            }),
+            axum::extract::State(state.clone()),
+            browser_headers,
+        )
+        .await;
+        assert!(authorize_result.is_ok());
+
+        let mut tv_headers = HeaderMap::new();
+        tv_headers.insert(
+            "authorization",
+            HeaderValue::from_static(
+                "MediaBrowser Client=\"Jellyfin Android TV\", Device=\"Chromecast\", DeviceId=\"androidtv-base-device-id\", Version=\"0.19.7\"",
+            ),
+        );
+
+        let auth_response = handle_authenticate_with_quick_connect(
+            axum::extract::State(state.clone()),
+            tv_headers,
+            Json(QuickConnectAuthenticateRequest {
+                secret: "secret-1".to_string(),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+
+        assert_eq!(auth_response.access_token, user.virtual_key);
+
+        let all_sessions = state
+            .user_authorization
+            .get_user_sessions(&user.id, None)
+            .await
+            .unwrap();
+        assert_eq!(all_sessions.len(), 2, "web and TV sessions should coexist");
+
+        let web_sessions = state
+            .user_authorization
+            .get_user_sessions(
+                &user.id,
+                Some(Device {
+                    client: "Jellyfin Web".to_string(),
+                    device: "Firefox".to_string(),
+                    device_id: "web-device-id".to_string(),
+                    version: "10.10.7".to_string(),
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            web_sessions.len(),
+            1,
+            "existing web session should remain available"
+        );
+        assert_eq!(web_sessions[0].0.jellyfin_token, "web-upstream-token");
     }
 }
