@@ -77,26 +77,26 @@ pub struct Device {
     pub version: String,
 }
 
-pub fn normalize_decice(value: &str) -> String {
+pub fn normalize_device(value: &str) -> String {
     value.trim().to_lowercase().replace("+", " ")
 }
 
 fn is_android_tv_client(client: &str) -> bool {
-    normalize_decice(client).contains("android tv")
+    normalize_device(client).contains("android tv")
 }
 
 impl Device {
     /// Check if this device matches another device based on client and either device_id or device name or version
     pub fn matches(&self, other: &Device) -> bool {
-        let self_client = normalize_decice(&self.client);
-        let other_client = normalize_decice(&other.client);
+        let self_client = normalize_device(&self.client);
+        let other_client = normalize_device(&other.client);
 
         if self_client != other_client {
             return false;
         }
 
-        let self_device_id = normalize_decice(&self.device_id);
-        let other_device_id = normalize_decice(&other.device_id);
+        let self_device_id = normalize_device(&self.device_id);
+        let other_device_id = normalize_device(&other.device_id);
 
         let self_has_known_device_id = Self::has_known_device_id(&self_device_id);
         let other_has_known_device_id = Self::has_known_device_id(&other_device_id);
@@ -107,8 +107,8 @@ impl Device {
         }
 
         // 2) Fallback to device name only when at least one side has no usable device id.
-        let self_device = normalize_decice(&self.device);
-        let other_device = normalize_decice(&other.device);
+        let self_device = normalize_device(&self.device);
+        let other_device = normalize_device(&other.device);
         !self_device.is_empty() && self_device == other_device
     }
 
@@ -778,13 +778,13 @@ impl UserAuthorizationService {
             return Ok(false);
         }
 
-        let incoming_device_id = normalize_decice(&incoming_device.device_id);
+        let incoming_device_id = normalize_device(&incoming_device.device_id);
         if !Device::has_known_device_id(&incoming_device_id) {
             return Ok(false);
         }
 
-        let incoming_client = normalize_decice(&incoming_device.client);
-        let incoming_name = normalize_decice(&incoming_device.device);
+        let incoming_client = normalize_device(&incoming_device.client);
+        let incoming_name = normalize_device(&incoming_device.device);
         if incoming_name.is_empty() {
             return Ok(false);
         }
@@ -798,13 +798,13 @@ impl UserAuthorizationService {
         let mut incoming_session_exists_by_mapping = std::collections::BTreeSet::new();
 
         for (session, _) in sessions {
-            let session_client = normalize_decice(&session.device.client);
-            let session_name = normalize_decice(&session.device.device);
+            let session_client = normalize_device(&session.device.client);
+            let session_name = normalize_device(&session.device.device);
             if session_client != incoming_client || session_name != incoming_name {
                 continue;
             }
 
-            let session_device_id = normalize_decice(&session.device.device_id);
+            let session_device_id = normalize_device(&session.device.device_id);
             if !Device::has_known_device_id(&session_device_id) {
                 continue;
             }
