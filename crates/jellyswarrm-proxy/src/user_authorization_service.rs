@@ -77,26 +77,26 @@ pub struct Device {
     pub version: String,
 }
 
-pub fn normalize_decice(value: &str) -> String {
+pub fn normalize_device(value: &str) -> String {
     value.trim().to_lowercase().replace("+", " ")
 }
 
 fn is_android_tv_client(client: &str) -> bool {
-    normalize_decice(client).contains("android tv")
+    normalize_device(client).contains("android tv")
 }
 
 impl Device {
     /// Check if this device matches another device based on client and either device_id or device name or version
     pub fn matches(&self, other: &Device) -> bool {
-        let self_client = normalize_decice(&self.client);
-        let other_client = normalize_decice(&other.client);
+        let self_client = normalize_device(&self.client);
+        let other_client = normalize_device(&other.client);
 
         if self_client != other_client {
             return false;
         }
 
-        let self_device_id = normalize_decice(&self.device_id);
-        let other_device_id = normalize_decice(&other.device_id);
+        let self_device_id = normalize_device(&self.device_id);
+        let other_device_id = normalize_device(&other.device_id);
 
         let self_has_known_device_id = Self::has_known_device_id(&self_device_id);
         let other_has_known_device_id = Self::has_known_device_id(&other_device_id);
@@ -107,8 +107,8 @@ impl Device {
         }
 
         // 2) Fallback to device name only when at least one side has no usable device id.
-        let self_device = normalize_decice(&self.device);
-        let other_device = normalize_decice(&other.device);
+        let self_device = normalize_device(&self.device);
+        let other_device = normalize_device(&other.device);
         !self_device.is_empty() && self_device == other_device
     }
 
@@ -467,27 +467,17 @@ impl UserAuthorizationService {
         .await?;
 
         if let Some(existing_mapping) = existing_mapping {
-            // If the mapped account changed, revoke all sessions for this mapping.
-            // Keeping old tokens after an account switch can cause cross-account drift.
             if !existing_mapping
                 .mapped_username
                 .trim()
                 .eq_ignore_ascii_case(mapped_username.trim())
             {
-                let revoked_sessions = sqlx::query(
-                    r#"
-                    DELETE FROM authorization_sessions
-                    WHERE mapping_id = ?
-                    "#,
-                )
-                .bind(existing_mapping.id)
-                .execute(&self.pool)
-                .await?
-                .rows_affected();
-
                 info!(
-                    "Mapped username changed for user {} on server {}. Revoked {} session(s)",
-                    user_id, server_url, revoked_sessions
+                    "Mapped username changed for user {} on server {} from '{}' to '{}'. Sessions were preserved; callers must revoke affected mapping sessions explicitly if needed.",
+                    user_id,
+                    server_url,
+                    existing_mapping.mapped_username,
+                    mapped_username
                 );
             }
         }
@@ -788,98 +778,141 @@ impl UserAuthorizationService {
             return Ok(false);
         }
 
-        let incoming_device_id = normalize_decice(&incoming_device.device_id);
+        let incoming_device_id = normalize_device(&incoming_device.device_id);
         if !Device::has_known_device_id(&incoming_device_id) {
             return Ok(false);
         }
 
-        let incoming_client = normalize_decice(&incoming_device.client);
-        let incoming_name = normalize_decice(&incoming_device.device);
+        let incoming_client = normalize_device(&incoming_device.client);
+        let incoming_name = normalize_device(&incoming_device.device);
         if incoming_name.is_empty() {
             return Ok(false);
         }
 
         let sessions = self.get_user_sessions(user_id, None).await?;
 
-        let mut unique_old_device_ids = std::collections::HashSet::new();
-        for (session, _) in sessions {
-            let session_client = normalize_decice(&session.device.client);
-            let session_name = normalize_decice(&session.device.device);
-            let session_device_id = normalize_decice(&session.device.device_id);
+        let mut stale_sessions_by_mapping: std::collections::BTreeMap<
+            i64,
+            Vec<AuthorizationSession>,
+        > = std::collections::BTreeMap::new();
+        let mut incoming_session_exists_by_mapping = std::collections::BTreeSet::new();
 
+        for (session, _) in sessions {
+            let session_client = normalize_device(&session.device.client);
+            let session_name = normalize_device(&session.device.device);
             if session_client != incoming_client || session_name != incoming_name {
                 continue;
             }
 
-            if !Device::has_known_device_id(&session_device_id)
-                || session_device_id == incoming_device_id
-            {
+            let session_device_id = normalize_device(&session.device.device_id);
+            if !Device::has_known_device_id(&session_device_id) {
                 continue;
             }
 
-            unique_old_device_ids.insert(session_device_id);
+            if session_device_id == incoming_device_id {
+                incoming_session_exists_by_mapping.insert(session.mapping_id);
+                continue;
+            }
+
+            stale_sessions_by_mapping
+                .entry(session.mapping_id)
+                .or_default()
+                .push(session);
         }
 
-        if unique_old_device_ids.len() != 1 {
-            // Ambiguous or no candidate; keep strict behavior and avoid rebinding.
+        if stale_sessions_by_mapping.is_empty() {
             return Ok(false);
         }
 
-        let old_device_id = unique_old_device_ids.into_iter().next().unwrap();
+        let collapsed_device_ids = stale_sessions_by_mapping
+            .iter()
+            .map(|(mapping_id, sessions)| {
+                let mut ids = sessions
+                    .iter()
+                    .map(|session| session.device.device_id.clone())
+                    .collect::<Vec<_>>();
+                ids.sort();
+                ids.dedup();
+                format!("mapping {}: {}", mapping_id, ids.join(", "))
+            })
+            .collect::<Vec<_>>();
+
+        warn!(
+            "Collapsing Android TV device IDs for user {} on device '{}' (client '{}') to '{}': {}",
+            user_id,
+            incoming_device.device,
+            incoming_device.client,
+            incoming_device.device_id,
+            collapsed_device_ids.join("; ")
+        );
+
         let now = chrono::Utc::now();
 
         let mut tx = self.pool.begin().await?;
 
-        // Remove rows that would violate UNIQUE(user_id, mapping_id, device_id) after update.
-        sqlx::query(
-            r#"
-            DELETE FROM authorization_sessions AS old
-            WHERE old.user_id = ?
-              AND lower(trim(old.client)) = ?
-              AND lower(trim(old.device)) = ?
-              AND lower(trim(old.device_id)) = ?
-              AND EXISTS (
-                  SELECT 1 FROM authorization_sessions AS newer
-                  WHERE newer.user_id = old.user_id
-                    AND newer.mapping_id = old.mapping_id
-                    AND lower(trim(newer.client)) = ?
-                    AND lower(trim(newer.device)) = ?
-                    AND lower(trim(newer.device_id)) = ?
-              )
-            "#,
-        )
-        .bind(user_id)
-        .bind(&incoming_client)
-        .bind(&incoming_name)
-        .bind(&old_device_id)
-        .bind(&incoming_client)
-        .bind(&incoming_name)
-        .bind(&incoming_device_id)
-        .execute(&mut *tx)
-        .await?;
+        let mut changed = false;
 
-        let updated = sqlx::query(
-            r#"
-            UPDATE authorization_sessions
-            SET device_id = ?, updated_at = ?
-            WHERE user_id = ?
-              AND lower(trim(client)) = ?
-              AND lower(trim(device)) = ?
-              AND lower(trim(device_id)) = ?
-            "#,
-        )
-        .bind(&incoming_device.device_id)
-        .bind(now)
-        .bind(user_id)
-        .bind(&incoming_client)
-        .bind(&incoming_name)
-        .bind(&old_device_id)
-        .execute(&mut *tx)
-        .await?;
+        for (mapping_id, mut stale_sessions) in stale_sessions_by_mapping {
+            stale_sessions.sort_by(|left, right| {
+                left.updated_at
+                    .cmp(&right.updated_at)
+                    .then(left.created_at.cmp(&right.created_at))
+                    .then(left.id.cmp(&right.id))
+            });
+
+            if incoming_session_exists_by_mapping.contains(&mapping_id) {
+                for session in stale_sessions {
+                    let deleted = sqlx::query(
+                        r#"
+                        DELETE FROM authorization_sessions
+                        WHERE id = ?
+                        "#,
+                    )
+                    .bind(session.id)
+                    .execute(&mut *tx)
+                    .await?;
+
+                    changed |= deleted.rows_affected() > 0;
+                }
+
+                continue;
+            }
+
+            let canonical_session = stale_sessions.pop().unwrap();
+
+            let updated = sqlx::query(
+                r#"
+                UPDATE authorization_sessions
+                SET device_id = ?, updated_at = ?
+                WHERE id = ?
+                "#,
+            )
+            .bind(&incoming_device.device_id)
+            .bind(now)
+            .bind(canonical_session.id)
+            .execute(&mut *tx)
+            .await?;
+
+            changed |= updated.rows_affected() > 0;
+
+            for session in stale_sessions {
+                let deleted = sqlx::query(
+                    r#"
+                    DELETE FROM authorization_sessions
+                    WHERE id = ?
+                    "#,
+                )
+                .bind(session.id)
+                .execute(&mut *tx)
+                .await?;
+
+                changed |= deleted.rows_affected() > 0;
+            }
+        }
 
         tx.commit().await?;
 
-        Ok(updated.rows_affected() > 0)
+        Ok(changed)
     }
 
     /// List all users
@@ -1433,6 +1466,242 @@ mod tests {
             .unwrap();
         assert_eq!(after.len(), 1, "strict lookup should succeed after rebind");
         assert_eq!(after[0].0.device.device_id, incoming_device.device_id);
+    }
+
+    #[tokio::test]
+    async fn test_android_tv_rebind_collapses_multiple_stale_device_ids_for_same_user() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = UserAuthorizationService::new(pool.clone());
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS servers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                url TEXT NOT NULL,
+                priority INTEGER NOT NULL DEFAULT 100,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            r#"
+            INSERT INTO servers (name, url, priority, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind("Test Server")
+        .bind("http://localhost:8096")
+        .bind(100)
+        .bind(chrono::Utc::now())
+        .bind(chrono::Utc::now())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let user = service
+            .get_or_create_user("androidtv-multi", &"testpass".into())
+            .await
+            .unwrap();
+
+        service
+            .add_server_mapping(
+                &user.id,
+                "http://localhost:8096",
+                "mappeduser",
+                &"mappedpass".into(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        for old_device_id in ["old-device-id-1", "old-device-id-2", "old-device-id-3"] {
+            let stored_auth = Authorization {
+                client: "Jellyfin Android TV".to_string(),
+                device: "Chromecast".to_string(),
+                device_id: old_device_id.to_string(),
+                version: "0.18.0".to_string(),
+                token: None,
+            };
+
+            service
+                .store_authorization_session(
+                    &user.id,
+                    "http://localhost:8096",
+                    &stored_auth,
+                    format!("token-{old_device_id}"),
+                    "original-jellyfin-user-id".to_string(),
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+
+        let incoming_device = Device {
+            client: "Jellyfin Android TV".to_string(),
+            device: "Chromecast".to_string(),
+            device_id: "incoming-device-id".to_string(),
+            version: "0.18.0".to_string(),
+        };
+
+        let before = service
+            .get_user_sessions(&user.id, Some(incoming_device.clone()))
+            .await
+            .unwrap();
+        assert!(before.is_empty(), "precondition: strict lookup should miss");
+
+        let rebound = service
+            .rebind_android_tv_device_sessions_if_needed(&user.id, &incoming_device)
+            .await
+            .unwrap();
+        assert!(rebound, "android tv stale sessions should be collapsed");
+
+        let after = service
+            .get_user_sessions(&user.id, Some(incoming_device.clone()))
+            .await
+            .unwrap();
+        assert_eq!(
+            after.len(),
+            1,
+            "collapse should leave one canonical session"
+        );
+        assert_eq!(after[0].0.device.device_id, incoming_device.device_id);
+
+        let all_sessions = service.get_user_sessions(&user.id, None).await.unwrap();
+        assert_eq!(all_sessions.len(), 1, "stale device ids should be pruned");
+    }
+
+    #[tokio::test]
+    async fn test_android_tv_rebind_scope_does_not_touch_other_users() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = UserAuthorizationService::new(pool.clone());
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS servers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                url TEXT NOT NULL,
+                priority INTEGER NOT NULL DEFAULT 100,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            r#"
+            INSERT INTO servers (name, url, priority, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind("Test Server")
+        .bind("http://localhost:8096")
+        .bind(100)
+        .bind(chrono::Utc::now())
+        .bind(chrono::Utc::now())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let user_a = service
+            .get_or_create_user("androidtv-a", &"testpass".into())
+            .await
+            .unwrap();
+        let user_b = service
+            .get_or_create_user("androidtv-b", &"testpass".into())
+            .await
+            .unwrap();
+
+        for user in [&user_a, &user_b] {
+            service
+                .add_server_mapping(
+                    &user.id,
+                    "http://localhost:8096",
+                    "mappeduser",
+                    &"mappedpass".into(),
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+
+        for old_device_id in ["old-device-id-1", "old-device-id-2"] {
+            let stored_auth = Authorization {
+                client: "Jellyfin Android TV".to_string(),
+                device: "Chromecast".to_string(),
+                device_id: old_device_id.to_string(),
+                version: "0.18.0".to_string(),
+                token: None,
+            };
+
+            service
+                .store_authorization_session(
+                    &user_a.id,
+                    "http://localhost:8096",
+                    &stored_auth,
+                    format!("token-a-{old_device_id}"),
+                    "original-jellyfin-user-id-a".to_string(),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            service
+                .store_authorization_session(
+                    &user_b.id,
+                    "http://localhost:8096",
+                    &stored_auth,
+                    format!("token-b-{old_device_id}"),
+                    "original-jellyfin-user-id-b".to_string(),
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+
+        let incoming_device = Device {
+            client: "Jellyfin Android TV".to_string(),
+            device: "Chromecast".to_string(),
+            device_id: "incoming-device-id".to_string(),
+            version: "0.18.0".to_string(),
+        };
+
+        let rebound = service
+            .rebind_android_tv_device_sessions_if_needed(&user_a.id, &incoming_device)
+            .await
+            .unwrap();
+        assert!(rebound);
+
+        let user_a_sessions = service.get_user_sessions(&user_a.id, None).await.unwrap();
+        assert_eq!(user_a_sessions.len(), 1);
+        assert_eq!(
+            user_a_sessions[0].0.device.device_id,
+            incoming_device.device_id
+        );
+
+        let user_b_sessions = service.get_user_sessions(&user_b.id, None).await.unwrap();
+        assert_eq!(
+            user_b_sessions.len(),
+            2,
+            "other users must remain untouched"
+        );
+        let user_b_device_ids = user_b_sessions
+            .iter()
+            .map(|(session, _)| session.device.device_id.as_str())
+            .collect::<Vec<_>>();
+        assert!(user_b_device_ids.contains(&"old-device-id-1"));
+        assert!(user_b_device_ids.contains(&"old-device-id-2"));
     }
 
     #[tokio::test]
@@ -2228,7 +2497,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_add_server_mapping_username_change_revokes_sessions() {
+    async fn test_add_server_mapping_username_change_preserves_sessions_until_explicit_revoke() {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         MIGRATOR.run(&pool).await.unwrap();
         let service = UserAuthorizationService::new(pool.clone());
@@ -2308,8 +2577,9 @@ mod tests {
             .1;
         assert_eq!(sessions_before.len(), 1);
 
-        // Change mapped username -> should revoke old sessions for this mapping.
-        service
+        // Change mapped username -> sessions stay until the caller explicitly revokes the
+        // affected mapping.
+        let mapping_id = service
             .add_server_mapping(
                 &user.id,
                 "http://localhost:8096",
@@ -2326,6 +2596,21 @@ mod tests {
             .unwrap()
             .unwrap()
             .1;
-        assert_eq!(sessions_after.len(), 0);
+
+        assert_eq!(sessions_after.len(), 1);
+
+        let deleted = service
+            .delete_sessions_for_mapping(mapping_id)
+            .await
+            .unwrap();
+        assert_eq!(deleted, 1);
+
+        let sessions_after_revoke = service
+            .get_user_sessions_by_virtual_token(&user.virtual_key)
+            .await
+            .unwrap()
+            .unwrap()
+            .1;
+        assert_eq!(sessions_after_revoke.len(), 0);
     }
 }

@@ -125,6 +125,29 @@ pub async fn connect_server(
 
     match client.authenticate_by_name(&form.username, form.password.as_str()).await {
         Ok(_) => {
+            let previous_mapping = match state
+                .user_authorization
+                .get_server_mapping(&user.id, server.url.as_str())
+                .await
+            {
+                Ok(mapping) => mapping,
+                Err(e) => {
+                    error!("Failed to inspect existing mapping: {}", e);
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Html("<span style=\"color: #dc3545;\">Database error</span>"),
+                    )
+                        .into_response();
+                }
+            };
+
+            let mapped_username_changed = previous_mapping.as_ref().is_some_and(|mapping| {
+                !mapping
+                    .mapped_username
+                    .trim()
+                    .eq_ignore_ascii_case(form.username.trim())
+            });
+
             // Credentials valid, create mapping
             match state
                 .user_authorization
@@ -137,7 +160,24 @@ pub async fn connect_server(
                 )
                 .await
             {
-                Ok(_) => {
+                Ok(mapping_id) => {
+                    if mapped_username_changed {
+                        match state
+                            .user_authorization
+                            .delete_sessions_for_mapping(mapping_id)
+                            .await
+                        {
+                            Ok(deleted) => info!(
+                                "Mapped account changed for user {} on server {}. Deleted {} affected session(s)",
+                                user.username, server.name, deleted
+                            ),
+                            Err(e) => error!(
+                                "Failed to delete sessions for updated mapping {}: {}",
+                                mapping_id, e
+                            ),
+                        }
+                    }
+
                     info!(
                         "Created mapping for user {} to server {}",
                         user.username, server.name
