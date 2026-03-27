@@ -23,6 +23,7 @@ RUN if [ ! -f "package.json" ]; then \
       git init && \
       git remote add origin https://github.com/jellyfin/jellyfin-web.git && \
       git fetch --depth 1 origin "$JELLYFIN_WEB_COMMIT" && \
+      git fetch --depth 1 origin --tags && \
       git checkout FETCH_HEAD ; \
     fi
 
