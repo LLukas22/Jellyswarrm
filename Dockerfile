@@ -8,21 +8,21 @@ RUN apk add --no-cache git
 
 WORKDIR /app/ui
 
-# Copy UI source. When building from a git context (e.g. docker build <url>),
-# submodules are not fetched automatically, so .git/modules/ui/ won't exist.
-# We handle both cases: local builds with submodules already present, and
-# remote builds where we need to clone jellyfin-web ourselves.
-COPY ui/ ./
-COPY .gitmodules /tmp/.gitmodules
+# When building from a git URL (docker build <url>), submodules are not
+# fetched, so ui/ is an empty gitlink. We detect this and clone the pinned
+# jellyfin-web commit directly. For local builds with submodules already
+# checked out, we just copy the source as before.
+#
+# Pinned commit — must match the ui submodule ref in the repo.
+ARG JELLYFIN_WEB_COMMIT=ea2abad3e1671473d352b3ccf06f616c61ec9381
 
-# If git metadata is missing (remote build), clone jellyfin-web into a
-# proper git repo so version detection and npm build scripts work.
-RUN if [ ! -d ".git" ] && [ ! -f ".git" ]; then \
-      echo "Submodule git metadata missing — cloning jellyfin-web..." && \
-      COMMIT=$(cat /tmp/.gitmodules 2>/dev/null | grep url | head -1 | awk '{print $NF}') && \
+COPY ui/ ./
+
+RUN if [ ! -f "package.json" ]; then \
+      echo "Submodule not present — cloning jellyfin-web@${JELLYFIN_WEB_COMMIT}..." && \
       git init && \
       git remote add origin https://github.com/jellyfin/jellyfin-web.git && \
-      git fetch --depth 1 origin HEAD && \
+      git fetch --depth 1 origin "$JELLYFIN_WEB_COMMIT" && \
       git checkout FETCH_HEAD ; \
     fi
 
