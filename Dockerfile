@@ -23,7 +23,6 @@ RUN if [ ! -f "package.json" ]; then \
       git init && \
       git remote add origin https://github.com/jellyfin/jellyfin-web.git && \
       git fetch --depth 1 origin "$JELLYFIN_WEB_COMMIT" && \
-      git fetch --depth 1 origin --tags && \
       git checkout FETCH_HEAD ; \
     fi
 
@@ -31,19 +30,19 @@ RUN if [ ! -f "package.json" ]; then \
 RUN --mount=type=cache,target=/root/.npm \
     npm install --engine-strict=false --ignore-scripts
 
-# Get and print UI version info (fallback to "dev" if no tags)
-RUN UI_VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "dev") && \
+# Get UI version from package.json (reliable even in shallow clones)
+RUN UI_VERSION=$(node -p "require('./package.json').version" 2>/dev/null || echo "dev") && \
     UI_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "unknown") && \
-    echo "UI_VERSION=${UI_VERSION#v}" && \
+    echo "UI_VERSION=${UI_VERSION}" && \
     echo "UI_COMMIT=$UI_COMMIT"
 
 # Build production UI bundle
 RUN npm run build:production
 
 # Write ui-version.env file
-RUN UI_VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "dev") && \
+RUN UI_VERSION=$(node -p "require('./package.json').version" 2>/dev/null || echo "dev") && \
     UI_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "unknown") && \
-    printf "UI_VERSION=%s\nUI_COMMIT=%s\n" "${UI_VERSION#v}" "$UI_COMMIT" > dist/ui-version.env && \
+    printf "UI_VERSION=%s\nUI_COMMIT=%s\n" "$UI_VERSION" "$UI_COMMIT" > dist/ui-version.env && \
     echo "Generated dist/ui-version.env"
 
 
