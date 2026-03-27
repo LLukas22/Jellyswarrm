@@ -55,12 +55,14 @@ pub fn multi_case_struct(args: TokenStream, input: TokenStream) -> TokenStream {
                     let field_vis = &field.vis;
                     let mut field_attrs = field.attrs.clone();
 
-                    // Check if field already has serde rename or alias attributes (syn v2.0 API)
+                    // Check if field already has serde rename, alias, or flatten attributes (syn v2.0 API)
                     let has_serde_rename_or_alias = field_attrs.iter().any(|attr| {
                         if attr.path().is_ident("serde") {
                             if let syn::Meta::List(meta_list) = &attr.meta {
                                 let tokens = meta_list.tokens.to_string();
-                                tokens.contains("rename") || tokens.contains("alias")
+                                tokens.contains("rename")
+                                    || tokens.contains("alias")
+                                    || tokens.contains("flatten")
                             } else {
                                 false
                             }

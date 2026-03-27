@@ -5,7 +5,7 @@ use axum::{
 use hyper::StatusCode;
 use reqwest::header::{HeaderValue, CONTENT_LENGTH, TRANSFER_ENCODING};
 use reqwest::Body;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use crate::{
     handlers::common::{
@@ -145,6 +145,24 @@ pub async fn post_playback_info(
         }
     }
 
+    // Log whether DeviceProfile is present — its absence causes upstream to
+    // fall back to transcoding because the server can't determine client capabilities.
+    if payload.extra.contains_key("DeviceProfile") {
+        debug!(
+            "PlaybackInfo: DeviceProfile present ({} bytes in extra map)",
+            serde_json::to_string(payload.extra.get("DeviceProfile").unwrap())
+                .map(|s| s.len())
+                .unwrap_or(0)
+        );
+    } else {
+        warn!(
+            "PlaybackInfo: DeviceProfile MISSING from request body! \
+             Client will likely get transcoding instead of direct play. \
+             Extra keys: {:?}",
+            payload.extra.keys().collect::<Vec<_>>()
+        );
+    }
+
     debug!("Forwarding PlaybackRequest JSON: {:?}", &payload);
 
     let json = serde_json::to_vec(&payload).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -160,6 +178,12 @@ pub async fn post_playback_info(
         HeaderValue::from_str(&len.to_string()).unwrap(),
     );
     request.headers_mut().remove(TRANSFER_ENCODING);
+    // Ensure Content-Type is explicitly set — some clients may send it
+    // under a slightly different casing that gets dropped during header processing.
+    request.headers_mut().insert(
+        reqwest::header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
 
     match execute_json_request::<PlaybackResponse>(&state.reqwest_client, request).await {
         Ok(mut response) => {
