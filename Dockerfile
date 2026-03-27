@@ -3,25 +3,36 @@
 #################################
 FROM node:20-alpine AS ui-build
 
-# Install git for version detection
+# Install git for version detection and submodule clone
 RUN apk add --no-cache git
 
 WORKDIR /app/ui
 
-# Copy package files for dependency caching
-COPY ui/package.json ui/package-lock.json* ./
+# Copy UI source. When building from a git context (e.g. docker build <url>),
+# submodules are not fetched automatically, so .git/modules/ui/ won't exist.
+# We handle both cases: local builds with submodules already present, and
+# remote builds where we need to clone jellyfin-web ourselves.
+COPY ui/ ./
+COPY .gitmodules /tmp/.gitmodules
+
+# If git metadata is missing (remote build), clone jellyfin-web into a
+# proper git repo so version detection and npm build scripts work.
+RUN if [ ! -d ".git" ] && [ ! -f ".git" ]; then \
+      echo "Submodule git metadata missing — cloning jellyfin-web..." && \
+      COMMIT=$(cat /tmp/.gitmodules 2>/dev/null | grep url | head -1 | awk '{print $NF}') && \
+      git init && \
+      git remote add origin https://github.com/jellyfin/jellyfin-web.git && \
+      git fetch --depth 1 origin HEAD && \
+      git checkout FETCH_HEAD ; \
+    fi
 
 # Install all dependencies (including dev deps needed for build)
 RUN --mount=type=cache,target=/root/.npm \
     npm install --engine-strict=false --ignore-scripts
 
-# Copy UI source code and git metadata
-COPY ui/ ./
-COPY .git/modules/ui/ /app/.git/modules/ui/
-
-# Get and print UI version info
-RUN UI_VERSION=$(git describe --tags --abbrev=0) && \
-    UI_COMMIT=$(git rev-parse HEAD) && \
+# Get and print UI version info (fallback to "dev" if no tags)
+RUN UI_VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "dev") && \
+    UI_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "unknown") && \
     echo "UI_VERSION=${UI_VERSION#v}" && \
     echo "UI_COMMIT=$UI_COMMIT"
 
@@ -29,8 +40,8 @@ RUN UI_VERSION=$(git describe --tags --abbrev=0) && \
 RUN npm run build:production
 
 # Write ui-version.env file
-RUN UI_VERSION=$(git describe --tags --abbrev=0) && \
-    UI_COMMIT=$(git rev-parse HEAD) && \
+RUN UI_VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "dev") && \
+    UI_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "unknown") && \
     printf "UI_VERSION=%s\nUI_COMMIT=%s\n" "${UI_VERSION#v}" "$UI_COMMIT" > dist/ui-version.env && \
     echo "Generated dist/ui-version.env"
 
