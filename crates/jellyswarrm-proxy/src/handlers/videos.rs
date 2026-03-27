@@ -4,7 +4,7 @@ use axum::http::{HeaderMap, HeaderName};
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
 use hyper::StatusCode;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::{
     config::MediaStreamingMode,
@@ -41,6 +41,13 @@ async fn proxy_request(
     client: &reqwest::Client,
     request: reqwest::Request,
 ) -> Result<Response, StatusCode> {
+    debug!(
+        "Video proxy request: method={} url={} range={:?}",
+        request.method(),
+        request.url(),
+        request.headers().get(hyper::header::RANGE)
+    );
+
     let resp = client.execute(request).await.map_err(|e| {
         error!("Proxy request failed: {}", e);
         StatusCode::BAD_GATEWAY
@@ -48,6 +55,15 @@ async fn proxy_request(
 
     let status = resp.status();
     let mut headers = resp.headers().clone();
+
+    debug!(
+        "Video proxy response: status={} content-type={:?} content-length={:?} content-range={:?} accept-ranges={:?}",
+        status,
+        headers.get(hyper::header::CONTENT_TYPE),
+        headers.get(hyper::header::CONTENT_LENGTH),
+        headers.get(hyper::header::CONTENT_RANGE),
+        headers.get(hyper::header::ACCEPT_RANGES),
+    );
 
     // Drop hop-by-hop headers; Hyper will manage connection semantics downstream.
     strip_hop_by_hop_headers(&mut headers);
