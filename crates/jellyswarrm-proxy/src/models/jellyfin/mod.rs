@@ -42,6 +42,9 @@ pub struct PlaybackRequest {
 pub struct PlaybackResponse {
     pub media_sources: Vec<MediaSource>,
     pub play_session_id: String,
+
+    #[serde(flatten)]
+    pub extra: std::collections::HashMap<String, serde_json::Value>,
 }
 
 #[allow(dead_code)]

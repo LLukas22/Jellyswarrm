@@ -545,6 +545,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .route("/{item_id}/stream", get(handlers::videos::get_stream))
                     .route("/{item_id}/stream.mkv", get(handlers::videos::get_stream))
                     .route("/{item_id}/stream.mp4", get(handlers::videos::get_stream))
+                    .route("/{item_id}/stream.mov", get(handlers::videos::get_stream))
                     .route(
                         "/{stream_id}/{*path}",
                         get(handlers::videos::get_video_resource),

@@ -486,6 +486,17 @@ pub fn apply_authorization_header(
     request: &mut reqwest::Request,
     auth: &Option<JellyfinAuthorization>,
 ) {
+    // Remove ALL Jellyfin auth headers before applying the new one.
+    // Without this, stale headers from the original client request leak through
+    // to the upstream server (e.g. X-Emby-Authorization with a Jellyswarm token
+    // gets forwarded alongside the new Authorization header carrying the upstream
+    // token, which can confuse session resolution on the upstream Jellyfin).
+    let headers = request.headers_mut();
+    headers.remove(reqwest::header::AUTHORIZATION);
+    headers.remove("X-Emby-Authorization");
+    headers.remove("X-Emby-Token");
+    headers.remove("X-MediaBrowser-Token");
+
     if let Some(auth) = auth {
         match auth {
             JellyfinAuthorization::Authorization(auth) => {

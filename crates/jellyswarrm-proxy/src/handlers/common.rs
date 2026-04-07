@@ -388,5 +388,20 @@ pub async fn track_play_session(
             .await;
     }
 
+    // Always track by media source ID so direct play (no transcoding URL)
+    // can resolve the server when the client requests the video stream.
+    info!(
+        "Tracking play session for media source: {}, server: {}",
+        item.id, server.name
+    );
+    state
+        .play_sessions
+        .add_session(PlaybackSession {
+            item_id: item.id.clone(),
+            session_id: session_id.to_string(),
+            server: server.clone(),
+        })
+        .await;
+
     Ok(())
 }

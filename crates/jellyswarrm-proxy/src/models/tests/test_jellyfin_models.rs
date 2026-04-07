@@ -240,6 +240,54 @@ mod tests {
     }
 
     #[test]
+    fn test_playback_request_roundtrip_preserves_device_profile() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let file_path =
+            format!("{manifest_dir}/src/models/tests/files/livetv_playback_request.json");
+
+        let json_content = fs::read_to_string(file_path)
+            .expect("Failed to read livetv_playback_request.json file");
+
+        // Parse the original JSON
+        let original: serde_json::Value = serde_json::from_str(&json_content).unwrap();
+
+        // Deserialize into PlaybackRequest
+        let request: PlaybackRequest = serde_json::from_str(&json_content)
+            .expect("Failed to deserialize");
+
+        // Serialize back to JSON (this is what post_playback_info does)
+        let serialized = serde_json::to_vec(&request).expect("Failed to serialize");
+        let roundtripped: serde_json::Value = serde_json::from_slice(&serialized).unwrap();
+
+        // Check DeviceProfile is present
+        assert!(
+            roundtripped.get("DeviceProfile").is_some(),
+            "DeviceProfile missing after roundtrip! Keys present: {:?}",
+            roundtripped.as_object().map(|o| o.keys().collect::<Vec<_>>())
+        );
+
+        // Check DeviceProfile content is preserved
+        let original_dp = original.get("DeviceProfile").unwrap();
+        let roundtripped_dp = roundtripped.get("DeviceProfile").unwrap();
+        assert_eq!(
+            original_dp, roundtripped_dp,
+            "DeviceProfile content changed after roundtrip"
+        );
+
+        // Check all top-level keys are preserved
+        let original_keys: std::collections::HashSet<String> = original
+            .as_object().unwrap().keys().cloned().collect();
+        let roundtripped_keys: std::collections::HashSet<String> = roundtripped
+            .as_object().unwrap().keys().cloned().collect();
+        assert_eq!(
+            original_keys, roundtripped_keys,
+            "Keys differ after roundtrip.\nMissing: {:?}\nExtra: {:?}",
+            original_keys.difference(&roundtripped_keys).collect::<Vec<_>>(),
+            roundtripped_keys.difference(&original_keys).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn test_livetv_playback_response() {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
         let file_path =

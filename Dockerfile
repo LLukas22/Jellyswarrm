@@ -3,35 +3,46 @@
 #################################
 FROM node:20-alpine AS ui-build
 
-# Install git for version detection
+# Install git for version detection and submodule clone
 RUN apk add --no-cache git
 
 WORKDIR /app/ui
 
-# Copy package files for dependency caching
-COPY ui/package.json ui/package-lock.json* ./
+# When building from a git URL (docker build <url>), submodules are not
+# fetched, so ui/ is an empty gitlink. We detect this and clone the pinned
+# jellyfin-web commit directly. For local builds with submodules already
+# checked out, we just copy the source as before.
+#
+# Pinned commit — must match the ui submodule ref in the repo.
+ARG JELLYFIN_WEB_COMMIT=ea2abad3e1671473d352b3ccf06f616c61ec9381
+
+COPY ui/ ./
+
+RUN if [ ! -f "package.json" ]; then \
+      echo "Submodule not present — cloning jellyfin-web@${JELLYFIN_WEB_COMMIT}..." && \
+      git init && \
+      git remote add origin https://github.com/jellyfin/jellyfin-web.git && \
+      git fetch --depth 1 origin "$JELLYFIN_WEB_COMMIT" && \
+      git checkout FETCH_HEAD ; \
+    fi
 
 # Install all dependencies (including dev deps needed for build)
 RUN --mount=type=cache,target=/root/.npm \
     npm install --engine-strict=false --ignore-scripts
 
-# Copy UI source code and git metadata
-COPY ui/ ./
-COPY .git/modules/ui/ /app/.git/modules/ui/
-
-# Get and print UI version info
-RUN UI_VERSION=$(git describe --tags --abbrev=0) && \
-    UI_COMMIT=$(git rev-parse HEAD) && \
-    echo "UI_VERSION=${UI_VERSION#v}" && \
+# Get UI version from package.json (reliable even in shallow clones)
+RUN UI_VERSION=$(node -p "require('./package.json').version" 2>/dev/null || echo "dev") && \
+    UI_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "unknown") && \
+    echo "UI_VERSION=${UI_VERSION}" && \
     echo "UI_COMMIT=$UI_COMMIT"
 
 # Build production UI bundle
 RUN npm run build:production
 
 # Write ui-version.env file
-RUN UI_VERSION=$(git describe --tags --abbrev=0) && \
-    UI_COMMIT=$(git rev-parse HEAD) && \
-    printf "UI_VERSION=%s\nUI_COMMIT=%s\n" "${UI_VERSION#v}" "$UI_COMMIT" > dist/ui-version.env && \
+RUN UI_VERSION=$(node -p "require('./package.json').version" 2>/dev/null || echo "dev") && \
+    UI_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "unknown") && \
+    printf "UI_VERSION=%s\nUI_COMMIT=%s\n" "$UI_VERSION" "$UI_COMMIT" > dist/ui-version.env && \
     echo "Generated dist/ui-version.env"
 
 
