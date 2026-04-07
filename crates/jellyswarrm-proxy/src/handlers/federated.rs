@@ -30,6 +30,51 @@ pub async fn get_items_from_all_servers_if_not_restricted(
     if let Some(query) = req.uri().query() {
         // Check if the request is for a specific series or folder
         if SERIES_OR_PARENT_RE.is_match(query) {
+            if let Ok(parsed) = serde_urlencoded::from_str::<std::collections::HashMap<String, String>>(query) {
+                if let Some(parent_id) = parsed
+                    .iter()
+                    .find(|(key, _)| key.eq_ignore_ascii_case("ParentId"))
+                    .map(|(_, value)| value.clone())
+                {
+                    if state
+                        .library_sync
+                        .unified_library_by_virtual_id(&parent_id)
+                        .await
+                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+                        .is_some()
+                    {
+                        let mut query = crate::library_sync_service::UnifiedBrowseQuery::default();
+                        query.parent_id = Some(parent_id);
+                        if let Some(start_index) = parsed.get("StartIndex").and_then(|v| v.parse().ok()) {
+                            query.start_index = Some(start_index);
+                        }
+                        if let Some(limit) = parsed.get("Limit").and_then(|v| v.parse().ok()) {
+                            query.limit = Some(limit);
+                        }
+                        query.search_term = parsed.get("SearchTerm").cloned();
+                        query.include_item_types = parsed.get("IncludeItemTypes").cloned();
+                        query.sort_by = parsed.get("SortBy").cloned();
+                        query.sort_order = parsed.get("SortOrder").cloned();
+                        query.recursive = parsed
+                            .get("Recursive")
+                            .and_then(|v| v.parse::<bool>().ok());
+                        query.user_id = parsed.get("UserId").cloned();
+
+                        let library = state
+                            .library_sync
+                            .unified_library_by_virtual_id(query.parent_id.as_deref().unwrap_or_default())
+                            .await
+                            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+                            .ok_or(StatusCode::NOT_FOUND)?;
+                        let items = state
+                            .library_sync
+                            .browse_unified_library(&library, &query)
+                            .await
+                            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                        return Ok(Json(crate::models::ItemsResponseVariants::WithCount(items)));
+                    }
+                }
+            }
             return get_items(State(state), req).await;
         }
     }
@@ -181,6 +226,17 @@ pub async fn get_items_from_all_servers(
                 }
                 interleaved_items.push(item.clone());
             }
+        }
+    }
+
+    if original_request.url().path().ends_with("/Views") || original_request.url().path().eq_ignore_ascii_case("/UserViews") {
+        let user_id = original_request
+            .url()
+            .query_pairs()
+            .find(|(k, _)| k.eq_ignore_ascii_case("UserId"))
+            .map(|(_, v)| v.to_string());
+        if let Ok(mut unified_views) = state.library_sync.unified_views(user_id.as_deref()).await {
+            interleaved_items.append(&mut unified_views);
         }
     }
 

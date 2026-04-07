@@ -130,6 +130,18 @@ fn default_auto_create_users_on_login() -> bool {
     true
 }
 
+fn default_sync_interval_secs() -> u64 {
+    300
+}
+
+fn default_detail_fetch_batch_size() -> i32 {
+    50
+}
+
+fn default_sync_enabled() -> bool {
+    true
+}
+
 mod base64_serde {
     use super::*;
     use serde::de::Error as DeError;
@@ -222,6 +234,17 @@ define_fallback_deserializer!(
     bool,
     default_auto_create_users_on_login
 );
+define_fallback_deserializer!(
+    deserialize_sync_interval_secs,
+    u64,
+    default_sync_interval_secs
+);
+define_fallback_deserializer!(
+    deserialize_detail_fetch_batch_size,
+    i32,
+    default_detail_fetch_batch_size
+);
+define_fallback_deserializer!(deserialize_sync_enabled, bool, default_sync_enabled);
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PreconfiguredServer {
@@ -290,6 +313,24 @@ pub struct AppConfig {
         deserialize_with = "deserialize_auto_create_users_on_login"
     )]
     pub auto_create_users_on_login: bool,
+
+    #[serde(
+        default = "default_sync_interval_secs",
+        deserialize_with = "deserialize_sync_interval_secs"
+    )]
+    pub sync_interval_secs: u64,
+
+    #[serde(
+        default = "default_detail_fetch_batch_size",
+        deserialize_with = "deserialize_detail_fetch_batch_size"
+    )]
+    pub detail_fetch_batch_size: i32,
+
+    #[serde(
+        default = "default_sync_enabled",
+        deserialize_with = "deserialize_sync_enabled"
+    )]
+    pub sync_enabled: bool,
 }
 
 pub const DEFAULT_CONFIG_FILENAME: &str = "jellyswarrm.toml";

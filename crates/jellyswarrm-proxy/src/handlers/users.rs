@@ -264,6 +264,14 @@ pub async fn handle_authenticate_by_name(
         let auth_response =
             decorate_auth_response(&state, &user, &payload.username, &successful_auths[0]).await;
 
+        let library_sync = state.library_sync.clone();
+        let user_id = user.id.clone();
+        tokio::spawn(async move {
+            if let Err(err) = library_sync.sync_user_data(&user_id).await {
+                tracing::warn!("Failed to sync unified user data after login: {err:?}");
+            }
+        });
+
         info!(
             "User '{}' successfully authenticated on {} out of {} servers and stored in authorization storage",
             payload.username,

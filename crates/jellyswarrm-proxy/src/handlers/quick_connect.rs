@@ -681,6 +681,8 @@ mod tests {
         processors::{request_analyzer::RequestAnalyzer, request_processor::RequestProcessor},
         server_storage::ServerStorageService,
         session_storage::SessionStorage,
+        library_sync_service::LibrarySyncService,
+        unified_library_service::UnifiedLibraryService,
         user_authorization_service::{Device, UserAuthorizationService},
         AppState, DataContext, JsonProcessors,
     };
@@ -700,7 +702,7 @@ mod tests {
         let data_context = DataContext {
             user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
             server_storage: Arc::new(ServerStorageService::new(pool.clone())),
-            media_storage: Arc::new(MediaStorageService::new(pool)),
+            media_storage: Arc::new(MediaStorageService::new(pool.clone())),
             play_sessions: Arc::new(SessionStorage::new()),
             config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
         };
@@ -710,12 +712,27 @@ mod tests {
             request_analyzer: RequestAnalyzer::new(data_context.clone()),
         };
 
+        let library_sync = Arc::new(LibrarySyncService::new(
+            pool.clone(),
+            data_context.server_storage.clone(),
+            data_context.user_authorization.clone(),
+            data_context.media_storage.clone(),
+            data_context.config.clone(),
+            reqwest::Client::new(),
+            crate::config::CLIENT_INFO.clone(),
+        ));
+        let unified_libraries = Arc::new(UnifiedLibraryService::new(
+            pool,
+        ));
+
         AppState::new(
             reqwest::Client::new(),
             reqwest::Client::new(),
             data_context,
             processors,
             QuickConnectStorage::new(),
+            library_sync,
+            unified_libraries,
         )
     }
 

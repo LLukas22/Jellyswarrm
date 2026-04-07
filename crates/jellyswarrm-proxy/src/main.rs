@@ -3,7 +3,7 @@ use axum::{
     extract::{Request, State},
     http::{HeaderName, StatusCode},
     response::{IntoResponse, Response},
-    routing::{any, get, post},
+    routing::{any, delete, get, post, put},
     Router,
 };
 
@@ -30,6 +30,7 @@ mod config;
 mod encryption;
 mod federated_users;
 mod handlers;
+mod library_sync_service;
 mod media_storage_service;
 mod models;
 mod processors;
@@ -37,13 +38,16 @@ mod request_preprocessing;
 mod server_storage;
 mod session_storage;
 mod ui;
+mod unified_library_service;
 mod url_helper;
 mod user_authorization_service;
 
 use federated_users::FederatedUserService;
 use handlers::syncplay::SyncPlayService;
+use library_sync_service::LibrarySyncService;
 use media_storage_service::MediaStorageService;
 use server_storage::ServerStorageService;
+use unified_library_service::UnifiedLibraryService;
 use user_authorization_service::UserAuthorizationService;
 
 use crate::{
@@ -78,6 +82,8 @@ pub struct AppState {
     pub quick_connect: QuickConnectStorage,
     pub federated_users: Arc<FederatedUserService>,
     pub syncplay: Arc<SyncPlayService>,
+    pub library_sync: Arc<LibrarySyncService>,
+    pub unified_libraries: Arc<UnifiedLibraryService>,
 }
 
 impl AppState {
@@ -87,6 +93,8 @@ impl AppState {
         data_context: DataContext,
         json_processors: JsonProcessors,
         quick_connect: QuickConnectStorage,
+        library_sync: Arc<LibrarySyncService>,
+        unified_libraries: Arc<UnifiedLibraryService>,
     ) -> Self {
         // Create temporary state to initialize FederatedUserService
         // This is a bit circular but FederatedUserService needs parts of AppState
@@ -109,6 +117,8 @@ impl AppState {
             quick_connect,
             federated_users,
             syncplay: Arc::new(SyncPlayService::new()),
+            library_sync,
+            unified_libraries,
         }
     }
 
@@ -305,12 +315,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    let shared_config = Arc::new(tokio::sync::RwLock::new(loaded_config.clone()));
+
     let data_context = DataContext {
         user_authorization: Arc::new(user_authorization.clone()),
         server_storage: Arc::new(server_storage.clone()),
         media_storage: Arc::new(media_storage.clone()),
         play_sessions: Arc::new(SessionStorage::new()),
-        config: Arc::new(tokio::sync::RwLock::new(loaded_config.clone())),
+        config: shared_config.clone(),
     };
 
     let json_processors = JsonProcessors {
@@ -318,12 +330,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         request_analyzer: RequestAnalyzer::new(data_context.clone()),
     };
 
+    let library_sync = Arc::new(LibrarySyncService::new(
+        pool.clone(),
+        Arc::new(server_storage.clone()),
+        Arc::new(user_authorization.clone()),
+        Arc::new(media_storage.clone()),
+        shared_config.clone(),
+        reqwest_client.clone(),
+        crate::config::CLIENT_INFO.clone(),
+    ));
+    let unified_libraries = Arc::new(UnifiedLibraryService::new(pool.clone()));
+
+    if loaded_config.sync_enabled {
+        library_sync.start_sync_loop(loaded_config.sync_interval_secs);
+    }
+
     let app_state = AppState::new(
         reqwest_client,
         streaming_reqwest_client,
         data_context,
         json_processors,
         quick_connect::QuickConnectStorage::new(),
+        library_sync,
+        unified_libraries,
     );
 
     quick_connect::QuickConnectStorage::start_cleanup_task(app_state.quick_connect.clone());
@@ -357,6 +386,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Router::new()
             // UI Management routes
             .nest(&format!("/{ui_route}"), ui_routes())
+            .nest(
+                "/ui/api/unified-libraries",
+                Router::new()
+                    .route("/", get(handlers::unified::list_unified_libraries))
+                    .route("/", post(handlers::unified::create_unified_library))
+                    .route("/available", get(handlers::unified::get_available_libraries))
+                    .route("/reorder", post(handlers::unified::reorder_unified_libraries))
+                    .route("/sync", post(handlers::unified::trigger_sync))
+                    .route("/sync", get(handlers::unified::sync_status))
+                    .route("/{id}", get(handlers::unified::get_unified_library))
+                    .route("/{id}", put(handlers::unified::update_unified_library))
+                    .route("/{id}", delete(handlers::unified::delete_unified_library))
+                    .route("/{id}/members", get(handlers::unified::list_unified_library_members))
+                    .route("/{id}/members", post(handlers::unified::add_unified_library_member))
+                    .route(
+                        "/{id}/members/{member_id}",
+                        delete(handlers::unified::remove_unified_library_member),
+                    ),
+            )
             .route("/", get(index_handler))
             .route(
                 "/QuickConnect/Enabled",
@@ -455,6 +503,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "/UserViews",
                 get(handlers::federated::get_items_from_all_servers),
             )
+            .route(
+                "/UnifiedLibraries/{library_id}/Items",
+                get(handlers::unified::browse_unified_items),
+            )
             // System info routes
             .nest(
                 "/System",
@@ -478,6 +530,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "/Latest",
                         get(handlers::federated::get_items_from_all_servers_if_not_restricted),
                     )
+                    .route("/Search", get(handlers::unified::search_unified_items))
                     .route("/{item_id}", get(handlers::items::get_item))
                     .route("/{item_id}/Similar", get(handlers::items::get_items))
                     .route("/{item_id}/LocalTrailers", get(handlers::items::get_items))

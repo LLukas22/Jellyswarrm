@@ -6,5 +6,6 @@ pub(crate) mod livestreams;
 pub(crate) mod quick_connect;
 pub(crate) mod syncplay;
 pub(crate) mod system;
+pub(crate) mod unified;
 pub(crate) mod users;
 pub(crate) mod videos;

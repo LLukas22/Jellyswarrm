@@ -1,0 +1,11 @@
+DROP TABLE IF EXISTS dedup_group_members;
+DROP TABLE IF EXISTS dedup_groups;
+DROP TABLE IF EXISTS sync_state;
+DROP TABLE IF EXISTS synced_user_data;
+DROP TRIGGER IF EXISTS synced_items_au;
+DROP TRIGGER IF EXISTS synced_items_ad;
+DROP TRIGGER IF EXISTS synced_items_ai;
+DROP TABLE IF EXISTS synced_items_fts;
+DROP TABLE IF EXISTS synced_items;
+DROP TABLE IF EXISTS unified_library_members;
+DROP TABLE IF EXISTS unified_libraries;
