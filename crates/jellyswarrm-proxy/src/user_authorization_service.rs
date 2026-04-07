@@ -97,13 +97,17 @@ impl Device {
 
         let self_device_id = normalize_device(&self.device_id);
         let other_device_id = normalize_device(&other.device_id);
+        let short_self_device_id = &self_device_id[..self_device_id.len().min(16)];
+        let short_other_device_id = &other_device_id[..other_device_id.len().min(16)];
 
-        let self_has_known_device_id = Self::has_known_device_id(&self_device_id);
-        let other_has_known_device_id = Self::has_known_device_id(&other_device_id);
+        let self_has_known_device_id = Self::has_known_device_id(&self_device_id)
+            || Self::has_known_device_id(&short_self_device_id);
+        let other_has_known_device_id = Self::has_known_device_id(&other_device_id)
+            || Self::has_known_device_id(&short_other_device_id);
 
         // 1) Strict match when both sides have a known device id.
         if self_has_known_device_id && other_has_known_device_id {
-            return self_device_id == other_device_id;
+            return self_device_id == other_device_id || short_self_device_id == short_other_device_id;
         }
 
         // 2) Fallback to device name only when at least one side has no usable device id.
