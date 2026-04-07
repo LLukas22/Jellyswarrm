@@ -486,6 +486,13 @@ pub fn apply_authorization_header(
     request: &mut reqwest::Request,
     auth: &Option<JellyfinAuthorization>,
 ) {
+    //Remove stale auth headers
+    let headers = request.headers_mut();
+    headers.remove(reqwest::header::AUTHORIZATION);
+    headers.remove("X-Emby-Authorization");
+    headers.remove("X-Emby-Token");
+    headers.remove("X-MediaBrowser-Token");
+
     if let Some(auth) = auth {
         match auth {
             JellyfinAuthorization::Authorization(auth) => {
