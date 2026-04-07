@@ -386,6 +386,20 @@ pub async fn track_play_session(
                 server: server.clone(),
             })
             .await;
+    } else {
+        // Some clients can not set the transcoding url, track by it then
+        info!(
+            "Tracking play session for media source: {}, server: {}",
+            item.id, server.name
+        );
+        state
+            .play_sessions
+            .add_session(PlaybackSession {
+                item_id: item.id.clone(),
+                session_id: session_id.to_string(),
+                server: server.clone(),
+            })
+            .await;
     }
 
     Ok(())
