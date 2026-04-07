@@ -5,7 +5,7 @@ use axum::{
 use hyper::StatusCode;
 use reqwest::header::{HeaderValue, CONTENT_LENGTH, TRANSFER_ENCODING};
 use reqwest::Body;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use crate::{
     handlers::common::{
@@ -124,6 +124,10 @@ pub async fn post_playback_info(
         .original_request
         .ok_or(StatusCode::BAD_REQUEST)?;
     let payload: PlaybackRequest = payload_from_request(&original_request)?;
+
+    if payload.device_profile.is_none() {
+        warn!("Got playback request from client without device profile. Transcoding will be enforced!")
+    }
 
     let server = preprocessed.server;
 

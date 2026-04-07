@@ -31,6 +31,7 @@ pub struct PlaybackRequest {
     pub start_time_ticks: Option<i64>,
     pub subtitle_stream_index: Option<StreamIndex>,
     pub user_id: Option<String>,
+    pub device_profile: Option<serde_json::Value>,
 
     #[serde(flatten)]
     pub extra: std::collections::HashMap<String, serde_json::Value>,
@@ -42,6 +43,9 @@ pub struct PlaybackRequest {
 pub struct PlaybackResponse {
     pub media_sources: Vec<MediaSource>,
     pub play_session_id: String,
+
+    #[serde(flatten)]
+    pub extra: std::collections::HashMap<String, serde_json::Value>,
 }
 
 #[allow(dead_code)]
