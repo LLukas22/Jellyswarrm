@@ -101,13 +101,14 @@ impl Device {
         let short_other_device_id = &other_device_id[..other_device_id.len().min(16)];
 
         let self_has_known_device_id = Self::has_known_device_id(&self_device_id)
-            || Self::has_known_device_id(&short_self_device_id);
+            || Self::has_known_device_id(short_self_device_id);
         let other_has_known_device_id = Self::has_known_device_id(&other_device_id)
-            || Self::has_known_device_id(&short_other_device_id);
+            || Self::has_known_device_id(short_other_device_id);
 
         // 1) Strict match when both sides have a known device id.
         if self_has_known_device_id && other_has_known_device_id {
-            return self_device_id == other_device_id || short_self_device_id == short_other_device_id;
+            return self_device_id == other_device_id
+                || short_self_device_id == short_other_device_id;
         }
 
         // 2) Fallback to device name only when at least one side has no usable device id.
@@ -362,7 +363,7 @@ impl UserAuthorizationService {
         let user = sqlx::query_as::<_, User>(
             r#"
             SELECT id, virtual_key, original_username, original_password_hash, created_at, updated_at
-            FROM users 
+            FROM users
             WHERE virtual_key = ?
             "#,
         )
@@ -378,7 +379,7 @@ impl UserAuthorizationService {
         let user = sqlx::query_as::<_, User>(
             r#"
             SELECT id, virtual_key, original_username, original_password_hash, created_at, updated_at
-            FROM users 
+            FROM users
             WHERE id = ?
             "#,
         )
@@ -400,7 +401,7 @@ impl UserAuthorizationService {
         let user = sqlx::query_as::<_, User>(
             r#"
             SELECT id, virtual_key, original_username, original_password_hash, created_at, updated_at
-            FROM users 
+            FROM users
             WHERE lower(trim(original_username)) = lower(trim(?)) AND original_password_hash = ?
             "#,
         )
@@ -440,7 +441,7 @@ impl UserAuthorizationService {
 
         sqlx::query(
             r#"
-            INSERT INTO server_mappings 
+            INSERT INTO server_mappings
             (user_id, server_url, mapped_username, mapped_password, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id, server_url) DO UPDATE SET
@@ -549,7 +550,7 @@ impl UserAuthorizationService {
         let mapping = sqlx::query_as::<_, ServerMapping>(
             r#"
             SELECT id, user_id, server_url, mapped_username, mapped_password, created_at, updated_at
-            FROM server_mappings 
+            FROM server_mappings
             WHERE user_id = ? AND server_url = ?
             "#,
         )
@@ -569,7 +570,7 @@ impl UserAuthorizationService {
         let mappings = sqlx::query_as::<_, ServerMapping>(
             r#"
             SELECT id, user_id, server_url, mapped_username, mapped_password, created_at, updated_at
-            FROM server_mappings 
+            FROM server_mappings
             WHERE user_id = ?
             ORDER BY server_url
             "#,
@@ -601,7 +602,7 @@ impl UserAuthorizationService {
 
         let result = sqlx::query(
             r#"
-            INSERT OR REPLACE INTO authorization_sessions 
+            INSERT OR REPLACE INTO authorization_sessions
             (user_id, mapping_id, server_url, client, device, device_id, version, jellyfin_token, original_user_id, expires_at, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
@@ -638,7 +639,7 @@ impl UserAuthorizationService {
         let user = sqlx::query_as::<_, User>(
             r#"
             SELECT id, virtual_key, original_username, original_password_hash, created_at, updated_at
-            FROM users 
+            FROM users
             WHERE id = ?
             "#,
         )
@@ -678,7 +679,7 @@ impl UserAuthorizationService {
     ) -> Result<Vec<(AuthorizationSession, Server)>, sqlx::Error> {
         let query = String::from(
             r#"
-    SELECT 
+    SELECT
         auth.id as auth_id,
         auth.user_id as auth_user_id,
         auth.mapping_id as auth_mapping_id,
@@ -692,7 +693,7 @@ impl UserAuthorizationService {
         auth.expires_at,
         auth.created_at as auth_created_at,
         auth.updated_at as auth_updated_at,
-        
+
         s.id as server_id,
         s.name as server_name,
         s.url as server_url_full,
@@ -967,7 +968,7 @@ impl UserAuthorizationService {
 
         let res = sqlx::query(
             r#"
-            UPDATE users 
+            UPDATE users
             SET original_password_hash = ?, updated_at = ?
             WHERE id = ?
             "#,
@@ -986,7 +987,7 @@ impl UserAuthorizationService {
         let mappings = sqlx::query_as::<_, ServerMapping>(
             r#"
             SELECT id, user_id, server_url, mapped_username, mapped_password, created_at, updated_at
-            FROM server_mappings 
+            FROM server_mappings
             WHERE user_id = ?
             "#,
         )
@@ -1058,9 +1059,9 @@ impl UserAuthorizationService {
         user_id: &str,
     ) -> Result<Vec<(String, i64)>, sqlx::Error> {
         let rows = sqlx::query(
-            r#"SELECT RTRIM(server_url,'/') as url_norm, COUNT(*) as cnt 
-                FROM authorization_sessions 
-                WHERE user_id = ? 
+            r#"SELECT RTRIM(server_url,'/') as url_norm, COUNT(*) as cnt
+                FROM authorization_sessions
+                WHERE user_id = ?
                 GROUP BY url_norm"#,
         )
         .bind(user_id)
@@ -1290,7 +1291,7 @@ mod tests {
         let auth = Authorization {
             client: "Switchfin".to_string(),
             device: "Linux".to_string(),
-            device_id: "device-123".to_string(),
+            device_id: "1234567890abcdef-stored".to_string(),
             version: "0.7.4".to_string(),
             token: None,
         };
@@ -1311,7 +1312,7 @@ mod tests {
         let query_device1 = Device {
             client: "Switchfin".to_string(),
             device: "Linux".to_string(),
-            device_id: "device-123".to_string(),
+            device_id: "1234567890abcdef-stored".to_string(),
             version: "0.7.4".to_string(),
         };
         let sessions1 = service
@@ -1320,11 +1321,11 @@ mod tests {
             .unwrap();
         assert_eq!(sessions1.len(), 1, "Should find exact match");
 
-        // Test 2: Fallback to device name + client when device id is unknown
+        // Test 2: Strict match when known device ids share the same short prefix
         let query_device2 = Device {
             client: "Switchfin".to_string(),
             device: "Linux".to_string(),
-            device_id: "unknown-device-id".to_string(),
+            device_id: "1234567890abcdef-query".to_string(),
             version: "0.7.4".to_string(),
         };
         let sessions2 = service
@@ -1334,14 +1335,14 @@ mod tests {
         assert_eq!(
             sessions2.len(),
             1,
-            "Should find fallback match by device name + client"
+            "Should find strict match by short device id prefix"
         );
 
-        // Test 3: Do not fallback to client + version anymore
+        // Test 3: Fallback to device name + client when device id is truly unknown
         let query_device3 = Device {
             client: "Switchfin".to_string(),
-            device: "Windows".to_string(), // Different device name
-            device_id: "different-device-id".to_string(),
+            device: "Linux".to_string(),
+            device_id: "unknown".to_string(),
             version: "0.7.4".to_string(),
         };
         let sessions3 = service
@@ -1350,16 +1351,16 @@ mod tests {
             .unwrap();
         assert_eq!(
             sessions3.len(),
-            0,
-            "Should not match by client + version fallback"
+            1,
+            "Should find fallback match by device name + client"
         );
 
-        // Test 4: No match when client and version are different
+        // Test 4: Different known device ids should not fallback by device name
         let query_device4 = Device {
-            client: "DifferentClient".to_string(),
+            client: "Switchfin".to_string(),
             device: "Linux".to_string(),
-            device_id: "device-123".to_string(),
-            version: "1.0.0".to_string(),
+            device_id: "different-device-id".to_string(),
+            version: "0.7.4".to_string(),
         };
         let sessions4 = service
             .get_user_sessions(&user.id, Some(query_device4))
@@ -1367,6 +1368,23 @@ mod tests {
             .unwrap();
         assert_eq!(
             sessions4.len(),
+            0,
+            "Should not fallback when both device ids are known and different"
+        );
+
+        // Test 5: No match when client and version are different
+        let query_device4 = Device {
+            client: "DifferentClient".to_string(),
+            device: "Linux".to_string(),
+            device_id: "1234567890abcdef-stored".to_string(),
+            version: "1.0.0".to_string(),
+        };
+        let sessions5 = service
+            .get_user_sessions(&user.id, Some(query_device4))
+            .await
+            .unwrap();
+        assert_eq!(
+            sessions5.len(),
             0,
             "Should not find any match when client and version differ"
         );
