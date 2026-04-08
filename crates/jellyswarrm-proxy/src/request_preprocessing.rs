@@ -91,7 +91,7 @@ static MEDIA_ID_QUERY_TAGS: &[&str] = &[
     "SeasonId",
     "startItemId",
     "IDs",
-    "PersonIds"
+    "PersonIds",
 ];
 
 static USER_ID_PATH_TAGS: &[&str] = &["Users"];
