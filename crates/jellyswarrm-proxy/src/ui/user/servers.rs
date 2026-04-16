@@ -415,6 +415,15 @@ pub async fn delete_server_mapping(
     StatusCode::NOT_FOUND.into_response()
 }
 
+#[allow(dead_code)]
+/// Helper to extract body text from an axum response (used in tests).
+async fn response_body_string(resp: axum::response::Response) -> String {
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    String::from_utf8(bytes.to_vec()).unwrap()
+}
+
 pub async fn check_user_server_status(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
@@ -464,5 +473,323 @@ pub async fn check_user_server_status(
             Html(format!("<span style=\"color: #dc3545;\">{}</span>", e)),
         )
             .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        config::{AppConfig, MediaStreamingMode, MIGRATOR},
+        encryption::encrypt_password,
+        handlers::quick_connect::QuickConnectStorage,
+        media_storage_service::MediaStorageService,
+        processors::{request_analyzer::RequestAnalyzer, request_processor::RequestProcessor},
+        server_storage::ServerStorageService,
+        session_storage::SessionStorage,
+        ui::auth::{User, UserRole},
+        user_authorization_service::UserAuthorizationService,
+        AppState, DataContext, JsonProcessors,
+    };
+    use axum::extract::{Path, State};
+    use axum::Form;
+    use serde_json::json;
+    use sqlx::SqlitePool;
+    use std::sync::Arc;
+    use wiremock::{
+        matchers::{method, path},
+        Mock, MockServer, ResponseTemplate,
+    };
+
+    async fn create_test_app_state() -> AppState {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+
+        let data_context = DataContext {
+            user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
+            server_storage: Arc::new(ServerStorageService::new(pool)),
+            media_storage: Arc::new(MediaStorageService::new(
+                SqlitePool::connect("sqlite::memory:").await.unwrap(),
+            )),
+            play_sessions: Arc::new(SessionStorage::new()),
+            config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
+        };
+
+        let processors = JsonProcessors {
+            request_processor: RequestProcessor::new(data_context.clone()),
+            request_analyzer: RequestAnalyzer::new(data_context.clone()),
+        };
+
+        AppState::new(
+            reqwest::Client::new(),
+            reqwest::Client::new(),
+            data_context,
+            processors,
+            QuickConnectStorage::new(),
+        )
+    }
+
+    fn make_test_user(id: &str, username: &str) -> User {
+        let password: Password = "test-password".into();
+        User {
+            id: id.to_string(),
+            username: username.to_string(),
+            password_hash: password.into(),
+            role: UserRole::User,
+        }
+    }
+
+    async fn setup_server_with_admin(state: &AppState, upstream_uri: &str) -> i64 {
+        let server_id = state
+            .server_storage
+            .add_server(
+                "TestServer",
+                upstream_uri,
+                100,
+                MediaStreamingMode::Redirect,
+            )
+            .await
+            .unwrap();
+
+        // Encrypt admin password with the default AppConfig password
+        let config = state.config.read().await;
+        let admin_password_hash: crate::encryption::HashedPassword = config.password.clone().into();
+        drop(config);
+
+        let encrypted = encrypt_password(&"admin-pass".into(), &admin_password_hash).unwrap();
+
+        state
+            .server_storage
+            .add_server_admin(server_id, "admin-user", &encrypted)
+            .await
+            .unwrap();
+
+        server_id
+    }
+
+    fn mock_admin_auth() -> Mock {
+        Mock::given(method("POST"))
+            .and(path("/Users/AuthenticateByName"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "AccessToken": "admin-token",
+                "User": {
+                    "Id": "admin-id",
+                    "Name": "admin-user",
+                    "ServerId": "server-1"
+                }
+            })))
+    }
+
+    fn mock_create_user_success() -> Mock {
+        Mock::given(method("POST"))
+            .and(path("/Users/New"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Id": "new-user-id",
+                "Name": "newuser",
+                "ServerId": "server-1"
+            })))
+    }
+
+    #[tokio::test]
+    async fn create_account_happy_path() {
+        let state = create_test_app_state().await;
+        let upstream = MockServer::start().await;
+
+        mock_admin_auth().mount(&upstream).await;
+        mock_create_user_success().mount(&upstream).await;
+
+        let server_id = setup_server_with_admin(&state, &upstream.uri()).await;
+
+        // Create a Jellyswarrm user
+        let js_user = state
+            .user_authorization
+            .get_or_create_user("TestUser", &"test-password".into())
+            .await
+            .unwrap();
+
+        let user = make_test_user(&js_user.id, "TestUser");
+
+        let resp = create_account_on_server(
+            State(state.clone()),
+            AuthenticatedUser(user),
+            Path(server_id),
+            Form(CreateAccountForm {
+                username: "newuser".to_string(),
+                password: "newpass".into(),
+            }),
+        )
+        .await
+        .into_response();
+
+        // Should redirect on success
+        assert!(resp.headers().contains_key("HX-Redirect"));
+
+        // Verify server mapping was created
+        let mappings = state
+            .user_authorization
+            .list_server_mappings(&js_user.id)
+            .await
+            .unwrap();
+        assert_eq!(mappings.len(), 1);
+        assert_eq!(mappings[0].mapped_username, "newuser");
+    }
+
+    #[tokio::test]
+    async fn create_account_no_admin_credentials() {
+        let state = create_test_app_state().await;
+        let upstream = MockServer::start().await;
+
+        // Add server WITHOUT admin credentials
+        let server_id = state
+            .server_storage
+            .add_server(
+                "NoAdminServer",
+                &upstream.uri(),
+                100,
+                MediaStreamingMode::Redirect,
+            )
+            .await
+            .unwrap();
+
+        let js_user = state
+            .user_authorization
+            .get_or_create_user("TestUser", &"test-password".into())
+            .await
+            .unwrap();
+
+        let user = make_test_user(&js_user.id, "TestUser");
+
+        let resp = create_account_on_server(
+            State(state.clone()),
+            AuthenticatedUser(user),
+            Path(server_id),
+            Form(CreateAccountForm {
+                username: "newuser".to_string(),
+                password: "newpass".into(),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert!(!resp.headers().contains_key("HX-Redirect"));
+        let body = response_body_string(resp).await;
+        assert!(body.contains("does not support account creation"));
+    }
+
+    #[tokio::test]
+    async fn create_account_admin_auth_failure() {
+        let state = create_test_app_state().await;
+        let upstream = MockServer::start().await;
+
+        // Mock admin auth to return 401
+        Mock::given(method("POST"))
+            .and(path("/Users/AuthenticateByName"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&upstream)
+            .await;
+
+        let server_id = setup_server_with_admin(&state, &upstream.uri()).await;
+
+        let js_user = state
+            .user_authorization
+            .get_or_create_user("TestUser", &"test-password".into())
+            .await
+            .unwrap();
+
+        let user = make_test_user(&js_user.id, "TestUser");
+
+        let resp = create_account_on_server(
+            State(state.clone()),
+            AuthenticatedUser(user),
+            Path(server_id),
+            Form(CreateAccountForm {
+                username: "newuser".to_string(),
+                password: "newpass".into(),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert!(!resp.headers().contains_key("HX-Redirect"));
+        let body = response_body_string(resp).await;
+        assert!(body.contains("Admin authentication failed"));
+    }
+
+    #[tokio::test]
+    async fn create_account_user_creation_failure() {
+        let state = create_test_app_state().await;
+        let upstream = MockServer::start().await;
+
+        mock_admin_auth().mount(&upstream).await;
+
+        // Mock user creation to fail (e.g., username already taken)
+        Mock::given(method("POST"))
+            .and(path("/Users/New"))
+            .respond_with(ResponseTemplate::new(400).set_body_string("Username already exists"))
+            .mount(&upstream)
+            .await;
+
+        let server_id = setup_server_with_admin(&state, &upstream.uri()).await;
+
+        let js_user = state
+            .user_authorization
+            .get_or_create_user("TestUser", &"test-password".into())
+            .await
+            .unwrap();
+
+        let user = make_test_user(&js_user.id, "TestUser");
+
+        let resp = create_account_on_server(
+            State(state.clone()),
+            AuthenticatedUser(user),
+            Path(server_id),
+            Form(CreateAccountForm {
+                username: "newuser".to_string(),
+                password: "newpass".into(),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert!(!resp.headers().contains_key("HX-Redirect"));
+        let body = response_body_string(resp).await;
+        assert!(body.contains("Failed to create account"));
+
+        // Verify no mapping was created
+        let mappings = state
+            .user_authorization
+            .list_server_mappings(&js_user.id)
+            .await
+            .unwrap();
+        assert!(mappings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn create_account_nonexistent_server() {
+        let state = create_test_app_state().await;
+
+        let js_user = state
+            .user_authorization
+            .get_or_create_user("TestUser", &"test-password".into())
+            .await
+            .unwrap();
+
+        let user = make_test_user(&js_user.id, "TestUser");
+
+        let resp = create_account_on_server(
+            State(state.clone()),
+            AuthenticatedUser(user),
+            Path(9999), // Non-existent server ID
+            Form(CreateAccountForm {
+                username: "newuser".to_string(),
+                password: "newpass".into(),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert!(!resp.headers().contains_key("HX-Redirect"));
+        let body = response_body_string(resp).await;
+        assert!(body.contains("Server not found"));
     }
 }
