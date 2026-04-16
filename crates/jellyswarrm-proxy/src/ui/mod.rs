@@ -155,6 +155,10 @@ pub fn ui_routes() -> axum::Router<AppState> {
             "/user/servers/{id}/connect",
             post(user::servers::connect_server),
         )
+        .route(
+            "/user/servers/{id}/create-account",
+            post(user::servers::create_account_on_server),
+        )
         .route("/user/media", get(user::media::get_user_media))
         .route(
             "/user/media/server/{server_id}/libraries",
