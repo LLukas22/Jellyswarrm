@@ -2,7 +2,7 @@ name: Docker Build
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, feat/passthrough-authentication ]
     tags: [ 'v*' ]
   pull_request:
     branches: [ main ]
@@ -10,6 +10,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
+  DOCKERHUB_REGISTRY: docker.io
 
 jobs:
   build-and-push:
@@ -43,6 +44,14 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
+    - name: Log in to Docker Hub
+      if: github.event_name != 'pull_request'
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.DOCKERHUB_REGISTRY }}
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
     - name: Convert repository name to lowercase
       id: repo
       run: echo "name=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
@@ -55,7 +64,9 @@ jobs:
       id: meta
       uses: docker/metadata-action@v5
       with:
-        images: ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}
+        images: |
+          ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}
+          ${{ vars.DOCKERHUB_IMAGE }}
         flavor: |
           suffix=-${{ steps.platform.outputs.suffix }}
         tags: |
@@ -63,6 +74,7 @@ jobs:
           type=semver,pattern={{major}}.{{minor}}
           type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
           type=raw,value=main,enable={{is_default_branch}}
+          type=raw,value=feat-passthrough-authentication,enable=${{ github.ref == 'refs/heads/feat/passthrough-authentication' }}
           type=sha,enable=${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
 
     - name: Build and push Docker image
@@ -102,7 +114,7 @@ jobs:
           BUILDKIT_INLINE_CACHE=1
 
   create-manifest:
-    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/passthrough-authentication' || startsWith(github.ref, 'refs/tags/v'))
     needs: build-and-push
     runs-on: ubuntu-latest
     permissions:
@@ -117,6 +129,13 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.DOCKERHUB_REGISTRY }}
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
     - name: Convert repository name to lowercase
       id: repo
       run: echo "name=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
@@ -125,12 +144,15 @@ jobs:
       id: meta
       uses: docker/metadata-action@v5
       with:
-        images: ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}
+        images: |
+          ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}
+          ${{ vars.DOCKERHUB_IMAGE }}
         tags: |
           type=semver,pattern={{version}}
           type=semver,pattern={{major}}.{{minor}}
           type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
           type=raw,value=main,enable={{is_default_branch}}
+          type=raw,value=feat-passthrough-authentication,enable=${{ github.ref == 'refs/heads/feat/passthrough-authentication' }}
           type=sha,enable=${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
 
     - name: Create and push multi-platform manifest
