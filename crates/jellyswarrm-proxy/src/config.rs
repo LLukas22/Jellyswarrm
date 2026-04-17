@@ -130,6 +130,10 @@ fn default_auto_create_users_on_login() -> bool {
     true
 }
 
+fn default_passthrough_authentication() -> bool {
+    false
+}
+
 mod base64_serde {
     use super::*;
     use serde::de::Error as DeError;
@@ -222,6 +226,11 @@ define_fallback_deserializer!(
     bool,
     default_auto_create_users_on_login
 );
+define_fallback_deserializer!(
+    deserialize_passthrough_authentication,
+    bool,
+    default_passthrough_authentication
+);
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PreconfiguredServer {
@@ -290,6 +299,17 @@ pub struct AppConfig {
         deserialize_with = "deserialize_auto_create_users_on_login"
     )]
     pub auto_create_users_on_login: bool,
+
+    /// When true, authentication is delegated entirely to the configured Jellyfin backends
+    /// (e.g. when all servers use LDAP). No pre-existing local users are required; a local
+    /// record is auto-created on first successful backend login. All servers are always tried,
+    /// even for users that already have mappings, so newly added servers are picked up
+    /// automatically.
+    #[serde(
+        default = "default_passthrough_authentication",
+        deserialize_with = "deserialize_passthrough_authentication"
+    )]
+    pub passthrough_authentication: bool,
 }
 
 pub const DEFAULT_CONFIG_FILENAME: &str = "jellyswarrm.toml";

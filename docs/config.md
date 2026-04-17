@@ -35,6 +35,7 @@ The table below lists all available configuration options:
 | `url_prefix` | *(none)* | `JELLYSWARRM_URL_PREFIX` | Optional URL prefix for all routes (useful for reverse proxy setups). |
 | `server_background_check_interval_secs` | `30` | `JELLYSWARRM_SERVER_BACKGROUND_CHECK_INTERVAL_SECS` | Interval in seconds for background server health checks. |
 | `auto_create_users_on_login` | `true` | `JELLYSWARRM_AUTO_CREATE_USERS_ON_LOGIN` | Automatically create local users on successful upstream login. |
+| `passthrough_authentication` | `false` | `JELLYSWARRM_PASSTHROUGH_AUTHENTICATION` | Delegate authentication entirely to the configured Jellyfin backends. See below. |
 
 ---
 
@@ -42,3 +43,25 @@ The table below lists all available configuration options:
 - The `session_key` is generated as a secure 64-byte key if not specified, and is stored in the config file for reuse.  
 - Each server now has its own streaming mode (`Redirect` or `Proxy`). For preconfigured servers, omit `media_streaming_mode` to use the default `Redirect`.
 - Configuration files are resolved from the data directory (`./data` by default), which can be overridden with `JELLYSWARRM_DATA_DIR`.
+
+---
+
+### Passthrough Authentication (`passthrough_authentication`)
+
+When all your Jellyfin servers share the same identity provider (e.g. LDAP/Active Directory), set `passthrough_authentication = true`. In this mode:
+
+- **No pre-created local users required.** Credentials are validated by the Jellyfin backends directly. A local record is auto-created on the first successful login.
+- **All servers are always tried.** Even for users who already have server mappings, any unmapped (e.g. newly added) servers are also probed with the submitted credentials. This ensures new servers are picked up automatically without manual user setup.
+- **`auto_create_users_on_login` is ignored** when passthrough is enabled — user creation always happens on successful backend auth.
+
+Example `jellyswarrm.toml`:
+
+```toml
+passthrough_authentication = true
+```
+
+Or via environment variable:
+
+```
+JELLYSWARRM_PASSTHROUGH_AUTHENTICATION=true
+```

@@ -139,13 +139,15 @@ pub async fn handle_authenticate_by_name(
 
     let mut auth_tasks = Vec::with_capacity(servers.len());
 
+    let passthrough = state.passthrough_authentication().await;
+
     let existing_user = state
         .user_authorization
         .get_user_by_username(&payload.username)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    if existing_user.is_none() && !state.auto_create_users_on_login().await {
+    if existing_user.is_none() && !passthrough && !state.auto_create_users_on_login().await {
         warn!(
             "Auto user creation disabled; rejecting login for non-existing local user '{}'",
             payload.username
@@ -193,7 +195,9 @@ pub async fn handle_authenticate_by_name(
         }
     }
 
-    if is_existing_user {
+    // In passthrough mode all servers are always probed so newly added servers are picked up
+    // automatically. Otherwise, unmapped servers are skipped for existing users.
+    if is_existing_user && !passthrough {
         if !servers.is_empty() {
             info!(
                 "Skipping {} unmapped servers for existing user '{}' during login",
@@ -202,7 +206,6 @@ pub async fn handle_authenticate_by_name(
             );
         }
     } else {
-        // For first-time users we still probe all configured servers so mappings can be created.
         let mut leftover_tasks: Vec<_> = servers
             .into_iter()
             .map(|server| {
@@ -210,7 +213,7 @@ pub async fn handle_authenticate_by_name(
                 let authentication = authentication.clone();
                 let payload = payload.clone();
                 info!(
-                    "No server mapping found for user '{}' on server '{}'",
+                    "No server mapping found for user '{}' on server '{}', trying with submitted credentials",
                     payload.username, server.name
                 );
 

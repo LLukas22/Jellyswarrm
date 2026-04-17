@@ -154,6 +154,11 @@ impl AppState {
         let config = self.config.read().await;
         config.auto_create_users_on_login
     }
+
+    pub async fn passthrough_authentication(&self) -> bool {
+        let config = self.config.read().await;
+        config.passthrough_authentication
+    }
 }
 
 #[derive(Clone)]
