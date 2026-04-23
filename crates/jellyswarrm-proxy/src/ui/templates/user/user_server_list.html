@@ -91,12 +91,20 @@
                     </span>
                 </td>
                 <td>
-                    <button 
+                    <button
                         onclick="openConnectModal('{{ server.id }}', '{{ server.name }}')"
                         class="contrast outline"
                         style="padding: 0.25rem 0.5rem; font-size: 0.8em;">
                         Connect
                     </button>
+                    {% if federated_server_ids.contains(&server.id) %}
+                    <button
+                        onclick="openCreateAccountModal('{{ server.id }}', '{{ server.name }}')"
+                        class="outline"
+                        style="padding: 0.25rem 0.5rem; font-size: 0.8em;">
+                        Create Account
+                    </button>
+                    {% endif %}
                 </td>
             </tr>
         {% endfor %}
@@ -133,25 +141,73 @@
         </article>
     </dialog>
 
+    <dialog id="create_account_modal">
+        <article>
+            <header>
+                <button aria-label="Close" rel="prev" onclick="closeCreateAccountModal()"></button>
+                <h3>Create Account on <span id="create_modal_server_name"></span></h3>
+            </header>
+            <div id="create_account_error"></div>
+            <form id="create_account_form" method="post" hx-post="" hx-target="#create_account_error" hx-swap="innerHTML">
+                <label>
+                    Username
+                    <input type="text" name="username" required>
+                </label>
+                <label>
+                    Password
+                    {% let pw_input_name = "password" %}
+                    {% let pw_input_placeholder = "Password" %}
+                    {% let pw_input_autocomplete = "new-password" %}
+                    {% let pw_input_required = true %}
+                    {% include "components/password_input.html" %}
+                </label>
+                <footer>
+                    <div class="grid">
+                        <button type="button" class="secondary" onclick="closeCreateAccountModal()">Cancel</button>
+                        <button type="submit">Create Account</button>
+                    </div>
+                </footer>
+            </form>
+        </article>
+    </dialog>
+
     <script>
         (function() {
-            const modal = document.getElementById('connect_modal');
-            const form = document.getElementById('connect_form');
-            const serverNameSpan = document.getElementById('modal_server_name');
-            const errorDiv = document.getElementById('connect_error');
+            const connectModal = document.getElementById('connect_modal');
+            const connectForm = document.getElementById('connect_form');
+            const connectServerNameSpan = document.getElementById('modal_server_name');
+            const connectErrorDiv = document.getElementById('connect_error');
             const uiRoute = "{{ ui_route }}";
 
             window.openConnectModal = function(id, name) {
-                serverNameSpan.innerText = name;
-                form.setAttribute('hx-post', '/' + uiRoute + '/user/servers/' + id + '/connect');
-                htmx.process(form);
-                errorDiv.innerHTML = '';
-                form.reset();
-                modal.showModal();
+                connectServerNameSpan.innerText = name;
+                connectForm.setAttribute('hx-post', '/' + uiRoute + '/user/servers/' + id + '/connect');
+                htmx.process(connectForm);
+                connectErrorDiv.innerHTML = '';
+                connectForm.reset();
+                connectModal.showModal();
             }
 
             window.closeConnectModal = function() {
-                modal.close();
+                connectModal.close();
+            }
+
+            const createModal = document.getElementById('create_account_modal');
+            const createForm = document.getElementById('create_account_form');
+            const createServerNameSpan = document.getElementById('create_modal_server_name');
+            const createErrorDiv = document.getElementById('create_account_error');
+
+            window.openCreateAccountModal = function(id, name) {
+                createServerNameSpan.innerText = name;
+                createForm.setAttribute('hx-post', '/' + uiRoute + '/user/servers/' + id + '/create-account');
+                htmx.process(createForm);
+                createErrorDiv.innerHTML = '';
+                createForm.reset();
+                createModal.showModal();
+            }
+
+            window.closeCreateAccountModal = function() {
+                createModal.close();
             }
         })();
     </script>
