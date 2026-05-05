@@ -1,9 +1,11 @@
 use axum::{
-    extract::{Request, State},
+    extract::{Path, Query, Request, State},
+    response::{IntoResponse, Response},
     Json,
 };
 use hyper::StatusCode;
 use regex::Regex;
+use std::collections::HashMap;
 use std::sync::LazyLock;
 use tokio::task::JoinSet;
 use tracing::{debug, error, trace};
@@ -13,8 +15,12 @@ use crate::{
         common::{execute_json_request, process_media_item},
         items::get_items,
     },
-    models::enums::{BaseItemKind, CollectionType},
+    models::{
+        enums::{BaseItemKind, CollectionType},
+        ItemsResponseVariants, ItemsResponseWithCount, MediaItem,
+    },
     request_preprocessing::{apply_to_request, extract_request_infos, JellyfinAuthorization},
+    unified_library_service::UnifiedLibraryAggregation,
     AppState,
 };
 
@@ -211,5 +217,232 @@ pub async fn get_items_from_all_servers(
         Ok(Json(crate::models::ItemsResponseVariants::Bare(
             interleaved_items,
         )))
+    }
+}
+
+pub async fn get_views_with_unified(
+    State(state): State<AppState>,
+    req: Request,
+) -> Result<impl IntoResponse, StatusCode> {
+    let covered_types = state
+        .unified_library
+        .get_covered_collection_types()
+        .await
+        .map_err(|e| {
+            error!("Failed to get covered collection types: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let Json(federated) = get_items_from_all_servers(State(state.clone()), req).await?;
+
+    if covered_types.is_empty() {
+        return Ok(Json(federated));
+    }
+
+    let (mut items, was_with_count) = match federated {
+        ItemsResponseVariants::WithCount(w) => (w.items, true),
+        ItemsResponseVariants::Bare(v) => (v, false),
+    };
+
+    // Remove real library folders whose type is covered by a virtual group
+    items.retain(|item| {
+        if item.item_type == BaseItemKind::CollectionFolder {
+            if let Some(ct) = &item.collection_type {
+                return !covered_types.contains(ct);
+            }
+        }
+        true
+    });
+
+    let stubs = state
+        .unified_library
+        .get_virtual_library_stubs()
+        .await
+        .map_err(|e| {
+            error!("Failed to get virtual library stubs: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let proxy_server_id = state.config.read().await.server_id.clone();
+    for stub in stubs {
+        if let Ok(v) = serde_json::to_value(stub) {
+            if let Ok(mut mi) = serde_json::from_value::<MediaItem>(v) {
+                mi.server_id = Some(proxy_server_id.clone());
+                items.push(mi);
+            }
+        }
+    }
+
+    let count = items.len() as i32;
+    let response = if was_with_count {
+        ItemsResponseVariants::WithCount(ItemsResponseWithCount {
+            items,
+            total_record_count: count,
+            start_index: 0,
+        })
+    } else {
+        ItemsResponseVariants::Bare(items)
+    };
+
+    Ok(Json(response))
+}
+
+pub async fn handle_items_with_virtual_library(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+    req: Request,
+) -> Result<Response, StatusCode> {
+    let parent_id = params.get("ParentId").cloned();
+    let start_index = params
+        .get("StartIndex")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(0);
+    let limit = params.get("Limit").and_then(|s| s.parse::<usize>().ok());
+
+    if let Some(pid) = parent_id {
+        match state.unified_library.get_group_by_virtual_id(&pid).await {
+            Ok(Some(group)) => {
+                let (_, _, _, sessions, _) =
+                    extract_request_infos(req, &state).await.map_err(|e| {
+                        error!("Failed to extract request infos: {}", e);
+                        StatusCode::BAD_REQUEST
+                    })?;
+                let sessions = sessions.ok_or(StatusCode::UNAUTHORIZED)?;
+                if sessions.is_empty() {
+                    return Err(StatusCode::UNAUTHORIZED);
+                }
+                let user_id = sessions[0].0.user_id.clone();
+
+                let aggregation = state
+                    .unified_library
+                    .get_aggregated_items(&group, &user_id, start_index, limit)
+                    .await
+                    .unwrap_or_else(|_| UnifiedLibraryAggregation {
+                        items: vec![],
+                        total_count: 0,
+                        offline_servers: vec![],
+                        unmatched_count: 0,
+                    });
+
+                let proxy_server_id = state.config.read().await.server_id.clone();
+                let media_items: Vec<MediaItem> = aggregation
+                    .items
+                    .into_iter()
+                    .filter_map(|bi| {
+                        serde_json::to_value(bi)
+                            .ok()
+                            .and_then(|v| serde_json::from_value(v).ok())
+                    })
+                    .map(|mut item: MediaItem| {
+                        item.server_id = Some(proxy_server_id.clone());
+                        item
+                    })
+                    .collect();
+
+                let offline_servers = aggregation.offline_servers;
+                let total_count = aggregation.total_count;
+
+                let body = Json(ItemsResponseVariants::WithCount(ItemsResponseWithCount {
+                    items: media_items,
+                    total_record_count: total_count,
+                    start_index: start_index as i32,
+                }));
+
+                let mut response = body.into_response();
+                if !offline_servers.is_empty() {
+                    if let Ok(val) = offline_servers.join(",").parse() {
+                        response
+                            .headers_mut()
+                            .insert("X-Jellyswarrm-Offline-Servers", val);
+                    }
+                }
+                return Ok(response);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                error!("DB error looking up virtual library {}: {}", pid, e);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    }
+
+    get_items_from_all_servers_if_not_restricted(State(state), req)
+        .await
+        .map(IntoResponse::into_response)
+}
+
+/// GET /Users/{user_id}/Items/{item_id}
+/// Intercepts requests for virtual library items; falls back to upstream for real items.
+pub async fn get_item_or_virtual_library(
+    State(state): State<AppState>,
+    Path((_, item_id)): Path<(String, String)>,
+    req: Request,
+) -> Result<Response, StatusCode> {
+    match state.unified_library.get_group_by_virtual_id(&item_id).await {
+        Ok(Some(group)) => {
+            let collection_type_str = serde_json::to_value(&group.library_type)
+                .ok()
+                .and_then(|v| v.as_str().map(String::from))
+                .unwrap_or_default();
+
+            let item = MediaItem {
+                id: group.virtual_id,
+                name: Some(group.name),
+                item_type: BaseItemKind::CollectionFolder,
+                collection_type: Some(group.library_type),
+                is_folder: Some(true),
+                server_id: None,
+                item_id: None,
+                series_id: None,
+                series_name: None,
+                season_id: None,
+                etag: None,
+                date_created: None,
+                can_delete: Some(false),
+                can_download: Some(false),
+                sort_name: None,
+                external_urls: None,
+                path: None,
+                enable_media_source_display: None,
+                channel_id: None,
+                provider_ids: None,
+                parent_id: None,
+                parent_logo_item_id: None,
+                parent_backdrop_item_id: None,
+                parent_backdrop_image_tags: None,
+                parent_logo_image_tag: None,
+                parent_thumb_item_id: None,
+                parent_thumb_image_tag: None,
+                user_data: None,
+                child_count: None,
+                display_preferences_id: None,
+                tags: None,
+                series_primary_image_tag: None,
+                image_tags: None,
+                backdrop_image_tags: None,
+                image_blur_hashes: None,
+                original_title: None,
+                media_sources: None,
+                media_streams: None,
+                chapters: None,
+                trickplay: None,
+                extra: {
+                    let mut m = std::collections::HashMap::new();
+                    m.insert(
+                        "CollectionType".to_string(),
+                        serde_json::Value::String(collection_type_str),
+                    );
+                    m
+                },
+            };
+            Ok(Json(item).into_response())
+        }
+        Ok(None) => crate::handlers::items::get_item(State(state), req)
+            .await
+            .map(IntoResponse::into_response),
+        Err(e) => {
+            error!("DB error looking up virtual item {}: {}", item_id, e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
     }
 }

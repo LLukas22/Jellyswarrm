@@ -37,6 +37,7 @@ mod request_preprocessing;
 mod server_storage;
 mod session_storage;
 mod ui;
+mod unified_library_service;
 mod url_helper;
 mod user_authorization_service;
 
@@ -44,6 +45,7 @@ use federated_users::FederatedUserService;
 use handlers::syncplay::SyncPlayService;
 use media_storage_service::MediaStorageService;
 use server_storage::ServerStorageService;
+use unified_library_service::UnifiedLibraryService;
 use user_authorization_service::UserAuthorizationService;
 
 use crate::{
@@ -78,6 +80,7 @@ pub struct AppState {
     pub quick_connect: QuickConnectStorage,
     pub federated_users: Arc<FederatedUserService>,
     pub syncplay: Arc<SyncPlayService>,
+    pub unified_library: Arc<UnifiedLibraryService>,
 }
 
 impl AppState {
@@ -109,6 +112,7 @@ impl AppState {
             quick_connect,
             federated_users,
             syncplay: Arc::new(SyncPlayService::new()),
+            unified_library: data_context.unified_library,
         }
     }
 
@@ -164,6 +168,7 @@ pub struct DataContext {
     pub media_storage: Arc<MediaStorageService>,
     pub play_sessions: Arc<SessionStorage>,
     pub config: Arc<tokio::sync::RwLock<AppConfig>>,
+    pub unified_library: Arc<UnifiedLibraryService>,
 }
 
 pub struct JsonProcessors {
@@ -305,12 +310,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    let unified_library = UnifiedLibraryService::new(
+        pool.clone(),
+        Arc::new(server_storage.clone()),
+        Arc::new(user_authorization.clone()),
+        Arc::new(media_storage.clone()),
+        reqwest_client.clone(),
+    );
+
     let data_context = DataContext {
         user_authorization: Arc::new(user_authorization.clone()),
         server_storage: Arc::new(server_storage.clone()),
         media_storage: Arc::new(media_storage.clone()),
         play_sessions: Arc::new(SessionStorage::new()),
         config: Arc::new(tokio::sync::RwLock::new(loaded_config.clone())),
+        unified_library: Arc::new(unified_library),
     };
 
     let json_processors = JsonProcessors {
@@ -431,11 +445,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .route("/{user_id}", get(handlers::users::handle_get_user_by_id))
                     .route(
                         "/{user_id}/Views",
-                        get(handlers::federated::get_items_from_all_servers),
+                        get(handlers::federated::get_views_with_unified),
                     )
                     .route(
                         "/{user_id}/Items",
-                        get(handlers::federated::get_items_from_all_servers_if_not_restricted),
+                        get(handlers::federated::handle_items_with_virtual_library),
                     )
                     .route(
                         "/{user_id}/Items/Resume",
@@ -445,7 +459,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "/{user_id}/Items/Latest",
                         get(handlers::federated::get_items_from_all_servers_if_not_restricted),
                     )
-                    .route("/{user_id}/Items/{item_id}", get(handlers::items::get_item))
+                    .route("/{user_id}/Items/{item_id}", get(handlers::federated::get_item_or_virtual_library))
                     .route(
                         "/{user_id}/Items/{item_id}/SpecialFeatures",
                         get(handlers::items::get_items_list),
@@ -453,7 +467,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .route(
                 "/UserViews",
-                get(handlers::federated::get_items_from_all_servers),
+                get(handlers::federated::get_views_with_unified),
             )
             // System info routes
             .nest(

@@ -49,3 +49,49 @@
 <section id="server-list" hx-get="/{{ ui_route }}/servers/list" hx-trigger="load">
     <p>Loading servers...</p>
 </section>
+
+<hr />
+
+<section id="unified-libraries" aria-labelledby="unified-libraries-heading">
+    <h2 id="unified-libraries-heading" class="section-heading-tight">Unified Libraries</h2>
+    <p style="margin-bottom: 1.25rem; color: var(--pico-muted-color);">Merge libraries of the same type across servers into a single virtual library visible to all clients.</p>
+
+    <form hx-post="/{{ ui_route }}/servers/unified-libraries"
+          hx-target="#library-create-error"
+          hx-swap="innerHTML"
+          hx-on::after-request="if(event.detail.successful) this.reset()">
+        <div class="server-form-grid">
+            <label class="form-field">
+                <span class="field-label">Name</span>
+                <input type="text" name="name" placeholder="e.g. Unified Movies" autocomplete="off" required maxlength="100">
+            </label>
+            <label class="form-field">
+                <span class="field-label">Library Type</span>
+                <select name="library_type" required>
+                    <option value="" disabled selected>Select type...</option>
+                    <option value="movies">Movies</option>
+                    <option value="tvshows">TV Shows</option>
+                    <option value="music">Music</option>
+                    <option value="musicvideos">Music Videos</option>
+                    <option value="trailers">Trailers</option>
+                    <option value="homevideos">Home Videos</option>
+                    <option value="boxsets">Box Sets</option>
+                    <option value="books">Books</option>
+                    <option value="photos">Photos</option>
+                    <option value="livetv">Live TV</option>
+                    <option value="playlists">Playlists</option>
+                    <option value="folders">Folders</option>
+                </select>
+            </label>
+            <div class="server-form-submit">
+                <span class="field-label field-label-placeholder" aria-hidden="true">Add</span>
+                <button type="submit" class="server-form-button">Create Group</button>
+            </div>
+        </div>
+    </form>
+    <div id="library-create-error" style="margin-top: 0.5rem;"></div>
+
+    <div id="library-list" hx-get="/{{ ui_route }}/servers/unified-libraries/list" hx-trigger="load">
+        <p>Loading unified libraries...</p>
+    </div>
+</section>

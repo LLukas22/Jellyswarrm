@@ -1,0 +1,43 @@
+{% if groups.is_empty() %}
+    <article>
+        <header><h4>No unified libraries configured</h4></header>
+        <p>Create a group above to merge libraries of the same type across servers.</p>
+    </article>
+{% else %}
+<table aria-label="Unified library groups">
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Library Type</th>
+            <th>Virtual ID</th>
+            <th>Servers</th>
+            <th style="text-align: center;">Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for group in groups %}
+        <tr>
+            <td style="vertical-align: middle;"><strong>{{ group.name }}</strong></td>
+            <td style="vertical-align: middle;">{{ group.library_type_display }}</td>
+            <td style="vertical-align: middle;">
+                <code title="{{ group.virtual_id_full }}" style="font-size: 0.8rem; cursor: default;">{{ group.virtual_id_short }}…</code>
+            </td>
+            <td style="vertical-align: middle;">
+                <span class="badge" style="background: var(--pico-muted-background); color: var(--pico-muted-color); font-size: 0.75rem;">auto-discovered</span>
+            </td>
+            <td style="text-align: center; vertical-align: middle;">
+                <button type="button" class="icon-btn danger"
+                        hx-delete="/{{ ui_route }}/servers/unified-libraries/{{ group.id }}"
+                        hx-confirm="Delete unified library '{{ group.name }}'?"
+                        hx-target="#library-list"
+                        hx-swap="innerHTML"
+                        title="Delete group">
+                    <i class="fas fa-trash" aria-hidden="true"></i>
+                    <span class="sr-only" style="position:absolute;left:-9999px;">Delete</span>
+                </button>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}

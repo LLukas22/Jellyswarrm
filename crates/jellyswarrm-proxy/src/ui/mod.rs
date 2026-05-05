@@ -132,6 +132,19 @@ pub fn ui_routes() -> axum::Router<AppState> {
             "/servers/{id}/admin",
             axum::routing::delete(admin::servers::delete_server_admin),
         )
+        // Unified Libraries
+        .route(
+            "/servers/unified-libraries/list",
+            get(admin::servers::get_library_group_list),
+        )
+        .route(
+            "/servers/unified-libraries",
+            post(admin::servers::create_library_group),
+        )
+        .route(
+            "/servers/unified-libraries/{id}",
+            axum::routing::delete(admin::servers::delete_library_group),
+        )
         // Settings
         .route("/settings", get(admin::settings::settings_page))
         .route("/settings/form", get(admin::settings::settings_form))

@@ -11,7 +11,9 @@ use tracing::{error, info};
 use crate::{
     config::MediaStreamingMode,
     encryption::{encrypt_password, Password},
+    models::enums::CollectionType,
     server_storage::Server,
+    unified_library_service::UnifiedLibraryGroup,
     AppState,
 };
 
@@ -450,6 +452,178 @@ pub async fn delete_server_admin(
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Html("<div class=\"alert alert-error\">Failed to delete admin</div>"),
+            )
+                .into_response()
+        }
+    }
+}
+
+// ─── Unified Library Group handlers ──────────────────────────────────────────
+
+pub struct LibraryGroupView {
+    pub id: i64,
+    pub name: String,
+    pub library_type_display: String,
+    pub virtual_id_short: String,
+    pub virtual_id_full: String,
+}
+
+#[derive(Template)]
+#[template(path = "admin/library_list.html")]
+pub struct LibraryListTemplate {
+    pub groups: Vec<LibraryGroupView>,
+    pub ui_route: String,
+}
+
+#[derive(Deserialize)]
+pub struct AddLibraryGroupForm {
+    pub name: String,
+    pub library_type: String,
+}
+
+fn map_library_type_display(ct: &CollectionType) -> &'static str {
+    match ct {
+        CollectionType::Movies => "Movies",
+        CollectionType::TvShows => "TV Shows",
+        CollectionType::Music => "Music",
+        CollectionType::MusicVideos => "Music Videos",
+        CollectionType::Trailers => "Trailers",
+        CollectionType::HomeVideos => "Home Videos",
+        CollectionType::BoxSets => "Box Sets",
+        CollectionType::Books => "Books",
+        CollectionType::Photos => "Photos",
+        CollectionType::LiveTv => "Live TV",
+        CollectionType::Playlists => "Playlists",
+        CollectionType::Folders => "Folders",
+        _ => "Unknown",
+    }
+}
+
+fn to_library_group_view(g: UnifiedLibraryGroup) -> LibraryGroupView {
+    LibraryGroupView {
+        id: g.id,
+        name: g.name,
+        library_type_display: map_library_type_display(&g.library_type).to_string(),
+        virtual_id_short: g.virtual_id[..8.min(g.virtual_id.len())].to_string(),
+        virtual_id_full: g.virtual_id,
+    }
+}
+
+async fn render_library_list(state: &AppState) -> Result<String, String> {
+    match state.unified_library.list_groups().await {
+        Ok(groups) => {
+            let views: Vec<LibraryGroupView> = groups.into_iter().map(to_library_group_view).collect();
+            let template = LibraryListTemplate {
+                groups: views,
+                ui_route: state.get_ui_route().await,
+            };
+            template.render().map_err(|e| e.to_string())
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Get library group list partial (HTMX)
+pub async fn get_library_group_list(State(state): State<AppState>) -> impl IntoResponse {
+    match render_library_list(&state).await {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => {
+            error!("Failed to render library group list: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Error").into_response()
+        }
+    }
+}
+
+/// Create a new unified library group
+pub async fn create_library_group(
+    State(state): State<AppState>,
+    Form(form): Form<AddLibraryGroupForm>,
+) -> Response {
+    let name = form.name.trim().to_string();
+
+    if name.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Html("<div class=\"alert alert-error\">Name cannot be empty</div>"),
+        )
+            .into_response();
+    }
+
+    if name.len() > 100 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Html("<div class=\"alert alert-error\">Name must be 100 characters or fewer</div>"),
+        )
+            .into_response();
+    }
+
+    let library_type: CollectionType =
+        match serde_json::from_value(serde_json::Value::String(form.library_type.clone())) {
+            Ok(ct) => ct,
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Html("<div class=\"alert alert-error\">Invalid library type</div>"),
+                )
+                    .into_response()
+            }
+        };
+
+    if matches!(library_type, CollectionType::Unknown | CollectionType::UnknownVariant(_)) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Html("<div class=\"alert alert-error\">Invalid library type</div>"),
+        )
+            .into_response();
+    }
+
+    match state.unified_library.create_group(&name, library_type).await {
+        Ok(_) => {
+            info!("Created unified library group: {}", name);
+            match render_library_list(&state).await {
+                Ok(html) => Html(format!(
+                    r#"<div id="library-list" hx-swap-oob="innerHTML">{html}</div>"#
+                ))
+                .into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+            }
+        }
+        Err(e) => {
+            error!("Failed to create library group: {}", e);
+            let msg = if e.to_string().contains("UNIQUE constraint failed") {
+                "A group with that name already exists"
+            } else {
+                "Failed to create group"
+            };
+            (
+                StatusCode::BAD_REQUEST,
+                Html(format!("<div class=\"alert alert-error\">{msg}</div>")),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Delete a unified library group
+pub async fn delete_library_group(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Response {
+    match state.unified_library.delete_group(id).await {
+        Ok(true) => {
+            info!("Deleted unified library group ID: {}", id);
+            get_library_group_list(State(state)).await.into_response()
+        }
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Html("<div class=\"alert alert-error\">Group not found</div>"),
+        )
+            .into_response(),
+        Err(e) => {
+            error!("Failed to delete library group: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("<div class=\"alert alert-error\">Failed to delete group</div>"),
             )
                 .into_response()
         }

@@ -68,6 +68,7 @@ tokio-test = { workspace = true }
 tempfile = { workspace = true }
 mockall = { workspace = true }
 wiremock = { workspace = true }
+proptest = "1"
 
 [build-dependencies]
 fs_extra = { workspace = true }
