@@ -1,0 +1,43 @@
+<div id="source-list">
+{% if sources.is_empty() %}
+    <p style="color: var(--pico-muted-color); margin: 0.5rem 0;">No sources assigned yet. Add sources below.</p>
+{% else %}
+<table aria-label="Assigned sources" style="margin-bottom: 0;">
+    <thead>
+        <tr>
+            <th>Server</th>
+            <th>Library</th>
+            <th>Tag Filter</th>
+            <th style="text-align: center;">Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for src in sources %}
+        <tr>
+            <td style="vertical-align: middle;">{{ src.server_name }}</td>
+            <td style="vertical-align: middle;">{{ src.jellyfin_library_name }}</td>
+            <td style="vertical-align: middle;">
+                {% if src.tag_filter_display.is_empty() %}
+                    <span style="color: var(--pico-muted-color); font-style: italic;">none</span>
+                {% else %}
+                    <code style="font-size: 0.8rem;">{{ src.tag_filter_display }}</code>
+                {% endif %}
+            </td>
+            <td style="text-align: center; vertical-align: middle;">
+                <button type="button" class="icon-btn danger"
+                        hx-delete="/{{ ui_route }}/servers/unified-libraries/{{ group_id }}/sources/{{ src.id }}"
+                        hx-confirm="Remove source '{{ src.jellyfin_library_name }}'?"
+                        hx-target="#source-list"
+                        hx-swap="outerHTML"
+                        title="Remove source"
+                        data-testid="remove-source-{{ src.id }}">
+                    <i class="fas fa-trash" aria-hidden="true"></i>
+                    <span class="sr-only" style="position:absolute;left:-9999px;">Remove</span>
+                </button>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+</div>

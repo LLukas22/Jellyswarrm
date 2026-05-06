@@ -145,6 +145,32 @@ pub fn ui_routes() -> axum::Router<AppState> {
             "/servers/unified-libraries/{id}",
             axum::routing::delete(admin::servers::delete_library_group),
         )
+        // Edit Sources
+        .route(
+            "/servers/unified-libraries/{id}/sources",
+            get(admin::servers::library_sources_page)
+                .post(admin::servers::add_source_handler),
+        )
+        .route(
+            "/servers/unified-libraries/{id}/sources/{source_id}",
+            axum::routing::delete(admin::servers::remove_source_handler),
+        )
+        .route(
+            "/servers/unified-libraries/{id}/mode",
+            axum::routing::patch(admin::servers::set_group_mode_handler),
+        )
+        .route(
+            "/servers/unified-libraries/{id}/global-tag-filter",
+            axum::routing::patch(admin::servers::set_global_tag_filter_handler),
+        )
+        .route(
+            "/servers/unified-libraries/{id}/refresh-cache",
+            post(admin::servers::refresh_cache_handler),
+        )
+        .route(
+            "/servers/unified-libraries/{id}/cached-libraries",
+            get(admin::servers::get_cached_libraries_for_picker),
+        )
         // Settings
         .route("/settings", get(admin::settings::settings_page))
         .route("/settings/form", get(admin::settings::settings_form))

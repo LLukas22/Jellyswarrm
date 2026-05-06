@@ -1,0 +1,220 @@
+<div id="messages"></div>
+
+<header style="margin-bottom: 1rem;">
+    <nav style="margin-bottom: 0.75rem;">
+        <a href="#"
+           hx-get="/{{ ui_route }}/servers"
+           hx-target="#main-content"
+           hx-swap="innerHTML"
+           role="button"
+           class="secondary outline"
+           style="display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.3rem 0.75rem; font-size: 0.875rem;"
+           data-testid="back-to-servers">
+            <i class="fas fa-arrow-left" aria-hidden="true"></i> Back to Servers
+        </a>
+    </nav>
+    <h1 style="margin-bottom: 0.25rem;">Edit Sources — {{ group_name }}</h1>
+    <p style="color: var(--pico-muted-color); margin: 0;">
+        {{ group_type_display }} ·
+        {% if group_mode == "manual" %}
+            <span style="background: var(--pico-primary-background, #0ea5e9); color: white; font-size: 0.75rem; padding: 0.1rem 0.4rem; border-radius: 3px;">Manual</span>
+        {% else %}
+            <span style="background: var(--pico-muted-background); color: var(--pico-muted-color); font-size: 0.75rem; padding: 0.1rem 0.4rem; border-radius: 3px;">Auto</span>
+        {% endif %}
+    </p>
+</header>
+
+<hr style="margin: 1rem 0;" />
+
+<section id="mode-section" style="margin-bottom: 1.5rem;" aria-labelledby="mode-section-heading">
+    <h2 id="mode-section-heading" class="section-heading-tight">Mode</h2>
+    <p style="color: var(--pico-muted-color); font-size: 0.9rem; margin-bottom: 0.75rem;">
+        <strong>Auto</strong> discovers all matching libraries from all servers automatically.
+        <strong>Manual</strong> lets you pick exactly which libraries contribute to this group.
+    </p>
+    <form hx-patch="/{{ ui_route }}/servers/unified-libraries/{{ group_id }}/mode"
+          hx-target="#main-content"
+          hx-swap="innerHTML"
+          style="display: inline;"
+          data-testid="mode-toggle-form">
+        <label class="form-field" style="display: inline-flex; align-items: center; gap: 0.5rem; margin: 0;">
+            <span class="field-label" style="margin: 0;">Switch mode:</span>
+            <select name="mode"
+                    hx-trigger="change"
+                    hx-include="closest form"
+                    style="width: auto; margin: 0;"
+                    data-testid="mode-select">
+                <option value="auto" {% if group_mode == "auto" %}selected{% endif %}>Auto</option>
+                <option value="manual" {% if group_mode == "manual" %}selected{% endif %}>Manual</option>
+            </select>
+        </label>
+    </form>
+</section>
+
+{% if group_mode == "auto" %}
+<section id="tag-filter-section" style="margin-bottom: 1.5rem;" aria-labelledby="tag-filter-heading">
+    <h2 id="tag-filter-heading" class="section-heading-tight">Global Tag Filter</h2>
+    <p style="color: var(--pico-muted-color); font-size: 0.9rem; margin-bottom: 0.75rem;">
+        Items must have at least one of these tags (OR logic). Leave empty to include all items.
+    </p>
+    <form hx-patch="/{{ ui_route }}/servers/unified-libraries/{{ group_id }}/global-tag-filter"
+          hx-target="#tag-filter-status"
+          hx-swap="innerHTML"
+          data-testid="global-tag-filter-form">
+        <div style="display: flex; gap: 0.5rem; align-items: flex-end; flex-wrap: wrap;">
+            <label class="form-field" style="flex: 1; min-width: 200px; margin: 0;">
+                <span class="field-label">Tags
+                    <span class="info-hint" tabindex="0"
+                          title="Comma-separated tag values. Example: adult, kids"
+                          aria-label="Tag filter help">
+                        <i class="fas fa-circle-info" aria-hidden="true"></i>
+                    </span>
+                </span>
+                <input type="text"
+                       name="global_tag_filter"
+                       value="{{ global_tag_filter }}"
+                       placeholder="e.g. adult, kids"
+                       maxlength="500"
+                       autocomplete="off"
+                       data-testid="global-tag-filter-input">
+            </label>
+            <button type="submit"
+                    style="margin-bottom: 0;"
+                    data-testid="save-tag-filter-btn">Save Filter</button>
+        </div>
+        <div id="tag-filter-status" style="margin-top: 0.4rem; font-size: 0.85rem; min-height: 1.2rem;"></div>
+    </form>
+</section>
+{% endif %}
+
+{% if group_mode == "manual" %}
+<section id="sources-section" style="margin-bottom: 1.5rem;" aria-labelledby="sources-heading">
+    <h2 id="sources-heading" class="section-heading-tight">Assigned Sources</h2>
+
+    <div id="source-list">
+    {% if sources.is_empty() %}
+        <p style="color: var(--pico-muted-color); margin: 0.5rem 0;">No sources assigned yet. Add sources below.</p>
+    {% else %}
+    <table aria-label="Assigned sources" style="margin-bottom: 0;">
+        <thead>
+            <tr>
+                <th>Server</th>
+                <th>Library</th>
+                <th>Tag Filter</th>
+                <th style="text-align: center;">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for src in sources %}
+            <tr>
+                <td style="vertical-align: middle;">{{ src.server_name }}</td>
+                <td style="vertical-align: middle;">{{ src.jellyfin_library_name }}</td>
+                <td style="vertical-align: middle;">
+                    {% if src.tag_filter_display.is_empty() %}
+                        <span style="color: var(--pico-muted-color); font-style: italic;">none</span>
+                    {% else %}
+                        <code style="font-size: 0.8rem;">{{ src.tag_filter_display }}</code>
+                    {% endif %}
+                </td>
+                <td style="text-align: center; vertical-align: middle;">
+                    <button type="button" class="icon-btn danger"
+                            hx-delete="/{{ ui_route }}/servers/unified-libraries/{{ group_id }}/sources/{{ src.id }}"
+                            hx-confirm="Remove source '{{ src.jellyfin_library_name }}'?"
+                            hx-target="#source-list"
+                            hx-swap="outerHTML"
+                            title="Remove source"
+                            data-testid="remove-source-{{ src.id }}">
+                        <i class="fas fa-trash" aria-hidden="true"></i>
+                        <span class="sr-only" style="position:absolute;left:-9999px;">Remove</span>
+                    </button>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+    </div>
+
+    <h3 style="margin-top: 1.25rem;">Add Source</h3>
+    <form hx-post="/{{ ui_route }}/servers/unified-libraries/{{ group_id }}/sources"
+          hx-target="#source-list"
+          hx-swap="outerHTML"
+          hx-on::after-request="if(event.detail.successful) { this.reset(); document.getElementById('picker-library-select').innerHTML = '<option value=\"\" disabled selected>Select server first...</option>'; }"
+          data-testid="add-source-form">
+        <div class="server-form-grid">
+            <label class="form-field">
+                <span class="field-label">Server</span>
+                <select name="server_id"
+                        required
+                        hx-get="/{{ ui_route }}/servers/unified-libraries/{{ group_id }}/cached-libraries"
+                        hx-trigger="change"
+                        hx-target="#picker-library-select"
+                        hx-swap="innerHTML"
+                        hx-include="[name='server_id']"
+                        data-testid="source-server-select">
+                    <option value="" disabled selected>Select server...</option>
+                    {% for s in servers %}
+                    <option value="{{ s.id }}">{{ s.name }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label class="form-field">
+                <span class="field-label">Library</span>
+                <select name="jellyfin_library_id"
+                        id="picker-library-select"
+                        required
+                        onchange="var opt = this.options[this.selectedIndex]; document.querySelector('[name=jellyfin_library_name]').value = opt.dataset.name || '';"
+                        data-testid="source-library-select">
+                    <option value="" disabled selected>Select server first...</option>
+                </select>
+                <input type="hidden" name="jellyfin_library_name">
+            </label>
+            <label class="form-field">
+                <span class="field-label">Tag Filter
+                    <span class="info-hint" tabindex="0"
+                          title="Comma-separated tags. Items need at least one match (OR). Leave empty for no filtering."
+                          aria-label="Tag filter help">
+                        <i class="fas fa-circle-info" aria-hidden="true"></i>
+                    </span>
+                </span>
+                <input type="text"
+                       name="tag_filter"
+                       placeholder="e.g. adult"
+                       maxlength="500"
+                       autocomplete="off"
+                       data-testid="source-tag-filter-input">
+            </label>
+            <div class="server-form-submit">
+                <span class="field-label field-label-placeholder" aria-hidden="true">Add</span>
+                <button type="submit"
+                        class="server-form-button"
+                        data-testid="add-source-submit">Add Source</button>
+            </div>
+        </div>
+        <div id="add-source-error" style="margin-top: 0.5rem;"></div>
+    </form>
+</section>
+{% endif %}
+
+<hr style="margin: 1rem 0;" />
+
+<section id="cache-section" aria-labelledby="cache-heading">
+    <h2 id="cache-heading" class="section-heading-tight">Library Discovery Cache</h2>
+    <p style="color: var(--pico-muted-color); font-size: 0.9rem; margin-bottom: 0.75rem;">
+        Refresh the list of available Jellyfin libraries from each connected server.
+        Requires a server admin to be configured for each server.
+        {% if group_mode == "manual" %}
+        Refresh before adding sources to see the latest available libraries.
+        {% endif %}
+    </p>
+    <button type="button"
+            hx-post="/{{ ui_route }}/servers/unified-libraries/{{ group_id }}/refresh-cache"
+            hx-target="#cache-refresh-status"
+            hx-swap="innerHTML"
+            hx-disabled-elt="this"
+            data-testid="refresh-cache-btn">
+        <i class="fas fa-arrows-rotate" aria-hidden="true"></i>
+        Refresh Cache
+    </button>
+    <div id="cache-refresh-status" style="margin-top: 0.75rem; font-size: 0.9rem;"></div>
+</section>

@@ -1,19 +1,19 @@
 use askama::Template;
 use axum::{
-    extract::{Path, State},
-    http::StatusCode,
+    extract::{Path, Query, State},
+    http::{HeaderValue, StatusCode},
     response::{Html, IntoResponse, Response},
     Form,
 };
 use serde::Deserialize;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::{
     config::MediaStreamingMode,
     encryption::{encrypt_password, Password},
     models::enums::CollectionType,
     server_storage::Server,
-    unified_library_service::UnifiedLibraryGroup,
+    unified_library_service::{GroupMode, UnifiedLibraryGroup},
     AppState,
 };
 
@@ -466,6 +466,8 @@ pub struct LibraryGroupView {
     pub library_type_display: String,
     pub virtual_id_short: String,
     pub virtual_id_full: String,
+    pub mode: String,
+    pub mode_display: &'static str,
 }
 
 #[derive(Template)]
@@ -479,6 +481,7 @@ pub struct LibraryListTemplate {
 pub struct AddLibraryGroupForm {
     pub name: String,
     pub library_type: String,
+    pub mode: Option<String>,
 }
 
 fn map_library_type_display(ct: &CollectionType) -> &'static str {
@@ -500,12 +503,18 @@ fn map_library_type_display(ct: &CollectionType) -> &'static str {
 }
 
 fn to_library_group_view(g: UnifiedLibraryGroup) -> LibraryGroupView {
+    let mode_display = match g.mode {
+        GroupMode::Auto => "Auto",
+        GroupMode::Manual => "Manual",
+    };
     LibraryGroupView {
         id: g.id,
         name: g.name,
         library_type_display: map_library_type_display(&g.library_type).to_string(),
         virtual_id_short: g.virtual_id[..8.min(g.virtual_id.len())].to_string(),
         virtual_id_full: g.virtual_id,
+        mode: g.mode.to_string(),
+        mode_display,
     }
 }
 
@@ -577,7 +586,19 @@ pub async fn create_library_group(
             .into_response();
     }
 
-    match state.unified_library.create_group(&name, library_type).await {
+    let mode_str = form.mode.as_deref().unwrap_or("auto");
+    let mode = match GroupMode::try_from(mode_str.to_string()) {
+        Ok(m) => m,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Html("<div class=\"alert alert-error\">Invalid mode value</div>"),
+            )
+                .into_response()
+        }
+    };
+
+    match state.unified_library.create_group(&name, library_type, mode).await {
         Ok(_) => {
             info!("Created unified library group: {}", name);
             match render_library_list(&state).await {
@@ -604,6 +625,79 @@ pub async fn create_library_group(
     }
 }
 
+// ─── Edit Sources — view structs, form types ─────────────────────────────────
+
+pub struct ServerOption {
+    pub id: i64,
+    pub name: String,
+}
+
+pub struct LibrarySourceView {
+    pub id: i64,
+    pub server_id: i64,
+    pub server_name: String,
+    pub jellyfin_library_id: String,
+    pub jellyfin_library_name: String,
+    pub tag_filter_display: String,
+}
+
+pub struct CachedLibraryOption {
+    pub jellyfin_library_id: String,
+    pub jellyfin_library_name: String,
+}
+
+#[derive(Template)]
+#[template(path = "admin/library_sources.html")]
+pub struct LibrarySourcesPageTemplate {
+    pub group_id: i64,
+    pub group_name: String,
+    pub group_type_display: String,
+    pub group_mode: String,
+    pub global_tag_filter: String,
+    pub sources: Vec<LibrarySourceView>,
+    pub servers: Vec<ServerOption>,
+    pub ui_route: String,
+}
+
+#[derive(Template)]
+#[template(path = "admin/library_source_list.html")]
+pub struct SourceListTemplate {
+    pub group_id: i64,
+    pub sources: Vec<LibrarySourceView>,
+    pub ui_route: String,
+}
+
+#[derive(Template)]
+#[template(path = "admin/library_picker_options.html")]
+pub struct LibraryPickerOptionsTemplate {
+    pub libraries: Vec<CachedLibraryOption>,
+}
+
+#[derive(Deserialize)]
+pub struct AddSourceForm {
+    pub server_id: i64,
+    pub jellyfin_library_id: String,
+    pub jellyfin_library_name: String,
+    pub tag_filter: String,
+}
+
+#[derive(Deserialize)]
+pub struct SetModeForm {
+    pub mode: String,
+}
+
+#[derive(Deserialize)]
+pub struct SetGlobalTagFilterForm {
+    pub global_tag_filter: String,
+}
+
+#[derive(Deserialize)]
+pub struct LibraryPickerQuery {
+    pub server_id: i64,
+}
+
+// ─── Delete a unified library group ──────────────────────────────────────────
+
 /// Delete a unified library group
 pub async fn delete_library_group(
     State(state): State<AppState>,
@@ -628,4 +722,434 @@ pub async fn delete_library_group(
                 .into_response()
         }
     }
+}
+
+// ─── Edit Sources — helpers ───────────────────────────────────────────────────
+
+fn parse_tag_filter_string(raw: &str) -> Option<Vec<String>> {
+    let tags: Vec<String> = raw
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if tags.is_empty() { None } else { Some(tags) }
+}
+
+async fn render_source_list(state: &AppState, group_id: i64) -> Result<String, String> {
+    let sources = state
+        .unified_library
+        .list_sources_for_group(group_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let servers = state
+        .server_storage
+        .list_servers()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let server_map: std::collections::HashMap<i64, String> =
+        servers.into_iter().map(|s| (s.id, s.name)).collect();
+
+    let source_views: Vec<LibrarySourceView> = sources
+        .into_iter()
+        .map(|src| {
+            let server_name = server_map
+                .get(&src.server_id)
+                .cloned()
+                .unwrap_or_else(|| format!("Server {}", src.server_id));
+            let tag_filter_display = src
+                .tag_filter
+                .as_ref()
+                .map(|v| v.join(", "))
+                .unwrap_or_default();
+            LibrarySourceView {
+                id: src.id,
+                server_id: src.server_id,
+                server_name,
+                jellyfin_library_id: src.jellyfin_library_id,
+                jellyfin_library_name: src.jellyfin_library_name,
+                tag_filter_display,
+            }
+        })
+        .collect();
+
+    let template = SourceListTemplate {
+        group_id,
+        sources: source_views,
+        ui_route: state.get_ui_route().await,
+    };
+    template.render().map_err(|e| e.to_string())
+}
+
+// ─── Edit Sources — handlers ──────────────────────────────────────────────────
+
+/// Edit Sources page for a unified library group
+pub async fn library_sources_page(
+    State(state): State<AppState>,
+    Path(group_id): Path<i64>,
+) -> impl IntoResponse {
+    let group = match state.unified_library.get_group_by_id(group_id).await {
+        Ok(Some(g)) => g,
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, Html("Group not found".to_string())).into_response()
+        }
+        Err(e) => {
+            error!("Failed to load group {}: {}", group_id, e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, Html("Database error".to_string()))
+                .into_response();
+        }
+    };
+
+    let sources = state
+        .unified_library
+        .list_sources_for_group(group_id)
+        .await
+        .unwrap_or_default();
+
+    let servers = state
+        .server_storage
+        .list_servers()
+        .await
+        .unwrap_or_default();
+
+    let server_map: std::collections::HashMap<i64, String> =
+        servers.iter().map(|s| (s.id, s.name.clone())).collect();
+
+    let source_views: Vec<LibrarySourceView> = sources
+        .into_iter()
+        .map(|src| {
+            let server_name = server_map
+                .get(&src.server_id)
+                .cloned()
+                .unwrap_or_else(|| format!("Server {}", src.server_id));
+            let tag_filter_display = src
+                .tag_filter
+                .as_ref()
+                .map(|v| v.join(", "))
+                .unwrap_or_default();
+            LibrarySourceView {
+                id: src.id,
+                server_id: src.server_id,
+                server_name,
+                jellyfin_library_id: src.jellyfin_library_id,
+                jellyfin_library_name: src.jellyfin_library_name,
+                tag_filter_display,
+            }
+        })
+        .collect();
+
+    let server_options: Vec<ServerOption> = servers
+        .into_iter()
+        .map(|s| ServerOption { id: s.id, name: s.name })
+        .collect();
+
+    let global_tag_filter = group
+        .global_tag_filter
+        .as_ref()
+        .map(|v| v.join(", "))
+        .unwrap_or_default();
+
+    let template = LibrarySourcesPageTemplate {
+        group_id,
+        group_name: group.name.clone(),
+        group_type_display: map_library_type_display(&group.library_type).to_string(),
+        group_mode: group.mode.to_string(),
+        global_tag_filter,
+        sources: source_views,
+        servers: server_options,
+        ui_route: state.get_ui_route().await,
+    };
+
+    match template.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => {
+            error!("Failed to render library sources template: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Template error").into_response()
+        }
+    }
+}
+
+/// GET cached libraries for the source picker (HTMX)
+pub async fn get_cached_libraries_for_picker(
+    State(state): State<AppState>,
+    Path(group_id): Path<i64>,
+    Query(query): Query<LibraryPickerQuery>,
+) -> impl IntoResponse {
+    let group = match state.unified_library.get_group_by_id(group_id).await {
+        Ok(Some(g)) => g,
+        Ok(None) => {
+            return Html(
+                "<option disabled>Group not found</option>".to_string(),
+            )
+            .into_response()
+        }
+        Err(e) => {
+            error!("Failed to load group {}: {}", group_id, e);
+            return Html("<option disabled>Error loading group</option>".to_string())
+                .into_response();
+        }
+    };
+
+    let libraries = state
+        .unified_library
+        .get_cached_libraries(query.server_id, Some(&group.library_type))
+        .await
+        .unwrap_or_default();
+
+    let lib_options: Vec<CachedLibraryOption> = libraries
+        .into_iter()
+        .map(|l| CachedLibraryOption {
+            jellyfin_library_id: l.jellyfin_library_id,
+            jellyfin_library_name: l.jellyfin_library_name,
+        })
+        .collect();
+
+    let template = LibraryPickerOptionsTemplate { libraries: lib_options };
+    match template.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => {
+            error!("Failed to render library picker options: {}", e);
+            Html("<option disabled>Error loading libraries</option>".to_string()).into_response()
+        }
+    }
+}
+
+/// POST add a source to a manual-mode group (HTMX)
+pub async fn add_source_handler(
+    State(state): State<AppState>,
+    Path(group_id): Path<i64>,
+    Form(form): Form<AddSourceForm>,
+) -> Response {
+    if form.jellyfin_library_id.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Html("<div class=\"alert alert-error\">Library must be selected</div>"),
+        )
+            .into_response();
+    }
+    if form.jellyfin_library_name.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Html("<div class=\"alert alert-error\">Library name is missing</div>"),
+        )
+            .into_response();
+    }
+
+    let tag_filter = parse_tag_filter_string(&form.tag_filter);
+
+    match state
+        .unified_library
+        .add_source(
+            group_id,
+            form.server_id,
+            &form.jellyfin_library_id,
+            &form.jellyfin_library_name,
+            tag_filter,
+        )
+        .await
+    {
+        Ok(_) => {
+            info!(
+                "Added source {} to group {}",
+                form.jellyfin_library_name, group_id
+            );
+            match render_source_list(&state, group_id).await {
+                Ok(html) => Html(html).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+            }
+        }
+        Err(e) => {
+            error!("Failed to add source to group {}: {}", group_id, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("<div class=\"alert alert-error\">Failed to add source</div>"),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// DELETE remove a source from a group (HTMX)
+pub async fn remove_source_handler(
+    State(state): State<AppState>,
+    Path((group_id, source_id)): Path<(i64, i64)>,
+) -> Response {
+    match state.unified_library.remove_source(source_id).await {
+        Ok(true) => {
+            info!("Removed source {} from group {}", source_id, group_id);
+            match render_source_list(&state, group_id).await {
+                Ok(html) => Html(html).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+            }
+        }
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Html("<div class=\"alert alert-error\">Source not found</div>"),
+        )
+            .into_response(),
+        Err(e) => {
+            error!("Failed to remove source {}: {}", source_id, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("<div class=\"alert alert-error\">Failed to remove source</div>"),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// PATCH set group mode — triggers HX-Redirect to reload page with correct sections
+pub async fn set_group_mode_handler(
+    State(state): State<AppState>,
+    Path(group_id): Path<i64>,
+    Form(form): Form<SetModeForm>,
+) -> Response {
+    let mode = match GroupMode::try_from(form.mode.clone()) {
+        Ok(m) => m,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Html("<div class=\"alert alert-error\">Invalid mode</div>"),
+            )
+                .into_response()
+        }
+    };
+
+    match state.unified_library.set_group_mode(group_id, mode).await {
+        Ok(true) => {
+            info!("Set group {} mode to {}", group_id, form.mode);
+            let ui_route = state.get_ui_route().await;
+            let redirect_url = format!(
+                "/{}/servers/unified-libraries/{}/sources",
+                ui_route, group_id
+            );
+            let mut response = StatusCode::OK.into_response();
+            if let Ok(val) = HeaderValue::from_str(&redirect_url) {
+                response.headers_mut().insert("HX-Redirect", val);
+            }
+            response
+        }
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Html("<div class=\"alert alert-error\">Group not found</div>"),
+        )
+            .into_response(),
+        Err(e) => {
+            error!("Failed to set group {} mode: {}", group_id, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("<div class=\"alert alert-error\">Failed to update mode</div>"),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// PATCH set global tag filter for an auto-mode group (HTMX)
+pub async fn set_global_tag_filter_handler(
+    State(state): State<AppState>,
+    Path(group_id): Path<i64>,
+    Form(form): Form<SetGlobalTagFilterForm>,
+) -> Response {
+    let tags = parse_tag_filter_string(&form.global_tag_filter);
+
+    match state
+        .unified_library
+        .set_global_tag_filter(group_id, tags)
+        .await
+    {
+        Ok(true) => {
+            info!("Updated global tag filter for group {}", group_id);
+            Html("<span style=\"color: var(--pico-ins-color);\">Filter saved</span>".to_string())
+                .into_response()
+        }
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Html("<span style=\"color: var(--pico-del-color);\">Group not found</span>"),
+        )
+            .into_response(),
+        Err(e) => {
+            error!("Failed to update global tag filter for group {}: {}", group_id, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("<span style=\"color: var(--pico-del-color);\">Failed to save filter</span>"),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// POST refresh library discovery cache for all servers (HTMX)
+pub async fn refresh_cache_handler(
+    State(state): State<AppState>,
+    Path(_group_id): Path<i64>,
+) -> Response {
+    let servers = match state.server_storage.list_servers().await {
+        Ok(s) => s,
+        Err(e) => {
+            error!("Failed to list servers for cache refresh: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("<div class=\"alert alert-error\">Failed to load servers</div>"),
+            )
+                .into_response();
+        }
+    };
+
+    let mut results: Vec<String> = Vec::new();
+
+    for server in &servers {
+        let session = match state
+            .user_authorization
+            .get_any_session_for_server(server.url.as_str())
+            .await
+        {
+            Ok(Some(s)) => s,
+            Ok(None) => {
+                results.push(format!(
+                    "<li><strong>{}</strong>: skipped (no active user sessions — log in via a Jellyfin client first)</li>",
+                    server.name
+                ));
+                continue;
+            }
+            Err(e) => {
+                warn!("Failed to get session for server {}: {}", server.name, e);
+                results.push(format!(
+                    "<li><strong>{}</strong>: error loading session</li>",
+                    server.name
+                ));
+                continue;
+            }
+        };
+
+        match state
+            .unified_library
+            .refresh_library_cache(server, &session)
+            .await
+        {
+            Ok(count) => {
+                info!("Refreshed library cache for {}: {} libraries", server.name, count);
+                results.push(format!(
+                    "<li><strong>{}</strong>: {} libraries cached</li>",
+                    server.name, count
+                ));
+            }
+            Err(e) => {
+                warn!("Cache refresh failed for {}: {}", server.name, e);
+                results.push(format!(
+                    "<li><strong>{}</strong>: refresh failed — {}</li>",
+                    server.name, e
+                ));
+            }
+        }
+    }
+
+    let body = if results.is_empty() {
+        "<p style=\"color: var(--pico-muted-color);\">No servers configured.</p>".to_string()
+    } else {
+        format!("<ul style=\"margin: 0; padding-left: 1.25rem;\">{}</ul>", results.join(""))
+    };
+
+    Html(body).into_response()
 }

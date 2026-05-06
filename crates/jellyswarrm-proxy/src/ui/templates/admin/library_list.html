@@ -10,7 +10,7 @@
             <th>Name</th>
             <th>Library Type</th>
             <th>Virtual ID</th>
-            <th>Servers</th>
+            <th>Mode</th>
             <th style="text-align: center;">Actions</th>
         </tr>
     </thead>
@@ -23,15 +23,31 @@
                 <code title="{{ group.virtual_id_full }}" style="font-size: 0.8rem; cursor: default;">{{ group.virtual_id_short }}…</code>
             </td>
             <td style="vertical-align: middle;">
-                <span class="badge" style="background: var(--pico-muted-background); color: var(--pico-muted-color); font-size: 0.75rem;">auto-discovered</span>
+                {% if group.mode == "manual" %}
+                    <span class="badge" style="background: var(--pico-primary-background, #0ea5e9); color: white; font-size: 0.75rem;">{{ group.mode_display }}</span>
+                {% else %}
+                    <span class="badge" style="background: var(--pico-muted-background); color: var(--pico-muted-color); font-size: 0.75rem;">{{ group.mode_display }}</span>
+                {% endif %}
             </td>
             <td style="text-align: center; vertical-align: middle;">
+                <a href="#"
+                   hx-get="/{{ ui_route }}/servers/unified-libraries/{{ group.id }}/sources"
+                   hx-target="#main-content"
+                   hx-push-url="true"
+                   class="icon-btn secondary"
+                   style="margin-right: 0.25rem;"
+                   title="Edit Sources"
+                   data-testid="edit-sources-{{ group.id }}">
+                    <i class="fas fa-sliders" aria-hidden="true"></i>
+                    <span class="sr-only" style="position:absolute;left:-9999px;">Edit Sources</span>
+                </a>
                 <button type="button" class="icon-btn danger"
                         hx-delete="/{{ ui_route }}/servers/unified-libraries/{{ group.id }}"
                         hx-confirm="Delete unified library '{{ group.name }}'?"
                         hx-target="#library-list"
                         hx-swap="innerHTML"
-                        title="Delete group">
+                        title="Delete group"
+                        data-testid="delete-group-{{ group.id }}">
                     <i class="fas fa-trash" aria-hidden="true"></i>
                     <span class="sr-only" style="position:absolute;left:-9999px;">Delete</span>
                 </button>

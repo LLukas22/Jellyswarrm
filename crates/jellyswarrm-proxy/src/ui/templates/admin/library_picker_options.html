@@ -1,0 +1,8 @@
+{% if libraries.is_empty() %}
+<option value="" disabled selected>No libraries cached — click Refresh Cache</option>
+{% else %}
+<option value="" disabled selected>Select library...</option>
+{% for lib in libraries %}
+<option value="{{ lib.jellyfin_library_id }}" data-name="{{ lib.jellyfin_library_name }}">{{ lib.jellyfin_library_name }}</option>
+{% endfor %}
+{% endif %}

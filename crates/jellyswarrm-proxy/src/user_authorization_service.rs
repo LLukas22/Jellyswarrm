@@ -1107,6 +1107,48 @@ impl UserAuthorizationService {
     }
 
     /// Get all servers mapped to a user, sorted by priority
+    pub async fn get_any_session_for_server(
+        &self,
+        server_url: &str,
+    ) -> Result<Option<AuthorizationSession>, sqlx::Error> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, user_id, mapping_id, server_url, client, device, device_id, version,
+                   jellyfin_token, original_user_id, expires_at, created_at, updated_at
+            FROM authorization_sessions
+            WHERE RTRIM(server_url, '/') = RTRIM(?, '/')
+              AND (expires_at IS NULL OR expires_at > ?)
+            ORDER BY updated_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(server_url)
+        .bind(chrono::Utc::now())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|row| {
+            let device = Device {
+                client: row.get("client"),
+                device: row.get("device"),
+                device_id: row.get("device_id"),
+                version: row.get("version"),
+            };
+            AuthorizationSession {
+                id: row.get("id"),
+                user_id: row.get("user_id"),
+                mapping_id: row.get("mapping_id"),
+                server_url: row.get("server_url"),
+                device,
+                jellyfin_token: row.get("jellyfin_token"),
+                original_user_id: row.get("original_user_id"),
+                expires_at: row.get("expires_at"),
+                created_at: row.get("created_at"),
+                updated_at: row.get("updated_at"),
+            }
+        }))
+    }
+
     pub async fn get_mapped_servers(&self, user_id: &str) -> Result<Vec<Server>, sqlx::Error> {
         let rows = sqlx::query(
             r#"

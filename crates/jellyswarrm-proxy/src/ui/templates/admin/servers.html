@@ -83,9 +83,16 @@
                     <option value="folders">Folders</option>
                 </select>
             </label>
+            <label class="form-field">
+                <span class="field-label">Mode</span>
+                <select name="mode" required data-testid="create-group-mode-select">
+                    <option value="auto" selected>Auto (discover all matching)</option>
+                    <option value="manual">Manual (select sources)</option>
+                </select>
+            </label>
             <div class="server-form-submit">
                 <span class="field-label field-label-placeholder" aria-hidden="true">Add</span>
-                <button type="submit" class="server-form-button">Create Group</button>
+                <button type="submit" class="server-form-button" data-testid="create-group-submit">Create Group</button>
             </div>
         </div>
     </form>
