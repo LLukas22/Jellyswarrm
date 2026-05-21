@@ -322,6 +322,14 @@ impl ItemsResponseVariants {
             ItemsResponseVariants::Bare(v) => v.get(index),
         }
     }
+
+    /// Consume self and return the inner items as a plain `Vec`.
+    pub fn into_items(self) -> Vec<MediaItem> {
+        match self {
+            ItemsResponseVariants::WithCount(w) => w.items,
+            ItemsResponseVariants::Bare(v) => v,
+        }
+    }
 }
 
 #[skip_serializing_none]

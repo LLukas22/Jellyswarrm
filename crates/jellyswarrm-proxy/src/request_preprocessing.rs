@@ -390,12 +390,34 @@ pub async fn apply_new_target_uri(
     // Process media IDs in the path
     for &path_segment in MEDIA_ID_PATH_TAGS {
         if let Some(media_id) = contains_id(&orig_url, path_segment) {
-            if let Some(media_mapping) = state
+            let direct = state
                 .media_storage
                 .get_media_mapping_by_virtual(&media_id)
                 .await
-                .unwrap_or_default()
-            {
+                .unwrap_or_default();
+
+            // For merged library folders the virtual_id is not in media_mappings directly;
+            // resolve through the first member instead.
+            let media_mapping = match direct {
+                Some(m) => Some(m),
+                None => {
+                    if let Ok(Some(rep_id)) = state
+                        .merged_library_service
+                        .get_first_member_virtual_id(&media_id)
+                        .await
+                    {
+                        state
+                            .media_storage
+                            .get_media_mapping_by_virtual(&rep_id)
+                            .await
+                            .unwrap_or_default()
+                    } else {
+                        None
+                    }
+                }
+            };
+
+            if let Some(media_mapping) = media_mapping {
                 debug!(
                     "Replacing media ID in path: {} -> {}",
                     media_id, media_mapping.original_media_id
@@ -581,11 +603,31 @@ pub async fn resolve_server(
     for &path_segment in MEDIA_ID_PATH_TAGS {
         if let Some(media_id) = contains_id(request.url(), path_segment) {
             debug!("Found {} ID in request: {}", path_segment, media_id);
-            if let Some((_mapping, server)) = state
+
+            // Direct lookup first; fall back through merged library representative.
+            let resolved = match state
                 .media_storage
                 .get_media_mapping_with_server(&media_id)
                 .await?
             {
+                Some(pair) => Some(pair),
+                None => {
+                    if let Ok(Some(rep_id)) = state
+                        .merged_library_service
+                        .get_first_member_virtual_id(&media_id)
+                        .await
+                    {
+                        state
+                            .media_storage
+                            .get_media_mapping_with_server(&rep_id)
+                            .await?
+                    } else {
+                        None
+                    }
+                }
+            };
+
+            if let Some((_mapping, server)) = resolved {
                 debug!(
                     "Found server for {} ID {}: {} ({})",
                     path_segment, media_id, server.name, server.url
@@ -608,11 +650,30 @@ pub async fn resolve_server(
                 .map(|(_, v)| v.to_string())
             {
                 debug!("Found {} in query: {}", param_name, param_value);
-                if let Some((_mapping, server)) = state
+
+                let resolved = match state
                     .media_storage
                     .get_media_mapping_with_server(&param_value)
                     .await?
                 {
+                    Some(pair) => Some(pair),
+                    None => {
+                        if let Ok(Some(rep_id)) = state
+                            .merged_library_service
+                            .get_first_member_virtual_id(&param_value)
+                            .await
+                        {
+                            state
+                                .media_storage
+                                .get_media_mapping_with_server(&rep_id)
+                                .await?
+                        } else {
+                            None
+                        }
+                    }
+                };
+
+                if let Some((_mapping, server)) = resolved {
                     debug!(
                         "Found server for {} {}: {} ({})",
                         param_name, param_value, server.name, server.url
