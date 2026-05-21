@@ -69,8 +69,7 @@
           default = jellyswarrm;
           jellyswarrm = jellyswarrm;
         };
-      }
-    ) // {
+
       # NixOS module for the service
       nixosModules.default = { config, lib, pkgs, ... }:
         with lib;
