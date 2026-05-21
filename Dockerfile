@@ -1,125 +1,51 @@
 #################################
-# Stage 1: Build UI (Node.js optimized)
+# Stage 1: Build via Nix flake
 #################################
-FROM node:20-alpine AS ui-build
+FROM nixos/nix:latest AS builder
 
-# Install git for version detection
-RUN apk add --no-cache git
+# Seed the Nix store cache from the base image the first time it is used.
+# The same cache IDs are mounted over /nix/store and /nix/var/nix in the build
+# step below; without this seed, the empty cache mount would shadow the base
+# image layer, making /bin/sh (a symlink into /nix/store) unreachable.
+# The .nix-seeded sentinel prevents redundant copies on subsequent builds.
+RUN --mount=type=cache,id=jellyswarrm-nix-store,target=/nix/store-init,sharing=locked \
+  --mount=type=cache,id=jellyswarrm-nix-var,target=/nix/var-init,sharing=locked \
+  if [ ! -e /nix/store-init/.nix-seeded ]; then \
+  cp -a /nix/store/. /nix/store-init/ && \
+  cp -a /nix/var/nix/. /nix/var-init/ && \
+  touch /nix/store-init/.nix-seeded; \
+  fi
 
-WORKDIR /app/ui
+COPY . /tmp/build
+WORKDIR /tmp/build
 
-# Copy package files for dependency caching
-COPY ui/package.json ui/package-lock.json* ./
-
-# Install all dependencies (including dev deps needed for build)
-RUN --mount=type=cache,target=/root/.npm \
-    npm install --engine-strict=false --ignore-scripts
-
-# Copy UI source code and git metadata
-COPY ui/ ./
-COPY .git/modules/ui/ /app/.git/modules/ui/
-
-# Get and print UI version info
-RUN UI_VERSION=$(git describe --tags --abbrev=0) && \
-    UI_COMMIT=$(git rev-parse HEAD) && \
-    echo "UI_VERSION=${UI_VERSION#v}" && \
-    echo "UI_COMMIT=$UI_COMMIT"
-
-# Build production UI bundle
-RUN npm run build:production
-
-# Write ui-version.env file
-RUN UI_VERSION=$(git describe --tags --abbrev=0) && \
-    UI_COMMIT=$(git rev-parse HEAD) && \
-    printf "UI_VERSION=%s\nUI_COMMIT=%s\n" "${UI_VERSION#v}" "$UI_COMMIT" > dist/ui-version.env && \
-    echo "Generated dist/ui-version.env"
-
+# The caches now contain the base image's store content plus any previously
+# compiled derivations, so Nix can reuse them instead of rebuilding from scratch.
+# The closure copy and result dereference must happen in this same RUN step
+# while the cache mounts are still active.
+RUN --mount=type=cache,id=jellyswarrm-nix-store,target=/nix/store,sharing=locked \
+  --mount=type=cache,id=jellyswarrm-nix-var,target=/nix/var/nix,sharing=locked \
+  nix --extra-experimental-features "nix-command flakes" \
+  --option filter-syscalls false \
+  build path:.#jellyswarrm --print-build-logs --verbose && \
+  mkdir -p /tmp/nix-store-closure /tmp/build-result && \
+  cp -R $(nix-store -qR result/) /tmp/nix-store-closure && \
+  cp -rL result/. /tmp/build-result/
 
 
 #################################
-# Stage 2: Rust Dependencies Cache
+# Stage 2: Minimal scratch image
 #################################
-FROM rust:1.92.0-alpine AS rust-deps
+FROM scratch
 
 WORKDIR /app
 
-# Install build dependencies
-RUN apk add --no-cache \
-	build-base \
-	pkgconf \
-	sqlite-dev \
-	openssl-dev
-
-# Copy Cargo manifests for dependency caching
-COPY .cargo .cargo
-COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
-COPY crates/jellyswarrm-proxy/Cargo.toml crates/jellyswarrm-proxy/Cargo.toml
-COPY crates/jellyswarrm-macros/Cargo.toml crates/jellyswarrm-macros/Cargo.toml
-COPY crates/jellyfin-api/Cargo.toml crates/jellyfin-api/Cargo.toml
-
-# Create dummy source files to build dependencies
-RUN mkdir -p crates/jellyswarrm-proxy/src crates/jellyswarrm-macros/src crates/jellyfin-api/src \
-	&& echo "fn main() {}" > crates/jellyswarrm-proxy/src/main.rs \
-	&& echo "" > crates/jellyswarrm-proxy/src/lib.rs \
-	&& echo "use proc_macro::TokenStream; #[proc_macro_attribute] pub fn multi_case_struct(_args: TokenStream, input: TokenStream) -> TokenStream { input }" > crates/jellyswarrm-macros/src/lib.rs \
-	&& echo "" > crates/jellyfin-api/src/lib.rs
-
-# Build dependencies only (will be cached)
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/tmp/target,sharing=locked \
-    CARGO_TARGET_DIR=/tmp/target cargo build --release --bin jellyswarrm-proxy \
-	&& cp /tmp/target/release/jellyswarrm-proxy /app/jellyswarrm-proxy-deps \
-	&& rm -rf crates/jellyswarrm-proxy/src crates/jellyswarrm-macros/src crates/jellyfin-api/src
-
-#################################
-# Stage 3: Build Rust Application
-#################################
-FROM rust-deps AS rust-build
-
-# Set env var so build.rs skips internal UI build (we already did it)
-ENV JELLYSWARRM_SKIP_UI=1
-
-# Copy UI build artifacts from stage 1
-COPY --from=ui-build /app/ui/dist crates/jellyswarrm-proxy/static/
-
-# Copy Rust source code and configuration
-COPY crates/jellyswarrm-proxy/askama.toml crates/jellyswarrm-proxy/askama.toml
-COPY crates/jellyswarrm-proxy/src crates/jellyswarrm-proxy/src
-COPY crates/jellyswarrm-proxy/migrations crates/jellyswarrm-proxy/migrations
-COPY crates/jellyswarrm-macros/src crates/jellyswarrm-macros/src
-COPY crates/jellyfin-api/src crates/jellyfin-api/src
-
-# Build only the application code (dependencies already cached)
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/tmp/target,sharing=locked \
-    rm -rf /tmp/target/release/deps/libjellyswarrm_macros* /tmp/target/release/deps/jellyswarrm_macros* \
-    && rm -rf /tmp/target/release/deps/libjellyfin_api* \
-    && touch crates/jellyswarrm-macros/src/lib.rs \
-    && touch crates/jellyfin-api/src/lib.rs \
-    && CARGO_TARGET_DIR=/tmp/target cargo build --release --bin jellyswarrm-proxy \
-    && cp /tmp/target/release/jellyswarrm-proxy /app/jellyswarrm-proxy
-
-#################################
-# Stage 4: Runtime Image (Alpine)
-#################################
-FROM alpine:3.20 AS runtime
-
-WORKDIR /app
+# The closure provides glibc, sqlite, and cacert — everything the binary needs.
+COPY --from=builder /tmp/nix-store-closure /nix/store
+COPY --from=builder /tmp/build-result /app
 
 ENV RUST_LOG=info
 
-# Install minimal runtime dependencies
-RUN apk add --no-cache \
-	ca-certificates \
-	sqlite-libs \
-	&& update-ca-certificates
-
-# Copy the compiled binary
-COPY --from=rust-build /app/jellyswarrm-proxy /app/jellyswarrm-proxy
-
 EXPOSE 3000
 
-ENTRYPOINT ["/app/jellyswarrm-proxy"]
-
+ENTRYPOINT ["/app/bin/jellyswarrm-proxy"]

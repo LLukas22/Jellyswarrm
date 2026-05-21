@@ -25,39 +25,41 @@
           extensions = [ "rust-src" ];
         };
 
-        jellyswarrm = pkgs.rustPlatform.buildRustPackage rec{
+        jellyswarrm = pkgs.rustPlatform.buildRustPackage {
           pname = "jellyswarrm";
-          version = "0.2.0";
+          version = "0.2.1";
 
-          src = pkgs.fetchFromGitHub {
-            owner = "LLukas22";
-            repo = "Jellyswarrm";
-            rev = "v${version}";
-            # Hash must be updated upon new release of Jellyswarrm
-            sha256 = "sha256-UvHZ5u9mSzMc7OxJF+diQmaxmXt+wXsVA6bI23TW8vw=";
+          src = self;
+
+          cargoLock = {
+            lockFile = ./Cargo.lock;
           };
 
-          # Hash must be updated upon new release of Jellyswarrm
-          cargoHash = "sha256-aWMW/mACrdCQWCi+9+2jQXYYEE1e84xlFWexr+SzM2o=";
+          nativeBuildInputs = with pkgs; [
+            pkg-config
+            makeBinaryWrapper
+          ];
 
           buildInputs = with pkgs; [
-            jellyfin-web
+            sqlite
           ];
 
           env = {
-            # Skip internal UI build since we are using the nix package for jellyfin-web
             JELLYSWARRM_SKIP_UI = "1";
           };
 
           preBuild = ''
-            # Move the contents of pre-built jellyfin-web to the cargo
             mkdir -p crates/jellyswarrm-proxy/static
             cp -r ${jellyfinWeb}/share/jellyfin-web/* crates/jellyswarrm-proxy/static/
-            # ui-version.env is required for the cargo build
             cat > crates/jellyswarrm-proxy/static/ui-version.env <<EOF
-              UI_VERSION=${jellyfinWeb.version}
-              UI_COMMIT=nix
+            UI_VERSION=${jellyfinWeb.version}
+            UI_COMMIT=nix
             EOF
+          '';
+
+          postInstall = ''
+            wrapProgram $out/bin/jellyswarrm-proxy \
+              --set SSL_CERT_FILE ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
           '';
         };
 
