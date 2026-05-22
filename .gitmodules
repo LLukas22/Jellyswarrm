@@ -1,3 +1,0 @@
-[submodule "ui"]
-	path = ui
-	url = https://github.com/jellyfin/jellyfin-web.git
