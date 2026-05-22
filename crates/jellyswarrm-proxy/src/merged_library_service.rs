@@ -114,7 +114,7 @@ impl MergedLibraryService {
             .await?;
         for (server_url, virtual_library_id) in members {
             sqlx::query(
-                "INSERT INTO merged_library_members \
+                "INSERT OR REPLACE INTO merged_library_members \
                  (merged_virtual_id, server_url, virtual_library_id) VALUES (?, ?, ?)",
             )
             .bind(merged_virtual_id)
