@@ -467,7 +467,7 @@ pub async fn get_items_from_all_servers(
                 .0
                 .name
                 .clone()
-                .unwrap_or_else(|| ct_key.splitn(2, ':').nth(1).map(str::to_string).unwrap_or_else(|| ct_key.clone()));
+                .unwrap_or_else(|| ct_key.split_once(':').map(|x| x.1.to_string()).unwrap_or_else(|| ct_key.clone()));
 
             let merged = match state
                 .merged_library_service
