@@ -11,10 +11,11 @@ use std::collections::HashMap;
 use tracing::{error, info};
 
 use crate::{
-    encryption::Password,
+    encryption::{HashedPassword, Password},
     federated_users::ServerSyncResult,
+    server_id::ServerId,
     server_storage::Server,
-    user_authorization_service::{ServerMapping, User},
+    user_authorization_service::{ServerMapping, User, UserAuthorizationService},
     AppState,
 };
 
@@ -57,9 +58,33 @@ pub struct AddUserForm {
 #[derive(Deserialize)]
 pub struct AddMappingForm {
     pub user_id: String,
-    pub server_url: String,
+    pub server_id: ServerId,
     pub mapped_username: String,
     pub mapped_password: Password,
+}
+
+fn mapping_credentials_changed(
+    user_authorization: &UserAuthorizationService,
+    previous_mapping: &ServerMapping,
+    user: &User,
+    admin_password_hash: &HashedPassword,
+    admin_password: &Password,
+    mapped_username: &str,
+    mapped_password: &Password,
+) -> bool {
+    let mapped_username_changed = !previous_mapping
+        .mapped_username
+        .trim()
+        .eq_ignore_ascii_case(mapped_username.trim());
+    let previous_password = user_authorization.decrypt_server_mapping_password(
+        previous_mapping,
+        &user.original_password_hash,
+        admin_password_hash,
+        None,
+        Some(admin_password),
+    );
+
+    mapped_username_changed || previous_password != *mapped_password
 }
 
 pub async fn create_user_with_mappings(
@@ -67,7 +92,7 @@ pub async fn create_user_with_mappings(
     user: User,
     servers: &[Server],
 ) -> UserWithMappings {
-    // session counts per server_url (normalized)
+    // Session counts keyed by canonical server URL for template display.
     let mut session_counts: HashMap<String, i64> = HashMap::new();
     if let Ok(rows) = state
         .user_authorization
@@ -84,20 +109,17 @@ pub async fn create_user_with_mappings(
         .list_server_mappings(&user.id)
         .await;
     let mut mappings_vec: Vec<(ServerMapping, Server, i64)> = Vec::new();
-    let mut mapped_urls: Vec<String> = Vec::new();
+    let mut mapped_server_ids: Vec<ServerId> = Vec::new();
     match mappings_fetch {
         Ok(mappings) => {
             for mapping in mappings {
-                if let Some(server) = servers.iter().find(|srv| {
-                    srv.url.as_str().trim_end_matches('/')
-                        == mapping.server_url.trim_end_matches('/')
-                }) {
+                if let Some(server) = servers.iter().find(|srv| srv.id == mapping.server_id) {
                     let count = session_counts
-                        .get(mapping.server_url.trim_end_matches('/'))
+                        .get(server.url.as_str())
                         .cloned()
                         .unwrap_or(0);
                     mappings_vec.push((mapping, server.clone(), count));
-                    mapped_urls.push(server.url.as_str().trim_end_matches('/').to_string());
+                    mapped_server_ids.push(server.id);
                 }
             }
         }
@@ -107,11 +129,7 @@ pub async fn create_user_with_mappings(
     }
     let available_servers: Vec<Server> = servers
         .iter()
-        .filter(|srv| {
-            !mapped_urls
-                .iter()
-                .any(|u| u == srv.url.as_str().trim_end_matches('/'))
-        })
+        .filter(|srv| !mapped_server_ids.contains(&srv.id))
         .cloned()
         .collect();
     let user_total_sessions: i64 = mappings_vec.iter().map(|(_, _, c)| *c).sum();
@@ -372,7 +390,7 @@ pub async fn add_mapping(
 
     info!(
         "Validating mapping credentials for local user '{}' on '{}' as mapped user '{}'.",
-        form.user_id, form.server_url, form.mapped_username
+        form.user_id, form.server_id, form.mapped_username
     );
 
     let all_servers = match state.server_storage.list_servers().await {
@@ -388,11 +406,7 @@ pub async fn add_mapping(
         }
     };
 
-    let normalized_target = form.server_url.trim_end_matches('/');
-    let server = match all_servers
-        .into_iter()
-        .find(|s| s.url.as_str().trim_end_matches('/') == normalized_target)
-    {
+    let server = match all_servers.into_iter().find(|s| s.id == form.server_id) {
         Some(server) => server,
         None => {
             return user_item_with_popup(
@@ -465,14 +479,14 @@ pub async fn add_mapping(
 
     let previous_mapping = match state
         .user_authorization
-        .get_server_mapping(&form.user_id, &form.server_url)
+        .get_server_mapping(&form.user_id, &server)
         .await
     {
         Ok(mapping) => mapping,
         Err(e) => {
             error!(
                 "Failed to load existing mapping for local user '{}' to server '{}': {}",
-                form.user_id, form.server_url, e
+                form.user_id, server.name, e
             );
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -482,40 +496,78 @@ pub async fn add_mapping(
         }
     };
 
-    let mapped_username_changed = previous_mapping.as_ref().is_some_and(|mapping| {
-        !mapping
-            .mapped_username
-            .trim()
-            .eq_ignore_ascii_case(form.mapped_username.trim())
-    });
+    let previous_mapping_user = if previous_mapping.is_some() {
+        match state.user_authorization.get_user_by_id(&form.user_id).await {
+            Ok(Some(user)) => Some(user),
+            Ok(None) => {
+                return user_item_with_popup(
+                    &state,
+                    &form.user_id,
+                    "Local user was not found. Please refresh and try again.".to_string(),
+                )
+                .await;
+            }
+            Err(e) => {
+                error!(
+                    "Failed to load local user '{}' while comparing mapping credentials: {}",
+                    form.user_id, e
+                );
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Html(
+                        "<div class=\"alert alert-error\">Failed to inspect existing mapping</div>",
+                    ),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        None
+    };
 
-    let config = state.config.read().await;
-    let admin_password = &config.password;
+    let admin_password = {
+        let config = state.config.read().await;
+        config.password.clone()
+    };
+    let admin_password_hash: HashedPassword = (&admin_password).into();
+
+    let mapped_credentials_changed = match (&previous_mapping, &previous_mapping_user) {
+        (Some(mapping), Some(user)) => mapping_credentials_changed(
+            &state.user_authorization,
+            mapping,
+            user,
+            &admin_password_hash,
+            &admin_password,
+            &form.mapped_username,
+            &form.mapped_password,
+        ),
+        _ => false,
+    };
 
     match state
         .user_authorization
         .add_server_mapping(
             &form.user_id,
-            &form.server_url,
+            &server,
             &form.mapped_username,
             &form.mapped_password,
-            Some(&admin_password.into()),
+            Some(&admin_password_hash),
         )
         .await
     {
         Ok(mapping_id) => {
             info!(
                 "Saved mapping {} for local user '{}' to server '{}' as mapped user '{}'.",
-                mapping_id, form.user_id, form.server_url, form.mapped_username
+                mapping_id, form.user_id, server.name, form.mapped_username
             );
-            if mapped_username_changed {
+            if mapped_credentials_changed {
                 match state
                     .user_authorization
                     .delete_sessions_for_mapping(mapping_id)
                     .await
                 {
                     Ok(deleted) => info!(
-                        "Mapped account changed for mapping {} (user {}). Deleted {} affected session(s)",
+                        "Mapped credentials changed for mapping {} (user {}). Deleted {} affected session(s)",
                         mapping_id, form.user_id, deleted
                     ),
                     Err(e) => error!(
@@ -529,7 +581,7 @@ pub async fn add_mapping(
         Err(e) => {
             error!(
                 "Failed to save mapping for local user '{}' to server '{}': {}",
-                form.user_id, form.server_url, e
+                form.user_id, server.name, e
             );
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -586,5 +638,83 @@ pub async fn delete_sessions(
             )
                 .into_response()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::encryption::encrypt_password;
+    use sqlx::SqlitePool;
+
+    fn test_user() -> User {
+        let now = chrono::Utc::now();
+        User {
+            id: "user-id".to_string(),
+            virtual_key: "virtual-key".to_string(),
+            original_username: "local-user".to_string(),
+            original_password_hash: HashedPassword::from_password("local-password"),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn test_mapping(
+        mapped_password: Password,
+        admin_password_hash: &HashedPassword,
+    ) -> ServerMapping {
+        let now = chrono::Utc::now();
+        ServerMapping {
+            id: 1,
+            user_id: "user-id".to_string(),
+            server_id: ServerId::new(1),
+            server_url: "http://localhost:8096".to_string(),
+            mapped_username: "mapped-user".to_string(),
+            mapped_password: encrypt_password(&mapped_password, admin_password_hash).unwrap(),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_mapping_credentials_changed_detects_password_only_change() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let service = UserAuthorizationService::new(pool);
+        let admin_password: Password = "admin-password".into();
+        let admin_password_hash: HashedPassword = (&admin_password).into();
+        let user = test_user();
+        let mapping = test_mapping("old-password".into(), &admin_password_hash);
+        let new_password: Password = "new-password".into();
+
+        assert!(mapping_credentials_changed(
+            &service,
+            &mapping,
+            &user,
+            &admin_password_hash,
+            &admin_password,
+            "mapped-user",
+            &new_password,
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_mapping_credentials_changed_ignores_unchanged_credentials() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let service = UserAuthorizationService::new(pool);
+        let admin_password: Password = "admin-password".into();
+        let admin_password_hash: HashedPassword = (&admin_password).into();
+        let user = test_user();
+        let same_password: Password = "old-password".into();
+        let mapping = test_mapping(same_password.clone(), &admin_password_hash);
+
+        assert!(!mapping_credentials_changed(
+            &service,
+            &mapping,
+            &user,
+            &admin_password_hash,
+            &admin_password,
+            " mapped-user ",
+            &same_password,
+        ));
     }
 }

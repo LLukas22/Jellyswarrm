@@ -35,10 +35,10 @@
             <input type="hidden" name="user_id" value="{{ uwm.user.id }}">
             <div class="grid" style="--pico-grid-gap:1rem; align-items:end;">
                 <label>Server
-                    <select id="server-{{ uwm.user.id }}" name="server_url" required style="margin-bottom:0;">
+                    <select id="server-{{ uwm.user.id }}" name="server_id" required style="margin-bottom:0;">
                         <option value="" disabled selected>Select server</option>
                         {% for server in uwm.available_servers %}
-                        <option value="{{ server.url }}">{{ server.name }}</option>
+                        <option value="{{ server.id }}">{{ server.name }}</option>
                         {% endfor %}
                     </select>
                 </label>

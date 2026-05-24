@@ -10,7 +10,7 @@ use axum::{
 use axum_messages::MessagesManagerLayer;
 use percent_encoding::percent_decode_str;
 use rust_embed::RustEmbed;
-use sqlx::{sqlite::SqliteConnectOptions, SqlitePool};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::{net::SocketAddr, str::FromStr};
 use std::{sync::Arc, time::Duration};
 use tokio::task::AbortHandle;
@@ -30,11 +30,14 @@ mod config;
 mod encryption;
 mod federated_users;
 mod handlers;
+mod legacy_server_identity;
 mod media_storage_service;
 mod models;
 mod processors;
 mod request_preprocessing;
+mod server_id;
 mod server_storage;
+mod server_url;
 mod session_storage;
 mod ui;
 mod url_helper;
@@ -42,6 +45,7 @@ mod user_authorization_service;
 
 use federated_users::FederatedUserService;
 use handlers::syncplay::SyncPlayService;
+use legacy_server_identity::canonicalize_legacy_server_identity;
 use media_storage_service::MediaStorageService;
 use server_storage::ServerStorageService;
 use user_authorization_service::UserAuthorizationService;
@@ -210,7 +214,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db_url = format!("sqlite://{}", db_path.to_string_lossy());
     let options = SqliteConnectOptions::from_str(&db_url)?.create_if_missing(true);
 
-    let pool = SqlitePool::connect_with(options).await?;
+    let pool = SqlitePoolOptions::new()
+        .after_connect(|connection, _| {
+            Box::pin(async move {
+                sqlx::query("PRAGMA foreign_keys = ON;")
+                    .execute(connection)
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect_with(options)
+        .await?;
+
+    canonicalize_legacy_server_identity(&pool)
+        .await
+        .unwrap_or_else(|e| {
+            error!(
+                "Failed to canonicalize legacy server identity data: {:#}",
+                e
+            );
+            std::process::exit(1);
+        });
 
     MIGRATOR.run(&pool).await.unwrap_or_else(|e| {
         error!("Failed to run database migrations: {}", e);

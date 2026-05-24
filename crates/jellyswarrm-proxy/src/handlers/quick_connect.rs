@@ -498,9 +498,10 @@ pub async fn handle_authenticate_with_quick_connect(
     let authorization = effective_quick_connect_authorization(&headers, &session, &user.id);
 
     for server_mapping in server_mappings {
-        if let Some(pos) = servers.iter().position(|s| {
-            s.url.as_str().trim_end_matches('/') == server_mapping.server_url.trim_end_matches('/')
-        }) {
+        if let Some(pos) = servers
+            .iter()
+            .position(|s| s.id == server_mapping.server_id)
+        {
             let server = servers.remove(pos);
             let state = state.clone();
             let authorization = authorization.clone();
@@ -518,8 +519,8 @@ pub async fn handle_authenticate_with_quick_connect(
             }));
         } else {
             debug!(
-                "Skipping mapping for unknown server URL {}",
-                server_mapping.server_url
+                "Skipping mapping for unknown server ID {}",
+                server_mapping.server_id
             );
         }
     }
@@ -606,7 +607,7 @@ async fn authenticate_with_mapping_on_server(
         .user_authorization
         .add_server_mapping(
             &user.id,
-            server.url.as_str(),
+            &server,
             &server_mapping.mapped_username,
             &mapped_password,
             Some(&user.original_password_hash),
@@ -637,7 +638,7 @@ async fn authenticate_with_mapping_on_server(
         .user_authorization
         .store_authorization_session(
             &user.id,
-            server.url.as_str(),
+            &server,
             &auth_to_store,
             auth_token,
             original_user_id,
@@ -898,10 +899,16 @@ mod tests {
             .mount(&upstream)
             .await;
 
-        state
+        let upstream_server_id = state
             .server_storage
             .add_server("Upstream", &upstream.uri(), 100, MediaStreamingMode::Proxy)
             .await
+            .unwrap();
+        let upstream_server = state
+            .server_storage
+            .get_server_by_id(upstream_server_id)
+            .await
+            .unwrap()
             .unwrap();
 
         let user = state
@@ -914,7 +921,7 @@ mod tests {
             .user_authorization
             .add_server_mapping(
                 &user.id,
-                &upstream.uri(),
+                &upstream_server,
                 "mappeduser",
                 &"mappedpass".into(),
                 None,
@@ -934,7 +941,7 @@ mod tests {
             .user_authorization
             .store_authorization_session(
                 &user.id,
-                &upstream.uri(),
+                &upstream_server,
                 &existing_web_auth,
                 "web-upstream-token".to_string(),
                 "upstream-user-id".to_string(),

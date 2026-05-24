@@ -69,10 +69,6 @@ async fn proxy_request(
     Ok(response)
 }
 
-fn session_matches_server(session: &AuthorizationSession, server: &Server) -> bool {
-    session.server_url.trim_end_matches('/') == server.url.as_str().trim_end_matches('/')
-}
-
 fn session_for_server(
     sessions: &Option<Vec<(AuthorizationSession, Server)>>,
     server: &Server,
@@ -80,7 +76,7 @@ fn session_for_server(
     sessions.as_ref().and_then(|sessions| {
         sessions
             .iter()
-            .find(|(session, _)| session_matches_server(session, server))
+            .find(|(_, session_server)| session_server.id == server.id)
             .map(|(session, _)| session.clone())
     })
 }
@@ -115,10 +111,9 @@ pub async fn get_video_resource(
 
     let mut upstream_request = original_request;
     let session = session_for_server(&preprocessed.sessions, &server).or_else(|| {
-        preprocessed
-            .session
-            .clone()
-            .filter(|session| session_matches_server(session, &server))
+        (preprocessed.server.id == server.id)
+            .then(|| preprocessed.session.clone())
+            .flatten()
     });
     let new_auth = remap_authorization(&preprocessed.auth, &session)
         .await

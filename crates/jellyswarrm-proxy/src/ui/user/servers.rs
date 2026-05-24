@@ -10,7 +10,8 @@ use serde::Deserialize;
 use tracing::{error, info};
 
 use crate::{
-    encryption::Password,
+    encryption::{HashedPassword, Password},
+    server_id::ServerId,
     server_storage::Server,
     ui::{auth::AuthenticatedUser, user::common::authenticate_user_on_server},
     AppState,
@@ -83,7 +84,7 @@ pub async fn get_user_servers(
 pub async fn connect_server(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
-    Path(server_id): Path<i64>,
+    Path(server_id): Path<ServerId>,
     Form(form): Form<ConnectServerForm>,
 ) -> impl IntoResponse {
     // Get server details
@@ -127,7 +128,7 @@ pub async fn connect_server(
         Ok(_) => {
             let previous_mapping = match state
                 .user_authorization
-                .get_server_mapping(&user.id, server.url.as_str())
+                .get_server_mapping(&user.id, &server)
                 .await
             {
                 Ok(mapping) => mapping,
@@ -141,11 +142,25 @@ pub async fn connect_server(
                 }
             };
 
-            let mapped_username_changed = previous_mapping.as_ref().is_some_and(|mapping| {
-                !mapping
+            let admin_password = {
+                let config = state.config.read().await;
+                config.password.clone()
+            };
+            let admin_password_hash: HashedPassword = (&admin_password).into();
+            let mapped_credentials_changed = previous_mapping.as_ref().is_some_and(|mapping| {
+                let mapped_username_changed = !mapping
                     .mapped_username
                     .trim()
-                    .eq_ignore_ascii_case(form.username.trim())
+                    .eq_ignore_ascii_case(form.username.trim());
+                let previous_password = state.user_authorization.decrypt_server_mapping_password(
+                    mapping,
+                    &user.password_hash,
+                    &admin_password_hash,
+                    None,
+                    Some(&admin_password),
+                );
+
+                mapped_username_changed || previous_password != form.password
             });
 
             // Credentials valid, create mapping
@@ -153,7 +168,7 @@ pub async fn connect_server(
                 .user_authorization
                 .add_server_mapping(
                     &user.id,
-                    server.url.as_str(),
+                    &server,
                     &form.username,
                     &form.password,
                     Some(&user.password_hash),
@@ -161,14 +176,14 @@ pub async fn connect_server(
                 .await
             {
                 Ok(mapping_id) => {
-                    if mapped_username_changed {
+                    if mapped_credentials_changed {
                         match state
                             .user_authorization
                             .delete_sessions_for_mapping(mapping_id)
                             .await
                         {
                             Ok(deleted) => info!(
-                                "Mapped account changed for user {} on server {}. Deleted {} affected session(s)",
+                                "Mapped credentials changed for user {} on server {}. Deleted {} affected session(s)",
                                 user.username, server.name, deleted
                             ),
                             Err(e) => error!(
@@ -222,7 +237,7 @@ pub async fn connect_server(
 pub async fn delete_server_mapping(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
-    Path(server_id): Path<i64>,
+    Path(server_id): Path<ServerId>,
 ) -> impl IntoResponse {
     // Get server details to find the URL
     let server = match state.server_storage.get_server_by_id(server_id).await {
@@ -248,12 +263,7 @@ pub async fn delete_server_mapping(
     };
 
     // Normalize URLs for comparison (remove trailing slashes)
-    let server_url = server.url.as_str().trim_end_matches('/');
-
-    if let Some(mapping) = mappings
-        .iter()
-        .find(|m| m.server_url.trim_end_matches('/') == server_url)
-    {
+    if let Some(mapping) = mappings.iter().find(|m| m.server_id == server.id) {
         match state
             .user_authorization
             .delete_server_mapping(mapping.id)
@@ -285,7 +295,7 @@ pub async fn delete_server_mapping(
 pub async fn check_user_server_status(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
-    Path(server_id): Path<i64>,
+    Path(server_id): Path<ServerId>,
 ) -> impl IntoResponse {
     // Get server details
     let server = match state.server_storage.get_server_by_id(server_id).await {

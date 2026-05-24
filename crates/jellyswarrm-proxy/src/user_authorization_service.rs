@@ -1,4 +1,4 @@
-use sqlx::{FromRow, Row, SqlitePool};
+use sqlx::{sqlite::SqliteRow, FromRow, Row, SqlitePool};
 use tracing::{debug, error, info, warn};
 
 use crate::config::MediaStreamingMode;
@@ -7,7 +7,10 @@ use crate::encryption::{
     HashedPassword, Password,
 };
 use crate::models::{generate_token, Authorization};
-use crate::server_storage::Server;
+use crate::server_id::ServerId;
+use crate::server_storage::{parse_server_url_column, Server};
+#[cfg(test)]
+use crate::server_url::ServerUrl;
 
 #[derive(Debug, Clone, FromRow, Eq, PartialEq, Hash)]
 pub struct User {
@@ -19,15 +22,31 @@ pub struct User {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(Debug, Clone, FromRow)]
+#[derive(Debug, Clone)]
 pub struct ServerMapping {
     pub id: i64,
     pub user_id: String,
+    pub server_id: ServerId,
     pub server_url: String,
     pub mapped_username: String,
     pub mapped_password: EncryptedPassword,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl<'r> sqlx::FromRow<'r, SqliteRow> for ServerMapping {
+    fn from_row(row: &SqliteRow) -> Result<Self, sqlx::Error> {
+        Ok(Self {
+            id: row.try_get("id")?,
+            user_id: row.try_get("user_id")?,
+            server_id: ServerId::new(row.try_get("server_id")?),
+            server_url: row.try_get("server_url")?,
+            mapped_username: row.try_get("mapped_username")?,
+            mapped_password: row.try_get("mapped_password")?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -43,9 +62,6 @@ pub struct AuthorizationSession {
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
-
-// Manual implementation of FromRow for AuthorizationSession to support nested Device
-use sqlx::sqlite::SqliteRow;
 
 impl<'r> sqlx::FromRow<'r, SqliteRow> for AuthorizationSession {
     fn from_row(row: &SqliteRow) -> Result<Self, sqlx::Error> {
@@ -224,6 +240,33 @@ pub struct UserAuthorizationService {
     pool: SqlitePool,
 }
 
+#[cfg(test)]
+pub enum ServerReference<'a> {
+    Server(&'a Server),
+    Url(&'a str),
+}
+
+#[cfg(test)]
+impl<'a> From<&'a Server> for ServerReference<'a> {
+    fn from(server: &'a Server) -> Self {
+        Self::Server(server)
+    }
+}
+
+#[cfg(test)]
+impl<'a> From<&'a str> for ServerReference<'a> {
+    fn from(server_url: &'a str) -> Self {
+        Self::Url(server_url)
+    }
+}
+
+#[cfg(test)]
+impl<'a> From<&'a &'a str> for ServerReference<'a> {
+    fn from(server_url: &'a &'a str) -> Self {
+        Self::Url(server_url)
+    }
+}
+
 impl UserAuthorizationService {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
@@ -231,6 +274,34 @@ impl UserAuthorizationService {
 
     fn normalized_username_key(username: &str) -> String {
         username.trim().to_string()
+    }
+
+    #[cfg(test)]
+    async fn resolve_server_reference(
+        &self,
+        server: ServerReference<'_>,
+    ) -> Result<(ServerId, String), sqlx::Error> {
+        match server {
+            ServerReference::Server(server) => Ok((server.id, server.url.as_str().to_string())),
+            ServerReference::Url(server_url) => {
+                let server_url = ServerUrl::canonicalize(server_url)
+                    .unwrap_or_else(|_| server_url.trim().trim_end_matches('/').to_string());
+                let server_id = sqlx::query_scalar::<_, i64>(
+                    r#"
+                    SELECT id
+                    FROM servers
+                    WHERE RTRIM(url, '/') = ?
+                    ORDER BY id ASC
+                    LIMIT 1
+                    "#,
+                )
+                .bind(&server_url)
+                .fetch_one(&self.pool)
+                .await?;
+
+                Ok((ServerId::new(server_id), server_url))
+            }
+        }
     }
 
     /// Create or get a user by username.
@@ -414,9 +485,54 @@ impl UserAuthorizationService {
     }
 
     /// Add or update server mapping for a user
+    #[cfg(not(test))]
     pub async fn add_server_mapping(
         &self,
         user_id: &str,
+        server: &Server,
+        mapped_username: &str,
+        mapped_password: &Password,
+        master_password: Option<&HashedPassword>,
+    ) -> Result<i64, sqlx::Error> {
+        self.add_server_mapping_by_id(
+            user_id,
+            server.id,
+            server.url.as_str(),
+            mapped_username,
+            mapped_password,
+            master_password,
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    pub async fn add_server_mapping<'a, S>(
+        &self,
+        user_id: &str,
+        server: S,
+        mapped_username: &str,
+        mapped_password: &Password,
+        master_password: Option<&HashedPassword>,
+    ) -> Result<i64, sqlx::Error>
+    where
+        S: Into<ServerReference<'a>>,
+    {
+        let (server_id, server_url) = self.resolve_server_reference(server.into()).await?;
+        self.add_server_mapping_by_id(
+            user_id,
+            server_id,
+            &server_url,
+            mapped_username,
+            mapped_password,
+            master_password,
+        )
+        .await
+    }
+
+    async fn add_server_mapping_by_id(
+        &self,
+        user_id: &str,
+        server_id: ServerId,
         server_url: &str,
         mapped_username: &str,
         mapped_password: &Password,
@@ -424,7 +540,9 @@ impl UserAuthorizationService {
     ) -> Result<i64, sqlx::Error> {
         let now = chrono::Utc::now();
 
-        let existing_mapping = self.get_server_mapping(user_id, server_url).await?;
+        let existing_mapping = self
+            .get_server_mapping_by_server_id(user_id, server_id)
+            .await?;
 
         let final_password = if let Some(master) = master_password {
             match encrypt_password(mapped_password, master) {
@@ -439,35 +557,26 @@ impl UserAuthorizationService {
             EncryptedPassword::from_raw(mapped_password.as_str().into())
         };
 
-        sqlx::query(
+        let mapping_id = sqlx::query_scalar::<_, i64>(
             r#"
             INSERT INTO server_mappings
-            (user_id, server_url, mapped_username, mapped_password, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(user_id, server_url) DO UPDATE SET
+            (user_id, server_id, server_url, mapped_username, mapped_password, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, server_id) DO UPDATE SET
+                server_url = excluded.server_url,
                 mapped_username = excluded.mapped_username,
                 mapped_password = excluded.mapped_password,
                 updated_at = excluded.updated_at
+            RETURNING id
             "#,
         )
         .bind(user_id)
-        .bind(server_url)
+        .bind(server_id.as_i64())
+        .bind(&server_url)
         .bind(mapped_username)
         .bind(final_password)
         .bind(now)
         .bind(now)
-        .execute(&self.pool)
-        .await?;
-
-        let mapping_id = sqlx::query_scalar::<_, i64>(
-            r#"
-            SELECT id
-            FROM server_mappings
-            WHERE user_id = ? AND server_url = ?
-            "#,
-        )
-        .bind(user_id)
-        .bind(server_url)
         .fetch_one(&self.pool)
         .await?;
 
@@ -545,17 +654,26 @@ impl UserAuthorizationService {
     pub async fn get_server_mapping(
         &self,
         user_id: &str,
-        server_url: &str,
+        server: &Server,
+    ) -> Result<Option<ServerMapping>, sqlx::Error> {
+        self.get_server_mapping_by_server_id(user_id, server.id)
+            .await
+    }
+
+    pub async fn get_server_mapping_by_server_id(
+        &self,
+        user_id: &str,
+        server_id: ServerId,
     ) -> Result<Option<ServerMapping>, sqlx::Error> {
         let mapping = sqlx::query_as::<_, ServerMapping>(
             r#"
-            SELECT id, user_id, server_url, mapped_username, mapped_password, created_at, updated_at
+            SELECT id, user_id, server_id, server_url, mapped_username, mapped_password, created_at, updated_at
             FROM server_mappings
-            WHERE user_id = ? AND server_url = ?
+            WHERE user_id = ? AND server_id = ?
             "#,
         )
         .bind(user_id)
-        .bind(server_url)
+        .bind(server_id.as_i64())
         .fetch_optional(&self.pool)
         .await?;
 
@@ -569,7 +687,7 @@ impl UserAuthorizationService {
     ) -> Result<Vec<ServerMapping>, sqlx::Error> {
         let mappings = sqlx::query_as::<_, ServerMapping>(
             r#"
-            SELECT id, user_id, server_url, mapped_username, mapped_password, created_at, updated_at
+            SELECT id, user_id, server_id, server_url, mapped_username, mapped_password, created_at, updated_at
             FROM server_mappings
             WHERE user_id = ?
             ORDER BY server_url
@@ -583,9 +701,58 @@ impl UserAuthorizationService {
     }
 
     /// Store authorization session
+    #[cfg(not(test))]
     pub async fn store_authorization_session(
         &self,
         user_id: &str,
+        server: &Server,
+        authorization: &Authorization,
+        jellyfin_token: String,
+        original_user_id: String,
+        expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<i64, sqlx::Error> {
+        self.store_authorization_session_by_id(
+            user_id,
+            server.id,
+            server.url.as_str(),
+            authorization,
+            jellyfin_token,
+            original_user_id,
+            expires_at,
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    pub async fn store_authorization_session<'a, S>(
+        &self,
+        user_id: &str,
+        server: S,
+        authorization: &Authorization,
+        jellyfin_token: String,
+        original_user_id: String,
+        expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<i64, sqlx::Error>
+    where
+        S: Into<ServerReference<'a>>,
+    {
+        let (server_id, server_url) = self.resolve_server_reference(server.into()).await?;
+        self.store_authorization_session_by_id(
+            user_id,
+            server_id,
+            &server_url,
+            authorization,
+            jellyfin_token,
+            original_user_id,
+            expires_at,
+        )
+        .await
+    }
+
+    async fn store_authorization_session_by_id(
+        &self,
+        user_id: &str,
+        server_id: ServerId,
         server_url: &str,
         authorization: &Authorization,
         jellyfin_token: String,
@@ -596,20 +763,30 @@ impl UserAuthorizationService {
 
         // Find mapping to obtain mapping_id (required for referential integrity & cascade deletes)
         let mapping = self
-            .get_server_mapping(user_id, server_url)
+            .get_server_mapping_by_server_id(user_id, server_id)
             .await?
             .ok_or(sqlx::Error::RowNotFound)?;
 
-        let result = sqlx::query(
+        let session_id = sqlx::query_scalar::<_, i64>(
             r#"
-            INSERT OR REPLACE INTO authorization_sessions
+            INSERT INTO authorization_sessions
             (user_id, mapping_id, server_url, client, device, device_id, version, jellyfin_token, original_user_id, expires_at, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, mapping_id, device_id) DO UPDATE SET
+                server_url = excluded.server_url,
+                client = excluded.client,
+                device = excluded.device,
+                version = excluded.version,
+                jellyfin_token = excluded.jellyfin_token,
+                original_user_id = excluded.original_user_id,
+                expires_at = excluded.expires_at,
+                updated_at = excluded.updated_at
+            RETURNING id
             "#,
         )
         .bind(user_id)
         .bind(mapping.id)
-        .bind(server_url)
+        .bind(&server_url)
         .bind(&authorization.client)
         .bind(&authorization.device)
         .bind(&authorization.device_id)
@@ -619,10 +796,9 @@ impl UserAuthorizationService {
         .bind(expires_at)
         .bind(now)
         .bind(now)
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
 
-        let session_id = result.last_insert_rowid();
         info!(
             "Stored authorization session for user {} on server {}",
             user_id, server_url
@@ -683,7 +859,7 @@ impl UserAuthorizationService {
         auth.id as auth_id,
         auth.user_id as auth_user_id,
         auth.mapping_id as auth_mapping_id,
-        auth.server_url as auth_server_url,
+        sm.server_url as auth_server_url,
         auth.client,
         auth.device,
         auth.device_id,
@@ -702,7 +878,8 @@ impl UserAuthorizationService {
         s.created_at as server_created_at,
         s.updated_at as server_updated_at
     FROM authorization_sessions auth
-    JOIN servers s ON RTRIM(auth.server_url, '/') = RTRIM(s.url, '/')
+    JOIN server_mappings sm ON auth.mapping_id = sm.id
+    JOIN servers s ON sm.server_id = s.id
     WHERE auth.user_id = ?
     AND (auth.expires_at IS NULL OR auth.expires_at > ?)
     ORDER BY s.priority DESC, s.name ASC
@@ -738,9 +915,9 @@ impl UserAuthorizationService {
                 };
 
                 let server = Server {
-                    id: row.get("server_id"),
+                    id: ServerId::new(row.get("server_id")),
                     name: row.get("server_name"),
-                    url: url::Url::parse(row.get::<String, _>("server_url_full").as_str()).unwrap(),
+                    url: parse_server_url_column("server_url_full", row.get("server_url_full"))?,
                     priority: row.get("priority"),
                     media_streaming_mode: row
                         .get::<String, _>("media_streaming_mode")
@@ -750,9 +927,9 @@ impl UserAuthorizationService {
                     updated_at: row.get("server_updated_at"),
                 };
 
-                (auth_session, server)
+                Ok((auth_session, server))
             })
-            .collect();
+            .collect::<Result<_, sqlx::Error>>()?;
 
         debug!("Found {} sessions for user_id: {}", sessions.len(), user_id);
 
@@ -945,10 +1122,20 @@ impl UserAuthorizationService {
 
     /// Delete a server mapping
     pub async fn delete_server_mapping(&self, mapping_id: i64) -> Result<bool, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query("DELETE FROM authorization_sessions WHERE mapping_id = ?")
+            .bind(mapping_id)
+            .execute(&mut *tx)
+            .await?;
+
         let res = sqlx::query("DELETE FROM server_mappings WHERE id = ?")
             .bind(mapping_id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+
+        tx.commit().await?;
+
         Ok(res.rows_affected() > 0)
     }
 
@@ -986,7 +1173,7 @@ impl UserAuthorizationService {
         // 2. Re-encrypt all server mappings
         let mappings = sqlx::query_as::<_, ServerMapping>(
             r#"
-            SELECT id, user_id, server_url, mapped_username, mapped_password, created_at, updated_at
+            SELECT id, user_id, server_id, server_url, mapped_username, mapped_password, created_at, updated_at
             FROM server_mappings
             WHERE user_id = ?
             "#,
@@ -1053,16 +1240,18 @@ impl UserAuthorizationService {
         }
     }
 
-    /// Get counts of authorization sessions per normalized server URL for a user
+    /// Get counts of authorization sessions per server for a user.
     pub async fn session_counts_by_server(
         &self,
         user_id: &str,
     ) -> Result<Vec<(String, i64)>, sqlx::Error> {
         let rows = sqlx::query(
-            r#"SELECT RTRIM(server_url,'/') as url_norm, COUNT(*) as cnt
-                FROM authorization_sessions
-                WHERE user_id = ?
-                GROUP BY url_norm"#,
+            r#"SELECT s.url as url_norm, COUNT(*) as cnt
+                FROM authorization_sessions auth
+                JOIN server_mappings sm ON auth.mapping_id = sm.id
+                JOIN servers s ON sm.server_id = s.id
+                WHERE auth.user_id = ?
+                GROUP BY sm.server_id"#,
         )
         .bind(user_id)
         .fetch_all(&self.pool)
@@ -1073,12 +1262,14 @@ impl UserAuthorizationService {
             .collect())
     }
 
-    /// Aggregate session counts for all users (user_id, server_url_normalized, count)
+    /// Aggregate session counts for all users (user_id, canonical server URL, count).
     pub async fn all_session_counts(&self) -> Result<Vec<(String, String, i64)>, sqlx::Error> {
         let rows = sqlx::query(
-            r#"SELECT user_id, RTRIM(server_url,'/') as url_norm, COUNT(*) as cnt
-                FROM authorization_sessions
-                GROUP BY user_id, url_norm"#,
+            r#"SELECT auth.user_id, s.url as url_norm, COUNT(*) as cnt
+                FROM authorization_sessions auth
+                JOIN server_mappings sm ON auth.mapping_id = sm.id
+                JOIN servers s ON sm.server_id = s.id
+                GROUP BY auth.user_id, sm.server_id"#,
         )
         .fetch_all(&self.pool)
         .await?;
@@ -1112,7 +1303,7 @@ impl UserAuthorizationService {
             r#"
             SELECT s.id, s.name, s.url, s.priority, s.media_streaming_mode, s.created_at, s.updated_at
             FROM servers s
-            JOIN server_mappings sm ON RTRIM(s.url, '/') = RTRIM(sm.server_url, '/')
+            JOIN server_mappings sm ON s.id = sm.server_id
             WHERE sm.user_id = ?
             ORDER BY s.priority DESC, s.name ASC
             "#,
@@ -1123,20 +1314,21 @@ impl UserAuthorizationService {
 
         let servers = rows
             .into_iter()
-            .map(|row| Server {
-                id: row.get("id"),
-                name: row.get("name"),
-                url: url::Url::parse(row.get::<String, _>("url").as_str())
-                    .unwrap_or_else(|_| url::Url::parse("http://invalid-url-in-db").unwrap()),
-                priority: row.get("priority"),
-                media_streaming_mode: row
-                    .get::<String, _>("media_streaming_mode")
-                    .parse()
-                    .unwrap_or(MediaStreamingMode::Redirect),
-                created_at: row.get("created_at"),
-                updated_at: row.get("updated_at"),
+            .map(|row| {
+                Ok(Server {
+                    id: ServerId::new(row.get("id")),
+                    name: row.get("name"),
+                    url: parse_server_url_column("url", row.get("url"))?,
+                    priority: row.get("priority"),
+                    media_streaming_mode: row
+                        .get::<String, _>("media_streaming_mode")
+                        .parse()
+                        .unwrap_or(MediaStreamingMode::Redirect),
+                    created_at: row.get("created_at"),
+                    updated_at: row.get("updated_at"),
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, sqlx::Error>>()?;
 
         Ok(servers)
     }
@@ -1147,6 +1339,34 @@ mod tests {
     use crate::config::MIGRATOR;
 
     use super::*;
+
+    async fn setup_service() -> (SqlitePool, UserAuthorizationService) {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = UserAuthorizationService::new(pool.clone());
+        (pool, service)
+    }
+
+    async fn insert_test_server(pool: &SqlitePool, name: &str, url: &str) -> ServerId {
+        let now = chrono::Utc::now();
+        let id = sqlx::query_scalar::<_, i64>(
+            r#"
+            INSERT INTO servers (name, url, priority, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            RETURNING id
+            "#,
+        )
+        .bind(name)
+        .bind(url)
+        .bind(100)
+        .bind(now)
+        .bind(now)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+
+        ServerId::new(id)
+    }
 
     #[test]
     fn test_device_from_useragent_parsing() {
@@ -1227,6 +1447,103 @@ mod tests {
             all_users.len(),
             1,
             "should not create duplicate local users"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_store_authorization_session_upserts_existing_device_session() {
+        let (pool, service) = setup_service().await;
+        insert_test_server(&pool, "Test Server", "http://localhost:8096").await;
+
+        let user = service
+            .get_or_create_user("testuser", &"testpass".into())
+            .await
+            .unwrap();
+        let mapping_id = service
+            .add_server_mapping(
+                &user.id,
+                "http://localhost:8096",
+                "mappeduser",
+                &"mappedpass".into(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let mut auth = Authorization {
+            client: "Test Client".to_string(),
+            device: "Test Device".to_string(),
+            device_id: "test-device-id".to_string(),
+            version: "1.0.0".to_string(),
+            token: None,
+        };
+
+        let first_session_id = service
+            .store_authorization_session(
+                &user.id,
+                "http://localhost:8096",
+                &auth,
+                "old-token".to_string(),
+                "old-original-user".to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+        let first_created_at = sqlx::query_scalar::<_, chrono::DateTime<chrono::Utc>>(
+            "SELECT created_at FROM authorization_sessions WHERE id = ?",
+        )
+        .bind(first_session_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        auth.version = "2.0.0".to_string();
+
+        let second_session_id = service
+            .store_authorization_session(
+                &user.id,
+                "http://localhost:8096",
+                &auth,
+                "new-token".to_string(),
+                "new-original-user".to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(first_session_id, second_session_id);
+
+        let count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM authorization_sessions WHERE mapping_id = ?",
+        )
+        .bind(mapping_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1);
+
+        let row = sqlx::query(
+            r#"
+            SELECT jellyfin_token, original_user_id, version, created_at
+            FROM authorization_sessions
+            WHERE id = ?
+            "#,
+        )
+        .bind(first_session_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(row.get::<String, _>("jellyfin_token"), "new-token");
+        assert_eq!(
+            row.get::<String, _>("original_user_id"),
+            "new-original-user"
+        );
+        assert_eq!(row.get::<String, _>("version"), "2.0.0");
+        assert_eq!(
+            row.get::<chrono::DateTime<chrono::Utc>, _>("created_at"),
+            first_created_at
         );
     }
 
@@ -2255,7 +2572,7 @@ mod tests {
             .1;
         assert_eq!(sessions_before.len(), 1);
 
-        // Delete mapping (should cascade delete session)
+        // Delete mapping (authorization sessions are removed explicitly before FK cascade backup)
         let deleted = service.delete_server_mapping(mapping_id).await.unwrap();
         assert!(deleted);
 
@@ -2269,7 +2586,7 @@ mod tests {
         assert_eq!(
             sessions_after.len(),
             0,
-            "Session should be deleted via cascade"
+            "Session should be deleted with the mapping"
         );
     }
 

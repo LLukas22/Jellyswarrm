@@ -167,7 +167,7 @@ pub async fn get_virtual_id(
     server: &Server,
 ) -> Result<String, StatusCode> {
     let mapping = media_storage
-        .get_or_create_media_mapping(id, server.url.as_str())
+        .get_or_create_media_mapping(id, server)
         .await
         .map_err(|e| {
             error!(
