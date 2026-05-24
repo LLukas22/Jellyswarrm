@@ -10,7 +10,7 @@ use serde::Deserialize;
 use tracing::{error, info};
 
 use crate::{
-    encryption::{HashedPassword, Password},
+    encryption::Password,
     server_id::ServerId,
     server_storage::Server,
     ui::{auth::AuthenticatedUser, user::common::authenticate_user_on_server},
@@ -126,43 +126,6 @@ pub async fn connect_server(
 
     match client.authenticate_by_name(&form.username, form.password.as_str()).await {
         Ok(_) => {
-            let previous_mapping = match state
-                .user_authorization
-                .get_server_mapping(&user.id, &server)
-                .await
-            {
-                Ok(mapping) => mapping,
-                Err(e) => {
-                    error!("Failed to inspect existing mapping: {}", e);
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Html("<span style=\"color: #dc3545;\">Database error</span>"),
-                    )
-                        .into_response();
-                }
-            };
-
-            let admin_password = {
-                let config = state.config.read().await;
-                config.password.clone()
-            };
-            let admin_password_hash: HashedPassword = (&admin_password).into();
-            let mapped_credentials_changed = previous_mapping.as_ref().is_some_and(|mapping| {
-                let mapped_username_changed = !mapping
-                    .mapped_username
-                    .trim()
-                    .eq_ignore_ascii_case(form.username.trim());
-                let previous_password = state.user_authorization.decrypt_server_mapping_password(
-                    mapping,
-                    &user.password_hash,
-                    &admin_password_hash,
-                    None,
-                    Some(&admin_password),
-                );
-
-                mapped_username_changed || previous_password != form.password
-            });
-
             // Credentials valid, create mapping
             match state
                 .user_authorization
@@ -175,24 +138,7 @@ pub async fn connect_server(
                 )
                 .await
             {
-                Ok(mapping_id) => {
-                    if mapped_credentials_changed {
-                        match state
-                            .user_authorization
-                            .delete_sessions_for_mapping(mapping_id)
-                            .await
-                        {
-                            Ok(deleted) => info!(
-                                "Mapped credentials changed for user {} on server {}. Deleted {} affected session(s)",
-                                user.username, server.name, deleted
-                            ),
-                            Err(e) => error!(
-                                "Failed to delete sessions for updated mapping {}: {}",
-                                mapping_id, e
-                            ),
-                        }
-                    }
-
+                Ok(_) => {
                     info!(
                         "Created mapping for user {} to server {}",
                         user.username, server.name
@@ -205,15 +151,15 @@ pub async fn connect_server(
                         HeaderValue::from_str(&format!("/{}", state.get_ui_route().await)).unwrap(),
                     );
                     response
-                },
-                 Err(e) => {
-                     error!("Failed to create mapping: {}", e);
-                     (
-                         StatusCode::OK,
-                         Html("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Database error</div>"),
-                     )
-                         .into_response()
-                 }
+                }
+                Err(e) => {
+                    error!("Failed to create mapping: {}", e);
+                    (
+                        StatusCode::OK,
+                        Html("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Database error</div>"),
+                    )
+                        .into_response()
+                }
             }
         }
         Err(jellyfin_api::error::Error::AuthenticationFailed(_)) => {

@@ -37,6 +37,14 @@ fn extract_video_id(path: &str) -> Option<&str> {
     None
 }
 
+fn extract_play_session_id(url: &url::Url) -> Option<String> {
+    url.query_pairs().find_map(|(key, value)| {
+        (key.eq_ignore_ascii_case("PlaySessionId") || key.eq_ignore_ascii_case("SessionId"))
+            .then(|| value.to_string())
+            .filter(|value| !value.is_empty())
+    })
+}
+
 async fn proxy_request(
     client: &reqwest::Client,
     request: reqwest::Request,
@@ -97,17 +105,65 @@ pub async fn get_video_resource(
         .ok_or(StatusCode::BAD_REQUEST)?;
 
     let id = extract_video_id(original_request.url().path()).ok_or(StatusCode::NOT_FOUND)?;
+    let play_session_id = extract_play_session_id(original_request.url()).ok_or_else(|| {
+        error!("No play session id found for video resource: {}", id);
+        StatusCode::NOT_FOUND
+    })?;
 
-    let server = if let Some(session) = state.play_sessions.get_session_by_item_id(id).await {
-        info!(
-            "Found play session for resource: {}, server: {}",
-            id, session.server.name
-        );
-        session.server
-    } else {
-        error!("No play session found for resource: {}", id);
-        return Err(StatusCode::NOT_FOUND);
+    let play_session = state
+        .play_sessions
+        .get_session_by_session_and_item_id(&play_session_id, id)
+        .await
+        .ok_or_else(|| {
+            error!(
+                "No play session found for resource: {} and session: {}",
+                id, play_session_id
+            );
+            StatusCode::NOT_FOUND
+        })?;
+
+    let server = match state
+        .server_storage
+        .get_server_by_id(play_session.server_id)
+        .await
+        .map_err(|e| {
+            error!(
+                "Failed to resolve server {} for play session {}: {}",
+                play_session.server_id, play_session_id, e
+            );
+            StatusCode::INTERNAL_SERVER_ERROR
+        })? {
+        Some(server) => server,
+        None => {
+            state
+                .play_sessions
+                .remove_sessions_for_server(play_session.server_id)
+                .await;
+            error!(
+                "Server {} for play session {} no longer exists",
+                play_session.server_id, play_session_id
+            );
+            return Err(StatusCode::NOT_FOUND);
+        }
     };
+
+    if !state
+        .server_storage
+        .server_status(server.id)
+        .await
+        .is_healthy()
+    {
+        error!(
+            "Server {} for play session {} is not healthy",
+            server.name, play_session_id
+        );
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    info!(
+        "Found play session for resource: {}, session: {}, server: {}",
+        id, play_session_id, server.name
+    );
 
     let mut upstream_request = original_request;
     let session = session_for_server(&preprocessed.sessions, &server).or_else(|| {

@@ -383,7 +383,7 @@ pub async fn track_play_session(
             .add_session(PlaybackSession {
                 item_id: id.to_string(),
                 session_id: session_id.to_string(),
-                server: server.clone(),
+                server_id: server.id,
             })
             .await;
     } else {
@@ -397,7 +397,7 @@ pub async fn track_play_session(
             .add_session(PlaybackSession {
                 item_id: item.id.clone(),
                 session_id: session_id.to_string(),
-                server: server.clone(),
+                server_id: server.id,
             })
             .await;
     }

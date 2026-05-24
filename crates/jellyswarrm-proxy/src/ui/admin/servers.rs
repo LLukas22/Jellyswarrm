@@ -268,6 +268,10 @@ pub async fn delete_server(
 ) -> Response {
     match state.server_storage.delete_server(server_id).await {
         Ok(true) => {
+            state
+                .play_sessions
+                .remove_sessions_for_server(server_id)
+                .await;
             info!("Deleted server with ID: {}", server_id);
             // Return updated server list
             get_server_list(State(state)).await.into_response()

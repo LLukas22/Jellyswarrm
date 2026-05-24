@@ -276,6 +276,31 @@ impl UserAuthorizationService {
         username.trim().to_string()
     }
 
+    fn mapping_credentials_changed(
+        existing_mapping: &ServerMapping,
+        mapped_username: &str,
+        mapped_password: &Password,
+        master_password: Option<&HashedPassword>,
+    ) -> bool {
+        if !existing_mapping
+            .mapped_username
+            .trim()
+            .eq_ignore_ascii_case(mapped_username.trim())
+        {
+            return true;
+        }
+
+        if let Some(master_password) = master_password {
+            if let Ok(existing_password) =
+                decrypt_password(&existing_mapping.mapped_password, master_password)
+            {
+                return existing_password != *mapped_password;
+            }
+        }
+
+        existing_mapping.mapped_password.as_str() != mapped_password.as_str()
+    }
+
     #[cfg(test)]
     async fn resolve_server_reference(
         &self,
@@ -543,6 +568,14 @@ impl UserAuthorizationService {
         let existing_mapping = self
             .get_server_mapping_by_server_id(user_id, server_id)
             .await?;
+        let credentials_changed = existing_mapping.as_ref().is_some_and(|existing_mapping| {
+            Self::mapping_credentials_changed(
+                existing_mapping,
+                mapped_username,
+                mapped_password,
+                master_password,
+            )
+        });
 
         let final_password = if let Some(master) = master_password {
             match encrypt_password(mapped_password, master) {
@@ -556,6 +589,8 @@ impl UserAuthorizationService {
             warn!("No encryption password provided. Storing as plaintext!");
             EncryptedPassword::from_raw(mapped_password.as_str().into())
         };
+
+        let mut tx = self.pool.begin().await?;
 
         let mapping_id = sqlx::query_scalar::<_, i64>(
             r#"
@@ -577,24 +612,23 @@ impl UserAuthorizationService {
         .bind(final_password)
         .bind(now)
         .bind(now)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await?;
 
-        if let Some(existing_mapping) = existing_mapping {
-            if !existing_mapping
-                .mapped_username
-                .trim()
-                .eq_ignore_ascii_case(mapped_username.trim())
-            {
-                info!(
-                    "Mapped username changed for user {} on server {} from '{}' to '{}'. Sessions were preserved; callers must revoke affected mapping sessions explicitly if needed.",
-                    user_id,
-                    server_url,
-                    existing_mapping.mapped_username,
-                    mapped_username
-                );
-            }
+        if credentials_changed {
+            let deleted = sqlx::query("DELETE FROM authorization_sessions WHERE mapping_id = ?")
+                .bind(mapping_id)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
+
+            info!(
+                "Mapped credentials changed for user {} on server {}. Deleted {} affected session(s).",
+                user_id, server_url, deleted
+            );
         }
+
+        tx.commit().await?;
 
         info!(
             "Added or updated server mapping for user {} to server {}",
@@ -2774,14 +2808,14 @@ mod tests {
             .await
             .unwrap();
 
-        // Re-add mapping for same user/server with same mapped account.
+        // Re-add mapping for same user/server with identical credentials.
         // Should update in place and preserve sessions.
         let mapping_id_2 = service
             .add_server_mapping(
                 &user.id,
                 "http://localhost:8096",
                 "mappeduser",
-                &"mappedpass-updated".into(),
+                &"mappedpass".into(),
                 None,
             )
             .await
@@ -2837,7 +2871,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_add_server_mapping_username_change_preserves_sessions_until_explicit_revoke() {
+    async fn test_add_server_mapping_username_change_deletes_sessions() {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         MIGRATOR.run(&pool).await.unwrap();
         let service = UserAuthorizationService::new(pool.clone());
@@ -2917,9 +2951,8 @@ mod tests {
             .1;
         assert_eq!(sessions_before.len(), 1);
 
-        // Change mapped username -> sessions stay until the caller explicitly revokes the
-        // affected mapping.
-        let mapping_id = service
+        // Change mapped username -> affected sessions are revoked by the service.
+        service
             .add_server_mapping(
                 &user.id,
                 "http://localhost:8096",
@@ -2937,20 +2970,67 @@ mod tests {
             .unwrap()
             .1;
 
-        assert_eq!(sessions_after.len(), 1);
+        assert_eq!(sessions_after.len(), 0);
+    }
 
-        let deleted = service
-            .delete_sessions_for_mapping(mapping_id)
+    #[tokio::test]
+    async fn test_add_server_mapping_password_change_deletes_sessions() {
+        let (pool, service) = setup_service().await;
+        insert_test_server(&pool, "Server 1", "http://localhost:8096").await;
+
+        let user = service
+            .get_or_create_user("testuser", &"testpass".into())
             .await
             .unwrap();
-        assert_eq!(deleted, 1);
 
-        let sessions_after_revoke = service
+        service
+            .add_server_mapping(
+                &user.id,
+                "http://localhost:8096",
+                "mappeduser",
+                &"mappedpass-a".into(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let auth = Authorization {
+            client: "Jellyfin Web".to_string(),
+            device: "Firefox".to_string(),
+            device_id: "device-1".to_string(),
+            version: "10.0.0".to_string(),
+            token: None,
+        };
+
+        service
+            .store_authorization_session(
+                &user.id,
+                "http://localhost:8096",
+                &auth,
+                "token-1".to_string(),
+                "orig-user-1".to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        service
+            .add_server_mapping(
+                &user.id,
+                "http://localhost:8096",
+                "mappeduser",
+                &"mappedpass-b".into(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let sessions_after = service
             .get_user_sessions_by_virtual_token(&user.virtual_key)
             .await
             .unwrap()
             .unwrap()
             .1;
-        assert_eq!(sessions_after_revoke.len(), 0);
+        assert_eq!(sessions_after.len(), 0);
     }
 }
