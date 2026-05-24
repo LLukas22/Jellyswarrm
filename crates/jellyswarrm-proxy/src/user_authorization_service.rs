@@ -572,7 +572,7 @@ impl UserAuthorizationService {
         )
         .bind(user_id)
         .bind(server_id.as_i64())
-        .bind(&server_url)
+        .bind(server_url)
         .bind(mapped_username)
         .bind(final_password)
         .bind(now)
@@ -749,6 +749,7 @@ impl UserAuthorizationService {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn store_authorization_session_by_id(
         &self,
         user_id: &str,
@@ -786,7 +787,7 @@ impl UserAuthorizationService {
         )
         .bind(user_id)
         .bind(mapping.id)
-        .bind(&server_url)
+        .bind(server_url)
         .bind(&authorization.client)
         .bind(&authorization.device)
         .bind(&authorization.device_id)
