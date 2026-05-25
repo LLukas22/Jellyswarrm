@@ -10,6 +10,7 @@ const PLAYBACK_SESSION_TTL: Duration = Duration::from_secs(12 * 60 * 60);
 pub struct PlaybackSession {
     pub session_id: String, // Unique identifier for the session
     pub item_id: String,    // ID of the media item being played
+    pub user_id: String,
     pub server_id: ServerId,
 }
 
@@ -89,6 +90,19 @@ impl SessionStorage {
             .map(|tracked| tracked.session.clone())
     }
 
+    pub async fn get_sessions_by_item_id(&self, item_id: &str) -> Vec<PlaybackSession> {
+        let now = Instant::now();
+        let mut sessions = self.sessions.write().await;
+        Self::prune_stale_sessions(&mut sessions, self.session_ttl, now);
+
+        sessions
+            .iter()
+            .rev()
+            .filter(|tracked| tracked.session.item_id == item_id)
+            .map(|tracked| tracked.session.clone())
+            .collect()
+    }
+
     pub async fn remove_session(&self, session_id: &str) {
         let mut sessions = self.sessions.write().await;
         sessions.retain(|tracked| tracked.session.session_id != session_id);
@@ -120,6 +134,7 @@ mod tests {
             .add_session(PlaybackSession {
                 session_id: "session-1".to_string(),
                 item_id: "item-1".to_string(),
+                user_id: "user-1".to_string(),
                 server_id: ServerId::new(1),
             })
             .await;
@@ -127,6 +142,7 @@ mod tests {
             .add_session(PlaybackSession {
                 session_id: "session-1".to_string(),
                 item_id: "item-1".to_string(),
+                user_id: "user-1".to_string(),
                 server_id: ServerId::new(2),
             })
             .await;
@@ -151,6 +167,7 @@ mod tests {
             .add_session(PlaybackSession {
                 session_id: "session-1".to_string(),
                 item_id: "shared-item".to_string(),
+                user_id: "user-1".to_string(),
                 server_id: ServerId::new(1),
             })
             .await;
@@ -158,6 +175,7 @@ mod tests {
             .add_session(PlaybackSession {
                 session_id: "session-2".to_string(),
                 item_id: "shared-item".to_string(),
+                user_id: "user-1".to_string(),
                 server_id: ServerId::new(2),
             })
             .await;
@@ -188,6 +206,7 @@ mod tests {
             .add_session(PlaybackSession {
                 session_id: "session-1".to_string(),
                 item_id: "item-1".to_string(),
+                user_id: "user-1".to_string(),
                 server_id: ServerId::new(1),
             })
             .await;
@@ -209,6 +228,7 @@ mod tests {
             .add_session(PlaybackSession {
                 session_id: "session-1".to_string(),
                 item_id: "item-1".to_string(),
+                user_id: "user-1".to_string(),
                 server_id: ServerId::new(1),
             })
             .await;
@@ -216,6 +236,7 @@ mod tests {
             .add_session(PlaybackSession {
                 session_id: "session-2".to_string(),
                 item_id: "item-2".to_string(),
+                user_id: "user-1".to_string(),
                 server_id: ServerId::new(2),
             })
             .await;
@@ -224,5 +245,32 @@ mod tests {
 
         assert!(storage.get_session("session-1").await.is_none());
         assert!(storage.get_session("session-2").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_get_sessions_by_item_id_returns_active_matches_newest_first() {
+        let storage = SessionStorage::new();
+
+        storage
+            .add_session(PlaybackSession {
+                session_id: "session-1".to_string(),
+                item_id: "shared-item".to_string(),
+                user_id: "user-1".to_string(),
+                server_id: ServerId::new(1),
+            })
+            .await;
+        storage
+            .add_session(PlaybackSession {
+                session_id: "session-2".to_string(),
+                item_id: "shared-item".to_string(),
+                user_id: "user-2".to_string(),
+                server_id: ServerId::new(2),
+            })
+            .await;
+
+        let sessions = storage.get_sessions_by_item_id("shared-item").await;
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0].session_id, "session-2");
+        assert_eq!(sessions[1].session_id, "session-1");
     }
 }

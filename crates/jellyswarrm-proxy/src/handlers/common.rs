@@ -364,6 +364,7 @@ pub async fn process_media_source(
 pub async fn track_play_session(
     item: &MediaSource,
     session_id: &str,
+    user_id: &str,
     server: &Server,
     state: &AppState,
 ) -> Result<(), StatusCode> {
@@ -383,6 +384,7 @@ pub async fn track_play_session(
             .add_session(PlaybackSession {
                 item_id: id.to_string(),
                 session_id: session_id.to_string(),
+                user_id: user_id.to_string(),
                 server_id: server.id,
             })
             .await;
@@ -397,6 +399,7 @@ pub async fn track_play_session(
             .add_session(PlaybackSession {
                 item_id: item.id.clone(),
                 session_id: session_id.to_string(),
+                user_id: user_id.to_string(),
                 server_id: server.id,
             })
             .await;

@@ -4,12 +4,13 @@ use axum::http::{HeaderMap, HeaderName};
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
 use hyper::StatusCode;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::{
     config::MediaStreamingMode,
     request_preprocessing::{apply_to_request, preprocess_request, remap_authorization},
     server_storage::Server,
+    session_storage::PlaybackSession,
     user_authorization_service::AuthorizationSession,
     AppState,
 };
@@ -43,6 +44,20 @@ fn extract_play_session_id(url: &url::Url) -> Option<String> {
             .then(|| value.to_string())
             .filter(|value| !value.is_empty())
     })
+}
+
+fn single_matching_play_session(
+    mut candidates: Vec<PlaybackSession>,
+    user_id: Option<&str>,
+) -> Result<PlaybackSession, usize> {
+    if let Some(user_id) = user_id {
+        candidates.retain(|session| session.user_id == user_id);
+    }
+
+    match candidates.len() {
+        1 => Ok(candidates.remove(0)),
+        count => Err(count),
+    }
 }
 
 async fn proxy_request(
@@ -105,22 +120,56 @@ pub async fn get_video_resource(
         .ok_or(StatusCode::BAD_REQUEST)?;
 
     let id = extract_video_id(original_request.url().path()).ok_or(StatusCode::NOT_FOUND)?;
-    let play_session_id = extract_play_session_id(original_request.url()).ok_or_else(|| {
-        error!("No play session id found for video resource: {}", id);
-        StatusCode::NOT_FOUND
-    })?;
+    let play_session_id = extract_play_session_id(original_request.url());
+    let play_session = if let Some(play_session_id) = play_session_id.as_deref() {
+        state
+            .play_sessions
+            .get_session_by_session_and_item_id(play_session_id, id)
+            .await
+            .ok_or_else(|| {
+                error!(
+                    "No play session found for resource: {} and session: {}",
+                    id, play_session_id
+                );
+                StatusCode::NOT_FOUND
+            })?
+    } else {
+        let candidates = state.play_sessions.get_sessions_by_item_id(id).await;
+        let user_id = preprocessed
+            .user
+            .as_ref()
+            .map(|user| user.id.as_str())
+            .or_else(|| {
+                preprocessed
+                    .session
+                    .as_ref()
+                    .map(|session| session.user_id.as_str())
+            });
 
-    let play_session = state
-        .play_sessions
-        .get_session_by_session_and_item_id(&play_session_id, id)
-        .await
-        .ok_or_else(|| {
-            error!(
-                "No play session found for resource: {} and session: {}",
-                id, play_session_id
-            );
-            StatusCode::NOT_FOUND
-        })?;
+        match single_matching_play_session(candidates, user_id) {
+            Ok(play_session) => {
+                warn!(
+                    "Video resource {} arrived without play session id; using only matching active session {}",
+                    id, play_session.session_id
+                );
+                play_session
+            }
+            Err(0) => {
+                error!(
+                    "No play session found for video resource without session id: {}",
+                    id
+                );
+                return Err(StatusCode::NOT_FOUND);
+            }
+            Err(count) => {
+                error!(
+                    "Ambiguous video resource {} without play session id matched {} active sessions",
+                    id, count
+                );
+                return Err(StatusCode::NOT_FOUND);
+            }
+        }
+    };
 
     let server = match state
         .server_storage
@@ -129,7 +178,7 @@ pub async fn get_video_resource(
         .map_err(|e| {
             error!(
                 "Failed to resolve server {} for play session {}: {}",
-                play_session.server_id, play_session_id, e
+                play_session.server_id, play_session.session_id, e
             );
             StatusCode::INTERNAL_SERVER_ERROR
         })? {
@@ -141,7 +190,7 @@ pub async fn get_video_resource(
                 .await;
             error!(
                 "Server {} for play session {} no longer exists",
-                play_session.server_id, play_session_id
+                play_session.server_id, play_session.session_id
             );
             return Err(StatusCode::NOT_FOUND);
         }
@@ -155,14 +204,14 @@ pub async fn get_video_resource(
     {
         error!(
             "Server {} for play session {} is not healthy",
-            server.name, play_session_id
+            server.name, play_session.session_id
         );
         return Err(StatusCode::NOT_FOUND);
     }
 
     info!(
         "Found play session for resource: {}, session: {}, server: {}",
-        id, play_session_id, server.name
+        id, play_session.session_id, server.name
     );
 
     let mut upstream_request = original_request;
@@ -216,5 +265,70 @@ pub async fn get_stream(
             info!("Proxying MKV stream from: {}", url);
             proxy_request(&state.streaming_reqwest_client, request).await
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::server_id::ServerId;
+
+    fn playback_session(session_id: &str, user_id: &str, server_id: i64) -> PlaybackSession {
+        PlaybackSession {
+            session_id: session_id.to_string(),
+            item_id: "item-1".to_string(),
+            user_id: user_id.to_string(),
+            server_id: ServerId::new(server_id),
+        }
+    }
+
+    #[test]
+    fn single_matching_play_session_accepts_one_candidate() {
+        let session = single_matching_play_session(
+            vec![playback_session("session-1", "user-1", 1)],
+            Some("user-1"),
+        )
+        .unwrap();
+
+        assert_eq!(session.session_id, "session-1");
+        assert_eq!(session.server_id, ServerId::new(1));
+    }
+
+    #[test]
+    fn single_matching_play_session_filters_by_user() {
+        let session = single_matching_play_session(
+            vec![
+                playback_session("session-1", "user-1", 1),
+                playback_session("session-2", "user-2", 2),
+            ],
+            Some("user-2"),
+        )
+        .unwrap();
+
+        assert_eq!(session.session_id, "session-2");
+        assert_eq!(session.server_id, ServerId::new(2));
+    }
+
+    #[test]
+    fn single_matching_play_session_rejects_ambiguous_matches() {
+        let result = single_matching_play_session(
+            vec![
+                playback_session("session-1", "user-1", 1),
+                playback_session("session-2", "user-1", 2),
+            ],
+            Some("user-1"),
+        );
+
+        assert!(matches!(result, Err(2)));
+    }
+
+    #[test]
+    fn single_matching_play_session_rejects_missing_user_match() {
+        let result = single_matching_play_session(
+            vec![playback_session("session-1", "user-1", 1)],
+            Some("user-2"),
+        );
+
+        assert!(matches!(result, Err(0)));
     }
 }

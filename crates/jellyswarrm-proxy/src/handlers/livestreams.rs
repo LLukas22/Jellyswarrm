@@ -61,7 +61,14 @@ pub async fn post_livestream_open(
         Ok(mut response) => {
             for item in &mut response.media_sources {
                 *item = process_media_source(item.clone(), &state.media_storage, &server).await?;
-                track_play_session(item, &response.play_session_id, &server, &state).await?;
+                track_play_session(
+                    item,
+                    &response.play_session_id,
+                    &session.user_id,
+                    &server,
+                    &state,
+                )
+                .await?;
             }
 
             debug!("Requested Playback: {:?}", response);
