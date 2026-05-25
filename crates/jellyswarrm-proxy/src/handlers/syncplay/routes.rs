@@ -18,7 +18,9 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::{request_preprocessing::resolve_request_identity_from_headers_uri, AppState};
+use crate::{
+    request_preprocessing::resolve_request_identity_from_headers_uri, server_id::ServerId, AppState,
+};
 
 use super::models::*;
 use super::service::SessionContext;
@@ -117,10 +119,6 @@ fn user_id_from_session_id(session_id: &str) -> Option<&str> {
     session_id.split(':').next().filter(|s| !s.is_empty())
 }
 
-fn normalize_server_url(input: &str) -> &str {
-    input.trim_end_matches('/')
-}
-
 async fn users_have_library_access_to_items(
     state: &AppState,
     user_ids: &[String],
@@ -130,9 +128,9 @@ async fn users_have_library_access_to_items(
         return Ok(true);
     }
 
-    let mut user_server_urls: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut user_server_ids: HashMap<String, HashSet<ServerId>> = HashMap::new();
     for user_id in user_ids {
-        if user_server_urls.contains_key(user_id) {
+        if user_server_ids.contains_key(user_id) {
             continue;
         }
 
@@ -146,11 +144,11 @@ async fn users_have_library_access_to_items(
             return Ok(false);
         };
 
-        let urls = sessions
+        let server_ids = sessions
             .into_iter()
-            .map(|(auth_session, _)| normalize_server_url(&auth_session.server_url).to_string())
+            .map(|(_, server)| server.id)
             .collect::<HashSet<_>>();
-        user_server_urls.insert(user_id.clone(), urls);
+        user_server_ids.insert(user_id.clone(), server_ids);
     }
 
     for item_id in item_ids {
@@ -163,9 +161,8 @@ async fn users_have_library_access_to_items(
             return Ok(false);
         };
 
-        let needed_server = normalize_server_url(&mapping.server_url);
-        for urls in user_server_urls.values() {
-            if !urls.contains(needed_server) {
+        for server_ids in user_server_ids.values() {
+            if !server_ids.contains(&mapping.server_id) {
                 return Ok(false);
             }
         }

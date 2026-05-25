@@ -167,7 +167,7 @@ pub async fn get_virtual_id(
     server: &Server,
 ) -> Result<String, StatusCode> {
     let mapping = media_storage
-        .get_or_create_media_mapping(id, server.url.as_str())
+        .get_or_create_media_mapping(id, server)
         .await
         .map_err(|e| {
             error!(
@@ -364,6 +364,7 @@ pub async fn process_media_source(
 pub async fn track_play_session(
     item: &MediaSource,
     session_id: &str,
+    user_id: &str,
     server: &Server,
     state: &AppState,
 ) -> Result<(), StatusCode> {
@@ -383,7 +384,8 @@ pub async fn track_play_session(
             .add_session(PlaybackSession {
                 item_id: id.to_string(),
                 session_id: session_id.to_string(),
-                server: server.clone(),
+                user_id: user_id.to_string(),
+                server_id: server.id,
             })
             .await;
     } else {
@@ -397,7 +399,8 @@ pub async fn track_play_session(
             .add_session(PlaybackSession {
                 item_id: item.id.clone(),
                 session_id: session_id.to_string(),
-                server: server.clone(),
+                user_id: user_id.to_string(),
+                server_id: server.id,
             })
             .await;
     }

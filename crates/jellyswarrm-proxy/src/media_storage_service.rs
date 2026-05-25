@@ -1,21 +1,38 @@
 use std::time::Duration;
 
-use sqlx::{FromRow, Row, SqlitePool};
+use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 use tracing::{debug, error, info, trace};
 use uuid::Uuid;
 
 use crate::config::MediaStreamingMode;
 use crate::models::generate_token;
-use crate::server_storage::Server;
+use crate::server_id::ServerId;
+use crate::server_storage::{parse_server_url_column, Server};
+#[cfg(test)]
+use crate::server_url::ServerUrl;
 use moka::future::Cache;
 
-#[derive(Debug, Clone, FromRow)]
+#[derive(Debug, Clone)]
 pub struct MediaMapping {
     pub id: i64,
     pub virtual_media_id: String,
     pub original_media_id: String,
+    pub server_id: ServerId,
     pub server_url: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl<'r> sqlx::FromRow<'r, SqliteRow> for MediaMapping {
+    fn from_row(row: &SqliteRow) -> Result<Self, sqlx::Error> {
+        Ok(Self {
+            id: row.try_get("id")?,
+            virtual_media_id: row.try_get("virtual_media_id")?,
+            original_media_id: row.try_get("original_media_id")?,
+            server_id: ServerId::new(row.try_get("server_id")?),
+            server_url: row.try_get("server_url")?,
+            created_at: row.try_get("created_at")?,
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -44,15 +61,17 @@ impl MediaStorageService {
     pub async fn get_or_create_media_mapping(
         &self,
         original_media_id: &str,
-        server_url: &str,
+        server: &Server,
     ) -> Result<MediaMapping, sqlx::Error> {
-        let key = format!("{}|{}", original_media_id, server_url);
+        let original_media_id = Self::normalize_uuid(original_media_id);
+        let server_id = server.id;
+        let key = format!("{}|{}", original_media_id, server_id);
         if let Some(cached) = self.original_mapping_cache.get(&key).await {
             trace!("Cache hit for media mapping: {}", key);
             return Ok(cached);
         }
         let mapping = self
-            ._get_or_create_media_mapping(original_media_id, server_url)
+            ._get_or_create_media_mapping(&original_media_id, server)
             .await?;
         self.original_mapping_cache
             .insert(key, mapping.clone())
@@ -63,13 +82,13 @@ impl MediaStorageService {
     async fn _get_or_create_media_mapping(
         &self,
         original_media_id: &str,
-        server_url: &str,
+        server: &Server,
     ) -> Result<MediaMapping, sqlx::Error> {
         let original_media_id = Self::normalize_uuid(original_media_id);
 
         // Try to find existing mapping
         if let Some(mapping) = self
-            .get_media_mapping_by_original(&original_media_id, server_url)
+            .get_media_mapping_by_original(&original_media_id, server.id)
             .await?
         {
             return Ok(mapping);
@@ -81,15 +100,16 @@ impl MediaStorageService {
 
         let inserted = sqlx::query_as::<_, MediaMapping>(
             r#"
-            INSERT INTO media_mappings (virtual_media_id, original_media_id, server_url, created_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(original_media_id, server_url) DO NOTHING
-            RETURNING id, virtual_media_id, original_media_id, server_url, created_at
+            INSERT INTO media_mappings (virtual_media_id, original_media_id, server_id, server_url, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(original_media_id, server_id) DO NOTHING
+            RETURNING id, virtual_media_id, original_media_id, server_id, server_url, created_at
             "#,
         )
         .bind(&virtual_media_id)
         .bind(&original_media_id)
-        .bind(server_url)
+        .bind(server.id.as_i64())
+        .bind(server.url.as_str())
         .bind(now)
         .fetch_optional(&self.pool)
         .await?;
@@ -97,14 +117,16 @@ impl MediaStorageService {
         if let Some(row) = inserted {
             debug!(
                 "Created new media mapping: {} -> {} ({})",
-                &original_media_id, row.virtual_media_id, server_url
+                &original_media_id,
+                row.virtual_media_id,
+                server.url.as_str()
             );
             return Ok(row);
         }
 
         // Conflict path: fetch existing row. Happens if another process created it concurrently
         if let Some(existing) = self
-            .get_media_mapping_by_original(&original_media_id, server_url)
+            .get_media_mapping_by_original(&original_media_id, server.id)
             .await?
         {
             return Ok(existing);
@@ -130,7 +152,7 @@ impl MediaStorageService {
 
         let mapping = sqlx::query_as::<_, MediaMapping>(
             r#"
-            SELECT id, virtual_media_id, original_media_id, server_url, created_at
+            SELECT id, virtual_media_id, original_media_id, server_id, server_url, created_at
             FROM media_mappings 
             WHERE virtual_media_id = ?
             "#,
@@ -146,19 +168,19 @@ impl MediaStorageService {
     pub async fn get_media_mapping_by_original(
         &self,
         original_media_id: &str,
-        server_url: &str,
+        server_id: ServerId,
     ) -> Result<Option<MediaMapping>, sqlx::Error> {
         let original_media_id = Self::normalize_uuid(original_media_id);
 
         let mapping = sqlx::query_as::<_, MediaMapping>(
             r#"
-            SELECT id, virtual_media_id, original_media_id, server_url, created_at
+            SELECT id, virtual_media_id, original_media_id, server_id, server_url, created_at
             FROM media_mappings 
-            WHERE original_media_id = ? AND server_url = ?
+            WHERE original_media_id = ? AND server_id = ?
             "#,
         )
         .bind(original_media_id)
-        .bind(server_url)
+        .bind(server_id.as_i64())
         .fetch_optional(&self.pool)
         .await?;
 
@@ -186,6 +208,7 @@ impl MediaStorageService {
                 m.id as media_id,
                 m.virtual_media_id,
                 m.original_media_id,
+                m.server_id as media_server_id,
                 m.server_url as media_server_url,
                 m.created_at as media_created_at,
                 
@@ -197,7 +220,7 @@ impl MediaStorageService {
                 s.created_at as server_created_at,
                 s.updated_at as server_updated_at
             FROM media_mappings m
-            JOIN servers s ON RTRIM(m.server_url, '/') = RTRIM(s.url, '/')
+            JOIN servers s ON m.server_id = s.id
             WHERE m.virtual_media_id = ?
             "#,
         )
@@ -210,14 +233,15 @@ impl MediaStorageService {
                 id: row.get("media_id"),
                 virtual_media_id: row.get("virtual_media_id"),
                 original_media_id: row.get("original_media_id"),
+                server_id: ServerId::new(row.get("media_server_id")),
                 server_url: row.get("media_server_url"),
                 created_at: row.get("media_created_at"),
             };
 
             let server = Server {
-                id: row.get("server_id"),
+                id: ServerId::new(row.get("server_id")),
                 name: row.get("server_name"),
-                url: url::Url::parse(row.get::<String, _>("server_url_full").as_str()).unwrap(),
+                url: parse_server_url_column("server_url_full", row.get("server_url_full"))?,
                 priority: row.get("priority"),
                 media_streaming_mode: row
                     .get::<String, _>("media_streaming_mode")
@@ -274,14 +298,14 @@ impl MediaStorageService {
     /// Delete all media mappings for a specific server
     pub async fn delete_media_mappings_by_server(
         &self,
-        server_url: &str,
+        server: &Server,
     ) -> Result<u64, sqlx::Error> {
         let result = sqlx::query(
             r#"
-            DELETE FROM media_mappings WHERE server_url = ?
+            DELETE FROM media_mappings WHERE server_id = ?
             "#,
         )
-        .bind(server_url)
+        .bind(server.id.as_i64())
         .execute(&self.pool)
         .await?;
 
@@ -289,7 +313,8 @@ impl MediaStorageService {
         if deleted_count > 0 {
             info!(
                 "Deleted {} media mappings for server: {}",
-                deleted_count, server_url
+                deleted_count,
+                server.url.as_str()
             );
         }
         self.original_mapping_cache.invalidate_all();
@@ -304,15 +329,44 @@ mod tests {
 
     use super::*;
 
+    async fn create_test_server(pool: &SqlitePool) -> Server {
+        let now = chrono::Utc::now();
+        let result = sqlx::query(
+            r#"
+            INSERT INTO servers (name, url, priority, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind("Test Server")
+        .bind("http://localhost:8096")
+        .bind(100)
+        .bind(now)
+        .bind(now)
+        .execute(pool)
+        .await
+        .unwrap();
+
+        Server {
+            id: ServerId::new(result.last_insert_rowid()),
+            name: "Test Server".to_string(),
+            url: ServerUrl::parse("http://localhost:8096").unwrap(),
+            priority: 100,
+            media_streaming_mode: MediaStreamingMode::Redirect,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
     #[tokio::test]
     async fn test_media_storage_service() {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         MIGRATOR.run(&pool).await.unwrap();
         let service = MediaStorageService::new(pool.clone());
+        let server = create_test_server(&pool).await;
 
         // Create media mapping
         let mapping = service
-            .get_or_create_media_mapping("original-movie-123", "http://localhost:8096")
+            .get_or_create_media_mapping("original-movie-123", &server)
             .await
             .unwrap();
 
@@ -335,43 +389,11 @@ mod tests {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         MIGRATOR.run(&pool).await.unwrap();
         let service = MediaStorageService::new(pool.clone());
-
-        // Create the servers table (normally done by ServerStorageService)
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS servers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                url TEXT NOT NULL,
-                priority INTEGER NOT NULL DEFAULT 100,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            "#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        // Create a server in the servers table
-        sqlx::query(
-            r#"
-            INSERT INTO servers (name, url, priority, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
-            "#,
-        )
-        .bind("Test Server")
-        .bind("http://localhost:8096")
-        .bind(100)
-        .bind(chrono::Utc::now())
-        .bind(chrono::Utc::now())
-        .execute(&pool)
-        .await
-        .unwrap();
+        let server = create_test_server(&pool).await;
 
         // Create media mapping
         let mapping = service
-            .get_or_create_media_mapping("original-movie-123", "http://localhost:8096")
+            .get_or_create_media_mapping("original-movie-123", &server)
             .await
             .unwrap();
 
@@ -385,10 +407,7 @@ mod tests {
         assert_eq!(retrieved_mapping.virtual_media_id, mapping.virtual_media_id);
         assert_eq!(retrieved_mapping.original_media_id, "original-movie-123");
         assert_eq!(server.name, "Test Server");
-        assert_eq!(
-            server.url.as_str().trim_end_matches('/'),
-            "http://localhost:8096"
-        );
+        assert_eq!(server.url.as_str(), "http://localhost:8096");
     }
 
     #[tokio::test]
@@ -396,10 +415,11 @@ mod tests {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         MIGRATOR.run(&pool).await.unwrap();
         let service = MediaStorageService::new(pool.clone());
+        let server = create_test_server(&pool).await;
 
         // Create media mapping
         let mapping = service
-            .get_or_create_media_mapping("movie-123", "http://localhost:8096")
+            .get_or_create_media_mapping("movie-123", &server)
             .await
             .unwrap();
 

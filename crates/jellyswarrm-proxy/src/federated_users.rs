@@ -188,7 +188,7 @@ impl FederatedUserService {
                             .user_authorization
                             .add_server_mapping(
                                 user_id,
-                                server.url.as_str(),
+                                &server,
                                 username,
                                 password,
                                 Some(&password.into()), // Encrypt with their own password so they can use it
@@ -231,7 +231,7 @@ impl FederatedUserService {
                                 .user_authorization
                                 .add_server_mapping(
                                     user_id,
-                                    server.url.as_str(),
+                                    &server,
                                     username,
                                     password,
                                     Some(&password.into()), // Encrypt with their own password so they can use it

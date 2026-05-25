@@ -11,6 +11,7 @@ use tracing::{error, info};
 use crate::{
     config::MediaStreamingMode,
     encryption::{encrypt_password, Password},
+    server_id::ServerId,
     server_storage::Server,
     AppState,
 };
@@ -183,8 +184,21 @@ pub async fn add_server(
         Err(e) => {
             error!("Failed to add server: {}", e);
 
-            let error_message = if e.to_string().contains("UNIQUE constraint failed") {
-                "A server with that name already exists"
+            let error_message = if let sqlx::Error::Database(db_error) = &e {
+                let constraint = db_error.constraint().unwrap_or_default();
+                let message = db_error.message();
+                if constraint == "idx_servers_url_unique"
+                    || message.contains("idx_servers_url_unique")
+                    || message.contains("servers.url")
+                {
+                    "A server with that URL already exists"
+                } else if message.contains("servers.name")
+                    || message.contains("UNIQUE constraint failed")
+                {
+                    "A server with that name already exists"
+                } else {
+                    "Failed to add server"
+                }
             } else if e.to_string().contains("Invalid URL") {
                 "Invalid URL format"
             } else {
@@ -205,7 +219,7 @@ pub async fn add_server(
 /// Update server media streaming mode
 pub async fn update_server_media_streaming_mode(
     State(state): State<AppState>,
-    Path(server_id): Path<i64>,
+    Path(server_id): Path<ServerId>,
     Form(form): Form<UpdateMediaStreamingModeForm>,
 ) -> Response {
     let media_streaming_mode = match form.media_streaming_mode.parse::<MediaStreamingMode>() {
@@ -248,9 +262,16 @@ pub async fn update_server_media_streaming_mode(
 }
 
 /// Delete a server
-pub async fn delete_server(State(state): State<AppState>, Path(server_id): Path<i64>) -> Response {
+pub async fn delete_server(
+    State(state): State<AppState>,
+    Path(server_id): Path<ServerId>,
+) -> Response {
     match state.server_storage.delete_server(server_id).await {
         Ok(true) => {
+            state
+                .play_sessions
+                .remove_sessions_for_server(server_id)
+                .await;
             info!("Deleted server with ID: {}", server_id);
             // Return updated server list
             get_server_list(State(state)).await.into_response()
@@ -274,7 +295,7 @@ pub async fn delete_server(State(state): State<AppState>, Path(server_id): Path<
 /// Update server priority
 pub async fn update_server_priority(
     State(state): State<AppState>,
-    Path(server_id): Path<i64>,
+    Path(server_id): Path<ServerId>,
     Form(form): Form<UpdatePriorityForm>,
 ) -> Response {
     if form.priority < 1 || form.priority > 999 {
@@ -314,7 +335,7 @@ pub async fn update_server_priority(
 /// Add server admin
 pub async fn add_server_admin(
     State(state): State<AppState>,
-    Path(server_id): Path<i64>,
+    Path(server_id): Path<ServerId>,
     Form(form): Form<AddServerAdminForm>,
 ) -> Response {
     // 1. Get server details
@@ -433,7 +454,7 @@ pub async fn add_server_admin(
 /// Delete server admin
 pub async fn delete_server_admin(
     State(state): State<AppState>,
-    Path(server_id): Path<i64>,
+    Path(server_id): Path<ServerId>,
 ) -> Response {
     match state.server_storage.delete_server_admin(server_id).await {
         Ok(true) => {

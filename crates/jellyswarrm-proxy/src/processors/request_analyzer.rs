@@ -100,7 +100,19 @@ impl JsonAnalyzer<RequestAnalysisContext, RequestBodyAnalysisResult> for Request
                     .get_session(session_id)
                     .await
                 {
-                    accumulator.servers.push(play_session.server);
+                    if let Some(server) = self
+                        .data_context
+                        .server_storage
+                        .get_server_by_id(play_session.server_id)
+                        .await?
+                    {
+                        accumulator.servers.push(server);
+                    } else {
+                        self.data_context
+                            .play_sessions
+                            .remove_sessions_for_server(play_session.server_id)
+                            .await;
+                    }
                 }
                 accumulator.found_session_ids.push(session_id.clone());
             }

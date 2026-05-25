@@ -11,6 +11,7 @@ use tracing::{error, info};
 
 use crate::{
     encryption::Password,
+    server_id::ServerId,
     server_storage::Server,
     ui::{auth::AuthenticatedUser, user::common::authenticate_user_on_server},
     AppState,
@@ -83,7 +84,7 @@ pub async fn get_user_servers(
 pub async fn connect_server(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
-    Path(server_id): Path<i64>,
+    Path(server_id): Path<ServerId>,
     Form(form): Form<ConnectServerForm>,
 ) -> impl IntoResponse {
     // Get server details
@@ -125,59 +126,19 @@ pub async fn connect_server(
 
     match client.authenticate_by_name(&form.username, form.password.as_str()).await {
         Ok(_) => {
-            let previous_mapping = match state
-                .user_authorization
-                .get_server_mapping(&user.id, server.url.as_str())
-                .await
-            {
-                Ok(mapping) => mapping,
-                Err(e) => {
-                    error!("Failed to inspect existing mapping: {}", e);
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Html("<span style=\"color: #dc3545;\">Database error</span>"),
-                    )
-                        .into_response();
-                }
-            };
-
-            let mapped_username_changed = previous_mapping.as_ref().is_some_and(|mapping| {
-                !mapping
-                    .mapped_username
-                    .trim()
-                    .eq_ignore_ascii_case(form.username.trim())
-            });
-
             // Credentials valid, create mapping
             match state
                 .user_authorization
                 .add_server_mapping(
                     &user.id,
-                    server.url.as_str(),
+                    &server,
                     &form.username,
                     &form.password,
                     Some(&user.password_hash),
                 )
                 .await
             {
-                Ok(mapping_id) => {
-                    if mapped_username_changed {
-                        match state
-                            .user_authorization
-                            .delete_sessions_for_mapping(mapping_id)
-                            .await
-                        {
-                            Ok(deleted) => info!(
-                                "Mapped account changed for user {} on server {}. Deleted {} affected session(s)",
-                                user.username, server.name, deleted
-                            ),
-                            Err(e) => error!(
-                                "Failed to delete sessions for updated mapping {}: {}",
-                                mapping_id, e
-                            ),
-                        }
-                    }
-
+                Ok(_) => {
                     info!(
                         "Created mapping for user {} to server {}",
                         user.username, server.name
@@ -190,15 +151,15 @@ pub async fn connect_server(
                         HeaderValue::from_str(&format!("/{}", state.get_ui_route().await)).unwrap(),
                     );
                     response
-                },
-                 Err(e) => {
-                     error!("Failed to create mapping: {}", e);
-                     (
-                         StatusCode::OK,
-                         Html("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Database error</div>"),
-                     )
-                         .into_response()
-                 }
+                }
+                Err(e) => {
+                    error!("Failed to create mapping: {}", e);
+                    (
+                        StatusCode::OK,
+                        Html("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Database error</div>"),
+                    )
+                        .into_response()
+                }
             }
         }
         Err(jellyfin_api::error::Error::AuthenticationFailed(_)) => {
@@ -222,7 +183,7 @@ pub async fn connect_server(
 pub async fn delete_server_mapping(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
-    Path(server_id): Path<i64>,
+    Path(server_id): Path<ServerId>,
 ) -> impl IntoResponse {
     // Get server details to find the URL
     let server = match state.server_storage.get_server_by_id(server_id).await {
@@ -248,12 +209,7 @@ pub async fn delete_server_mapping(
     };
 
     // Normalize URLs for comparison (remove trailing slashes)
-    let server_url = server.url.as_str().trim_end_matches('/');
-
-    if let Some(mapping) = mappings
-        .iter()
-        .find(|m| m.server_url.trim_end_matches('/') == server_url)
-    {
+    if let Some(mapping) = mappings.iter().find(|m| m.server_id == server.id) {
         match state
             .user_authorization
             .delete_server_mapping(mapping.id)
@@ -285,7 +241,7 @@ pub async fn delete_server_mapping(
 pub async fn check_user_server_status(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
-    Path(server_id): Path<i64>,
+    Path(server_id): Path<ServerId>,
 ) -> impl IntoResponse {
     // Get server details
     let server = match state.server_storage.get_server_by_id(server_id).await {

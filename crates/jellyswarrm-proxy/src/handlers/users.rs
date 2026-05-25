@@ -164,10 +164,10 @@ pub async fn handle_authenticate_by_name(
 
         if !server_mappings.is_empty() {
             for server_mapping in server_mappings {
-                if let Some(pos) = servers.iter().position(|s| {
-                    s.url.as_str().trim_end_matches('/')
-                        == server_mapping.server_url.trim_end_matches('/')
-                }) {
+                if let Some(pos) = servers
+                    .iter()
+                    .position(|s| s.id == server_mapping.server_id)
+                {
                     let server = servers.remove(pos);
                     info!(
                         "Using server mapping for user '{}' on server '{}'",
@@ -301,7 +301,7 @@ async fn persist_successful_auths(
             .user_authorization
             .add_server_mapping(
                 &user.id,
-                successful.server.url.as_str(),
+                &successful.server,
                 &successful.final_username,
                 &successful.final_password,
                 Some(&login_password.clone().into()),
@@ -319,7 +319,7 @@ async fn persist_successful_auths(
             .user_authorization
             .store_authorization_session(
                 &user.id,
-                successful.server.url.as_str(),
+                &successful.server,
                 &auth_to_store,
                 successful.auth_response.access_token.clone(),
                 successful.auth_response.user.id.clone(),
