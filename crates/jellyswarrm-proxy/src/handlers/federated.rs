@@ -51,9 +51,7 @@ fn extract_pagination(url: &url::Url) -> (usize, usize) {
 fn strip_pagination(url: &url::Url) -> url::Url {
     let new_query: String = url
         .query_pairs()
-        .filter(|(k, _)| {
-            !k.eq_ignore_ascii_case("startIndex") && !k.eq_ignore_ascii_case("limit")
-        })
+        .filter(|(k, _)| !k.eq_ignore_ascii_case("startIndex") && !k.eq_ignore_ascii_case("limit"))
         .map(|(k, v)| {
             format!(
                 "{}={}",
@@ -189,10 +187,7 @@ async fn get_items_for_merged_library(
         let session = match session {
             Some(s) => s,
             None => {
-                error!(
-                    "No active session for server '{}' — skipping",
-                    server.name
-                );
+                error!("No active session for server '{}' — skipping", server.name);
                 continue;
             }
         };
@@ -205,8 +200,10 @@ async fn get_items_for_merged_library(
             }
         };
 
-        let new_url =
-            strip_pagination(&replace_parent_id(request.url(), &mapping.original_media_id));
+        let new_url = strip_pagination(&replace_parent_id(
+            request.url(),
+            &mapping.original_media_id,
+        ));
         *request.url_mut() = new_url;
 
         let auth = JellyfinAuthorization::Authorization(session.to_authorization());
@@ -288,8 +285,11 @@ async fn get_items_for_merged_library(
         ak.cmp(bk)
     });
     let total = all_items.len() as i32;
-    let paged: Vec<crate::models::MediaItem> =
-        all_items.into_iter().skip(start_index).take(limit).collect();
+    let paged: Vec<crate::models::MediaItem> = all_items
+        .into_iter()
+        .skip(start_index)
+        .take(limit)
+        .collect();
     Ok(Json(crate::models::ItemsResponseVariants::WithCount(
         crate::models::ItemsResponseWithCount {
             items: paged,
@@ -316,7 +316,10 @@ pub async fn get_items_from_all_servers(
 
     let mut join_set: JoinSet<(
         usize,
-        Option<(crate::models::ItemsResponseVariants, crate::server_storage::Server)>,
+        Option<(
+            crate::models::ItemsResponseVariants,
+            crate::server_storage::Server,
+        )>,
     )> = JoinSet::new();
 
     for (index, (session, server)) in sessions.into_iter().enumerate() {
@@ -363,7 +366,10 @@ pub async fn get_items_from_all_servers(
                     (index, Some((resp, server_clone)))
                 }
                 Err(e) => {
-                    error!("Failed to fetch items from '{}': {:?}", server_clone.name, e);
+                    error!(
+                        "Failed to fetch items from '{}': {:?}",
+                        server_clone.name, e
+                    );
                     (index, None)
                 }
             }
@@ -379,8 +385,10 @@ pub async fn get_items_from_all_servers(
     }
     indexed_raw.sort_by_key(|(i, _)| *i);
 
-    let server_raw: Vec<(crate::models::ItemsResponseVariants, crate::server_storage::Server)> =
-        indexed_raw.into_iter().filter_map(|(_, v)| v).collect();
+    let server_raw: Vec<(
+        crate::models::ItemsResponseVariants,
+        crate::server_storage::Server,
+    )> = indexed_raw.into_iter().filter_map(|(_, v)| v).collect();
 
     let cfg = state.config.read().await.clone();
     let server_id = cfg.server_id.clone();
@@ -463,11 +471,12 @@ pub async fn get_items_from_all_servers(
                 Err(e) => error!("Failed to process single-server library: {:?}", e),
             }
         } else {
-            let display_name = group[0]
-                .0
-                .name
-                .clone()
-                .unwrap_or_else(|| ct_key.split_once(':').map(|x| x.1.to_string()).unwrap_or_else(|| ct_key.clone()));
+            let display_name = group[0].0.name.clone().unwrap_or_else(|| {
+                ct_key
+                    .split_once(':')
+                    .map(|x| x.1.to_string())
+                    .unwrap_or_else(|| ct_key.clone())
+            });
 
             let merged = match state
                 .merged_library_service
@@ -480,7 +489,7 @@ pub async fn get_items_from_all_servers(
                         "Failed to get/create merged library for '{}': {}",
                         ct_key, e
                     );
-                        for (item, server) in group {
+                    for (item, server) in group {
                         if let Ok(p) =
                             process_media_item(item, &state, &server, true, &server_id).await
                         {

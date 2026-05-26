@@ -228,8 +228,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // WAL mode allows concurrent reads alongside writes; NORMAL sync is
     // safe enough for a media proxy (no bank-level durability required).
-    sqlx::query("PRAGMA journal_mode=WAL;").execute(&pool).await?;
-    sqlx::query("PRAGMA synchronous=NORMAL;").execute(&pool).await?;
+    sqlx::query("PRAGMA journal_mode=WAL;")
+        .execute(&pool)
+        .await?;
+    sqlx::query("PRAGMA synchronous=NORMAL;")
+        .execute(&pool)
+        .await?;
     sqlx::query("PRAGMA foreign_keys = ON;")
         .execute(&pool)
         .await?;
