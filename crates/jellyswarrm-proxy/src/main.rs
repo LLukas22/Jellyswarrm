@@ -405,7 +405,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .route("/websocket", get(handlers::syncplay::websocket))
             .route("/socket", get(handlers::syncplay::websocket))
             .route("/GetUtcTime", get(handlers::syncplay::get_utc_time))
-            //.route("/GetUTCTime", get(handlers::syncplay::get_utc_time))
             .nest(
                 "/SyncPlay",
                 Router::new()
@@ -595,7 +594,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .layer(MessagesManagerLayer)
             .layer(auth_layer)
             .with_state(app_state)
-    };
+    }
+    .route("/GetUTCTime", get(handlers::syncplay::get_utc_time));
 
     // Create socket address
     let addr = match format!("{}:{}", loaded_config.host, loaded_config.port).parse::<SocketAddr>()
