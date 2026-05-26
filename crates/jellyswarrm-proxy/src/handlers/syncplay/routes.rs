@@ -28,9 +28,13 @@ use super::service::SessionContext;
 fn try_send_playlist_correction(
     group: &SyncPlayGroup,
     sync_state: &mut super::service::SyncPlayState,
-    expected_playlist_item_id: Uuid,
+    expected_playlist_item_id: Option<Uuid>,
     session_id: &str,
 ) -> bool {
+    let Some(expected_playlist_item_id) = expected_playlist_item_id else {
+        return false;
+    };
+
     if let Some(current) = group
         .playing_item_index
         .and_then(|idx| group.playlist.get(idx))
@@ -64,6 +68,10 @@ fn is_stale_client_update(
     last_client_when
         .map(|last| when + Duration::milliseconds(500) < last)
         .unwrap_or(false)
+}
+
+fn client_position_ticks(position_ticks: i64) -> i64 {
+    position_ticks.max(0)
 }
 
 async fn deny_library_access(
@@ -196,7 +204,7 @@ async fn handle_ws(state: AppState, session: SessionContext, socket: WebSocket) 
     let (mut ws_sender, mut ws_receiver) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
 
-    state
+    let connection_id = state
         .syncplay
         .register_websocket(session.session_id.clone(), tx)
         .await;
@@ -236,7 +244,7 @@ async fn handle_ws(state: AppState, session: SessionContext, socket: WebSocket) 
 
     state
         .syncplay
-        .unregister_websocket_and_leave(&session.session_id)
+        .unregister_websocket_with_grace(session.session_id.clone(), connection_id)
         .await;
 }
 
@@ -270,12 +278,14 @@ pub async fn join_group(
     session: SessionContext,
     Json(payload): Json<JoinGroupRequestDto>,
 ) -> Result<StatusCode, StatusCode> {
+    let mut expected_queue_item_ids = None;
     if let Some(group) = state
         .syncplay
         .get_group_snapshot_by_id(payload.group_id)
         .await
     {
-        if !user_has_library_access(&state, &session.user.id, &group.queue_item_ids()).await? {
+        let queue_item_ids = group.queue_item_ids();
+        if !user_has_library_access(&state, &session.user.id, &queue_item_ids).await? {
             deny_library_access(
                 &state,
                 &session,
@@ -284,9 +294,14 @@ pub async fn join_group(
             .await;
             return Ok(StatusCode::NO_CONTENT);
         }
+        expected_queue_item_ids = Some(queue_item_ids);
     }
 
-    if !state.syncplay.join_group(&session, payload.group_id).await {
+    if !state
+        .syncplay
+        .join_group(&session, payload.group_id, expected_queue_item_ids)
+        .await
+    {
         return Ok(StatusCode::CONFLICT);
     }
 
@@ -348,6 +363,7 @@ pub async fn set_new_queue(
     session: SessionContext,
     Json(payload): Json<PlayRequestDto>,
 ) -> Result<StatusCode, StatusCode> {
+    let mut expected_participants = None;
     if let Some(group) = state
         .syncplay
         .get_group_snapshot_for_session(&session.session_id)
@@ -362,11 +378,24 @@ pub async fn set_new_queue(
             .await;
             return Ok(StatusCode::NO_CONTENT);
         }
+        expected_participants = Some(group.participants.keys().cloned().collect::<HashSet<_>>());
     }
 
+    let session_id = session.session_id.clone();
     state
         .syncplay
         .with_group_for_session(&session, move |group, sync_state| {
+            if expected_participants
+                .as_ref()
+                .is_some_and(|expected| *expected != group.participants.keys().cloned().collect())
+            {
+                sync_state.notify_session_for_group(
+                    &session_id,
+                    group.group_id,
+                    GroupUpdateType::LibraryAccessDenied,
+                );
+                return;
+            }
             info!(
                 group_id = %group.group_id,
                 item_count = payload.playing_queue.len(),
@@ -389,9 +418,10 @@ pub async fn set_new_queue(
             let now = Utc::now();
             group.set_position(payload.start_position_ticks, now);
             group.pending_position_ticks = Some(group.start_position_ticks);
-            group.is_playing = false;
+            group.is_playing = true;
             if group.playlist.is_empty() {
                 group.state = GroupStateType::Idle;
+                group.is_playing = false;
                 group.set_position(0, now);
                 group.pending_position_ticks = None;
                 group.waiting_resume_playing = false;
@@ -558,6 +588,7 @@ pub async fn queue_items(
     session: SessionContext,
     Json(payload): Json<QueueRequestDto>,
 ) -> Result<StatusCode, StatusCode> {
+    let mut expected_participants = None;
     if let Some(group) = state
         .syncplay
         .get_group_snapshot_for_session(&session.session_id)
@@ -572,11 +603,24 @@ pub async fn queue_items(
             .await;
             return Ok(StatusCode::NO_CONTENT);
         }
+        expected_participants = Some(group.participants.keys().cloned().collect::<HashSet<_>>());
     }
 
+    let session_id = session.session_id.clone();
     state
         .syncplay
         .with_group_for_session(&session, move |group, sync_state| {
+            if expected_participants
+                .as_ref()
+                .is_some_and(|expected| *expected != group.participants.keys().cloned().collect())
+            {
+                sync_state.notify_session_for_group(
+                    &session_id,
+                    group.group_id,
+                    GroupUpdateType::LibraryAccessDenied,
+                );
+                return;
+            }
             let mode = payload.mode;
             info!(
                 group_id = %group.group_id,
@@ -759,27 +803,38 @@ pub async fn buffering(
             }
             debug!(
                 group_id = %group.group_id,
-                playlist_item_id = %payload.playlist_item_id,
+                playlist_item_id = ?payload.playlist_item_id,
                 position_ticks = payload.position_ticks,
                 "SyncPlay buffering update"
             );
-            if group.pending_position_ticks.is_none() && group.state != GroupStateType::Waiting {
-                let position_ticks = group.freeze_at_estimated_position(when);
-                group.pending_position_ticks = Some(position_ticks);
+            let client_position = client_position_ticks(payload.position_ticks);
+            let entering_waiting = group.state != GroupStateType::Waiting;
+            let was_playing = group.state == GroupStateType::Playing && group.is_playing;
+            if group.pending_position_ticks.is_none() {
+                let pending_position = if was_playing {
+                    group.freeze_at_estimated_position(Utc::now())
+                } else {
+                    client_position
+                };
+                group.pending_position_ticks = Some(pending_position);
             }
-            group.is_playing = payload.is_playing;
-            if group.state == GroupStateType::Waiting {
-                if group.pending_position_ticks.is_none() {
-                    group.pending_position_ticks = Some(group.start_position_ticks);
-                }
-            } else {
+            group.is_playing = was_playing || payload.is_playing;
+            if entering_waiting {
                 group.state = GroupStateType::Waiting;
-                group.waiting_resume_playing = payload.is_playing;
+                group.waiting_resume_playing = was_playing || payload.is_playing;
             }
             if when > group.last_updated_at {
                 group.last_updated_at = when;
             }
             group.touch();
+            if entering_waiting && was_playing {
+                sync_state.broadcast_command(
+                    group,
+                    SendCommandType::Pause,
+                    Some(group.start_position_ticks),
+                    0,
+                );
+            }
             sync_state.broadcast_state_update(group, "Buffer");
         })
         .await;
@@ -818,12 +873,12 @@ pub async fn ready(
             }
             debug!(
                 group_id = %group.group_id,
-                playlist_item_id = %payload.playlist_item_id,
+                playlist_item_id = ?payload.playlist_item_id,
                 position_ticks = payload.position_ticks,
                 "SyncPlay ready update"
             );
+            let client_position = client_position_ticks(payload.position_ticks);
             if group.pending_position_ticks.is_none() && group.state != GroupStateType::Waiting {
-                group.is_playing = payload.is_playing;
                 if when > group.last_updated_at {
                     group.last_updated_at = when;
                 }
@@ -832,7 +887,7 @@ pub async fn ready(
             }
             group.state = GroupStateType::Waiting;
             if group.pending_position_ticks.is_none() {
-                group.pending_position_ticks = Some(group.start_position_ticks);
+                group.pending_position_ticks = Some(client_position);
             }
             if when > group.last_updated_at {
                 group.last_updated_at = when;
@@ -907,7 +962,7 @@ pub async fn next_item(
     session: SessionContext,
     payload: Option<Json<NextItemRequestDto>>,
 ) -> Result<StatusCode, StatusCode> {
-    let playlist_item_id = payload.as_ref().map(|p| p.0.playlist_item_id);
+    let playlist_item_id = payload.as_ref().and_then(|p| p.0.playlist_item_id);
     state
         .syncplay
         .with_group_for_session(&session, move |group, sync_state| {
@@ -930,7 +985,7 @@ pub async fn previous_item(
     session: SessionContext,
     payload: Option<Json<NextItemRequestDto>>,
 ) -> Result<StatusCode, StatusCode> {
-    let playlist_item_id = payload.as_ref().map(|p| p.0.playlist_item_id);
+    let playlist_item_id = payload.as_ref().and_then(|p| p.0.playlist_item_id);
     state
         .syncplay
         .with_group_for_session(&session, move |group, sync_state| {
@@ -990,7 +1045,7 @@ pub async fn ping(
         .syncplay
         .with_group_for_session(&session, move |group, _| {
             if let Some(member) = group.participants.get_mut(&session_id) {
-                member.ping = payload.ping;
+                member.ping = payload.ping.max(0.0).round() as u64;
             }
             group.touch();
         })
@@ -999,8 +1054,6 @@ pub async fn ping(
 }
 
 pub async fn get_utc_time(
-    State(_state): State<AppState>,
-    _session: SessionContext,
     Query(_query): Query<HashMap<String, String>>,
 ) -> Result<Json<UtcTimeResponse>, StatusCode> {
     let request_reception_time = Utc::now();

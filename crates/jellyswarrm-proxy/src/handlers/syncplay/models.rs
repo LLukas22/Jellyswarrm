@@ -1,9 +1,14 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
+use jellyswarrm_macros::multi_case_struct;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
+
+fn utc_now() -> DateTime<Utc> {
+    Utc::now()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -85,97 +90,115 @@ pub struct GroupInfoDto {
     pub last_updated_at: DateTime<Utc>,
 }
 
+#[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
 pub struct NewGroupRequestDto {
     pub group_name: String,
 }
 
+#[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
 pub struct JoinGroupRequestDto {
     pub group_id: Uuid,
 }
 
+#[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
 pub struct PlayRequestDto {
+    #[serde(default)]
     pub playing_queue: Vec<String>,
+    #[serde(default)]
     pub playing_item_position: usize,
+    #[serde(default)]
     pub start_position_ticks: i64,
 }
 
+#[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
 pub struct SetPlaylistItemRequestDto {
     pub playlist_item_id: Uuid,
 }
 
+#[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
 pub struct RemoveFromPlaylistRequestDto {
+    #[serde(default)]
     pub playlist_item_ids: Vec<Uuid>,
+    #[serde(default)]
     pub clear_playlist: bool,
+    #[serde(default)]
     pub clear_playing_item: bool,
 }
 
+#[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
 pub struct MovePlaylistItemRequestDto {
     pub playlist_item_id: Uuid,
     pub new_index: usize,
 }
 
+#[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
 pub struct QueueRequestDto {
+    #[serde(default)]
     pub item_ids: Vec<String>,
+    #[serde(default = "default_queue_mode")]
     pub mode: GroupQueueMode,
 }
 
+fn default_queue_mode() -> GroupQueueMode {
+    GroupQueueMode::Queue
+}
+
+#[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
 pub struct SeekRequestDto {
+    #[serde(default)]
     pub position_ticks: i64,
 }
 
+#[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
 pub struct BufferRequestDto {
+    #[serde(default = "utc_now")]
     pub when: DateTime<Utc>,
+    #[serde(default)]
     pub position_ticks: i64,
+    #[serde(default)]
     pub is_playing: bool,
-    pub playlist_item_id: Uuid,
+    pub playlist_item_id: Option<Uuid>,
 }
 
+#[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
 pub struct IgnoreWaitRequestDto {
+    #[serde(default)]
     pub ignore_wait: bool,
 }
 
+#[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
 pub struct NextItemRequestDto {
-    pub playlist_item_id: Uuid,
+    pub playlist_item_id: Option<Uuid>,
 }
 
+#[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
 pub struct SetRepeatModeRequestDto {
     pub mode: GroupRepeatMode,
 }
 
+#[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
 pub struct SetShuffleModeRequestDto {
     pub mode: GroupShuffleMode,
 }
 
+#[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
 pub struct PingRequestDto {
-    pub ping: u64,
+    #[serde(default)]
+    pub ping: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -191,6 +214,7 @@ pub(super) struct GroupParticipant {
     pub ping: u64,
     pub is_buffering: bool,
     pub ignore_wait: bool,
+    pub is_connected: bool,
     pub last_client_when: Option<DateTime<Utc>>,
 }
 
@@ -300,6 +324,7 @@ impl SyncPlayGroup {
         let highest = self
             .participants
             .values()
+            .filter(|p| p.is_connected)
             .map(|p| p.ping as i64)
             .max()
             .unwrap_or(super::service::DEFAULT_PING_MS);
@@ -360,4 +385,65 @@ pub(super) struct PlayQueueUpdate {
 pub(super) struct InboundWebSocketMessage {
     pub message_type: String,
     pub data: Option<Value>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remove_from_playlist_accepts_clear_payload_without_item_ids() {
+        let payload: RemoveFromPlaylistRequestDto =
+            serde_json::from_value(serde_json::json!({ "ClearPlaylist": true }))
+                .expect("clear playlist payload should deserialize");
+
+        assert!(payload.clear_playlist);
+        assert!(payload.playlist_item_ids.is_empty());
+    }
+
+    #[test]
+    fn remove_from_playlist_accepts_item_payload_without_clear_flags() {
+        let playlist_item_id = Uuid::new_v4();
+        let payload: RemoveFromPlaylistRequestDto = serde_json::from_value(serde_json::json!({
+            "PlaylistItemIds": [playlist_item_id]
+        }))
+        .expect("remove item payload should deserialize");
+
+        assert!(!payload.clear_playlist);
+        assert_eq!(payload.playlist_item_ids, vec![playlist_item_id]);
+    }
+
+    #[test]
+    fn ping_accepts_fractional_javascript_number() {
+        let payload: PingRequestDto = serde_json::from_value(serde_json::json!({
+            "Ping": 17.5
+        }))
+        .expect("fractional ping should deserialize");
+
+        assert_eq!(payload.ping, 17.5);
+    }
+
+    #[test]
+    fn buffer_payload_accepts_missing_playlist_item_id() {
+        let payload: BufferRequestDto = serde_json::from_value(serde_json::json!({
+            "When": "2026-05-25T12:00:00Z",
+            "PositionTicks": 1234,
+            "IsPlaying": true
+        }))
+        .expect("buffer payload should deserialize without playlist item id");
+
+        assert_eq!(payload.playlist_item_id, None);
+    }
+
+    #[test]
+    fn syncplay_requests_accept_camel_case_aliases() {
+        let payload: QueueRequestDto = serde_json::from_value(serde_json::json!({
+            "itemIds": ["media-a"],
+            "mode": "QueueNext"
+        }))
+        .expect("camel case queue payload should deserialize");
+
+        assert_eq!(payload.item_ids, vec!["media-a".to_string()]);
+        assert!(matches!(payload.mode, GroupQueueMode::QueueNext));
+    }
 }
