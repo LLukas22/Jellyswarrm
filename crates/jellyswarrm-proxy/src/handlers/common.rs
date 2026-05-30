@@ -285,6 +285,12 @@ pub async fn process_media_item(
         }
     }
 
+    if let Some(people) = &mut item.people {
+        for person in people.iter_mut() {
+            remap_id(&mut person.id, media_storage, server).await?;
+        }
+    }
+
     if let Some(trickplay) = &mut item.trickplay {
         remap_map_keys(trickplay, media_storage, server).await?;
     }
@@ -294,6 +300,17 @@ pub async fn process_media_item(
     }
 
     Ok(item)
+}
+
+async fn remap_id(
+    value: &mut String,
+    media_storage: &MediaStorageService,
+    server: &Server,
+) -> Result<(), StatusCode> {
+    let original = value.clone();
+    *value = get_virtual_id(&original, media_storage, server).await?;
+
+    Ok(())
 }
 
 async fn remap_optional_id(
@@ -474,4 +491,119 @@ pub async fn track_play_session(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use serde_json::json;
+    use sqlx::SqlitePool;
+
+    use super::*;
+    use crate::{
+        config::{AppConfig, MediaStreamingMode, MIGRATOR},
+        media_storage_service::MediaStorageService,
+        processors::{request_analyzer::RequestAnalyzer, request_processor::RequestProcessor},
+        server_id::ServerId,
+        server_storage::ServerStorageService,
+        server_url::ServerUrl,
+        session_storage::SessionStorage,
+        user_authorization_service::UserAuthorizationService,
+        DataContext, JsonProcessors,
+    };
+
+    async fn create_test_state() -> (AppState, Server) {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+
+        let now = chrono::Utc::now();
+        let result = sqlx::query(
+            r#"
+            INSERT INTO servers (name, url, priority, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind("People Server")
+        .bind("http://people.example:8096")
+        .bind(100)
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let server = Server {
+            id: ServerId::new(result.last_insert_rowid()),
+            name: "People Server".to_string(),
+            url: ServerUrl::parse("http://people.example:8096").unwrap(),
+            priority: 100,
+            media_streaming_mode: MediaStreamingMode::Redirect,
+            created_at: now,
+            updated_at: now,
+        };
+
+        let data_context = DataContext {
+            user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
+            server_storage: Arc::new(ServerStorageService::new(pool.clone())),
+            media_storage: Arc::new(MediaStorageService::new(pool)),
+            play_sessions: Arc::new(SessionStorage::new()),
+            config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
+        };
+
+        let processors = JsonProcessors {
+            request_processor: RequestProcessor::new(data_context.clone()),
+            request_analyzer: RequestAnalyzer::new(data_context.clone()),
+        };
+
+        (
+            AppState::new(
+                reqwest::Client::new(),
+                reqwest::Client::new(),
+                data_context,
+                processors,
+                crate::handlers::quick_connect::QuickConnectStorage::new(),
+            ),
+            server,
+        )
+    }
+
+    #[tokio::test]
+    async fn process_media_item_remaps_nested_people_ids() {
+        let (state, server) = create_test_state().await;
+        let original_person_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let item: MediaItem = serde_json::from_value(json!({
+            "Id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "Type": "Movie",
+            "Name": "Movie With People",
+            "People": [
+                {
+                    "Name": "Actor",
+                    "Id": original_person_id,
+                    "Type": "Actor",
+                    "PrimaryImageTag": "person-image-tag"
+                }
+            ]
+        }))
+        .unwrap();
+
+        let processed = process_media_item(item, &state, &server, false, "proxy-server")
+            .await
+            .unwrap();
+        let person = processed
+            .people
+            .as_ref()
+            .and_then(|people| people.first())
+            .unwrap();
+
+        assert_ne!(person.id, original_person_id);
+        let mapping = state
+            .media_storage
+            .get_media_mapping_by_virtual(&person.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(mapping.original_media_id, original_person_id);
+        assert_eq!(mapping.server_id, server.id);
+    }
 }

@@ -367,6 +367,7 @@ pub struct MediaItem {
     pub media_sources: Option<Vec<MediaSource>>,
     pub media_streams: Option<Vec<MediaStream>>,
     pub chapters: Option<Vec<Chapter>>,
+    pub people: Option<Vec<Person>>,
     pub trickplay: Option<std::collections::HashMap<String, serde_json::Value>>,
 
     #[serde(flatten)]
