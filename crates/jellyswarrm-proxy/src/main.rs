@@ -10,7 +10,7 @@ use axum::{
 use axum_messages::MessagesManagerLayer;
 use percent_encoding::percent_decode_str;
 use rust_embed::RustEmbed;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use std::{net::SocketAddr, str::FromStr};
 use std::{sync::Arc, time::Duration};
 use tokio::task::AbortHandle;
@@ -215,12 +215,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Resolve database path inside DATA_DIR
     let db_path = DATA_DIR.join("jellyswarrm.db");
     let db_url = format!("sqlite://{}", db_path.to_string_lossy());
-    let options = SqliteConnectOptions::from_str(&db_url)?.create_if_missing(true);
+    let options = SqliteConnectOptions::from_str(&db_url)?
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal)
+        .foreign_keys(true)
+        .busy_timeout(Duration::from_secs(30));
 
     let pool = SqlitePoolOptions::new()
         .after_connect(|connection, _| {
             Box::pin(async move {
-                sqlx::query("PRAGMA foreign_keys = ON;")
+                sqlx::query("PRAGMA wal_autocheckpoint = 1000;")
                     .execute(connection)
                     .await?;
                 Ok(())
@@ -243,10 +248,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         error!("Failed to run database migrations: {}", e);
         std::process::exit(1);
     });
-
-    sqlx::query("PRAGMA foreign_keys = ON;")
-        .execute(&pool)
-        .await?;
 
     // Create reqwest client for regular API traffic.
     let reqwest_client = reqwest::Client::builder()
