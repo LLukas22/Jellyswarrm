@@ -3,14 +3,12 @@ use axum::{
     Json,
 };
 use hyper::StatusCode;
-use reqwest::header::{HeaderValue, CONTENT_LENGTH, TRANSFER_ENCODING};
-use reqwest::Body;
 use tracing::{debug, error, warn};
 
 use crate::{
     handlers::common::{
-        execute_json_request, payload_from_request, process_media_item, process_media_source,
-        track_play_session,
+        execute_json_request, payload_from_request, process_items_response, process_media_item,
+        process_media_items, process_playback_response, remap_playback_request, set_json_body,
     },
     models::{MediaItem, PlaybackRequest, PlaybackResponse},
     request_preprocessing::preprocess_request,
@@ -65,10 +63,7 @@ pub async fn get_items(
     {
         Ok(mut response) => {
             let server_id = { state.config.read().await.server_id.clone() };
-            for item in &mut response.iter_mut_items() {
-                *item =
-                    process_media_item(item.clone(), &state, &server, false, &server_id).await?;
-            }
+            process_items_response(&mut response, &state, &server, false, &server_id).await?;
 
             Ok(Json(response))
         }
@@ -95,10 +90,7 @@ pub async fn get_items_list(
     {
         Ok(mut response) => {
             let server_id = { state.config.read().await.server_id.clone() };
-            for item in &mut response {
-                *item =
-                    process_media_item(item.clone(), &state, &server, false, &server_id).await?;
-            }
+            process_media_items(&mut response, &state, &server, false, &server_id).await?;
 
             Ok(Json(response))
         }
@@ -134,50 +126,16 @@ pub async fn post_playback_info(
     let session = preprocessed.session.ok_or(StatusCode::UNAUTHORIZED)?;
 
     let mut payload = payload;
-    if payload.user_id.is_some() {
-        payload.user_id = Some(session.original_user_id.clone());
-    }
-
-    if let Some(media_source_id) = &payload.media_source_id {
-        if let Some(media_mapping) = state
-            .media_storage
-            .get_media_mapping_by_virtual(media_source_id)
-            .await
-            .unwrap_or_default()
-        {
-            payload.media_source_id = Some(media_mapping.original_media_id);
-        }
-    }
+    remap_playback_request(&mut payload, &state, &session).await?;
 
     debug!("Forwarding PlaybackRequest JSON: {:?}", &payload);
 
-    let json = serde_json::to_vec(&payload).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    // Set body as a full buffer and provide Content-Length so upstream servers
-    // don't wait for chunked data (which can trigger MinRequestBodyDataRate errors).
-    let len = json.len();
     let mut request = preprocessed.request;
-    *request.body_mut() = Some(Body::from(json));
-    // Ensure Content-Length is set and remove Transfer-Encoding if present.
-    request.headers_mut().insert(
-        CONTENT_LENGTH,
-        HeaderValue::from_str(&len.to_string()).unwrap(),
-    );
-    request.headers_mut().remove(TRANSFER_ENCODING);
+    set_json_body(&mut request, &payload)?;
 
     match execute_json_request::<PlaybackResponse>(&state.reqwest_client, request).await {
         Ok(mut response) => {
-            for item in &mut response.media_sources {
-                *item = process_media_source(item.clone(), &state.media_storage, &server).await?;
-                track_play_session(
-                    item,
-                    &response.play_session_id,
-                    &session.user_id,
-                    &server,
-                    &state,
-                )
-                .await?;
-            }
+            process_playback_response(&mut response, &state, &server, &session.user_id).await?;
 
             debug!("Requested Playback: {:?}", response);
 

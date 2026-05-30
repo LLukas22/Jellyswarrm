@@ -1,14 +1,13 @@
 use sqlx::{sqlite::SqliteRow, FromRow, Row, SqlitePool};
 use tracing::{debug, error, info, warn};
 
-use crate::config::MediaStreamingMode;
 use crate::encryption::{
     decrypt_password, decrypt_password_with_key_material, encrypt_password, EncryptedPassword,
     HashedPassword, Password,
 };
 use crate::models::{generate_token, Authorization};
 use crate::server_id::ServerId;
-use crate::server_storage::{parse_server_url_column, Server};
+use crate::server_storage::Server;
 #[cfg(test)]
 use crate::server_url::ServerUrl;
 
@@ -232,6 +231,26 @@ impl AuthorizationSession {
             version: self.device.version.clone(),
             token: Some(self.jellyfin_token.clone()),
         }
+    }
+
+    fn from_user_sessions_row(row: &SqliteRow) -> Result<Self, sqlx::Error> {
+        Ok(Self {
+            id: row.try_get("auth_id")?,
+            user_id: row.try_get("auth_user_id")?,
+            mapping_id: row.try_get("auth_mapping_id")?,
+            server_url: row.try_get("auth_server_url")?,
+            device: Device {
+                client: row.try_get("client")?,
+                device: row.try_get("device")?,
+                device_id: row.try_get("device_id")?,
+                version: row.try_get("version")?,
+            },
+            jellyfin_token: row.try_get("jellyfin_token")?,
+            original_user_id: row.try_get("original_user_id")?,
+            expires_at: row.try_get("expires_at")?,
+            created_at: row.try_get("auth_created_at")?,
+            updated_at: row.try_get("auth_updated_at")?,
+        })
     }
 }
 
@@ -930,39 +949,10 @@ impl UserAuthorizationService {
         let sessions: Vec<(AuthorizationSession, Server)> = rows
             .into_iter()
             .map(|row| {
-                let device = Device {
-                    client: row.get("client"),
-                    device: row.get("device"),
-                    device_id: row.get("device_id"),
-                    version: row.get("version"),
-                };
-                let auth_session = AuthorizationSession {
-                    id: row.get("auth_id"),
-                    user_id: row.get("auth_user_id"),
-                    mapping_id: row.get("auth_mapping_id"),
-                    server_url: row.get("auth_server_url"),
-                    device,
-                    jellyfin_token: row.get("jellyfin_token"),
-                    original_user_id: row.get("original_user_id"),
-                    expires_at: row.get("expires_at"),
-                    created_at: row.get("auth_created_at"),
-                    updated_at: row.get("auth_updated_at"),
-                };
-
-                let server = Server {
-                    id: ServerId::new(row.get("server_id")),
-                    name: row.get("server_name"),
-                    url: parse_server_url_column("server_url_full", row.get("server_url_full"))?,
-                    priority: row.get("priority"),
-                    media_streaming_mode: row
-                        .get::<String, _>("media_streaming_mode")
-                        .parse()
-                        .unwrap_or(MediaStreamingMode::Redirect),
-                    created_at: row.get("server_created_at"),
-                    updated_at: row.get("server_updated_at"),
-                };
-
-                Ok((auth_session, server))
+                Ok((
+                    AuthorizationSession::from_user_sessions_row(&row)?,
+                    Server::from_session_join_row(&row)?,
+                ))
             })
             .collect::<Result<_, sqlx::Error>>()?;
 
@@ -1095,7 +1085,9 @@ impl UserAuthorizationService {
                 continue;
             }
 
-            let canonical_session = stale_sessions.pop().unwrap();
+            let Some(canonical_session) = stale_sessions.pop() else {
+                continue;
+            };
 
             let updated = sqlx::query(
                 r#"
@@ -1349,20 +1341,7 @@ impl UserAuthorizationService {
 
         let servers = rows
             .into_iter()
-            .map(|row| {
-                Ok(Server {
-                    id: ServerId::new(row.get("id")),
-                    name: row.get("name"),
-                    url: parse_server_url_column("url", row.get("url"))?,
-                    priority: row.get("priority"),
-                    media_streaming_mode: row
-                        .get::<String, _>("media_streaming_mode")
-                        .parse()
-                        .unwrap_or(MediaStreamingMode::Redirect),
-                    created_at: row.get("created_at"),
-                    updated_at: row.get("updated_at"),
-                })
-            })
+            .map(Server::from_row)
             .collect::<Result<Vec<_>, sqlx::Error>>()?;
 
         Ok(servers)
@@ -1580,6 +1559,65 @@ mod tests {
             row.get::<chrono::DateTime<chrono::Utc>, _>("created_at"),
             first_created_at
         );
+    }
+
+    #[tokio::test]
+    async fn test_get_mapped_servers_returns_server_rows_in_priority_order() {
+        let (pool, service) = setup_service().await;
+        let low_priority_server =
+            insert_test_server(&pool, "Low Priority", "http://low:8096").await;
+        let high_priority_server =
+            insert_test_server(&pool, "High Priority", "http://high:8096").await;
+
+        sqlx::query("UPDATE servers SET priority = ? WHERE id = ?")
+            .bind(10)
+            .bind(low_priority_server.as_i64())
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE servers SET priority = ? WHERE id = ?")
+            .bind(200)
+            .bind(high_priority_server.as_i64())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let user = service
+            .get_or_create_user("testuser", &"testpass".into())
+            .await
+            .unwrap();
+        service
+            .add_server_mapping(
+                &user.id,
+                "http://low:8096/",
+                "lowuser",
+                &"lowpass".into(),
+                None,
+            )
+            .await
+            .unwrap();
+        service
+            .add_server_mapping(
+                &user.id,
+                "http://high:8096/",
+                "highuser",
+                &"highpass".into(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let servers = service.get_mapped_servers(&user.id).await.unwrap();
+
+        assert_eq!(
+            servers
+                .iter()
+                .map(|server| server.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["High Priority", "Low Priority"]
+        );
+        assert_eq!(servers[0].url.as_str(), "http://high:8096");
+        assert_eq!(servers[1].url.as_str(), "http://low:8096");
     }
 
     #[tokio::test]

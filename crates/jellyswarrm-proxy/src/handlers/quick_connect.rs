@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
 };
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -105,13 +105,13 @@ impl QuickConnectStorage {
     }
 
     pub fn store_session(&self, session: QuickConnectSession) {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions_lock();
         sessions.insert(session.secret.clone(), session.clone());
         sessions.insert(session.code.clone(), session);
     }
 
     pub fn get_session(&self, key: &str) -> Option<QuickConnectSession> {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions_lock();
 
         if let Some(session) = sessions.get(key) {
             if session.is_expired() {
@@ -133,7 +133,7 @@ impl QuickConnectStorage {
         code: &str,
         mut updater: impl FnMut(&mut QuickConnectSession),
     ) -> bool {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions_lock();
 
         if let Some(session) = sessions.get(code).cloned() {
             if session.is_expired() {
@@ -156,7 +156,7 @@ impl QuickConnectStorage {
     }
 
     pub fn remove_session(&self, secret: &str) -> Option<QuickConnectSession> {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions_lock();
 
         if let Some(session) = sessions.remove(secret) {
             sessions.remove(&session.code);
@@ -167,7 +167,7 @@ impl QuickConnectStorage {
     }
 
     pub fn cleanup_expired(&self) -> usize {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions_lock();
         let mut expired = Vec::new();
 
         for session in sessions.values() {
@@ -197,6 +197,12 @@ impl QuickConnectStorage {
                 }
             }
         });
+    }
+
+    fn sessions_lock(&self) -> MutexGuard<'_, HashMap<String, QuickConnectSession>> {
+        self.sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 

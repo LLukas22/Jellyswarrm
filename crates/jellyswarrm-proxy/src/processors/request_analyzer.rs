@@ -41,10 +41,7 @@ impl RequestBodyAnalysisResult {
         for server in &self.servers {
             *server_count.entry(server).or_insert(0) += 1;
         }
-        let (most_common_server, _) = server_count
-            .into_iter()
-            .max_by_key(|&(_, count)| count)
-            .unwrap();
+        let (most_common_server, _) = server_count.into_iter().max_by_key(|&(_, count)| count)?;
         Some(most_common_server.clone())
     }
 
@@ -57,10 +54,7 @@ impl RequestBodyAnalysisResult {
         for user in &self.users {
             *user_count.entry(user).or_insert(0) += 1;
         }
-        let (most_common_user, _) = user_count
-            .into_iter()
-            .max_by_key(|&(_, count)| count)
-            .unwrap();
+        let (most_common_user, _) = user_count.into_iter().max_by_key(|&(_, count)| count)?;
         Some(most_common_user.clone())
     }
 }

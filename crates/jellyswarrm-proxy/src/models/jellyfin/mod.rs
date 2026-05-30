@@ -315,11 +315,10 @@ impl ItemsResponseVariants {
         }
     }
 
-    /// Return item at `index` if present.
-    pub fn get(&self, index: usize) -> Option<&MediaItem> {
+    pub fn into_items(self) -> Vec<MediaItem> {
         match self {
-            ItemsResponseVariants::WithCount(w) => w.items.get(index),
-            ItemsResponseVariants::Bare(v) => v.get(index),
+            ItemsResponseVariants::WithCount(w) => w.items,
+            ItemsResponseVariants::Bare(v) => v,
         }
     }
 }
@@ -368,6 +367,7 @@ pub struct MediaItem {
     pub media_sources: Option<Vec<MediaSource>>,
     pub media_streams: Option<Vec<MediaStream>>,
     pub chapters: Option<Vec<Chapter>>,
+    pub people: Option<Vec<Person>>,
     pub trickplay: Option<std::collections::HashMap<String, serde_json::Value>>,
 
     #[serde(flatten)]
