@@ -3,7 +3,6 @@ use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use hyper::StatusCode;
-use regex::Regex;
 use reqwest::header::{HeaderValue, CONTENT_LENGTH, TRANSFER_ENCODING};
 use serde::Serialize;
 use tracing::{error, info};
@@ -133,51 +132,38 @@ where
                 }
             }
 
-            // Extract line/column info and show snippet
-            let err_str = parse_error.to_string();
-            let re = Regex::new(r"line\s*(\d+)\s*column\s*(\d+)").unwrap();
-            if let Some(caps) = re.captures(&err_str) {
-                if let (Some(line_m), Some(col_m)) = (caps.get(1), caps.get(2)) {
-                    if let (Ok(line), Ok(col)) = (
-                        line_m.as_str().parse::<usize>(),
-                        col_m.as_str().parse::<usize>(),
-                    ) {
-                        // Show error with context snippet
-                        let lines: Vec<&str> = pretty_json.lines().collect();
-                        let line_idx = line.saturating_sub(1); // Convert to 0-based
-                        let col_idx = col.saturating_sub(1); // Convert to 0-based
+            let line = parse_error.line();
+            let col = parse_error.column();
+            if line > 0 || col > 0 {
+                let lines: Vec<&str> = pretty_json.lines().collect();
+                let line_idx = line.saturating_sub(1);
+                let col_idx = col.saturating_sub(1);
 
-                        let mut snippet = String::new();
-                        let context_before = 3;
-                        let context_after = 3;
-                        let start_idx = line_idx.saturating_sub(context_before);
-                        let end_idx = std::cmp::min(lines.len(), line_idx + context_after + 1);
+                let mut snippet = String::new();
+                let context_before = 3;
+                let context_after = 3;
+                let start_idx = line_idx.saturating_sub(context_before);
+                let end_idx = std::cmp::min(lines.len(), line_idx + context_after + 1);
 
-                        for i in start_idx..end_idx {
-                            let line_num = i + 1;
-                            let line_content = lines.get(i).unwrap_or(&"");
+                for i in start_idx..end_idx {
+                    let line_num = i + 1;
+                    let line_content = lines.get(i).unwrap_or(&"");
 
-                            if i == line_idx {
-                                // Error line
-                                snippet.push_str(&format!(">>> {line_num:>4} | {line_content}\n"));
-                                // Show caret pointing to error column
-                                let visible_col =
-                                    std::cmp::min(col_idx, line_content.chars().count());
-                                let spaces = " ".repeat(visible_col);
-                                snippet.push_str(&format!("         | {spaces}^ (column {col})\n"));
-                            } else {
-                                // Context line
-                                snippet.push_str(&format!("    {line_num:>4} | {line_content}\n"));
-                            }
-                        }
-
-                        error!(
-                            "JSON parsing failed: {}\nAt line {}, column {}:\n{}",
-                            parse_error, line, col, snippet
-                        );
-                        return Err(StatusCode::BAD_GATEWAY);
+                    if i == line_idx {
+                        snippet.push_str(&format!(">>> {line_num:>4} | {line_content}\n"));
+                        let visible_col = std::cmp::min(col_idx, line_content.chars().count());
+                        let spaces = " ".repeat(visible_col);
+                        snippet.push_str(&format!("         | {spaces}^ (column {col})\n"));
+                    } else {
+                        snippet.push_str(&format!("    {line_num:>4} | {line_content}\n"));
                     }
                 }
+
+                error!(
+                    "JSON parsing failed: {}\nAt line {}, column {}:\n{}",
+                    parse_error, line, col, snippet
+                );
+                return Err(StatusCode::BAD_GATEWAY);
             }
 
             // Fallback if no line/column info
@@ -452,11 +438,10 @@ pub async fn track_play_session(
     state: &AppState,
 ) -> Result<(), StatusCode> {
     if let Some(transcoding_url) = &item.transcoding_url {
-        let re = Regex::new(r"/videos/([^/]+)/").unwrap();
-        let id = re
-            .captures(transcoding_url)
-            .and_then(|cap| cap.get(1))
-            .map(|m| m.as_str())
+        let id = transcoding_url
+            .split("/videos/")
+            .nth(1)
+            .and_then(|rest| rest.split('/').next())
             .unwrap_or_default();
         info!(
             "Tracking play session for item: {}, server: {}",

@@ -123,7 +123,13 @@ impl ServerStorageService {
         let http_client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
             .build()
-            .unwrap();
+            .unwrap_or_else(|e| {
+                error!(
+                    "Failed to create server health-check client with timeout: {}",
+                    e
+                );
+                reqwest::Client::new()
+            });
         Self {
             pool,
             health_status: Arc::new(RwLock::new(HashMap::new())),

@@ -1,4 +1,5 @@
 use percent_encoding::percent_decode_str;
+use std::fmt;
 
 pub fn generate_token() -> String {
     use uuid::Uuid;
@@ -6,7 +7,7 @@ pub fn generate_token() -> String {
 }
 
 // See https://github.com/jellyfin/jellyfin/blob/master/Jellyfin.Server.Implementations/Security/AuthorizationContext.cs
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Authorization {
     pub client: String,
     pub device: String,
@@ -83,6 +84,20 @@ impl Authorization {
         result
     }
 
+    /// Convert to a log-safe authorization header string with secrets redacted.
+    pub fn to_redacted_header_value(&self) -> String {
+        let mut result = format!(
+            "MediaBrowser Client=\"{}\", Device=\"{}\", DeviceId=\"{}\", Version=\"{}\"",
+            self.client, self.device, self.device_id, self.version
+        );
+
+        if self.token.is_some() {
+            result.push_str(", Token=\"<redacted>\"");
+        }
+
+        result
+    }
+
     /// Convert to header value without "MediaBrowser " prefix
     pub fn to_params_string(&self) -> String {
         let mut result = format!(
@@ -103,8 +118,24 @@ impl Authorization {
             "{} on {} ({})",
             self.client,
             self.device,
-            self.token.as_deref().unwrap_or("no token")
+            if self.token.is_some() {
+                "token present"
+            } else {
+                "no token"
+            }
         )
+    }
+}
+
+impl fmt::Debug for Authorization {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Authorization")
+            .field("client", &self.client)
+            .field("device", &self.device)
+            .field("device_id", &self.device_id)
+            .field("version", &self.version)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .finish()
     }
 }
 
@@ -150,9 +181,9 @@ fn decode_value(raw: &str) -> String {
     percent_decode_str(trimmed).decode_utf8_lossy().into_owned()
 }
 
-impl std::fmt::Display for Authorization {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.to_header_value())
+impl fmt::Display for Authorization {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.to_redacted_header_value())
     }
 }
 
@@ -396,7 +427,7 @@ mod tests {
         };
 
         let short = auth.to_short_string();
-        assert_eq!(short, "Jellyfin Web on Firefox (test_token)");
+        assert_eq!(short, "Jellyfin Web on Firefox (token present)");
 
         let auth_no_token = Authorization {
             token: None,
@@ -450,6 +481,7 @@ mod tests {
         };
 
         let display = format!("{}", auth);
-        assert_eq!(display, auth.to_header_value());
+        assert_eq!(display, auth.to_redacted_header_value());
+        assert!(!display.contains("abc"));
     }
 }

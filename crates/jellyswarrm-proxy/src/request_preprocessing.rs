@@ -3,6 +3,7 @@ use axum::extract::{OriginalUri, Request};
 use anyhow::{anyhow, Result};
 use axum::http;
 use http_body_util::BodyExt;
+use std::fmt;
 use tracing::{debug, error};
 
 use crate::models::Authorization;
@@ -101,13 +102,35 @@ static USER_ID_QUERY_TAGS: &[&str] = &["UserId"];
 
 static API_KEY_QUERY_TAGS: &[&str] = &["api_key", "ApiKey"];
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum JellyfinAuthorization {
     Authorization(Authorization),
     XMediaBrowser(String),
     ApiKey(String),
     XEmbyToken(String),
     XEmbyAuthorization(Authorization),
+}
+
+impl fmt::Debug for JellyfinAuthorization {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            JellyfinAuthorization::Authorization(auth) => {
+                f.debug_tuple("Authorization").field(auth).finish()
+            }
+            JellyfinAuthorization::XMediaBrowser(_) => {
+                f.debug_tuple("XMediaBrowser").field(&"<redacted>").finish()
+            }
+            JellyfinAuthorization::ApiKey(_) => {
+                f.debug_tuple("ApiKey").field(&"<redacted>").finish()
+            }
+            JellyfinAuthorization::XEmbyToken(_) => {
+                f.debug_tuple("XEmbyToken").field(&"<redacted>").finish()
+            }
+            JellyfinAuthorization::XEmbyAuthorization(auth) => {
+                f.debug_tuple("XEmbyAuthorization").field(auth).finish()
+            }
+        }
+    }
 }
 
 impl JellyfinAuthorization {
@@ -230,10 +253,7 @@ pub async fn extract_request_infos(
     if let Some(auth) = &auth {
         debug!("Extracted authorization: {:?}", auth);
     } else {
-        debug!(
-            "No authorization found in request! Headers: {:?}",
-            request.headers()
-        );
+        debug!("No authorization found in request");
     }
 
     let device = if let Some(auth) = &auth {
@@ -613,7 +633,9 @@ pub async fn resolve_server(
             }
         }
 
-        let (session, server) = sessions.first().unwrap();
+        let Some((session, server)) = sessions.first() else {
+            return Err(anyhow!("no authorization sessions available"));
+        };
         return Ok((server.clone(), Some(session.clone())));
     }
 

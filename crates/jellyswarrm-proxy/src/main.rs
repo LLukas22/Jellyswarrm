@@ -691,14 +691,20 @@ async fn index_handler(
             .status(StatusCode::TEMPORARY_REDIRECT)
             .header("Location", "/ui")
             .body(Body::empty())
-            .unwrap())
+            .map_err(|e| {
+                error!("Failed to build redirect response: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?)
     } else {
         // Servers exist, return the index.html page
         if let Some(content) = Asset::get("index.html") {
             Ok(Response::builder()
                 .header("Content-Type", "text/html")
                 .body(Body::from(content.data.into_owned()))
-                .unwrap())
+                .map_err(|e| {
+                    error!("Failed to build index response: {}", e);
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?)
         } else {
             // Fallback if index.html is not found in assets
             error!("index.html not found in static assets");
@@ -724,10 +730,13 @@ async fn proxy_handler(
     let decoded_path = percent_decode_str(path).decode_utf8_lossy().to_string();
     if let Some(content) = Asset::get(&decoded_path) {
         let mime = mime_guess::from_path(decoded_path).first_or_octet_stream();
-        return Ok(Response::builder()
+        return Response::builder()
             .header("Content-Type", mime.as_ref())
             .body(Body::from(content.data.into_owned()))
-            .unwrap());
+            .map_err(|e| {
+                error!("Failed to build static asset response: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            });
     }
 
     let preprocessed = preprocess_request(req, &state).await.map_err(|e| {
@@ -797,17 +806,22 @@ async fn proxy_handler(
 
 async fn shutdown_signal(deletion_task_abort_handle: AbortHandle) {
     let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            error!("Failed to install Ctrl+C handler: {}", e);
+            std::future::pending::<()>().await;
+        }
     };
 
     #[cfg(unix)]
     let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to install signal handler")
-            .recv()
-            .await;
+        let Ok(mut signal) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        else {
+            error!("Failed to install terminate signal handler");
+            std::future::pending::<()>().await;
+            return;
+        };
+        signal.recv().await;
     };
 
     #[cfg(not(unix))]
