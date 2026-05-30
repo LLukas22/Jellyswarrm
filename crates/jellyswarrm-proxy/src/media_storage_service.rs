@@ -4,10 +4,11 @@ use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 use tracing::{debug, error, info, trace};
 use uuid::Uuid;
 
+#[cfg(test)]
 use crate::config::MediaStreamingMode;
 use crate::models::generate_token;
 use crate::server_id::ServerId;
-use crate::server_storage::{parse_server_url_column, Server};
+use crate::server_storage::Server;
 #[cfg(test)]
 use crate::server_url::ServerUrl;
 use moka::future::Cache;
@@ -238,18 +239,7 @@ impl MediaStorageService {
                 created_at: row.get("media_created_at"),
             };
 
-            let server = Server {
-                id: ServerId::new(row.get("server_id")),
-                name: row.get("server_name"),
-                url: parse_server_url_column("server_url_full", row.get("server_url_full"))?,
-                priority: row.get("priority"),
-                media_streaming_mode: row
-                    .get::<String, _>("media_streaming_mode")
-                    .parse()
-                    .unwrap_or(MediaStreamingMode::Redirect),
-                created_at: row.get("server_created_at"),
-                updated_at: row.get("server_updated_at"),
-            };
+            let server = Server::from_session_join_row(&row)?;
 
             self.mapping_with_server_cache
                 .insert(virtual_media_id, (mapping.clone(), server.clone()))

@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, RwLockWriteGuard};
 
 use crate::server_id::ServerId;
 
@@ -43,9 +43,7 @@ impl SessionStorage {
     }
 
     pub async fn add_session(&self, session: PlaybackSession) {
-        let now = Instant::now();
-        let mut sessions = self.sessions.write().await;
-        Self::prune_stale_sessions(&mut sessions, self.session_ttl, now);
+        let mut sessions = self.live_sessions().await;
 
         if let Some(index) = sessions.iter().position(|tracked| {
             tracked.session.session_id == session.session_id
@@ -56,14 +54,12 @@ impl SessionStorage {
 
         sessions.push(TrackedPlaybackSession {
             session,
-            updated_at: now,
+            updated_at: Instant::now(),
         });
     }
 
     pub async fn get_session(&self, session_id: &str) -> Option<PlaybackSession> {
-        let now = Instant::now();
-        let mut sessions = self.sessions.write().await;
-        Self::prune_stale_sessions(&mut sessions, self.session_ttl, now);
+        let sessions = self.live_sessions().await;
 
         sessions
             .iter()
@@ -77,9 +73,7 @@ impl SessionStorage {
         session_id: &str,
         item_id: &str,
     ) -> Option<PlaybackSession> {
-        let now = Instant::now();
-        let mut sessions = self.sessions.write().await;
-        Self::prune_stale_sessions(&mut sessions, self.session_ttl, now);
+        let sessions = self.live_sessions().await;
 
         sessions
             .iter()
@@ -91,9 +85,7 @@ impl SessionStorage {
     }
 
     pub async fn get_sessions_by_item_id(&self, item_id: &str) -> Vec<PlaybackSession> {
-        let now = Instant::now();
-        let mut sessions = self.sessions.write().await;
-        Self::prune_stale_sessions(&mut sessions, self.session_ttl, now);
+        let sessions = self.live_sessions().await;
 
         sessions
             .iter()
@@ -111,6 +103,13 @@ impl SessionStorage {
     pub async fn remove_sessions_for_server(&self, server_id: ServerId) {
         let mut sessions = self.sessions.write().await;
         sessions.retain(|tracked| tracked.session.server_id != server_id);
+    }
+
+    async fn live_sessions(&self) -> RwLockWriteGuard<'_, Vec<TrackedPlaybackSession>> {
+        let now = Instant::now();
+        let mut sessions = self.sessions.write().await;
+        Self::prune_stale_sessions(&mut sessions, self.session_ttl, now);
+        sessions
     }
 
     fn prune_stale_sessions(
@@ -218,6 +217,34 @@ mod tests {
             .get_session_by_session_and_item_id("session-1", "item-1")
             .await
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn test_add_session_prunes_stale_sessions() {
+        let storage = SessionStorage::with_session_ttl(Duration::from_millis(1));
+
+        storage
+            .add_session(PlaybackSession {
+                session_id: "stale-session".to_string(),
+                item_id: "stale-item".to_string(),
+                user_id: "user-1".to_string(),
+                server_id: ServerId::new(1),
+            })
+            .await;
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        storage
+            .add_session(PlaybackSession {
+                session_id: "fresh-session".to_string(),
+                item_id: "fresh-item".to_string(),
+                user_id: "user-1".to_string(),
+                server_id: ServerId::new(2),
+            })
+            .await;
+
+        assert!(storage.get_session("stale-session").await.is_none());
+        assert!(storage.get_session("fresh-session").await.is_some());
     }
 
     #[tokio::test]

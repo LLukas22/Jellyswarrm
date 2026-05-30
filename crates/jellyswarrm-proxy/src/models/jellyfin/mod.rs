@@ -315,11 +315,10 @@ impl ItemsResponseVariants {
         }
     }
 
-    /// Return item at `index` if present.
-    pub fn get(&self, index: usize) -> Option<&MediaItem> {
+    pub fn into_items(self) -> Vec<MediaItem> {
         match self {
-            ItemsResponseVariants::WithCount(w) => w.items.get(index),
-            ItemsResponseVariants::Bare(v) => v.get(index),
+            ItemsResponseVariants::WithCount(w) => w.items,
+            ItemsResponseVariants::Bare(v) => v,
         }
     }
 }

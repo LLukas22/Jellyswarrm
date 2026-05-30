@@ -1,7 +1,7 @@
 use axum::{
     body::Body,
     extract::{Request, State},
-    http::{HeaderName, StatusCode},
+    http::StatusCode,
     response::{IntoResponse, Response},
     routing::{any, get, post},
     Router,
@@ -34,6 +34,7 @@ mod legacy_server_identity;
 mod media_storage_service;
 mod models;
 mod processors;
+mod proxy_headers;
 mod request_preprocessing;
 mod server_id;
 mod server_storage;
@@ -52,11 +53,13 @@ use user_authorization_service::UserAuthorizationService;
 
 use crate::{
     config::{AppConfig, MIGRATOR},
+    handlers::common::set_json_body,
     handlers::quick_connect::{self, QuickConnectStorage},
     processors::{
         request_analyzer::RequestAnalyzer,
         request_processor::{RequestProcessingContext, RequestProcessor},
     },
+    proxy_headers::is_hop_by_hop_header,
     request_preprocessing::body_to_json,
     ui::Backend,
 };
@@ -754,16 +757,7 @@ async fn proxy_handler(
                 })?;
         if response.was_modified {
             debug!("Modified JSON body for request to {}", request_url);
-            let new_body = serde_json::to_vec(&response.data).map_err(|e| {
-                error!("Failed to serialize processed JSON body: {}", e);
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-            *request.body_mut() = Some(reqwest::Body::from(new_body.clone()));
-            // Update Content-Length header
-            request.headers_mut().insert(
-                reqwest::header::CONTENT_LENGTH,
-                reqwest::header::HeaderValue::from_str(&new_body.len().to_string()).unwrap(),
-            );
+            set_json_body(&mut request, &response.data)?;
         }
     }
     let response = state.reqwest_client.execute(request).await.map_err(|e| {
@@ -799,21 +793,6 @@ async fn proxy_handler(
     })?;
 
     Ok(response)
-}
-
-fn is_hop_by_hop_header(name: &HeaderName) -> bool {
-    // RFC 7230 Section 6.1: Hop-by-hop headers
-    matches!(
-        name.as_str().to_lowercase().as_str(),
-        "connection"
-            | "keep-alive"
-            | "proxy-authenticate"
-            | "proxy-authorization"
-            | "te"
-            | "trailers"
-            | "transfer-encoding"
-            | "upgrade"
-    )
 }
 
 async fn shutdown_signal(deletion_task_abort_handle: AbortHandle) {

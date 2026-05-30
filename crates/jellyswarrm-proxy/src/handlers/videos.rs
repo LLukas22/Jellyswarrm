@@ -1,6 +1,5 @@
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::{HeaderMap, HeaderName};
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
 use hyper::StatusCode;
@@ -8,23 +7,13 @@ use tracing::{error, info, warn};
 
 use crate::{
     config::MediaStreamingMode,
+    proxy_headers::remove_hop_by_hop_headers,
     request_preprocessing::{apply_to_request, preprocess_request, remap_authorization},
     server_storage::Server,
     session_storage::PlaybackSession,
     user_authorization_service::AuthorizationSession,
     AppState,
 };
-
-fn strip_hop_by_hop_headers(headers: &mut HeaderMap) {
-    headers.remove(hyper::header::CONNECTION);
-    headers.remove(HeaderName::from_static("keep-alive"));
-    headers.remove(hyper::header::PROXY_AUTHENTICATE);
-    headers.remove(hyper::header::PROXY_AUTHORIZATION);
-    headers.remove(hyper::header::TE);
-    headers.remove(hyper::header::TRAILER);
-    headers.remove(hyper::header::TRANSFER_ENCODING);
-    headers.remove(hyper::header::UPGRADE);
-}
 
 fn extract_video_id(path: &str) -> Option<&str> {
     let mut segments = path.trim_matches('/').split('/');
@@ -73,7 +62,7 @@ async fn proxy_request(
     let mut headers = resp.headers().clone();
 
     // Drop hop-by-hop headers; Hyper will manage connection semantics downstream.
-    strip_hop_by_hop_headers(&mut headers);
+    remove_hop_by_hop_headers(&mut headers);
 
     // Create a stream that yields chunks as they are received from the upstream server
     let stream = resp

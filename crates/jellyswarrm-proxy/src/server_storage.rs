@@ -29,17 +29,36 @@ pub struct Server {
 
 impl Server {
     pub(crate) fn from_row(row: SqliteRow) -> Result<Self, sqlx::Error> {
+        Self::from_row_ref(&row)
+    }
+
+    pub(crate) fn from_row_ref(row: &SqliteRow) -> Result<Self, sqlx::Error> {
         Ok(Server {
-            id: ServerId::new(row.get("id")),
-            name: row.get("name"),
-            url: parse_server_url_column("url", row.get("url"))?,
-            priority: row.get("priority"),
+            id: ServerId::new(row.try_get("id")?),
+            name: row.try_get("name")?,
+            url: parse_server_url_column("url", row.try_get("url")?)?,
+            priority: row.try_get("priority")?,
             media_streaming_mode: row
-                .get::<String, _>("media_streaming_mode")
+                .try_get::<String, _>("media_streaming_mode")?
                 .parse()
                 .unwrap_or(MediaStreamingMode::Redirect),
-            created_at: row.get("created_at"),
-            updated_at: row.get("updated_at"),
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+        })
+    }
+
+    pub(crate) fn from_session_join_row(row: &SqliteRow) -> Result<Self, sqlx::Error> {
+        Ok(Server {
+            id: ServerId::new(row.try_get("server_id")?),
+            name: row.try_get("server_name")?,
+            url: parse_server_url_column("server_url_full", row.try_get("server_url_full")?)?,
+            priority: row.try_get("priority")?,
+            media_streaming_mode: row
+                .try_get::<String, _>("media_streaming_mode")?
+                .parse()
+                .unwrap_or(MediaStreamingMode::Redirect),
+            created_at: row.try_get("server_created_at")?,
+            updated_at: row.try_get("server_updated_at")?,
         })
     }
 }

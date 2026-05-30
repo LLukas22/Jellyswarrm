@@ -4,14 +4,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use hyper::StatusCode;
 use regex::Regex;
+use reqwest::header::{HeaderValue, CONTENT_LENGTH, TRANSFER_ENCODING};
+use serde::Serialize;
 use tracing::{error, info};
 
 use crate::models::enums::CollectionType;
 use crate::{
     media_storage_service::MediaStorageService,
-    models::{MediaItem, MediaSource},
+    models::{ItemsResponseVariants, MediaItem, MediaSource, PlaybackRequest, PlaybackResponse},
     server_storage::Server,
     session_storage::PlaybackSession,
+    user_authorization_service::AuthorizationSession,
     AppState,
 };
 
@@ -35,6 +38,29 @@ where
             Err(StatusCode::BAD_REQUEST)
         }
     }
+}
+
+pub fn set_json_body<T>(request: &mut reqwest::Request, payload: &T) -> Result<(), StatusCode>
+where
+    T: Serialize,
+{
+    let json = serde_json::to_vec(payload).map_err(|e| {
+        error!("Failed to serialize JSON request body: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let len = json.len();
+    *request.body_mut() = Some(reqwest::Body::from(json));
+    request.headers_mut().insert(
+        CONTENT_LENGTH,
+        HeaderValue::from_str(&len.to_string()).map_err(|e| {
+            error!("Failed to build Content-Length header: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?,
+    );
+    request.headers_mut().remove(TRANSFER_ENCODING);
+
+    Ok(())
 }
 
 /// Execute a reqwest request and parse the JSON response with comprehensive error handling
@@ -214,31 +240,12 @@ pub async fn process_media_item(
     }
 
     item.id = get_virtual_id(&item.id, media_storage, server).await?;
-
-    if let Some(parent_id) = &item.parent_id {
-        item.parent_id = Some(get_virtual_id(parent_id, media_storage, server).await?);
-    }
-
-    if let Some(original_id) = &item.item_id {
-        item.item_id = Some(get_virtual_id(original_id, media_storage, server).await?);
-    }
-
-    if let Some(etag) = &item.etag {
-        item.etag = Some(get_virtual_id(etag, media_storage, server).await?);
-    }
-
-    if let Some(series_id) = &item.series_id {
-        item.series_id = Some(get_virtual_id(series_id, media_storage, server).await?);
-    }
-
-    if let Some(season_id) = &item.season_id {
-        item.season_id = Some(get_virtual_id(season_id, media_storage, server).await?);
-    }
-
-    if let Some(preferences_id) = &item.display_preferences_id {
-        item.display_preferences_id =
-            Some(get_virtual_id(preferences_id, media_storage, server).await?);
-    }
+    remap_optional_id(&mut item.parent_id, media_storage, server).await?;
+    remap_optional_id(&mut item.item_id, media_storage, server).await?;
+    remap_optional_id(&mut item.etag, media_storage, server).await?;
+    remap_optional_id(&mut item.series_id, media_storage, server).await?;
+    remap_optional_id(&mut item.season_id, media_storage, server).await?;
+    remap_optional_id(&mut item.display_preferences_id, media_storage, server).await?;
 
     if item.can_delete.is_some() {
         item.can_delete = Some(false);
@@ -254,43 +261,15 @@ pub async fn process_media_item(
         }
     }
 
-    if let Some(parent_logo_item_id) = &item.parent_logo_item_id {
-        item.parent_logo_item_id =
-            Some(get_virtual_id(parent_logo_item_id, media_storage, server).await?);
-    }
-
-    if let Some(parent_backdrop_item_id) = &item.parent_backdrop_item_id {
-        item.parent_backdrop_item_id =
-            Some(get_virtual_id(parent_backdrop_item_id, media_storage, server).await?);
-    }
-
-    if let Some(parent_logo_image_tag) = &item.parent_logo_image_tag {
-        item.parent_logo_image_tag =
-            Some(get_virtual_id(parent_logo_image_tag, media_storage, server).await?);
-    }
-
-    if let Some(parent_thumb_item_id) = &item.parent_thumb_item_id {
-        item.parent_thumb_item_id =
-            Some(get_virtual_id(parent_thumb_item_id, media_storage, server).await?);
-    }
-
-    if let Some(parent_thumb_image_tag) = &item.parent_thumb_image_tag {
-        item.parent_thumb_image_tag =
-            Some(get_virtual_id(parent_thumb_image_tag, media_storage, server).await?);
-    }
-
-    if let Some(series_primary_image_tag) = &item.series_primary_image_tag {
-        item.series_primary_image_tag =
-            Some(get_virtual_id(series_primary_image_tag, media_storage, server).await?);
-    }
+    remap_optional_id(&mut item.parent_logo_item_id, media_storage, server).await?;
+    remap_optional_id(&mut item.parent_backdrop_item_id, media_storage, server).await?;
+    remap_optional_id(&mut item.parent_logo_image_tag, media_storage, server).await?;
+    remap_optional_id(&mut item.parent_thumb_item_id, media_storage, server).await?;
+    remap_optional_id(&mut item.parent_thumb_image_tag, media_storage, server).await?;
+    remap_optional_id(&mut item.series_primary_image_tag, media_storage, server).await?;
 
     if let Some(image_tags) = &mut item.image_tags {
-        let mut updated_tags = HashMap::new();
-        for (tag_type, tag_id) in image_tags.iter() {
-            let virtual_id = get_virtual_id(tag_id, media_storage, server).await?;
-            updated_tags.insert(tag_type.clone(), virtual_id);
-        }
-        *image_tags = updated_tags;
+        remap_map_values(image_tags, media_storage, server).await?;
     }
 
     if let Some(image_blur_hashes) = &mut item.image_blur_hashes {
@@ -307,38 +286,21 @@ pub async fn process_media_item(
     }
 
     if let Some(backdrop_image_tags) = &mut item.backdrop_image_tags {
-        let mut new_backdrop_tags = Vec::new();
-        for tag in backdrop_image_tags.iter() {
-            let virtual_id = get_virtual_id(tag, media_storage, server).await?;
-            new_backdrop_tags.push(virtual_id);
-        }
-        item.backdrop_image_tags = Some(new_backdrop_tags);
+        remap_id_vec(backdrop_image_tags, media_storage, server).await?;
     }
 
     if let Some(parent_backdrop_image_tags) = &mut item.parent_backdrop_image_tags {
-        let mut new_parent_backdrop_image_tags = Vec::new();
-        for tag in parent_backdrop_image_tags.iter() {
-            let virtual_id = get_virtual_id(tag, media_storage, server).await?;
-            new_parent_backdrop_image_tags.push(virtual_id);
-        }
-        item.parent_backdrop_image_tags = Some(new_parent_backdrop_image_tags);
+        remap_id_vec(parent_backdrop_image_tags, media_storage, server).await?;
     }
 
     if let Some(chapters) = &mut item.chapters {
         for chapter in chapters.iter_mut() {
-            if let Some(image_tag) = &chapter.image_tag {
-                chapter.image_tag = Some(get_virtual_id(image_tag, media_storage, server).await?);
-            }
+            remap_optional_id(&mut chapter.image_tag, media_storage, server).await?;
         }
     }
 
     if let Some(trickplay) = &mut item.trickplay {
-        let mut updated_hash_map = HashMap::new();
-        for (id, v) in trickplay.iter() {
-            let virtual_id = get_virtual_id(id, media_storage, server).await?;
-            updated_hash_map.insert(virtual_id, v.clone());
-        }
-        *trickplay = updated_hash_map;
+        remap_map_keys(trickplay, media_storage, server).await?;
     }
 
     if item.server_id.is_some() {
@@ -346,6 +308,87 @@ pub async fn process_media_item(
     }
 
     Ok(item)
+}
+
+async fn remap_optional_id(
+    value: &mut Option<String>,
+    media_storage: &MediaStorageService,
+    server: &Server,
+) -> Result<(), StatusCode> {
+    if let Some(id) = value.clone() {
+        *value = Some(get_virtual_id(&id, media_storage, server).await?);
+    }
+
+    Ok(())
+}
+
+async fn remap_id_vec(
+    values: &mut [String],
+    media_storage: &MediaStorageService,
+    server: &Server,
+) -> Result<(), StatusCode> {
+    for value in values {
+        let original = value.clone();
+        *value = get_virtual_id(&original, media_storage, server).await?;
+    }
+
+    Ok(())
+}
+
+async fn remap_map_values(
+    values: &mut HashMap<String, String>,
+    media_storage: &MediaStorageService,
+    server: &Server,
+) -> Result<(), StatusCode> {
+    for value in values.values_mut() {
+        let original = value.clone();
+        *value = get_virtual_id(&original, media_storage, server).await?;
+    }
+
+    Ok(())
+}
+
+async fn remap_map_keys<T>(
+    values: &mut HashMap<String, T>,
+    media_storage: &MediaStorageService,
+    server: &Server,
+) -> Result<(), StatusCode> {
+    let old_values = std::mem::take(values);
+    for (key, value) in old_values {
+        values.insert(get_virtual_id(&key, media_storage, server).await?, value);
+    }
+
+    Ok(())
+}
+
+pub async fn process_items_response(
+    response: &mut ItemsResponseVariants,
+    state: &AppState,
+    server: &Server,
+    should_change_name: bool,
+    server_id: &str,
+) -> Result<(), StatusCode> {
+    for item in response.iter_mut_items() {
+        *item =
+            process_media_item(item.clone(), state, server, should_change_name, server_id).await?;
+    }
+
+    Ok(())
+}
+
+pub async fn process_media_items(
+    response: &mut [MediaItem],
+    state: &AppState,
+    server: &Server,
+    should_change_name: bool,
+    server_id: &str,
+) -> Result<(), StatusCode> {
+    for item in response {
+        *item =
+            process_media_item(item.clone(), state, server, should_change_name, server_id).await?;
+    }
+
+    Ok(())
 }
 
 pub async fn process_media_source(
@@ -359,6 +402,46 @@ pub async fn process_media_source(
     // TODO check media streams
 
     Ok(item)
+}
+
+pub async fn remap_playback_request(
+    payload: &mut PlaybackRequest,
+    state: &AppState,
+    session: &AuthorizationSession,
+) -> Result<(), StatusCode> {
+    if payload.user_id.is_some() {
+        payload.user_id = Some(session.original_user_id.clone());
+    }
+
+    if let Some(media_source_id) = &payload.media_source_id {
+        if let Some(media_mapping) = state
+            .media_storage
+            .get_media_mapping_by_virtual(media_source_id)
+            .await
+            .map_err(|e| {
+                error!("Failed to resolve media source id mapping: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+        {
+            payload.media_source_id = Some(media_mapping.original_media_id);
+        }
+    }
+
+    Ok(())
+}
+
+pub async fn process_playback_response(
+    response: &mut PlaybackResponse,
+    state: &AppState,
+    server: &Server,
+    user_id: &str,
+) -> Result<(), StatusCode> {
+    for item in &mut response.media_sources {
+        *item = process_media_source(item.clone(), &state.media_storage, server).await?;
+        track_play_session(item, &response.play_session_id, user_id, server, state).await?;
+    }
+
+    Ok(())
 }
 
 pub async fn track_play_session(

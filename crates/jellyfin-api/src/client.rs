@@ -112,35 +112,14 @@ impl JellyfinClient {
         path: &str,
         body: Option<&serde_json::Value>,
     ) -> Result<T, Error> {
-        let url = self.base_url.join(path)?;
-        let auth_header = self.build_auth_header().await;
-
-        let mut request = self
-            .http_client
-            .request(method, url)
-            .header(header::AUTHORIZATION, auth_header);
+        let mut request = self.request_builder(method, path).await?;
 
         if let Some(b) = body {
             request = request.json(b);
         }
 
         let response = request.send().await?;
-        let status = response.status();
-
-        if status.is_success() {
-            let data = response.json::<T>().await?;
-            Ok(data)
-        } else {
-            match status {
-                StatusCode::UNAUTHORIZED => Err(Error::Unauthorized),
-                StatusCode::FORBIDDEN => Err(Error::Forbidden),
-                StatusCode::NOT_FOUND => Err(Error::NotFound),
-                _ => {
-                    let text = response.text().await.unwrap_or_default();
-                    Err(Error::ServerError(format!("{} - {}", status, text)))
-                }
-            }
-        }
+        Self::parse_response(response).await
     }
 
     async fn request_no_content(
@@ -149,32 +128,55 @@ impl JellyfinClient {
         path: &str,
         body: Option<&serde_json::Value>,
     ) -> Result<(), Error> {
-        let url = self.base_url.join(path)?;
-        let auth_header = self.build_auth_header().await;
-
-        let mut request = self
-            .http_client
-            .request(method, url)
-            .header(header::AUTHORIZATION, auth_header);
+        let mut request = self.request_builder(method, path).await?;
 
         if let Some(b) = body {
             request = request.json(b);
         }
 
         let response = request.send().await?;
-        let status = response.status();
+        Self::check_success(response).await
+    }
 
-        if status.is_success() {
-            Ok(())
-        } else {
-            match status {
-                StatusCode::UNAUTHORIZED => Err(Error::Unauthorized),
-                StatusCode::FORBIDDEN => Err(Error::Forbidden),
-                StatusCode::NOT_FOUND => Err(Error::NotFound),
-                _ => {
-                    let text = response.text().await.unwrap_or_default();
-                    Err(Error::ServerError(format!("{} - {}", status, text)))
-                }
+    async fn request_builder(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+    ) -> Result<reqwest::RequestBuilder, Error> {
+        let url = self.base_url.join(path)?;
+        let auth_header = self.build_auth_header().await;
+
+        Ok(self
+            .http_client
+            .request(method, url)
+            .header(header::AUTHORIZATION, auth_header))
+    }
+
+    async fn parse_response<T: DeserializeOwned>(response: reqwest::Response) -> Result<T, Error> {
+        if response.status().is_success() {
+            return Ok(response.json::<T>().await?);
+        }
+
+        Err(Self::response_error(response).await)
+    }
+
+    async fn check_success(response: reqwest::Response) -> Result<(), Error> {
+        if response.status().is_success() {
+            return Ok(());
+        }
+
+        Err(Self::response_error(response).await)
+    }
+
+    async fn response_error(response: reqwest::Response) -> Error {
+        let status = response.status();
+        match status {
+            StatusCode::UNAUTHORIZED => Error::Unauthorized,
+            StatusCode::FORBIDDEN => Error::Forbidden,
+            StatusCode::NOT_FOUND => Error::NotFound,
+            _ => {
+                let text = response.text().await.unwrap_or_default();
+                Error::ServerError(format!("{} - {}", status, text))
             }
         }
     }
@@ -336,34 +338,14 @@ impl JellyfinClient {
         }
 
         let path = format!("Users/{}/Items", user_id);
-        let url = self.base_url.join(&path)?;
-
-        let auth_header = self.build_auth_header().await;
-
         let response = self
-            .http_client
-            .get(url)
-            .header(header::AUTHORIZATION, auth_header)
+            .request_builder(reqwest::Method::GET, &path)
+            .await?
             .query(&query)
             .send()
             .await?;
 
-        let status = response.status();
-
-        if status.is_success() {
-            let data = response.json::<crate::models::ItemsResponse>().await?;
-            Ok(data)
-        } else {
-            match status {
-                StatusCode::UNAUTHORIZED => Err(Error::Unauthorized),
-                StatusCode::FORBIDDEN => Err(Error::Forbidden),
-                StatusCode::NOT_FOUND => Err(Error::NotFound),
-                _ => {
-                    let text = response.text().await.unwrap_or_default();
-                    Err(Error::ServerError(format!("{} - {}", status, text)))
-                }
-            }
-        }
+        Self::parse_response(response).await
     }
 }
 
