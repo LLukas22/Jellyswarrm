@@ -69,6 +69,7 @@ pub async fn resolve_request_identity_from_headers_uri(
 // Static configuration for server resolution
 static MEDIA_ID_PATH_TAGS: &[&str] = &[
     "Items",
+    "Audio",
     "Shows",
     "Videos",
     "PlayedItems",
@@ -87,6 +88,7 @@ static MEDIA_ID_PATH_TAGS: &[&str] = &[
 
 static MEDIA_ID_QUERY_TAGS: &[&str] = &[
     "ParentId",
+    "ItemId",
     "SeriesId",
     "MediaSourceId",
     "Tag",
@@ -817,5 +819,26 @@ pub fn body_to_json(request: &reqwest::Request) -> Option<serde_json::Value> {
         }
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn media_id_tags_cover_audio_paths_and_item_id_queries() {
+        let audio_id = "11111111111111111111111111111111";
+        let audio_url = url::Url::parse(&format!(
+            "http://localhost/Audio/{audio_id}/universal?ItemId=22222222222222222222222222222222"
+        ))
+        .unwrap();
+
+        let matched_path_id = MEDIA_ID_PATH_TAGS
+            .iter()
+            .find_map(|path_segment| contains_id(&audio_url, path_segment));
+
+        assert_eq!(matched_path_id.as_deref(), Some(audio_id));
+        assert!(matches_case_insensitive("ItemId", MEDIA_ID_QUERY_TAGS));
     }
 }

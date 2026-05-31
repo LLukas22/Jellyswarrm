@@ -396,6 +396,7 @@ pub struct MediaSource {
     pub required_http_headers: Option<serde_json::Value>,
     pub transcoding_sub_protocol: Option<String>,
     pub transcoding_url: Option<String>,
+    pub stream_url: Option<String>,
     pub transcoding_container: Option<String>,
     pub default_audio_stream_index: Option<i32>,
     pub default_subtitle_stream_index: Option<i32>,

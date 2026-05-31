@@ -44,7 +44,7 @@ pub async fn post_livestream_open(
 
     match execute_json_request::<PlaybackResponse>(&state.reqwest_client, request).await {
         Ok(mut response) => {
-            process_playback_response(&mut response, &state, &server, &session.user_id).await?;
+            process_playback_response(&mut response, &state, &server, &session).await?;
 
             debug!("Requested Playback: {:?}", response);
 

@@ -8,9 +8,13 @@ use serde::Serialize;
 use tracing::{error, info};
 
 use crate::models::enums::CollectionType;
+use crate::url_helper::is_id_like;
 use crate::{
     media_storage_service::MediaStorageService,
-    models::{ItemsResponseVariants, MediaItem, MediaSource, PlaybackRequest, PlaybackResponse},
+    models::{
+        ItemsResponseVariants, MediaItem, MediaSource, MediaStream, PlaybackRequest,
+        PlaybackResponse,
+    },
     server_storage::Server,
     session_storage::PlaybackSession,
     user_authorization_service::AuthorizationSession,
@@ -199,6 +203,7 @@ pub async fn process_media_item(
     server: &Server,
     should_change_name: bool,
     server_id: &str,
+    proxy_api_key: Option<&str>,
 ) -> Result<MediaItem, StatusCode> {
     let mut item = item;
 
@@ -243,8 +248,13 @@ pub async fn process_media_item(
 
     if let Some(media_sources) = &mut item.media_sources {
         for source in media_sources.iter_mut() {
-            *source = process_media_source(source.clone(), media_storage, server).await?;
+            *source =
+                process_media_source(source.clone(), media_storage, server, proxy_api_key).await?;
         }
+    }
+
+    if let Some(media_streams) = &mut item.media_streams {
+        process_media_streams(media_streams, media_storage, server, proxy_api_key).await?;
     }
 
     remap_optional_id(&mut item.parent_logo_item_id, media_storage, server).await?;
@@ -370,10 +380,18 @@ pub async fn process_items_response(
     server: &Server,
     should_change_name: bool,
     server_id: &str,
+    proxy_api_key: Option<&str>,
 ) -> Result<(), StatusCode> {
     for item in response.iter_mut_items() {
-        *item =
-            process_media_item(item.clone(), state, server, should_change_name, server_id).await?;
+        *item = process_media_item(
+            item.clone(),
+            state,
+            server,
+            should_change_name,
+            server_id,
+            proxy_api_key,
+        )
+        .await?;
     }
 
     Ok(())
@@ -385,10 +403,18 @@ pub async fn process_media_items(
     server: &Server,
     should_change_name: bool,
     server_id: &str,
+    proxy_api_key: Option<&str>,
 ) -> Result<(), StatusCode> {
     for item in response {
-        *item =
-            process_media_item(item.clone(), state, server, should_change_name, server_id).await?;
+        *item = process_media_item(
+            item.clone(),
+            state,
+            server,
+            should_change_name,
+            server_id,
+            proxy_api_key,
+        )
+        .await?;
     }
 
     Ok(())
@@ -398,13 +424,239 @@ pub async fn process_media_source(
     item: MediaSource,
     media_storage: &MediaStorageService,
     server: &Server,
+    proxy_api_key: Option<&str>,
 ) -> Result<MediaSource, StatusCode> {
     let mut item = item;
 
     item.id = get_virtual_id(&item.id, media_storage, server).await?;
-    // TODO check media streams
+
+    remap_delivery_url(
+        &mut item.transcoding_url,
+        media_storage,
+        server,
+        proxy_api_key,
+    )
+    .await?;
+    remap_delivery_url(&mut item.stream_url, media_storage, server, proxy_api_key).await?;
+
+    if let Some(media_streams) = &mut item.media_streams {
+        process_media_streams(media_streams, media_storage, server, proxy_api_key).await?;
+    }
+
+    if let Some(media_attachments) = &mut item.media_attachments {
+        process_media_attachments(media_attachments, media_storage, server, proxy_api_key).await?;
+    }
 
     Ok(item)
+}
+
+async fn process_media_streams(
+    media_streams: &mut [MediaStream],
+    media_storage: &MediaStorageService,
+    server: &Server,
+    proxy_api_key: Option<&str>,
+) -> Result<(), StatusCode> {
+    for stream in media_streams {
+        remap_delivery_url(
+            &mut stream.delivery_url,
+            media_storage,
+            server,
+            proxy_api_key,
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn process_media_attachments(
+    media_attachments: &mut [serde_json::Value],
+    media_storage: &MediaStorageService,
+    server: &Server,
+    proxy_api_key: Option<&str>,
+) -> Result<(), StatusCode> {
+    for attachment in media_attachments {
+        for key in ["DeliveryUrl", "deliveryUrl"] {
+            let Some(value) = attachment
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            let mut delivery_url = Some(value);
+            remap_delivery_url(&mut delivery_url, media_storage, server, proxy_api_key).await?;
+            if let Some(delivery_url) = delivery_url {
+                attachment[key] = serde_json::Value::String(delivery_url);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn remap_delivery_url(
+    delivery_url: &mut Option<String>,
+    media_storage: &MediaStorageService,
+    server: &Server,
+    proxy_api_key: Option<&str>,
+) -> Result<(), StatusCode> {
+    let Some(value) = delivery_url else {
+        return Ok(());
+    };
+
+    let Some((mut url, style)) = parse_delivery_url(value) else {
+        return Ok(());
+    };
+
+    remap_delivery_url_path(&mut url, media_storage, server).await?;
+    remap_delivery_url_query(&mut url, media_storage, server, proxy_api_key).await?;
+
+    *value = format_delivery_url(url, style);
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum DeliveryUrlStyle {
+    Absolute,
+    RootRelative,
+    Relative,
+}
+
+fn parse_delivery_url(value: &str) -> Option<(url::Url, DeliveryUrlStyle)> {
+    if let Ok(url) = url::Url::parse(value) {
+        return Some((url, DeliveryUrlStyle::Absolute));
+    }
+
+    let (path, style) = if value.starts_with('/') {
+        (value.to_string(), DeliveryUrlStyle::RootRelative)
+    } else {
+        (format!("/{value}"), DeliveryUrlStyle::Relative)
+    };
+
+    url::Url::parse(&format!("http://localhost{path}"))
+        .ok()
+        .map(|url| (url, style))
+}
+
+fn format_delivery_url(url: url::Url, style: DeliveryUrlStyle) -> String {
+    match style {
+        DeliveryUrlStyle::Absolute => url.to_string(),
+        DeliveryUrlStyle::RootRelative => relative_url_from_parts(&url),
+        DeliveryUrlStyle::Relative => relative_url_from_parts(&url)
+            .strip_prefix('/')
+            .unwrap_or(url.path())
+            .to_string(),
+    }
+}
+
+fn relative_url_from_parts(url: &url::Url) -> String {
+    let mut value = url.path().to_string();
+    if let Some(query) = url.query() {
+        value.push('?');
+        value.push_str(query);
+    }
+    if let Some(fragment) = url.fragment() {
+        value.push('#');
+        value.push_str(fragment);
+    }
+    value
+}
+
+async fn remap_delivery_url_path(
+    url: &mut url::Url,
+    media_storage: &MediaStorageService,
+    server: &Server,
+) -> Result<(), StatusCode> {
+    let Some(segments) = url.path_segments() else {
+        return Ok(());
+    };
+
+    let mut changed = false;
+    let mut remapped_segments = Vec::new();
+
+    for segment in segments {
+        if is_id_like(segment) {
+            remapped_segments.push(get_virtual_id(segment, media_storage, server).await?);
+            changed = true;
+        } else {
+            remapped_segments.push(segment.to_string());
+        }
+    }
+
+    if changed {
+        url.set_path(&remapped_segments.join("/"));
+    }
+
+    Ok(())
+}
+
+async fn remap_delivery_url_query(
+    url: &mut url::Url,
+    media_storage: &MediaStorageService,
+    server: &Server,
+    proxy_api_key: Option<&str>,
+) -> Result<(), StatusCode> {
+    let Some(query) = url.query() else {
+        return Ok(());
+    };
+
+    let mut changed = false;
+    let mut pairs = Vec::new();
+
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        let value = if key.eq_ignore_ascii_case("api_key") || key.eq_ignore_ascii_case("ApiKey") {
+            if let Some(proxy_api_key) = proxy_api_key {
+                changed = true;
+                proxy_api_key.to_string()
+            } else {
+                value.into_owned()
+            }
+        } else {
+            let remapped = remap_delivery_url_query_value(&value, media_storage, server).await?;
+            if remapped != value {
+                changed = true;
+            }
+            remapped
+        };
+
+        pairs.push((key.into_owned(), value));
+    }
+
+    if changed {
+        url.query_pairs_mut().clear().extend_pairs(pairs);
+    }
+
+    Ok(())
+}
+
+async fn remap_delivery_url_query_value(
+    value: &str,
+    media_storage: &MediaStorageService,
+    server: &Server,
+) -> Result<String, StatusCode> {
+    let mut changed = false;
+    let mut remapped_ids = Vec::new();
+
+    for raw_id in value.split(',') {
+        let id = raw_id.trim();
+        if id.is_empty() {
+            continue;
+        }
+
+        if is_id_like(id) {
+            remapped_ids.push(get_virtual_id(id, media_storage, server).await?);
+            changed = true;
+        } else {
+            remapped_ids.push(id.to_string());
+        }
+    }
+
+    if changed {
+        Ok(remapped_ids.join(","))
+    } else {
+        Ok(value.to_string())
+    }
 }
 
 pub async fn remap_playback_request(
@@ -437,11 +689,40 @@ pub async fn process_playback_response(
     response: &mut PlaybackResponse,
     state: &AppState,
     server: &Server,
-    user_id: &str,
+    session: &AuthorizationSession,
 ) -> Result<(), StatusCode> {
+    let proxy_user = state
+        .user_authorization
+        .get_user_by_id(&session.user_id)
+        .await
+        .map_err(|e| {
+            error!("Failed to resolve proxy user for playback response: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or_else(|| {
+            error!(
+                "Failed to resolve proxy user {} for playback response",
+                session.user_id
+            );
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
     for item in &mut response.media_sources {
-        *item = process_media_source(item.clone(), &state.media_storage, server).await?;
-        track_play_session(item, &response.play_session_id, user_id, server, state).await?;
+        *item = process_media_source(
+            item.clone(),
+            &state.media_storage,
+            server,
+            Some(proxy_user.virtual_key.as_str()),
+        )
+        .await?;
+        track_play_session(
+            item,
+            &response.play_session_id,
+            &session.user_id,
+            server,
+            state,
+        )
+        .await?;
     }
 
     Ok(())
@@ -454,43 +735,120 @@ pub async fn track_play_session(
     server: &Server,
     state: &AppState,
 ) -> Result<(), StatusCode> {
-    if let Some(transcoding_url) = &item.transcoding_url {
-        let id = transcoding_url
-            .split("/videos/")
-            .nth(1)
-            .and_then(|rest| rest.split('/').next())
-            .unwrap_or_default();
-        info!(
-            "Tracking play session for item: {}, server: {}",
-            id, server.name
-        );
-        state
-            .play_sessions
-            .add_session(PlaybackSession {
-                item_id: id.to_string(),
-                session_id: session_id.to_string(),
-                user_id: user_id.to_string(),
-                server_id: server.id,
-            })
-            .await;
-    } else {
-        // Some clients can not set the transcoding url, track by it then
-        info!(
-            "Tracking play session for media source: {}, server: {}",
-            item.id, server.name
-        );
-        state
-            .play_sessions
-            .add_session(PlaybackSession {
-                item_id: item.id.clone(),
-                session_id: session_id.to_string(),
-                user_id: user_id.to_string(),
-                server_id: server.id,
-            })
-            .await;
+    let mut session_ids = vec![session_id.to_string()];
+    let mut item_ids = vec![item.id.clone()];
+
+    collect_delivery_url_tracking_values(
+        item.transcoding_url.as_deref(),
+        &mut session_ids,
+        &mut item_ids,
+    );
+    collect_delivery_url_tracking_values(
+        item.stream_url.as_deref(),
+        &mut session_ids,
+        &mut item_ids,
+    );
+
+    if let Some(media_streams) = &item.media_streams {
+        for stream in media_streams {
+            collect_delivery_url_tracking_values(
+                stream.delivery_url.as_deref(),
+                &mut session_ids,
+                &mut item_ids,
+            );
+        }
+    }
+
+    if let Some(media_attachments) = &item.media_attachments {
+        for attachment in media_attachments {
+            collect_delivery_url_tracking_values(
+                attachment
+                    .get("DeliveryUrl")
+                    .and_then(serde_json::Value::as_str),
+                &mut session_ids,
+                &mut item_ids,
+            );
+        }
+    }
+
+    for tracked_session_id in session_ids {
+        for item_id in &item_ids {
+            add_tracked_play_session(item_id, &tracked_session_id, user_id, server, state).await;
+        }
     }
 
     Ok(())
+}
+
+fn collect_delivery_url_tracking_values(
+    value: Option<&str>,
+    session_ids: &mut Vec<String>,
+    item_ids: &mut Vec<String>,
+) {
+    let Some(value) = value else {
+        return;
+    };
+
+    if let Some(session_id) = extract_play_session_id_from_delivery_url(value) {
+        push_unique(session_ids, session_id);
+    }
+
+    if let Some(item_id) = extract_media_id_from_delivery_url(value) {
+        push_unique(item_ids, item_id);
+    }
+}
+
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if !values.iter().any(|existing| existing == &value) {
+        values.push(value);
+    }
+}
+
+async fn add_tracked_play_session(
+    item_id: &str,
+    session_id: &str,
+    user_id: &str,
+    server: &Server,
+    state: &AppState,
+) {
+    info!(
+        "Tracking play session for item: {}, server: {}",
+        item_id, server.name
+    );
+    state
+        .play_sessions
+        .add_session(PlaybackSession {
+            item_id: item_id.to_string(),
+            session_id: session_id.to_string(),
+            user_id: user_id.to_string(),
+            server_id: server.id,
+        })
+        .await;
+}
+
+fn extract_media_id_from_delivery_url(value: &str) -> Option<String> {
+    let (url, _) = parse_delivery_url(value)?;
+    let mut segments = url.path_segments()?;
+
+    while let Some(segment) = segments.next() {
+        if segment.eq_ignore_ascii_case("Videos") || segment.eq_ignore_ascii_case("Audio") {
+            return segments
+                .next()
+                .filter(|segment| !segment.is_empty())
+                .map(str::to_string);
+        }
+    }
+
+    None
+}
+
+fn extract_play_session_id_from_delivery_url(value: &str) -> Option<String> {
+    let (url, _) = parse_delivery_url(value)?;
+    url.query_pairs().find_map(|(key, value)| {
+        (key.eq_ignore_ascii_case("PlaySessionId") || key.eq_ignore_ascii_case("SessionId"))
+            .then(|| value.to_string())
+            .filter(|value| !value.is_empty())
+    })
 }
 
 #[cfg(test)]
@@ -587,7 +945,7 @@ mod tests {
         }))
         .unwrap();
 
-        let processed = process_media_item(item, &state, &server, false, "proxy-server")
+        let processed = process_media_item(item, &state, &server, false, "proxy-server", None)
             .await
             .unwrap();
         let person = processed
@@ -605,5 +963,163 @@ mod tests {
             .unwrap();
         assert_eq!(mapping.original_media_id, original_person_id);
         assert_eq!(mapping.server_id, server.id);
+    }
+
+    #[tokio::test]
+    async fn process_media_source_remaps_stream_subtitle_and_attachment_delivery_urls() {
+        let (state, server) = create_test_state().await;
+        let original_item_id = "11111111111111111111111111111111";
+        let original_source_id = "22222222222222222222222222222222";
+        let mut source: MediaSource = serde_json::from_value(json!({
+            "Id": original_source_id,
+            "StreamUrl": format!(
+                "/Audio/{}/universal?api_key=upstream-token&MediaSourceId={}",
+                original_item_id,
+                original_source_id
+            ),
+            "MediaStreams": [
+                {
+                    "Index": 3,
+                    "Type": "Subtitle",
+                    "Codec": "ass",
+                    "DeliveryMethod": "External",
+                    "DeliveryUrl": format!(
+                        "/Videos/{}/{}/Subtitles/3/0/Stream.ass?api_key=upstream-token&MediaSourceId={}",
+                        original_item_id,
+                        original_source_id,
+                        original_source_id
+                    )
+                }
+            ],
+            "MediaAttachments": [
+                {
+                    "MimeType": "font/ttf",
+                    "DeliveryUrl": format!(
+                        "/Videos/{}/{}/Attachments/5?api_key=upstream-token",
+                        original_item_id,
+                        original_source_id
+                    )
+                }
+            ]
+        }))
+        .unwrap();
+
+        source = process_media_source(source, &state.media_storage, &server, Some("proxy-token"))
+            .await
+            .unwrap();
+
+        let virtual_item_id = state
+            .media_storage
+            .get_or_create_media_mapping(original_item_id, &server)
+            .await
+            .unwrap()
+            .virtual_media_id;
+        let virtual_source_id = state
+            .media_storage
+            .get_or_create_media_mapping(original_source_id, &server)
+            .await
+            .unwrap()
+            .virtual_media_id;
+        let stream_url = source.stream_url.as_ref().unwrap().clone();
+        let subtitle_url = source.media_streams.unwrap()[0]
+            .delivery_url
+            .as_ref()
+            .unwrap()
+            .clone();
+        let attachment_url = source.media_attachments.unwrap()[0]
+            .get("DeliveryUrl")
+            .and_then(serde_json::Value::as_str)
+            .unwrap()
+            .to_string();
+
+        assert!(stream_url.starts_with(&format!("/Audio/{virtual_item_id}/universal")));
+        assert!(stream_url.contains("api_key=proxy-token"));
+        assert!(stream_url.contains(&format!("MediaSourceId={virtual_source_id}")));
+        assert!(subtitle_url.starts_with(&format!(
+            "/Videos/{virtual_item_id}/{virtual_source_id}/Subtitles/3/0/Stream.ass"
+        )));
+        assert!(subtitle_url.contains("api_key=proxy-token"));
+        assert!(subtitle_url.contains(&format!("MediaSourceId={virtual_source_id}")));
+        assert!(attachment_url.starts_with(&format!(
+            "/Videos/{virtual_item_id}/{virtual_source_id}/Attachments/5"
+        )));
+        assert!(attachment_url.contains("api_key=proxy-token"));
+    }
+
+    #[tokio::test]
+    async fn track_play_session_tracks_media_source_and_transcoding_url_ids() {
+        let (state, server) = create_test_state().await;
+        let source: MediaSource = serde_json::from_value(json!({
+            "Id": "media-source-id",
+            "TranscodingUrl": "/Videos/video-resource-id/master.m3u8?PlaySessionId=session-1"
+        }))
+        .unwrap();
+
+        track_play_session(&source, "session-1", "user-1", &server, &state)
+            .await
+            .unwrap();
+
+        let source_session = state
+            .play_sessions
+            .get_session_by_session_and_item_id("session-1", "media-source-id")
+            .await
+            .unwrap();
+        let video_session = state
+            .play_sessions
+            .get_session_by_session_and_item_id("session-1", "video-resource-id")
+            .await
+            .unwrap();
+
+        assert_eq!(source_session.server_id, server.id);
+        assert_eq!(video_session.server_id, server.id);
+    }
+
+    #[tokio::test]
+    async fn track_play_session_tracks_embedded_url_session_ids_and_resource_ids() {
+        let (state, server) = create_test_state().await;
+        let source: MediaSource = serde_json::from_value(json!({
+            "Id": "media-source-id",
+            "StreamUrl": "/Audio/audio-resource-id/universal?PlaySessionId=audio-session",
+            "MediaStreams": [
+                {
+                    "Index": 3,
+                    "Type": "Subtitle",
+                    "DeliveryUrl": "/Videos/subtitle-resource-id/media-source-id/Subtitles/3/0/Stream.ass?PlaySessionId=subtitle-session"
+                }
+            ],
+            "MediaAttachments": [
+                {
+                    "DeliveryUrl": "/Videos/attachment-resource-id/media-source-id/Attachments/5?SessionId=attachment-session"
+                }
+            ]
+        }))
+        .unwrap();
+
+        track_play_session(&source, "response-session", "user-1", &server, &state)
+            .await
+            .unwrap();
+
+        for session_id in [
+            "response-session",
+            "audio-session",
+            "subtitle-session",
+            "attachment-session",
+        ] {
+            for item_id in [
+                "media-source-id",
+                "audio-resource-id",
+                "subtitle-resource-id",
+                "attachment-resource-id",
+            ] {
+                assert!(
+                    state
+                        .play_sessions
+                        .get_session_by_session_and_item_id(session_id, item_id)
+                        .await
+                        .is_some(),
+                    "missing tracked session {session_id} for item {item_id}"
+                );
+            }
+        }
     }
 }

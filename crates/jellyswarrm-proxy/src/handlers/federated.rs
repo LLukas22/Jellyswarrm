@@ -173,7 +173,7 @@ async fn fetch_items_from_server(
                 error!("Failed to get items from server '{}': {:?}", server.name, e);
             })?;
 
-    process_items_response(&mut items_response, &state, &server, true, &server_id)
+    process_items_response(&mut items_response, &state, &server, true, &server_id, None)
         .await
         .inspect_err(|e| {
             error!(

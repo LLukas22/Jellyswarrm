@@ -81,6 +81,26 @@ async fn proxy_request(
     Ok(response)
 }
 
+async fn forward_video_request(
+    state: &AppState,
+    server: &Server,
+    request: reqwest::Request,
+    log_label: &str,
+) -> Result<Response, StatusCode> {
+    let url = request.url().clone();
+
+    match server.media_streaming_mode {
+        MediaStreamingMode::Redirect => {
+            info!("Redirecting {} to: {}", log_label, url);
+            Ok(axum::response::Redirect::temporary(url.as_ref()).into_response())
+        }
+        MediaStreamingMode::Proxy => {
+            info!("Proxying {} from: {}", log_label, url);
+            proxy_request(&state.streaming_reqwest_client, request).await
+        }
+    }
+}
+
 fn session_for_server(
     sessions: &Option<Vec<(AuthorizationSession, Server)>>,
     server: &Server,
@@ -106,14 +126,17 @@ pub async fn get_video_resource(
 
     let original_request = preprocessed
         .original_request
+        .as_ref()
         .ok_or(StatusCode::BAD_REQUEST)?;
 
-    let id = extract_video_id(original_request.url().path()).ok_or(StatusCode::NOT_FOUND)?;
+    let id = extract_video_id(original_request.url().path())
+        .ok_or(StatusCode::NOT_FOUND)?
+        .to_string();
     let play_session_id = extract_play_session_id(original_request.url());
     let play_session = if let Some(play_session_id) = play_session_id.as_deref() {
         state
             .play_sessions
-            .get_session_by_session_and_item_id(play_session_id, id)
+            .get_session_by_session_and_item_id(play_session_id, &id)
             .await
             .ok_or_else(|| {
                 error!(
@@ -123,7 +146,7 @@ pub async fn get_video_resource(
                 StatusCode::NOT_FOUND
             })?
     } else {
-        let candidates = state.play_sessions.get_sessions_by_item_id(id).await;
+        let candidates = state.play_sessions.get_sessions_by_item_id(&id).await;
         let user_id = preprocessed
             .user
             .as_ref()
@@ -143,22 +166,66 @@ pub async fn get_video_resource(
                 );
                 play_session
             }
-            Err(0) => {
-                error!(
-                    "No play session found for video resource without session id: {}",
-                    id
-                );
-                return Err(StatusCode::NOT_FOUND);
-            }
             Err(count) => {
-                error!(
-                    "Ambiguous video resource {} without play session id matched {} active sessions",
-                    id, count
-                );
+                if state
+                    .media_storage
+                    .get_media_mapping_with_server(&id)
+                    .await
+                    .map_err(|e| {
+                        error!(
+                            "Failed to resolve media mapping for video resource {}: {}",
+                            id, e
+                        );
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    })?
+                    .is_some()
+                {
+                    let server = preprocessed.server;
+                    if !state
+                        .server_storage
+                        .server_status(server.id)
+                        .await
+                        .is_healthy()
+                    {
+                        error!(
+                            "Server {} for video resource {} is not healthy",
+                            server.name, id
+                        );
+                        return Err(StatusCode::NOT_FOUND);
+                    }
+
+                    warn!(
+                        "Video resource {} arrived without play session id; routing by virtual media mapping",
+                        id
+                    );
+                    return forward_video_request(
+                        &state,
+                        &server,
+                        preprocessed.request,
+                        "video resource",
+                    )
+                    .await;
+                }
+
+                if count == 0 {
+                    error!(
+                        "No play session found for video resource without session id: {}",
+                        id
+                    );
+                } else {
+                    error!(
+                        "Ambiguous video resource {} without play session id matched {} active sessions",
+                        id, count
+                    );
+                }
                 return Err(StatusCode::NOT_FOUND);
             }
         }
     };
+
+    let original_request = preprocessed
+        .original_request
+        .ok_or(StatusCode::BAD_REQUEST)?;
 
     let server = match state
         .server_storage
@@ -218,18 +285,7 @@ pub async fn get_video_resource(
 
     apply_to_request(&mut upstream_request, &server, &session, &new_auth, &state).await;
 
-    let url = upstream_request.url().clone();
-
-    match server.media_streaming_mode {
-        MediaStreamingMode::Redirect => {
-            info!("Redirecting HLS stream to: {}", url);
-            Ok(axum::response::Redirect::temporary(url.as_ref()).into_response())
-        }
-        MediaStreamingMode::Proxy => {
-            info!("Proxying HLS stream from: {}", url);
-            proxy_request(&state.streaming_reqwest_client, upstream_request).await
-        }
-    }
+    forward_video_request(&state, &server, upstream_request, "HLS stream").await
 }
 
 pub async fn get_stream(
@@ -243,18 +299,7 @@ pub async fn get_stream(
 
     let server = preprocessed.server;
     let request = preprocessed.request;
-    let url = request.url().clone();
-
-    match server.media_streaming_mode {
-        MediaStreamingMode::Redirect => {
-            info!("Redirecting MKV stream to: {}", url);
-            Ok(axum::response::Redirect::temporary(url.as_ref()).into_response())
-        }
-        MediaStreamingMode::Proxy => {
-            info!("Proxying MKV stream from: {}", url);
-            proxy_request(&state.streaming_reqwest_client, request).await
-        }
-    }
+    forward_video_request(&state, &server, request, "media stream").await
 }
 
 #[cfg(test)]
