@@ -437,6 +437,7 @@ pub async fn process_media_source(
         proxy_api_key,
     )
     .await?;
+    remap_delivery_url(&mut item.stream_url, media_storage, server, proxy_api_key).await?;
 
     if let Some(media_streams) = &mut item.media_streams {
         process_media_streams(media_streams, media_storage, server, proxy_api_key).await?;
@@ -900,12 +901,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn process_media_source_remaps_subtitle_and_attachment_delivery_urls() {
+    async fn process_media_source_remaps_stream_subtitle_and_attachment_delivery_urls() {
         let (state, server) = create_test_state().await;
         let original_item_id = "11111111111111111111111111111111";
         let original_source_id = "22222222222222222222222222222222";
         let mut source: MediaSource = serde_json::from_value(json!({
             "Id": original_source_id,
+            "StreamUrl": format!(
+                "/Audio/{}/universal?api_key=upstream-token&MediaSourceId={}",
+                original_item_id,
+                original_source_id
+            ),
             "MediaStreams": [
                 {
                     "Index": 3,
@@ -949,6 +955,7 @@ mod tests {
             .await
             .unwrap()
             .virtual_media_id;
+        let stream_url = source.stream_url.as_ref().unwrap().clone();
         let subtitle_url = source.media_streams.unwrap()[0]
             .delivery_url
             .as_ref()
@@ -960,6 +967,9 @@ mod tests {
             .unwrap()
             .to_string();
 
+        assert!(stream_url.starts_with(&format!("/Audio/{virtual_item_id}/universal")));
+        assert!(stream_url.contains("api_key=proxy-token"));
+        assert!(stream_url.contains(&format!("MediaSourceId={virtual_source_id}")));
         assert!(subtitle_url.starts_with(&format!(
             "/Videos/{virtual_item_id}/{virtual_source_id}/Subtitles/3/0/Stream.ass"
         )));

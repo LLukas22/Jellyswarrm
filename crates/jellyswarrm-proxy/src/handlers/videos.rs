@@ -299,7 +299,7 @@ pub async fn get_stream(
 
     let server = preprocessed.server;
     let request = preprocessed.request;
-    forward_video_request(&state, &server, request, "MKV stream").await
+    forward_video_request(&state, &server, request, "media stream").await
 }
 
 #[cfg(test)]

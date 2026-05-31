@@ -578,6 +578,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         get(handlers::videos::get_video_resource),
                     ),
             )
+            // Audio streaming routes
+            .nest(
+                "/Audio",
+                Router::new()
+                    .route("/{item_id}/universal", get(handlers::videos::get_stream))
+                    .route("/{item_id}/stream", get(handlers::videos::get_stream))
+                    .route("/{item_id}/stream.{container}", get(handlers::videos::get_stream)),
+            )
             // Persons
             .nest(
                 "/Persons",
