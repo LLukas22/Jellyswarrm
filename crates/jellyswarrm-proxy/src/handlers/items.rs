@@ -28,11 +28,24 @@ pub async fn get_item(
 
     let server = preprocessed.server;
 
+    let proxy_api_key = preprocessed
+        .user
+        .as_ref()
+        .map(|user| user.virtual_key.clone());
+
     match execute_json_request::<MediaItem>(&state.reqwest_client, preprocessed.request).await {
         Ok(media_item) => {
             let server_id = { state.config.read().await.server_id.clone() };
             Ok(Json(
-                process_media_item(media_item, &state, &server, false, &server_id).await?,
+                process_media_item(
+                    media_item,
+                    &state,
+                    &server,
+                    false,
+                    &server_id,
+                    proxy_api_key.as_deref(),
+                )
+                .await?,
             ))
         }
         Err(e) => {
@@ -55,6 +68,11 @@ pub async fn get_items(
 
     let server = preprocessed.server;
 
+    let proxy_api_key = preprocessed
+        .user
+        .as_ref()
+        .map(|user| user.virtual_key.clone());
+
     match execute_json_request::<crate::models::ItemsResponseVariants>(
         &state.reqwest_client,
         preprocessed.request,
@@ -63,7 +81,15 @@ pub async fn get_items(
     {
         Ok(mut response) => {
             let server_id = { state.config.read().await.server_id.clone() };
-            process_items_response(&mut response, &state, &server, false, &server_id).await?;
+            process_items_response(
+                &mut response,
+                &state,
+                &server,
+                false,
+                &server_id,
+                proxy_api_key.as_deref(),
+            )
+            .await?;
 
             Ok(Json(response))
         }
@@ -86,11 +112,24 @@ pub async fn get_items_list(
 
     let server = preprocessed.server;
 
+    let proxy_api_key = preprocessed
+        .user
+        .as_ref()
+        .map(|user| user.virtual_key.clone());
+
     match execute_json_request::<Vec<MediaItem>>(&state.reqwest_client, preprocessed.request).await
     {
         Ok(mut response) => {
             let server_id = { state.config.read().await.server_id.clone() };
-            process_media_items(&mut response, &state, &server, false, &server_id).await?;
+            process_media_items(
+                &mut response,
+                &state,
+                &server,
+                false,
+                &server_id,
+                proxy_api_key.as_deref(),
+            )
+            .await?;
 
             Ok(Json(response))
         }
@@ -135,7 +174,7 @@ pub async fn post_playback_info(
 
     match execute_json_request::<PlaybackResponse>(&state.reqwest_client, request).await {
         Ok(mut response) => {
-            process_playback_response(&mut response, &state, &server, &session.user_id).await?;
+            process_playback_response(&mut response, &state, &server, &session).await?;
 
             debug!("Requested Playback: {:?}", response);
 
