@@ -10,8 +10,15 @@
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, rust-overlay }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+      rust-overlay,
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs {
@@ -21,43 +28,48 @@
         # Import jellyfin-web from nixpkgs instead of building ui
         jellyfinWeb = pkgs.jellyfin-web;
 
-        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
-          extensions = [ "rust-src" ];
+        rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+
+        rustPlatform = pkgs.makeRustPlatform {
+          cargo = rustToolchain;
+          rustc = rustToolchain;
         };
 
-        jellyswarrm = pkgs.rustPlatform.buildRustPackage rec{
+        jellyswarrm = rustPlatform.buildRustPackage {
           pname = "jellyswarrm";
-          version = "0.2.0";
+          version = "0.2.1";
 
-          src = pkgs.fetchFromGitHub {
-            owner = "LLukas22";
-            repo = "Jellyswarrm";
-            rev = "v${version}";
-            # Hash must be updated upon new release of Jellyswarrm
-            sha256 = "sha256-UvHZ5u9mSzMc7OxJF+diQmaxmXt+wXsVA6bI23TW8vw=";
+          src = self;
+
+          cargoLock = {
+            lockFile = ./Cargo.lock;
           };
 
-          # Hash must be updated upon new release of Jellyswarrm
-          cargoHash = "sha256-aWMW/mACrdCQWCi+9+2jQXYYEE1e84xlFWexr+SzM2o=";
+          nativeBuildInputs = with pkgs; [
+            pkg-config
+            makeBinaryWrapper
+          ];
 
           buildInputs = with pkgs; [
-            jellyfin-web
+            sqlite
           ];
 
           env = {
-            # Skip internal UI build since we are using the nix package for jellyfin-web
             JELLYSWARRM_SKIP_UI = "1";
           };
 
           preBuild = ''
-            # Move the contents of pre-built jellyfin-web to the cargo
             mkdir -p crates/jellyswarrm-proxy/static
             cp -r ${jellyfinWeb}/share/jellyfin-web/* crates/jellyswarrm-proxy/static/
-            # ui-version.env is required for the cargo build
             cat > crates/jellyswarrm-proxy/static/ui-version.env <<EOF
-              UI_VERSION=${jellyfinWeb.version}
-              UI_COMMIT=nix
+            UI_VERSION=${jellyfinWeb.version}
+            UI_COMMIT=nix
             EOF
+          '';
+
+          postInstall = ''
+            wrapProgram $out/bin/jellyswarrm-proxy \
+              --set SSL_CERT_FILE ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
           '';
         };
 
@@ -68,9 +80,16 @@
           jellyswarrm = jellyswarrm;
         };
       }
-    ) // {
+    )
+    // {
       # NixOS module for the service
-      nixosModules.default = { config, lib, pkgs, ... }:
+      nixosModules.default =
+        {
+          config,
+          lib,
+          pkgs,
+          ...
+        }:
         with lib;
         let
           cfg = config.services.jellyswarrm;
@@ -139,7 +158,7 @@
 
             extraEnvironment = mkOption {
               type = types.attrsOf types.str;
-              default = {};
+              default = { };
               description = "Extra environment variables to pass to Jellyswarrm";
               example = {
                 RUST_LOG = "info";
@@ -156,7 +175,7 @@
               description = "Jellyswarrm service user";
             };
 
-            users.groups.${cfg.group} = {};
+            users.groups.${cfg.group} = { };
 
             systemd.services.jellyswarrm = {
               description = "Jellyswarrm Jellyfin reverse proxy";
@@ -181,22 +200,28 @@
                 ProtectKernelTunables = true;
                 ProtectKernelModules = true;
                 ProtectControlGroups = true;
-                RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
+                RestrictAddressFamilies = [
+                  "AF_INET"
+                  "AF_INET6"
+                  "AF_UNIX"
+                ];
                 RestrictNamespaces = true;
                 LockPersonality = true;
                 RestrictRealtime = true;
                 RestrictSUIDSGID = true;
                 RemoveIPC = true;
                 PrivateMounts = true;
-              } // (
-                if cfg.passwordFile != null
-                then {
-                  LoadCredential = "password:${cfg.passwordFile}";
-                  ExecStart = "${pkgs.bash}/bin/bash -c 'JELLYSWARRM_PASSWORD=$(cat $CREDENTIALS_DIRECTORY/password) exec ${cfg.package}/bin/jellyswarrm-proxy'";
-                }
-                else {
-                  ExecStart = "${cfg.package}/bin/jellyswarrm-proxy";
-                }
+              }
+              // (
+                if cfg.passwordFile != null then
+                  {
+                    LoadCredential = "password:${cfg.passwordFile}";
+                    ExecStart = "${pkgs.bash}/bin/bash -c 'JELLYSWARRM_PASSWORD=$(cat $CREDENTIALS_DIRECTORY/password) exec ${cfg.package}/bin/jellyswarrm-proxy'";
+                  }
+                else
+                  {
+                    ExecStart = "${cfg.package}/bin/jellyswarrm-proxy";
+                  }
               );
 
               environment = {
@@ -204,11 +229,9 @@
                 JELLYSWARRM_PORT = toString cfg.port;
                 JELLYSWARRM_USERNAME = cfg.username;
                 JELLYSWARRM_DATA_DIR = cfg.dataDir;
-              } // cfg.extraEnvironment // (
-                if cfg.passwordFile == null
-                then { JELLYSWARRM_PASSWORD = "jellyswarrm"; }
-                else {}
-              );
+              }
+              // cfg.extraEnvironment
+              // (if cfg.passwordFile == null then { JELLYSWARRM_PASSWORD = "jellyswarrm"; } else { });
             };
 
             networking.firewall = mkIf cfg.openFirewall {
