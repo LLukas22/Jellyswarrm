@@ -735,17 +735,73 @@ pub async fn track_play_session(
     server: &Server,
     state: &AppState,
 ) -> Result<(), StatusCode> {
-    add_tracked_play_session(&item.id, session_id, user_id, server, state).await;
+    let mut session_ids = vec![session_id.to_string()];
+    let mut item_ids = vec![item.id.clone()];
 
-    if let Some(transcoding_url) = &item.transcoding_url {
-        if let Some(id) = extract_video_id_from_delivery_url(transcoding_url) {
-            if id != item.id {
-                add_tracked_play_session(&id, session_id, user_id, server, state).await;
-            }
+    collect_delivery_url_tracking_values(
+        item.transcoding_url.as_deref(),
+        &mut session_ids,
+        &mut item_ids,
+    );
+    collect_delivery_url_tracking_values(
+        item.stream_url.as_deref(),
+        &mut session_ids,
+        &mut item_ids,
+    );
+
+    if let Some(media_streams) = &item.media_streams {
+        for stream in media_streams {
+            collect_delivery_url_tracking_values(
+                stream.delivery_url.as_deref(),
+                &mut session_ids,
+                &mut item_ids,
+            );
+        }
+    }
+
+    if let Some(media_attachments) = &item.media_attachments {
+        for attachment in media_attachments {
+            collect_delivery_url_tracking_values(
+                attachment
+                    .get("DeliveryUrl")
+                    .and_then(serde_json::Value::as_str),
+                &mut session_ids,
+                &mut item_ids,
+            );
+        }
+    }
+
+    for tracked_session_id in session_ids {
+        for item_id in &item_ids {
+            add_tracked_play_session(item_id, &tracked_session_id, user_id, server, state).await;
         }
     }
 
     Ok(())
+}
+
+fn collect_delivery_url_tracking_values(
+    value: Option<&str>,
+    session_ids: &mut Vec<String>,
+    item_ids: &mut Vec<String>,
+) {
+    let Some(value) = value else {
+        return;
+    };
+
+    if let Some(session_id) = extract_play_session_id_from_delivery_url(value) {
+        push_unique(session_ids, session_id);
+    }
+
+    if let Some(item_id) = extract_media_id_from_delivery_url(value) {
+        push_unique(item_ids, item_id);
+    }
+}
+
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if !values.iter().any(|existing| existing == &value) {
+        values.push(value);
+    }
 }
 
 async fn add_tracked_play_session(
@@ -770,12 +826,12 @@ async fn add_tracked_play_session(
         .await;
 }
 
-fn extract_video_id_from_delivery_url(value: &str) -> Option<String> {
+fn extract_media_id_from_delivery_url(value: &str) -> Option<String> {
     let (url, _) = parse_delivery_url(value)?;
     let mut segments = url.path_segments()?;
 
     while let Some(segment) = segments.next() {
-        if segment.eq_ignore_ascii_case("Videos") {
+        if segment.eq_ignore_ascii_case("Videos") || segment.eq_ignore_ascii_case("Audio") {
             return segments
                 .next()
                 .filter(|segment| !segment.is_empty())
@@ -784,6 +840,15 @@ fn extract_video_id_from_delivery_url(value: &str) -> Option<String> {
     }
 
     None
+}
+
+fn extract_play_session_id_from_delivery_url(value: &str) -> Option<String> {
+    let (url, _) = parse_delivery_url(value)?;
+    url.query_pairs().find_map(|(key, value)| {
+        (key.eq_ignore_ascii_case("PlaySessionId") || key.eq_ignore_ascii_case("SessionId"))
+            .then(|| value.to_string())
+            .filter(|value| !value.is_empty())
+    })
 }
 
 #[cfg(test)]
@@ -1007,5 +1072,54 @@ mod tests {
 
         assert_eq!(source_session.server_id, server.id);
         assert_eq!(video_session.server_id, server.id);
+    }
+
+    #[tokio::test]
+    async fn track_play_session_tracks_embedded_url_session_ids_and_resource_ids() {
+        let (state, server) = create_test_state().await;
+        let source: MediaSource = serde_json::from_value(json!({
+            "Id": "media-source-id",
+            "StreamUrl": "/Audio/audio-resource-id/universal?PlaySessionId=audio-session",
+            "MediaStreams": [
+                {
+                    "Index": 3,
+                    "Type": "Subtitle",
+                    "DeliveryUrl": "/Videos/subtitle-resource-id/media-source-id/Subtitles/3/0/Stream.ass?PlaySessionId=subtitle-session"
+                }
+            ],
+            "MediaAttachments": [
+                {
+                    "DeliveryUrl": "/Videos/attachment-resource-id/media-source-id/Attachments/5?SessionId=attachment-session"
+                }
+            ]
+        }))
+        .unwrap();
+
+        track_play_session(&source, "response-session", "user-1", &server, &state)
+            .await
+            .unwrap();
+
+        for session_id in [
+            "response-session",
+            "audio-session",
+            "subtitle-session",
+            "attachment-session",
+        ] {
+            for item_id in [
+                "media-source-id",
+                "audio-resource-id",
+                "subtitle-resource-id",
+                "attachment-resource-id",
+            ] {
+                assert!(
+                    state
+                        .play_sessions
+                        .get_session_by_session_and_item_id(session_id, item_id)
+                        .await
+                        .is_some(),
+                    "missing tracked session {session_id} for item {item_id}"
+                );
+            }
+        }
     }
 }
