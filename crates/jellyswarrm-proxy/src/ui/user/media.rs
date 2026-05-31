@@ -9,12 +9,13 @@ use jellyfin_api::models::{BaseItem, IncludeItemTypes};
 use tracing::error;
 
 use crate::{
+    server_id::ServerId,
     ui::{auth::AuthenticatedUser, user::common::authenticate_user_on_server},
     AppState,
 };
 
 pub struct ServerInfo {
-    pub id: i64,
+    pub id: ServerId,
     pub name: String,
 }
 
@@ -34,7 +35,7 @@ pub struct UserMediaTemplate {
 #[derive(Template)]
 #[template(path = "user/server_libraries.html")]
 pub struct ServerLibrariesTemplate {
-    pub server_id: i64,
+    pub server_id: ServerId,
     pub libraries: Vec<LibraryWithCount>,
     pub ui_route: String,
 }
@@ -42,7 +43,7 @@ pub struct ServerLibrariesTemplate {
 #[derive(Template)]
 #[template(path = "user/library_items.html")]
 pub struct LibraryItemsTemplate {
-    pub server_id: i64,
+    pub server_id: ServerId,
     pub library_id: String,
     pub items: Vec<BaseItem>,
     pub next_page: Option<i32>,
@@ -90,7 +91,7 @@ pub async fn get_user_media(
 pub async fn get_server_libraries(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
-    Path(server_id): Path<i64>,
+    Path(server_id): Path<ServerId>,
 ) -> impl IntoResponse {
     let server = match state.server_storage.get_server_by_id(server_id).await {
         Ok(Some(s)) => s,
@@ -161,7 +162,7 @@ pub async fn get_server_libraries(
 pub async fn get_library_items(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
-    Path((server_id, library_id)): Path<(i64, String)>,
+    Path((server_id, library_id)): Path<(ServerId, String)>,
     Query(pagination): Query<Pagination>,
 ) -> impl IntoResponse {
     let server = match state.server_storage.get_server_by_id(server_id).await {
@@ -228,7 +229,7 @@ pub async fn get_library_items(
 pub async fn proxy_media_image(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
-    Path((server_id, item_id)): Path<(i64, String)>,
+    Path((server_id, item_id)): Path<(ServerId, String)>,
 ) -> impl IntoResponse {
     // Get server
     let server = match state.server_storage.get_server_by_id(server_id).await {

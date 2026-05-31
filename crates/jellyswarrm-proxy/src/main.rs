@@ -1,7 +1,7 @@
 use axum::{
     body::Body,
     extract::{Request, State},
-    http::{HeaderName, StatusCode},
+    http::StatusCode,
     response::{IntoResponse, Response},
     routing::{any, get, post},
     Router,
@@ -10,7 +10,7 @@ use axum::{
 use axum_messages::MessagesManagerLayer;
 use percent_encoding::percent_decode_str;
 use rust_embed::RustEmbed;
-use sqlx::{sqlite::SqliteConnectOptions, SqlitePool};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use std::{net::SocketAddr, str::FromStr};
 use std::{sync::Arc, time::Duration};
 use tokio::task::AbortHandle;
@@ -30,12 +30,16 @@ mod config;
 mod encryption;
 mod federated_users;
 mod handlers;
+mod legacy_server_identity;
 mod media_storage_service;
 mod merged_library_service;
 mod models;
 mod processors;
+mod proxy_headers;
 mod request_preprocessing;
+mod server_id;
 mod server_storage;
+mod server_url;
 mod session_storage;
 mod ui;
 mod url_helper;
@@ -43,6 +47,7 @@ mod user_authorization_service;
 
 use federated_users::FederatedUserService;
 use handlers::syncplay::SyncPlayService;
+use legacy_server_identity::canonicalize_legacy_server_identity;
 use media_storage_service::MediaStorageService;
 use merged_library_service::MergedLibraryService;
 use server_storage::ServerStorageService;
@@ -50,11 +55,13 @@ use user_authorization_service::UserAuthorizationService;
 
 use crate::{
     config::{AppConfig, MIGRATOR},
+    handlers::common::set_json_body,
     handlers::quick_connect::{self, QuickConnectStorage},
     processors::{
         request_analyzer::RequestAnalyzer,
         request_processor::{RequestProcessingContext, RequestProcessor},
     },
+    proxy_headers::is_hop_by_hop_header,
     request_preprocessing::body_to_json,
     ui::Backend,
 };
@@ -217,26 +224,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Resolve database path inside DATA_DIR
     let db_path = DATA_DIR.join("jellyswarrm.db");
     let db_url = format!("sqlite://{}", db_path.to_string_lossy());
-    let options = SqliteConnectOptions::from_str(&db_url)?.create_if_missing(true);
+    let options = SqliteConnectOptions::from_str(&db_url)?
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal)
+        .foreign_keys(true)
+        .busy_timeout(Duration::from_secs(30));
 
-    let pool = SqlitePool::connect_with(options).await?;
+    let pool = SqlitePoolOptions::new()
+        .after_connect(|connection, _| {
+            Box::pin(async move {
+                sqlx::query("PRAGMA wal_autocheckpoint = 1000;")
+                    .execute(connection)
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect_with(options)
+        .await?;
+
+    canonicalize_legacy_server_identity(&pool)
+        .await
+        .unwrap_or_else(|e| {
+            error!(
+                "Failed to canonicalize legacy server identity data: {:#}",
+                e
+            );
+            std::process::exit(1);
+        });
 
     MIGRATOR.run(&pool).await.unwrap_or_else(|e| {
         error!("Failed to run database migrations: {}", e);
         std::process::exit(1);
     });
-
-    // WAL mode allows concurrent reads alongside writes; NORMAL sync is
-    // safe enough for a media proxy (no bank-level durability required).
-    sqlx::query("PRAGMA journal_mode=WAL;")
-        .execute(&pool)
-        .await?;
-    sqlx::query("PRAGMA synchronous=NORMAL;")
-        .execute(&pool)
-        .await?;
-    sqlx::query("PRAGMA foreign_keys = ON;")
-        .execute(&pool)
-        .await?;
 
     // Create reqwest client for regular API traffic.
     let reqwest_client = reqwest::Client::builder()
@@ -401,7 +421,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .route("/websocket", get(handlers::syncplay::websocket))
             .route("/socket", get(handlers::syncplay::websocket))
             .route("/GetUtcTime", get(handlers::syncplay::get_utc_time))
-            //.route("/GetUTCTime", get(handlers::syncplay::get_utc_time))
             .nest(
                 "/SyncPlay",
                 Router::new()
@@ -571,6 +590,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         get(handlers::videos::get_video_resource),
                     ),
             )
+            // Audio streaming routes
+            .nest(
+                "/Audio",
+                Router::new()
+                    .route("/{item_id}/universal", get(handlers::videos::get_stream))
+                    .route("/{item_id}/stream", get(handlers::videos::get_stream))
+                    .route("/{item_id}/stream.{container}", get(handlers::videos::get_stream)),
+            )
             // Persons
             .nest(
                 "/Persons",
@@ -591,7 +618,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .layer(MessagesManagerLayer)
             .layer(auth_layer)
             .with_state(app_state)
-    };
+    }
+    .route("/GetUTCTime", get(handlers::syncplay::get_utc_time));
 
     // Create socket address
     let addr = match format!("{}:{}", loaded_config.host, loaded_config.port).parse::<SocketAddr>()
@@ -684,14 +712,20 @@ async fn index_handler(
             .status(StatusCode::TEMPORARY_REDIRECT)
             .header("Location", "/ui")
             .body(Body::empty())
-            .unwrap())
+            .map_err(|e| {
+                error!("Failed to build redirect response: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?)
     } else {
         // Servers exist, return the index.html page
         if let Some(content) = Asset::get("index.html") {
             Ok(Response::builder()
                 .header("Content-Type", "text/html")
                 .body(Body::from(content.data.into_owned()))
-                .unwrap())
+                .map_err(|e| {
+                    error!("Failed to build index response: {}", e);
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?)
         } else {
             // Fallback if index.html is not found in assets
             error!("index.html not found in static assets");
@@ -717,10 +751,13 @@ async fn proxy_handler(
     let decoded_path = percent_decode_str(path).decode_utf8_lossy().to_string();
     if let Some(content) = Asset::get(&decoded_path) {
         let mime = mime_guess::from_path(decoded_path).first_or_octet_stream();
-        return Ok(Response::builder()
+        return Response::builder()
             .header("Content-Type", mime.as_ref())
             .body(Body::from(content.data.into_owned()))
-            .unwrap());
+            .map_err(|e| {
+                error!("Failed to build static asset response: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            });
     }
 
     let preprocessed = preprocess_request(req, &state).await.map_err(|e| {
@@ -750,16 +787,7 @@ async fn proxy_handler(
                 })?;
         if response.was_modified {
             debug!("Modified JSON body for request to {}", request_url);
-            let new_body = serde_json::to_vec(&response.data).map_err(|e| {
-                error!("Failed to serialize processed JSON body: {}", e);
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-            *request.body_mut() = Some(reqwest::Body::from(new_body.clone()));
-            // Update Content-Length header
-            request.headers_mut().insert(
-                reqwest::header::CONTENT_LENGTH,
-                reqwest::header::HeaderValue::from_str(&new_body.len().to_string()).unwrap(),
-            );
+            set_json_body(&mut request, &response.data)?;
         }
     }
     let response = state.reqwest_client.execute(request).await.map_err(|e| {
@@ -797,34 +825,24 @@ async fn proxy_handler(
     Ok(response)
 }
 
-fn is_hop_by_hop_header(name: &HeaderName) -> bool {
-    // RFC 7230 Section 6.1: Hop-by-hop headers
-    matches!(
-        name.as_str().to_lowercase().as_str(),
-        "connection"
-            | "keep-alive"
-            | "proxy-authenticate"
-            | "proxy-authorization"
-            | "te"
-            | "trailers"
-            | "transfer-encoding"
-            | "upgrade"
-    )
-}
-
 async fn shutdown_signal(deletion_task_abort_handle: AbortHandle) {
     let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            error!("Failed to install Ctrl+C handler: {}", e);
+            std::future::pending::<()>().await;
+        }
     };
 
     #[cfg(unix)]
     let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to install signal handler")
-            .recv()
-            .await;
+        let Ok(mut signal) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        else {
+            error!("Failed to install terminate signal handler");
+            std::future::pending::<()>().await;
+            return;
+        };
+        signal.recv().await;
     };
 
     #[cfg(not(unix))]

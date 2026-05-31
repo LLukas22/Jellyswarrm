@@ -119,16 +119,13 @@ pub async fn handle_authenticate_by_name(
     }
 
     let authentication = extract_auth_header(&headers).map_err(|_| {
-        error!(
-            "No valid 'Authorization' header found in authentication request! Headers: {:?}",
-            headers
-        );
+        error!("No valid authorization header found in authentication request");
         StatusCode::BAD_REQUEST
     })?;
 
     info!(
         "Got login request with authentication header: {}",
-        authentication.to_header_value()
+        authentication.to_redacted_header_value()
     );
 
     info!(
@@ -164,10 +161,10 @@ pub async fn handle_authenticate_by_name(
 
         if !server_mappings.is_empty() {
             for server_mapping in server_mappings {
-                if let Some(pos) = servers.iter().position(|s| {
-                    s.url.as_str().trim_end_matches('/')
-                        == server_mapping.server_url.trim_end_matches('/')
-                }) {
+                if let Some(pos) = servers
+                    .iter()
+                    .position(|s| s.id == server_mapping.server_id)
+                {
                     let server = servers.remove(pos);
                     info!(
                         "Using server mapping for user '{}' on server '{}'",
@@ -301,7 +298,7 @@ async fn persist_successful_auths(
             .user_authorization
             .add_server_mapping(
                 &user.id,
-                successful.server.url.as_str(),
+                &successful.server,
                 &successful.final_username,
                 &successful.final_password,
                 Some(&login_password.clone().into()),
@@ -319,7 +316,7 @@ async fn persist_successful_auths(
             .user_authorization
             .store_authorization_session(
                 &user.id,
-                successful.server.url.as_str(),
+                &successful.server,
                 &auth_to_store,
                 successful.auth_response.access_token.clone(),
                 successful.auth_response.user.id.clone(),
@@ -437,7 +434,11 @@ async fn authenticate_on_server(
         AuthError::NetworkError(e.to_string())
     })?;
 
-    tracing::trace!("Raw response from {}: {}", server.name, response_text);
+    tracing::trace!(
+        "Received authentication response from {} ({} bytes)",
+        server.name,
+        response_text.len()
+    );
 
     let auth_response =
         serde_json::from_str::<AuthenticateResponse>(&response_text).map_err(|e| {
@@ -469,10 +470,10 @@ fn extract_auth_header(headers: &HeaderMap) -> Result<Authorization, AuthError> 
         .and_then(|value| value.to_str().ok())
     {
         if let Ok(auth) = Authorization::parse(raw_auth) {
-            debug!("Extracted 'Authorization' header: {}", raw_auth);
+            debug!("Extracted 'Authorization' header: {}", auth);
             Ok(auth)
         } else {
-            warn!("Invalid 'Authorization' header format: {}", raw_auth);
+            warn!("Invalid 'Authorization' header format");
             Err(AuthError::ParseError(
                 "Invalid 'Authorization' header format".to_string(),
             ))
@@ -482,19 +483,16 @@ fn extract_auth_header(headers: &HeaderMap) -> Result<Authorization, AuthError> 
         .and_then(|value| value.to_str().ok())
     {
         if let Ok(auth) = Authorization::parse_with_legacy(raw_auth, true) {
-            debug!("Extracted 'X-Emby-Authorization' header: {}", raw_auth);
+            debug!("Extracted 'X-Emby-Authorization' header: {}", auth);
             Ok(auth)
         } else {
-            warn!("Invalid 'Authorization' header format: {}", raw_auth);
+            warn!("Invalid 'X-Emby-Authorization' header format");
             Err(AuthError::ParseError(
                 "Invalid 'X-Emby-Authorization' header format".to_string(),
             ))
         }
     } else {
-        error!(
-            "No 'Authorization' header found in login request! Headers: {:?}",
-            headers
-        );
+        error!("No 'Authorization' header found in login request");
 
         Err(AuthError::ParseError(
             "No 'Authorization' header found in login request!".to_string(),

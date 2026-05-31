@@ -51,9 +51,22 @@ pub fn contains_id(url: &Url, name: &str) -> Option<String> {
 }
 
 pub fn replace_id(url: Url, original: &str, replacement: &str) -> Url {
-    let mut url = url.clone();
-    let path = url.path();
-    url.set_path(&path.replace(original, replacement));
+    let mut url = url;
+    let Some(segments) = url.path_segments() else {
+        return url;
+    };
+
+    let replaced_segments = segments
+        .map(|segment| {
+            if segment == original {
+                replacement
+            } else {
+                segment
+            }
+        })
+        .collect::<Vec<_>>();
+
+    url.set_path(&replaced_segments.join("/"));
     url
 }
 

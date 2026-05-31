@@ -6,7 +6,7 @@ use axum::{
 };
 use tracing::error;
 
-use crate::{server_storage::ServerHealthStatus, AppState};
+use crate::{server_id::ServerId, server_storage::ServerHealthStatus, AppState};
 
 #[derive(Template)]
 #[template(path = "admin/server_status.html")]
@@ -18,7 +18,7 @@ pub struct ServerStatusTemplate {
 /// Check server status
 pub async fn check_server_status(
     State(state): State<AppState>,
-    Path(server_id): Path<i64>,
+    Path(server_id): Path<ServerId>,
 ) -> impl IntoResponse {
     // Get the server details first
     match state.server_storage.get_server_by_id(server_id).await {

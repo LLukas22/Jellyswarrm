@@ -39,7 +39,7 @@ pub async fn authenticate_user_on_server(
     // Check for mapping and try to authenticate
     let mapping = match state
         .user_authorization
-        .get_server_mapping(&user.id, server.url.as_str())
+        .get_server_mapping(&user.id, server)
         .await
     {
         Ok(Some(m)) => m,

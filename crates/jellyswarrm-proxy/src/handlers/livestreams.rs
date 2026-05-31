@@ -3,12 +3,12 @@ use axum::{
     Json,
 };
 use hyper::StatusCode;
-use reqwest::Body;
 use tracing::{debug, error};
 
 use crate::{
     handlers::common::{
-        execute_json_request, payload_from_request, process_media_source, track_play_session,
+        execute_json_request, payload_from_request, process_playback_response,
+        remap_playback_request, set_json_body,
     },
     models::{PlaybackRequest, PlaybackResponse},
     request_preprocessing::preprocess_request,
@@ -37,32 +37,14 @@ pub async fn post_livestream_open(
     let session = preprocessed.session.ok_or(StatusCode::UNAUTHORIZED)?;
 
     let mut payload = payload;
-    if payload.user_id.is_some() {
-        payload.user_id = Some(session.original_user_id.clone());
-    }
-
-    if let Some(media_source_id) = &payload.media_source_id {
-        if let Some(media_mapping) = state
-            .media_storage
-            .get_media_mapping_by_virtual(media_source_id)
-            .await
-            .unwrap_or_default()
-        {
-            payload.media_source_id = Some(media_mapping.original_media_id);
-        }
-    }
-
-    let json = serde_json::to_vec(&payload).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    remap_playback_request(&mut payload, &state, &session).await?;
 
     let mut request = preprocessed.request;
-    *request.body_mut() = Some(Body::from(json));
+    set_json_body(&mut request, &payload)?;
 
     match execute_json_request::<PlaybackResponse>(&state.reqwest_client, request).await {
         Ok(mut response) => {
-            for item in &mut response.media_sources {
-                *item = process_media_source(item.clone(), &state.media_storage, &server).await?;
-                track_play_session(item, &response.play_session_id, &server, &state).await?;
-            }
+            process_playback_response(&mut response, &state, &server, &session).await?;
 
             debug!("Requested Playback: {:?}", response);
 

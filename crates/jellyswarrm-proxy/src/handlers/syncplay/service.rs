@@ -5,6 +5,7 @@ use chrono::Utc;
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{mpsc, RwLock};
+use tokio::time::{sleep, Duration};
 use tracing::{debug, info};
 use uuid::Uuid;
 
@@ -17,12 +18,15 @@ use super::models::{
 };
 
 pub(crate) const DEFAULT_PING_MS: i64 = 500;
+const WEBSOCKET_DISCONNECT_GRACE: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
 pub(super) struct SyncPlayState {
     groups: HashMap<Uuid, SyncPlayGroup>,
     session_to_group: HashMap<String, Uuid>,
     ws_connections: HashMap<String, mpsc::UnboundedSender<String>>,
+    ws_connection_ids: HashMap<String, Uuid>,
+    disconnect_grace_ids: HashMap<String, Uuid>,
 }
 
 impl SyncPlayState {
@@ -44,6 +48,7 @@ impl SyncPlayState {
         if let Ok(text) = serde_json::to_string(&payload) {
             if tx.send(text).is_err() {
                 self.ws_connections.remove(session_id);
+                self.ws_connection_ids.remove(session_id);
             }
         }
     }
@@ -82,6 +87,21 @@ impl SyncPlayState {
         self.send_group_update(
             std::iter::once(session_id.to_string()),
             Uuid::nil(),
+            update_type,
+            Value::String(String::new()),
+        );
+    }
+
+    /// Send a one-shot notification scoped to a known group.
+    pub(super) fn notify_session_for_group(
+        &mut self,
+        session_id: &str,
+        group_id: Uuid,
+        update_type: GroupUpdateType,
+    ) {
+        self.send_group_update(
+            std::iter::once(session_id.to_string()),
+            group_id,
             update_type,
             Value::String(String::new()),
         );
@@ -208,7 +228,7 @@ impl SyncPlayGroup {
     fn all_ready(&self) -> bool {
         self.participants
             .values()
-            .all(|p| !p.is_buffering || p.ignore_wait)
+            .all(|p| !p.is_connected || !p.is_buffering || p.ignore_wait)
     }
 }
 
@@ -223,17 +243,109 @@ impl SyncPlayService {
         &self,
         session_id: String,
         tx: mpsc::UnboundedSender<String>,
-    ) {
+    ) -> Uuid {
         let mut state = self.state.write().await;
+        let connection_id = Uuid::new_v4();
         state.ws_connections.insert(session_id.clone(), tx);
+        state
+            .ws_connection_ids
+            .insert(session_id.clone(), connection_id);
+        state.disconnect_grace_ids.remove(&session_id);
         debug!(session_id = %session_id, "Registered SyncPlay websocket");
         state.send_to_session(&session_id, "ForceKeepAlive", &15_u64);
+
+        if let Some(group_id) = state.session_to_group.get(&session_id).copied() {
+            if let Some(mut group) = state.groups.remove(&group_id) {
+                if let Some(member) = group.participants.get_mut(&session_id) {
+                    member.is_connected = true;
+                    member.is_buffering = !group.playlist.is_empty();
+                    member.last_client_when = None;
+                }
+                if !group.playlist.is_empty() {
+                    let now = Utc::now();
+                    let resume_playing = group.is_playing;
+                    let position_ticks = group.freeze_at_estimated_position(now);
+                    group.pending_position_ticks = Some(position_ticks);
+                    group.state = GroupStateType::Waiting;
+                    group.waiting_resume_playing = resume_playing;
+                }
+                group.touch();
+                state.send_group_update(
+                    vec![session_id.clone()],
+                    group_id,
+                    GroupUpdateType::GroupJoined,
+                    serde_json::to_value(group.to_group_info()).unwrap_or(Value::Null),
+                );
+                state.send_queue_update_to(
+                    &group,
+                    PlayQueueUpdateReason::NewPlaylist,
+                    vec![session_id.clone()],
+                );
+                if group.state == GroupStateType::Waiting {
+                    if group.waiting_resume_playing {
+                        state.broadcast_command(
+                            &group,
+                            SendCommandType::Pause,
+                            Some(group.start_position_ticks),
+                            0,
+                        );
+                    }
+                    state.broadcast_state_update(&group, "Buffer");
+                }
+                state.groups.insert(group_id, group);
+            }
+        }
+
+        connection_id
     }
 
-    pub(super) async fn unregister_websocket_and_leave(&self, session_id: &str) {
+    pub(super) async fn unregister_websocket_with_grace(
+        &self,
+        session_id: String,
+        connection_id: Uuid,
+    ) {
+        {
+            let mut state = self.state.write().await;
+            if state.ws_connection_ids.get(&session_id) != Some(&connection_id) {
+                return;
+            }
+            state.ws_connection_ids.remove(&session_id);
+            state.ws_connections.remove(&session_id);
+            let disconnect_grace_id = Uuid::new_v4();
+            state
+                .disconnect_grace_ids
+                .insert(session_id.clone(), disconnect_grace_id);
+            if let Some(group_id) = state.session_to_group.get(&session_id).copied() {
+                if let Some(mut group) = state.groups.remove(&group_id) {
+                    if let Some(member) = group.participants.get_mut(&session_id) {
+                        member.is_connected = false;
+                    }
+                    state.resolve_waiting(&mut group, "Disconnect");
+                    state.groups.insert(group_id, group);
+                }
+            }
+            debug!(session_id = %session_id, "Unregistered SyncPlay websocket with reconnect grace");
+
+            let service = self.clone();
+            tokio::spawn(async move {
+                sleep(WEBSOCKET_DISCONNECT_GRACE).await;
+                service
+                    .leave_if_still_disconnected(&session_id, disconnect_grace_id)
+                    .await;
+            });
+        }
+    }
+
+    async fn leave_if_still_disconnected(&self, session_id: &str, disconnect_grace_id: Uuid) {
         let mut state = self.state.write().await;
-        state.ws_connections.remove(session_id);
-        debug!(session_id = %session_id, "Unregistered SyncPlay websocket and leaving group");
+        if state.ws_connections.contains_key(session_id) {
+            return;
+        }
+        if state.disconnect_grace_ids.get(session_id) != Some(&disconnect_grace_id) {
+            return;
+        }
+        state.disconnect_grace_ids.remove(session_id);
+        debug!(session_id = %session_id, "SyncPlay websocket grace expired; leaving group");
         Self::leave_locked(&mut state, session_id);
     }
 
@@ -248,6 +360,7 @@ impl SyncPlayService {
             ping: DEFAULT_PING_MS as u64,
             is_buffering,
             ignore_wait: false,
+            is_connected: true,
             last_client_when: None,
         }
     }
@@ -306,7 +419,12 @@ impl SyncPlayService {
         Some(group.to_group_info())
     }
 
-    pub(super) async fn join_group(&self, session: &SessionContext, group_id: Uuid) -> bool {
+    pub(super) async fn join_group(
+        &self,
+        session: &SessionContext,
+        group_id: Uuid,
+        expected_queue_item_ids: Option<Vec<String>>,
+    ) -> bool {
         let mut state = self.state.write().await;
         if !state.ws_connections.contains_key(&session.session_id) {
             return false;
@@ -317,6 +435,15 @@ impl SyncPlayService {
             state.notify_session(&session.session_id, GroupUpdateType::GroupDoesNotExist);
             return true;
         };
+
+        if expected_queue_item_ids
+            .as_ref()
+            .is_some_and(|expected| *expected != group.queue_item_ids())
+        {
+            state.groups.insert(group_id, group);
+            state.notify_session(&session.session_id, GroupUpdateType::LibraryAccessDenied);
+            return true;
+        }
 
         group.participants.insert(
             session.session_id.clone(),
@@ -383,6 +510,7 @@ impl SyncPlayService {
     }
 
     fn leave_locked(state: &mut SyncPlayState, session_id: &str) {
+        state.disconnect_grace_ids.remove(session_id);
         let Some(group_id) = state.session_to_group.remove(session_id) else {
             return;
         };
@@ -407,6 +535,7 @@ impl SyncPlayService {
                 Value::String(group_id.to_string()),
             );
             if !group.participants.is_empty() {
+                state.resolve_waiting(&mut group, "Leave");
                 state.groups.insert(group_id, group);
                 info!(
                     group_id = %group_id,
@@ -546,7 +675,7 @@ mod tests {
             .expect("group creation should succeed");
         assert_eq!(group.participants, vec!["alice".to_string()]);
 
-        service.join_group(&s2, group.group_id).await;
+        service.join_group(&s2, group.group_id, None).await;
         let joined = service
             .get_group_snapshot_by_id(group.group_id)
             .await
@@ -646,7 +775,7 @@ mod tests {
 
         let m1 = recv_json(&mut rx).await;
         let m2 = recv_json(&mut rx).await;
-        let messages = vec![m1, m2];
+        let messages = [m1, m2];
         assert!(messages
             .iter()
             .any(|m| m["MessageType"] == "SyncPlayCommand"
@@ -680,12 +809,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_websocket_disconnect_removes_participant() {
+    async fn test_group_scoped_notification_uses_current_group_id() {
         let service = SyncPlayService::new();
         let s1 = make_session(make_user("u1", "alice"), "web");
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
 
         service.register_websocket(s1.session_id.clone(), tx).await;
+        let _ = recv_json(&mut rx).await;
+        let group = service
+            .create_group(&s1, "party".to_string())
+            .await
+            .expect("group creation should succeed");
+        let _ = recv_json(&mut rx).await;
+
+        let session_id = s1.session_id.clone();
+        let ok = service
+            .with_group_for_session(&s1, move |g, sync_state| {
+                sync_state.notify_session_for_group(
+                    &session_id,
+                    g.group_id,
+                    GroupUpdateType::LibraryAccessDenied,
+                );
+            })
+            .await;
+        assert!(ok);
+
+        let access_denied = recv_json(&mut rx).await;
+        assert_eq!(access_denied["MessageType"], "SyncPlayGroupUpdate");
+        assert_eq!(access_denied["Data"]["Type"], "LibraryAccessDenied");
+        assert_eq!(access_denied["Data"]["GroupId"], group.group_id.to_string());
+    }
+
+    #[tokio::test]
+    async fn test_websocket_disconnect_keeps_group_during_grace() {
+        let service = SyncPlayService::new();
+        let s1 = make_session(make_user("u1", "alice"), "web");
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+
+        let connection_id = service.register_websocket(s1.session_id.clone(), tx).await;
         let _ = recv_json(&mut rx).await;
 
         let group = service
@@ -694,11 +855,221 @@ mod tests {
             .expect("group creation should succeed");
         let _ = recv_json(&mut rx).await;
 
-        service.unregister_websocket_and_leave(&s1.session_id).await;
+        service
+            .unregister_websocket_with_grace(s1.session_id.clone(), connection_id)
+            .await;
         assert!(service
             .get_group_snapshot_by_id(group.group_id)
             .await
-            .is_none());
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn test_stale_websocket_close_does_not_unregister_reconnect() {
+        let service = SyncPlayService::new();
+        let s1 = make_session(make_user("u1", "alice"), "web");
+        let (tx1, mut rx1) = mpsc::unbounded_channel::<String>();
+        let (tx2, mut rx2) = mpsc::unbounded_channel::<String>();
+
+        let old_connection_id = service.register_websocket(s1.session_id.clone(), tx1).await;
+        let _ = recv_json(&mut rx1).await;
+        let group = service
+            .create_group(&s1, "party".to_string())
+            .await
+            .expect("group creation should succeed");
+        let _ = recv_json(&mut rx1).await;
+
+        service.register_websocket(s1.session_id.clone(), tx2).await;
+        service
+            .unregister_websocket_with_grace(s1.session_id.clone(), old_connection_id)
+            .await;
+        service.send_keepalive(&s1.session_id).await;
+
+        let messages = recv_many(&mut rx2, 6).await;
+        assert!(messages.iter().any(|m| m["MessageType"] == "KeepAlive"));
+        assert!(service
+            .get_group_snapshot_by_id(group.group_id)
+            .await
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn test_stale_disconnect_grace_does_not_remove_later_disconnect() {
+        let service = SyncPlayService::new();
+        let s1 = make_session(make_user("u1", "alice"), "web");
+        let (tx1, mut rx1) = mpsc::unbounded_channel::<String>();
+        let (tx2, mut rx2) = mpsc::unbounded_channel::<String>();
+
+        let first_connection_id = service.register_websocket(s1.session_id.clone(), tx1).await;
+        let _ = recv_json(&mut rx1).await;
+        let group = service
+            .create_group(&s1, "party".to_string())
+            .await
+            .expect("group creation should succeed");
+        let _ = recv_json(&mut rx1).await;
+
+        service
+            .unregister_websocket_with_grace(s1.session_id.clone(), first_connection_id)
+            .await;
+        let first_grace_id = {
+            let state = service.state.read().await;
+            *state
+                .disconnect_grace_ids
+                .get(&s1.session_id)
+                .expect("disconnect grace missing")
+        };
+
+        let second_connection_id = service.register_websocket(s1.session_id.clone(), tx2).await;
+        let _ = recv_many(&mut rx2, 6).await;
+        service
+            .unregister_websocket_with_grace(s1.session_id.clone(), second_connection_id)
+            .await;
+
+        service
+            .leave_if_still_disconnected(&s1.session_id, first_grace_id)
+            .await;
+
+        assert!(service
+            .get_group_snapshot_by_id(group.group_id)
+            .await
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn test_reconnect_receives_group_and_queue_snapshot() {
+        let service = SyncPlayService::new();
+        let s1 = make_session(make_user("u1", "alice"), "web");
+        let (tx1, mut rx1) = mpsc::unbounded_channel::<String>();
+        let (tx2, mut rx2) = mpsc::unbounded_channel::<String>();
+
+        service.register_websocket(s1.session_id.clone(), tx1).await;
+        let _ = recv_json(&mut rx1).await;
+        service
+            .create_group(&s1, "party".to_string())
+            .await
+            .expect("group creation should succeed");
+        let _ = recv_json(&mut rx1).await;
+        let _ = service
+            .with_group_for_session(&s1, |g, _| {
+                g.playlist = vec![SyncPlayQueueItem {
+                    item_id: "virtual-media-a".to_string(),
+                    playlist_item_id: Uuid::new_v4(),
+                }];
+                g.playing_item_index = Some(0);
+            })
+            .await;
+
+        service.register_websocket(s1.session_id.clone(), tx2).await;
+
+        let messages = recv_many(&mut rx2, 6).await;
+        assert!(messages.iter().any(|m| {
+            m["MessageType"] == "SyncPlayGroupUpdate" && m["Data"]["Type"] == "GroupJoined"
+        }));
+        assert!(messages.iter().any(|m| {
+            m["MessageType"] == "SyncPlayGroupUpdate" && m["Data"]["Type"] == "PlayQueue"
+        }));
+    }
+
+    #[tokio::test]
+    async fn test_disconnect_resolves_waiting_when_remaining_members_ready() {
+        let service = SyncPlayService::new();
+        let s1 = make_session(make_user("u1", "alice"), "web");
+        let s2 = make_session(make_user("u2", "bob"), "tv");
+        let (tx1, mut rx1) = mpsc::unbounded_channel::<String>();
+        let (tx2, mut rx2) = mpsc::unbounded_channel::<String>();
+
+        let s1_connection_id = service.register_websocket(s1.session_id.clone(), tx1).await;
+        service.register_websocket(s2.session_id.clone(), tx2).await;
+        let _ = recv_json(&mut rx1).await;
+        let _ = recv_json(&mut rx2).await;
+        let group = service
+            .create_group(&s1, "party".to_string())
+            .await
+            .expect("group creation should succeed");
+        let _ = recv_json(&mut rx1).await;
+        service.join_group(&s2, group.group_id, None).await;
+        let _ = recv_many(&mut rx1, 8).await;
+        let _ = recv_many(&mut rx2, 8).await;
+
+        let _ = service
+            .with_group_for_session(&s1, |g, _| {
+                g.playlist = vec![SyncPlayQueueItem {
+                    item_id: "virtual-media-a".to_string(),
+                    playlist_item_id: Uuid::new_v4(),
+                }];
+                g.playing_item_index = Some(0);
+                g.state = GroupStateType::Waiting;
+                g.waiting_resume_playing = true;
+                g.pending_position_ticks = Some(500);
+                for p in g.participants.values_mut() {
+                    p.is_buffering = true;
+                }
+                g.participants
+                    .get_mut(&s2.session_id)
+                    .expect("member missing")
+                    .is_buffering = false;
+            })
+            .await;
+
+        service
+            .unregister_websocket_with_grace(s1.session_id.clone(), s1_connection_id)
+            .await;
+
+        let snapshot = service
+            .get_group_snapshot_by_id(group.group_id)
+            .await
+            .expect("group missing");
+        assert_eq!(snapshot.state, GroupStateType::Playing);
+    }
+
+    #[tokio::test]
+    async fn test_leave_resolves_waiting_when_remaining_members_ready() {
+        let service = SyncPlayService::new();
+        let s1 = make_session(make_user("u1", "alice"), "web");
+        let s2 = make_session(make_user("u2", "bob"), "tv");
+        let (tx1, mut rx1) = mpsc::unbounded_channel::<String>();
+        let (tx2, mut rx2) = mpsc::unbounded_channel::<String>();
+
+        service.register_websocket(s1.session_id.clone(), tx1).await;
+        service.register_websocket(s2.session_id.clone(), tx2).await;
+        let _ = recv_json(&mut rx1).await;
+        let _ = recv_json(&mut rx2).await;
+        let group = service
+            .create_group(&s1, "party".to_string())
+            .await
+            .expect("group creation should succeed");
+        let _ = recv_json(&mut rx1).await;
+        service.join_group(&s2, group.group_id, None).await;
+        let _ = recv_many(&mut rx1, 8).await;
+        let _ = recv_many(&mut rx2, 8).await;
+
+        let _ = service
+            .with_group_for_session(&s1, |g, _| {
+                g.playlist = vec![SyncPlayQueueItem {
+                    item_id: "virtual-media-a".to_string(),
+                    playlist_item_id: Uuid::new_v4(),
+                }];
+                g.playing_item_index = Some(0);
+                g.state = GroupStateType::Waiting;
+                g.waiting_resume_playing = true;
+                g.pending_position_ticks = Some(500);
+                for p in g.participants.values_mut() {
+                    p.is_buffering = true;
+                }
+                g.participants
+                    .get_mut(&s2.session_id)
+                    .expect("member missing")
+                    .is_buffering = false;
+            })
+            .await;
+
+        service.leave_group(&s1).await;
+
+        let snapshot = service
+            .get_group_snapshot_by_id(group.group_id)
+            .await
+            .expect("group missing");
+        assert_eq!(snapshot.state, GroupStateType::Playing);
     }
 
     #[tokio::test]
@@ -719,7 +1090,7 @@ mod tests {
             .await
             .expect("group creation should succeed");
         let _ = recv_json(&mut rx1).await;
-        service.join_group(&s2, group.group_id).await;
+        service.join_group(&s2, group.group_id, None).await;
         let _ = recv_many(&mut rx1, 8).await;
         let _ = recv_many(&mut rx2, 8).await;
 
@@ -815,7 +1186,7 @@ mod tests {
             })
             .await;
 
-        service.join_group(&s2, group.group_id).await;
+        service.join_group(&s2, group.group_id, None).await;
         let msgs = recv_many(&mut rx2, 8).await;
         assert!(msgs
             .iter()
@@ -845,7 +1216,7 @@ mod tests {
             .expect("group creation should succeed");
         let _ = recv_json(&mut rx1).await;
 
-        service.join_group(&s2, group.group_id).await;
+        service.join_group(&s2, group.group_id, None).await;
 
         let joiner_messages = recv_many(&mut rx2, 8).await;
         assert!(joiner_messages.iter().any(|m| {
@@ -929,7 +1300,7 @@ mod tests {
             .await
             .expect("group creation should succeed");
 
-        let joined = service.join_group(&s2, group.group_id).await;
+        let joined = service.join_group(&s2, group.group_id, None).await;
         assert!(!joined);
 
         let snapshot = service

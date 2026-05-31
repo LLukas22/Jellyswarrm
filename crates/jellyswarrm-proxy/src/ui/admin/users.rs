@@ -13,6 +13,7 @@ use tracing::{error, info};
 use crate::{
     encryption::Password,
     federated_users::ServerSyncResult,
+    server_id::ServerId,
     server_storage::Server,
     user_authorization_service::{ServerMapping, User},
     AppState,
@@ -57,7 +58,7 @@ pub struct AddUserForm {
 #[derive(Deserialize)]
 pub struct AddMappingForm {
     pub user_id: String,
-    pub server_url: String,
+    pub server_id: ServerId,
     pub mapped_username: String,
     pub mapped_password: Password,
 }
@@ -67,7 +68,7 @@ pub async fn create_user_with_mappings(
     user: User,
     servers: &[Server],
 ) -> UserWithMappings {
-    // session counts per server_url (normalized)
+    // Session counts keyed by canonical server URL for template display.
     let mut session_counts: HashMap<String, i64> = HashMap::new();
     if let Ok(rows) = state
         .user_authorization
@@ -84,20 +85,17 @@ pub async fn create_user_with_mappings(
         .list_server_mappings(&user.id)
         .await;
     let mut mappings_vec: Vec<(ServerMapping, Server, i64)> = Vec::new();
-    let mut mapped_urls: Vec<String> = Vec::new();
+    let mut mapped_server_ids: Vec<ServerId> = Vec::new();
     match mappings_fetch {
         Ok(mappings) => {
             for mapping in mappings {
-                if let Some(server) = servers.iter().find(|srv| {
-                    srv.url.as_str().trim_end_matches('/')
-                        == mapping.server_url.trim_end_matches('/')
-                }) {
+                if let Some(server) = servers.iter().find(|srv| srv.id == mapping.server_id) {
                     let count = session_counts
-                        .get(mapping.server_url.trim_end_matches('/'))
+                        .get(server.url.as_str())
                         .cloned()
                         .unwrap_or(0);
                     mappings_vec.push((mapping, server.clone(), count));
-                    mapped_urls.push(server.url.as_str().trim_end_matches('/').to_string());
+                    mapped_server_ids.push(server.id);
                 }
             }
         }
@@ -107,11 +105,7 @@ pub async fn create_user_with_mappings(
     }
     let available_servers: Vec<Server> = servers
         .iter()
-        .filter(|srv| {
-            !mapped_urls
-                .iter()
-                .any(|u| u == srv.url.as_str().trim_end_matches('/'))
-        })
+        .filter(|srv| !mapped_server_ids.contains(&srv.id))
         .cloned()
         .collect();
     let user_total_sessions: i64 = mappings_vec.iter().map(|(_, _, c)| *c).sum();
@@ -372,7 +366,7 @@ pub async fn add_mapping(
 
     info!(
         "Validating mapping credentials for local user '{}' on '{}' as mapped user '{}'.",
-        form.user_id, form.server_url, form.mapped_username
+        form.user_id, form.server_id, form.mapped_username
     );
 
     let all_servers = match state.server_storage.list_servers().await {
@@ -388,11 +382,7 @@ pub async fn add_mapping(
         }
     };
 
-    let normalized_target = form.server_url.trim_end_matches('/');
-    let server = match all_servers
-        .into_iter()
-        .find(|s| s.url.as_str().trim_end_matches('/') == normalized_target)
-    {
+    let server = match all_servers.into_iter().find(|s| s.id == form.server_id) {
         Some(server) => server,
         None => {
             return user_item_with_popup(
@@ -463,73 +453,33 @@ pub async fn add_mapping(
         }
     }
 
-    let previous_mapping = match state
-        .user_authorization
-        .get_server_mapping(&form.user_id, &form.server_url)
-        .await
-    {
-        Ok(mapping) => mapping,
-        Err(e) => {
-            error!(
-                "Failed to load existing mapping for local user '{}' to server '{}': {}",
-                form.user_id, form.server_url, e
-            );
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Html("<div class=\"alert alert-error\">Failed to inspect existing mapping</div>"),
-            )
-                .into_response();
-        }
+    let admin_password = {
+        let config = state.config.read().await;
+        (&config.password).into()
     };
-
-    let mapped_username_changed = previous_mapping.as_ref().is_some_and(|mapping| {
-        !mapping
-            .mapped_username
-            .trim()
-            .eq_ignore_ascii_case(form.mapped_username.trim())
-    });
-
-    let config = state.config.read().await;
-    let admin_password = &config.password;
 
     match state
         .user_authorization
         .add_server_mapping(
             &form.user_id,
-            &form.server_url,
+            &server,
             &form.mapped_username,
             &form.mapped_password,
-            Some(&admin_password.into()),
+            Some(&admin_password),
         )
         .await
     {
         Ok(mapping_id) => {
             info!(
                 "Saved mapping {} for local user '{}' to server '{}' as mapped user '{}'.",
-                mapping_id, form.user_id, form.server_url, form.mapped_username
+                mapping_id, form.user_id, server.name, form.mapped_username
             );
-            if mapped_username_changed {
-                match state
-                    .user_authorization
-                    .delete_sessions_for_mapping(mapping_id)
-                    .await
-                {
-                    Ok(deleted) => info!(
-                        "Mapped account changed for mapping {} (user {}). Deleted {} affected session(s)",
-                        mapping_id, form.user_id, deleted
-                    ),
-                    Err(e) => error!(
-                        "Failed to delete sessions for changed mapping {} (user {}): {}",
-                        mapping_id, form.user_id, e
-                    ),
-                }
-            }
             get_user_item(&state, &form.user_id).await.into_response()
         }
         Err(e) => {
             error!(
                 "Failed to save mapping for local user '{}' to server '{}': {}",
-                form.user_id, form.server_url, e
+                form.user_id, server.name, e
             );
             (
                 StatusCode::INTERNAL_SERVER_ERROR,

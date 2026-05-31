@@ -41,10 +41,7 @@ impl RequestBodyAnalysisResult {
         for server in &self.servers {
             *server_count.entry(server).or_insert(0) += 1;
         }
-        let (most_common_server, _) = server_count
-            .into_iter()
-            .max_by_key(|&(_, count)| count)
-            .unwrap();
+        let (most_common_server, _) = server_count.into_iter().max_by_key(|&(_, count)| count)?;
         Some(most_common_server.clone())
     }
 
@@ -57,10 +54,7 @@ impl RequestBodyAnalysisResult {
         for user in &self.users {
             *user_count.entry(user).or_insert(0) += 1;
         }
-        let (most_common_user, _) = user_count
-            .into_iter()
-            .max_by_key(|&(_, count)| count)
-            .unwrap();
+        let (most_common_user, _) = user_count.into_iter().max_by_key(|&(_, count)| count)?;
         Some(most_common_user.clone())
     }
 }
@@ -100,7 +94,19 @@ impl JsonAnalyzer<RequestAnalysisContext, RequestBodyAnalysisResult> for Request
                     .get_session(session_id)
                     .await
                 {
-                    accumulator.servers.push(play_session.server);
+                    if let Some(server) = self
+                        .data_context
+                        .server_storage
+                        .get_server_by_id(play_session.server_id)
+                        .await?
+                    {
+                        accumulator.servers.push(server);
+                    } else {
+                        self.data_context
+                            .play_sessions
+                            .remove_sessions_for_server(play_session.server_id)
+                            .await;
+                    }
                 }
                 accumulator.found_session_ids.push(session_id.clone());
             }

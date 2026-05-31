@@ -1,13 +1,15 @@
 use axum::extract::{OriginalUri, Request};
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use axum::http;
 use http_body_util::BodyExt;
+use std::fmt;
 use tracing::{debug, error};
 
 use crate::models::Authorization;
 use crate::processors::analyze_json;
 use crate::processors::request_analyzer::{RequestAnalysisContext, RequestBodyAnalysisResult};
+use crate::proxy_headers::remove_hop_by_hop_headers;
 use crate::server_storage::Server;
 use crate::url_helper::{contains_id, join_server_url, replace_id};
 use crate::user_authorization_service::{AuthorizationSession, Device, User};
@@ -67,6 +69,7 @@ pub async fn resolve_request_identity_from_headers_uri(
 // Static configuration for server resolution
 static MEDIA_ID_PATH_TAGS: &[&str] = &[
     "Items",
+    "Audio",
     "Shows",
     "Videos",
     "PlayedItems",
@@ -85,6 +88,7 @@ static MEDIA_ID_PATH_TAGS: &[&str] = &[
 
 static MEDIA_ID_QUERY_TAGS: &[&str] = &[
     "ParentId",
+    "ItemId",
     "SeriesId",
     "MediaSourceId",
     "Tag",
@@ -100,13 +104,35 @@ static USER_ID_QUERY_TAGS: &[&str] = &["UserId"];
 
 static API_KEY_QUERY_TAGS: &[&str] = &["api_key", "ApiKey"];
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum JellyfinAuthorization {
     Authorization(Authorization),
     XMediaBrowser(String),
     ApiKey(String),
     XEmbyToken(String),
     XEmbyAuthorization(Authorization),
+}
+
+impl fmt::Debug for JellyfinAuthorization {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            JellyfinAuthorization::Authorization(auth) => {
+                f.debug_tuple("Authorization").field(auth).finish()
+            }
+            JellyfinAuthorization::XMediaBrowser(_) => {
+                f.debug_tuple("XMediaBrowser").field(&"<redacted>").finish()
+            }
+            JellyfinAuthorization::ApiKey(_) => {
+                f.debug_tuple("ApiKey").field(&"<redacted>").finish()
+            }
+            JellyfinAuthorization::XEmbyToken(_) => {
+                f.debug_tuple("XEmbyToken").field(&"<redacted>").finish()
+            }
+            JellyfinAuthorization::XEmbyAuthorization(auth) => {
+                f.debug_tuple("XEmbyAuthorization").field(auth).finish()
+            }
+        }
+    }
 }
 
 impl JellyfinAuthorization {
@@ -229,10 +255,7 @@ pub async fn extract_request_infos(
     if let Some(auth) = &auth {
         debug!("Extracted authorization: {:?}", auth);
     } else {
-        debug!(
-            "No authorization found in request! Headers: {:?}",
-            request.headers()
-        );
+        debug!("No authorization found in request");
     }
 
     let device = if let Some(auth) = &auth {
@@ -371,25 +394,46 @@ pub async fn apply_new_target_uri(
     session: &Option<AuthorizationSession>,
     state: &AppState,
 ) {
-    // Get the original path and query
     let mut orig_url = request.url().clone();
     debug!("Original request URL: {}", orig_url);
-    // Handle user ID replacement in the path if session is available
-    if let Some(session) = session {
-        for &path_segment in USER_ID_PATH_TAGS {
-            if let Some(user_id) = contains_id(&orig_url, path_segment) {
-                debug!(
-                    "Replacing user ID in path: {} -> {}",
-                    user_id, session.original_user_id
-                );
-                orig_url = replace_id(orig_url, &user_id, &session.original_user_id);
-            }
+
+    replace_user_ids_in_path(&mut orig_url, session);
+    replace_media_ids_in_path(&mut orig_url, state).await;
+
+    let mut pairs: Vec<(String, String)> = orig_url
+        .query_pairs()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+
+    replace_session_query_values(&mut pairs, session);
+    replace_media_ids_in_query(&mut pairs, state).await;
+
+    let path = state.remove_prefix_from_path(orig_url.path()).await;
+    let mut new_url = join_server_url(&server.url, path);
+    new_url.query_pairs_mut().clear().extend_pairs(pairs);
+
+    *request.url_mut() = new_url;
+}
+
+fn replace_user_ids_in_path(orig_url: &mut url::Url, session: &Option<AuthorizationSession>) {
+    let Some(session) = session else {
+        return;
+    };
+
+    for &path_segment in USER_ID_PATH_TAGS {
+        if let Some(user_id) = contains_id(orig_url, path_segment) {
+            debug!(
+                "Replacing user ID in path: {} -> {}",
+                user_id, session.original_user_id
+            );
+            *orig_url = replace_id(orig_url.clone(), &user_id, &session.original_user_id);
         }
     }
+}
 
-    // Process media IDs in the path
+async fn replace_media_ids_in_path(orig_url: &mut url::Url, state: &AppState) {
     for &path_segment in MEDIA_ID_PATH_TAGS {
-        if let Some(media_id) = contains_id(&orig_url, path_segment) {
+        if let Some(media_id) = contains_id(orig_url, path_segment) {
             let direct = state
                 .media_storage
                 .get_media_mapping_by_virtual(&media_id)
@@ -422,87 +466,79 @@ pub async fn apply_new_target_uri(
                     "Replacing media ID in path: {} -> {}",
                     media_id, media_mapping.original_media_id
                 );
-                orig_url = replace_id(orig_url, &media_id, &media_mapping.original_media_id);
+                *orig_url = replace_id(
+                    orig_url.clone(),
+                    &media_id,
+                    &media_mapping.original_media_id,
+                );
             }
         }
     }
+}
 
-    // Parse and modify query pairs
-    let mut pairs: Vec<(String, String)> = orig_url
-        .query_pairs()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect();
+fn replace_session_query_values(
+    pairs: &mut [(String, String)],
+    session: &Option<AuthorizationSession>,
+) {
+    let Some(session) = session else {
+        return;
+    };
 
-    // If session is available, update the user ID and api key in the query
-    if let Some(session) = session {
-        for &param_name in USER_ID_QUERY_TAGS {
-            if let Some(idx) = pairs
-                .iter()
-                .position(|(k, _)| k.eq_ignore_ascii_case(param_name))
-            {
-                pairs[idx].1 = session.original_user_id.clone();
-            }
+    for (name, value) in pairs {
+        if matches_case_insensitive(name, USER_ID_QUERY_TAGS) {
+            *value = session.original_user_id.clone();
+        } else if matches_case_insensitive(name, API_KEY_QUERY_TAGS) {
+            *value = session.jellyfin_token.clone();
+        }
+    }
+}
+
+async fn replace_media_ids_in_query(pairs: &mut [(String, String)], state: &AppState) {
+    for (name, value) in pairs {
+        if !matches_case_insensitive(name, MEDIA_ID_QUERY_TAGS) {
+            continue;
         }
 
-        for &param_name in API_KEY_QUERY_TAGS {
-            if let Some(idx) = pairs
-                .iter()
-                .position(|(k, _)| k.eq_ignore_ascii_case(param_name))
-            {
-                pairs[idx].1 = session.jellyfin_token.clone();
-            }
+        if let Some(resolved_value) = resolve_media_id_list(value, state).await {
+            *value = resolved_value;
+        }
+    }
+}
+
+async fn resolve_media_id_list(value: &str, state: &AppState) -> Option<String> {
+    let mut changed = false;
+    let mut resolved_ids = Vec::new();
+
+    for raw_id in value.split(',') {
+        let trimmed = raw_id.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if let Some(media_mapping) = state
+            .media_storage
+            .get_media_mapping_by_virtual(trimmed)
+            .await
+            .unwrap_or_default()
+        {
+            debug!(
+                "Replacing media ID in query: {} -> {}",
+                trimmed, media_mapping.original_media_id
+            );
+            resolved_ids.push(media_mapping.original_media_id);
+            changed = true;
+        } else {
+            resolved_ids.push(trimmed.to_string());
         }
     }
 
-    // Process media IDs in the query
-    for &param_name in MEDIA_ID_QUERY_TAGS {
-        let indices = pairs
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, (k, _))| k.eq_ignore_ascii_case(param_name).then_some(idx))
-            .collect::<Vec<_>>();
+    changed.then(|| resolved_ids.join(","))
+}
 
-        for idx in indices {
-            let original_value = pairs[idx].1.clone();
-            let mut changed = false;
-            let mut resolved_ids = Vec::new();
-
-            for raw_id in original_value.split(',') {
-                let trimmed = raw_id.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-
-                if let Some(media_mapping) = state
-                    .media_storage
-                    .get_media_mapping_by_virtual(trimmed)
-                    .await
-                    .unwrap_or_default()
-                {
-                    debug!(
-                        "Replacing media ID in query: {} -> {}",
-                        trimmed, media_mapping.original_media_id
-                    );
-                    resolved_ids.push(media_mapping.original_media_id);
-                    changed = true;
-                } else {
-                    resolved_ids.push(trimmed.to_string());
-                }
-            }
-
-            if changed {
-                pairs[idx].1 = resolved_ids.join(",");
-            }
-        }
-    }
-
-    let path = state.remove_prefix_from_path(orig_url.path()).await;
-    let mut new_url = join_server_url(&server.url, path);
-    // Clear and set new query
-    new_url.query_pairs_mut().clear().extend_pairs(pairs);
-
-    // Set the new URL on the request
-    *request.url_mut() = new_url;
+fn matches_case_insensitive(value: &str, candidates: &[&str]) -> bool {
+    candidates
+        .iter()
+        .any(|candidate| value.eq_ignore_ascii_case(candidate))
 }
 
 pub fn apply_authorization_header(
@@ -519,29 +555,29 @@ pub fn apply_authorization_header(
     if let Some(auth) = auth {
         match auth {
             JellyfinAuthorization::Authorization(auth) => {
-                request.headers_mut().insert(
-                    reqwest::header::AUTHORIZATION,
-                    reqwest::header::HeaderValue::from_str(&auth.to_header_value()).unwrap(),
-                );
+                if let Ok(value) = reqwest::header::HeaderValue::from_str(&auth.to_header_value()) {
+                    request
+                        .headers_mut()
+                        .insert(reqwest::header::AUTHORIZATION, value);
+                }
             }
             // Map XEmbyAuthorization to Authorization header
             JellyfinAuthorization::XEmbyAuthorization(auth) => {
-                request.headers_mut().insert(
-                    reqwest::header::AUTHORIZATION,
-                    reqwest::header::HeaderValue::from_str(&auth.to_header_value()).unwrap(),
-                );
+                if let Ok(value) = reqwest::header::HeaderValue::from_str(&auth.to_header_value()) {
+                    request
+                        .headers_mut()
+                        .insert(reqwest::header::AUTHORIZATION, value);
+                }
             }
             JellyfinAuthorization::XMediaBrowser(token) => {
-                request.headers_mut().insert(
-                    "X-MediaBrowser-Token",
-                    reqwest::header::HeaderValue::from_str(token).unwrap(),
-                );
+                if let Ok(value) = reqwest::header::HeaderValue::from_str(token) {
+                    request.headers_mut().insert("X-MediaBrowser-Token", value);
+                }
             }
             JellyfinAuthorization::XEmbyToken(token) => {
-                request.headers_mut().insert(
-                    "X-Emby-Token",
-                    reqwest::header::HeaderValue::from_str(token).unwrap(),
-                );
+                if let Ok(value) = reqwest::header::HeaderValue::from_str(token) {
+                    request.headers_mut().insert("X-Emby-Token", value);
+                }
             }
             JellyfinAuthorization::ApiKey(_) => {}
         }
@@ -550,10 +586,9 @@ pub fn apply_authorization_header(
 
 pub fn apply_host_header(request: &mut reqwest::Request, server: &Server) {
     if let Some(host) = server.url.host_str() {
-        request.headers_mut().insert(
-            reqwest::header::HOST,
-            reqwest::header::HeaderValue::from_str(host).unwrap(),
-        );
+        if let Ok(value) = reqwest::header::HeaderValue::from_str(host) {
+            request.headers_mut().insert(reqwest::header::HOST, value);
+        }
     }
 }
 
@@ -597,95 +632,7 @@ pub async fn resolve_server(
     state: &AppState,
     request: &reqwest::Request,
 ) -> Result<(Server, Option<AuthorizationSession>)> {
-    let mut request_server = None;
-
-    // Check URL paths for media IDs using the static configuration
-    for &path_segment in MEDIA_ID_PATH_TAGS {
-        if let Some(media_id) = contains_id(request.url(), path_segment) {
-            debug!("Found {} ID in request: {}", path_segment, media_id);
-
-            // Direct lookup first; fall back through merged library representative.
-            let resolved = match state
-                .media_storage
-                .get_media_mapping_with_server(&media_id)
-                .await?
-            {
-                Some(pair) => Some(pair),
-                None => {
-                    if let Ok(Some(rep_id)) = state
-                        .merged_library_service
-                        .get_first_member_virtual_id(&media_id)
-                        .await
-                    {
-                        state
-                            .media_storage
-                            .get_media_mapping_with_server(&rep_id)
-                            .await?
-                    } else {
-                        None
-                    }
-                }
-            };
-
-            if let Some((_mapping, server)) = resolved {
-                debug!(
-                    "Found server for {} ID {}: {} ({})",
-                    path_segment, media_id, server.name, server.url
-                );
-                request_server = Some(server);
-                break; // Stop at first match
-            } else {
-                debug!("No server found for {} ID: {}", path_segment, media_id);
-            }
-        }
-    }
-
-    // Check query parameters using the static configuration
-    if request_server.is_none() {
-        for &param_name in MEDIA_ID_QUERY_TAGS {
-            if let Some(param_value) = request
-                .url()
-                .query_pairs()
-                .find(|(k, _)| k.eq_ignore_ascii_case(param_name))
-                .map(|(_, v)| v.to_string())
-            {
-                debug!("Found {} in query: {}", param_name, param_value);
-
-                let resolved = match state
-                    .media_storage
-                    .get_media_mapping_with_server(&param_value)
-                    .await?
-                {
-                    Some(pair) => Some(pair),
-                    None => {
-                        if let Ok(Some(rep_id)) = state
-                            .merged_library_service
-                            .get_first_member_virtual_id(&param_value)
-                            .await
-                        {
-                            state
-                                .media_storage
-                                .get_media_mapping_with_server(&rep_id)
-                                .await?
-                        } else {
-                            None
-                        }
-                    }
-                };
-
-                if let Some((_mapping, server)) = resolved {
-                    debug!(
-                        "Found server for {} {}: {} ({})",
-                        param_name, param_value, server.name, server.url
-                    );
-                    request_server = Some(server);
-                    break; // Stop at first match
-                } else {
-                    debug!("No server found for {} : {}", param_name, param_value);
-                }
-            }
-        }
-    }
+    let mut request_server = server_from_request_media_ids(state, request).await?;
 
     if request_server.is_none() {
         if let Some(request_body_result) = request_body_result {
@@ -701,17 +648,18 @@ pub async fn resolve_server(
 
     if let Some(sessions) = sessions {
         if let Some(request_server) = request_server {
-            if let Some((session, server)) = sessions.iter().find(|(_, server)| {
-                let request_url = request_server.url.as_str().trim_end_matches('/');
-                let server_url = server.url.as_str().trim_end_matches('/');
-                request_url == server_url
-            }) {
+            if let Some((session, server)) = sessions
+                .iter()
+                .find(|(_, server)| request_server.id == server.id)
+            {
                 debug!("Found server in request: {}", server.url);
                 return Ok((server.clone(), Some(session.clone())));
             }
         }
 
-        let (session, server) = sessions.first().unwrap();
+        let Some((session, server)) = sessions.first() else {
+            return Err(anyhow!("no authorization sessions available"));
+        };
         return Ok((server.clone(), Some(session.clone())));
     }
 
@@ -721,8 +669,88 @@ pub async fn resolve_server(
     }
 
     let server = state.server_storage.get_best_server().await?;
-    let server = server.ok_or_else(|| anyhow::anyhow!("No server available"))?;
+    let server = server.ok_or_else(|| anyhow!("No server available"))?;
     Ok((server, None))
+}
+
+async fn server_from_request_media_ids(
+    state: &AppState,
+    request: &reqwest::Request,
+) -> Result<Option<Server>> {
+    if let Some(server) = server_from_path_media_ids(state, request.url()).await? {
+        return Ok(Some(server));
+    }
+
+    server_from_query_media_ids(state, request.url()).await
+}
+
+async fn server_from_path_media_ids(state: &AppState, url: &url::Url) -> Result<Option<Server>> {
+    for &path_segment in MEDIA_ID_PATH_TAGS {
+        if let Some(media_id) = contains_id(url, path_segment) {
+            debug!("Found {} ID in request: {}", path_segment, media_id);
+            if let Some(server) = server_from_virtual_media_id(state, &media_id).await? {
+                debug!(
+                    "Found server for {} ID {}: {} ({})",
+                    path_segment, media_id, server.name, server.url
+                );
+                return Ok(Some(server));
+            }
+            debug!("No server found for {} ID: {}", path_segment, media_id);
+        }
+    }
+
+    Ok(None)
+}
+
+async fn server_from_query_media_ids(state: &AppState, url: &url::Url) -> Result<Option<Server>> {
+    for (param_name, param_value) in url.query_pairs() {
+        if !matches_case_insensitive(&param_name, MEDIA_ID_QUERY_TAGS) {
+            continue;
+        }
+
+        debug!("Found {} in query: {}", param_name, param_value);
+        for raw_id in param_value.split(',') {
+            let media_id = raw_id.trim();
+            if media_id.is_empty() {
+                continue;
+            }
+
+            if let Some(server) = server_from_virtual_media_id(state, media_id).await? {
+                debug!(
+                    "Found server for {} {}: {} ({})",
+                    param_name, media_id, server.name, server.url
+                );
+                return Ok(Some(server));
+            }
+            debug!("No server found for {}: {}", param_name, media_id);
+        }
+    }
+
+    Ok(None)
+}
+
+async fn server_from_virtual_media_id(state: &AppState, media_id: &str) -> Result<Option<Server>> {
+    if let Some((_mapping, server)) = state
+        .media_storage
+        .get_media_mapping_with_server(media_id)
+        .await?
+    {
+        return Ok(Some(server));
+    }
+
+    let Some(member_media_id) = state
+        .merged_library_service
+        .get_first_member_virtual_id(media_id)
+        .await?
+    else {
+        return Ok(None);
+    };
+
+    Ok(state
+        .media_storage
+        .get_media_mapping_with_server(&member_media_id)
+        .await?
+        .map(|(_mapping, server)| server))
 }
 
 pub async fn get_user_from_request(
@@ -773,14 +801,19 @@ pub async fn get_user_from_request(
 }
 
 pub async fn axum_to_reqwest(req: Request) -> Result<reqwest::Request> {
-    let original_uri = req.extensions().get::<OriginalUri>().unwrap();
+    let original_uri = req
+        .extensions()
+        .get::<OriginalUri>()
+        .ok_or_else(|| anyhow!("missing original request URI"))?;
+    let path_and_query = original_uri
+        .path_and_query()
+        .ok_or_else(|| anyhow!("missing request path and query"))?;
 
     let uri_with_host = http::uri::Builder::new()
         .scheme("http")
         .authority("localhost")
-        .path_and_query(original_uri.path_and_query().unwrap().to_string())
-        .build()
-        .unwrap();
+        .path_and_query(path_and_query.to_string())
+        .build()?;
 
     // First extract parts and body separately
     let (parts, body) = req.into_parts();
@@ -789,26 +822,9 @@ pub async fn axum_to_reqwest(req: Request) -> Result<reqwest::Request> {
     let mut http_req = http::Request::from_parts(parts, reqwest::Body::from(body_bytes));
     *http_req.uri_mut() = uri_with_host;
 
-    let rewquest_req =
-        reqwest::Request::try_from(http_req).expect("http::Uri to url::Url conversion failed");
+    let rewquest_req = reqwest::Request::try_from(http_req)?;
 
     Ok(rewquest_req)
-}
-
-fn remove_hop_by_hop_headers(headers: &mut reqwest::header::HeaderMap) {
-    let hop_by_hop_headers = [
-        "connection",
-        "keep-alive",
-        "proxy-authenticate",
-        "proxy-authorization",
-        "te",
-        "trailers",
-        "transfer-encoding",
-        "upgrade",
-    ];
-    for h in hop_by_hop_headers.iter() {
-        headers.remove(*h);
-    }
 }
 
 /// Try to parse the body of a reqwest::Request into serde_json::Value
@@ -841,5 +857,26 @@ pub fn body_to_json(request: &reqwest::Request) -> Option<serde_json::Value> {
         }
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn media_id_tags_cover_audio_paths_and_item_id_queries() {
+        let audio_id = "11111111111111111111111111111111";
+        let audio_url = url::Url::parse(&format!(
+            "http://localhost/Audio/{audio_id}/universal?ItemId=22222222222222222222222222222222"
+        ))
+        .unwrap();
+
+        let matched_path_id = MEDIA_ID_PATH_TAGS
+            .iter()
+            .find_map(|path_segment| contains_id(&audio_url, path_segment));
+
+        assert_eq!(matched_path_id.as_deref(), Some(audio_id));
+        assert!(matches_case_insensitive("ItemId", MEDIA_ID_QUERY_TAGS));
     }
 }
