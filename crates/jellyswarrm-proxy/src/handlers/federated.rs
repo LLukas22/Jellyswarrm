@@ -191,6 +191,9 @@ async fn get_items_for_merged_library(
     }
 
     indexed_results.sort_by_key(|(index, _)| *index);
+    let wrapped_response = indexed_results
+        .iter()
+        .any(|(_, items)| matches!(items, ItemsResponseVariants::WithCount(_)));
     let mut all_items = indexed_results
         .into_iter()
         .flat_map(|(_, response)| response.into_items())
@@ -202,11 +205,12 @@ async fn get_items_for_merged_library(
     });
 
     let (paged_items, total_count) = apply_pagination(all_items, pagination);
-    items_response_to_json(ItemsResponseVariants::WithCount(ItemsResponseWithCount {
-        items: paged_items,
-        total_record_count: to_i32(total_count),
-        start_index: to_i32(pagination.start_index),
-    }))
+    items_response_to_json(items_response_from_shape(
+        paged_items,
+        total_count,
+        pagination,
+        wrapped_response,
+    ))
 }
 
 pub async fn get_items_from_all_servers(
@@ -383,6 +387,9 @@ async fn get_items_from_all_servers_with_merged_libraries(
         .into_iter()
         .map(|(_, raw)| raw)
         .collect::<Vec<_>>();
+    let wrapped_response = server_raw
+        .iter()
+        .any(|(items, _)| matches!(items, ItemsResponseVariants::WithCount(_)));
     let mut library_groups: HashMap<String, Vec<(MediaItem, Server)>> = HashMap::new();
     let mut non_lib_per_server: Vec<ItemsResponseVariants> = Vec::new();
     let mut live_tv_seen = false;
@@ -508,11 +515,29 @@ async fn get_items_from_all_servers_with_merged_libraries(
         total_count
     );
 
-    items_response_to_json(ItemsResponseVariants::WithCount(ItemsResponseWithCount {
-        items: paged_items,
-        total_record_count: to_i32(total_count),
-        start_index: to_i32(pagination.start_index),
-    }))
+    items_response_to_json(items_response_from_shape(
+        paged_items,
+        total_count,
+        pagination,
+        wrapped_response,
+    ))
+}
+
+fn items_response_from_shape(
+    items: Vec<MediaItem>,
+    total_count: usize,
+    pagination: Pagination,
+    wrapped_response: bool,
+) -> ItemsResponseVariants {
+    if wrapped_response {
+        ItemsResponseVariants::WithCount(ItemsResponseWithCount {
+            items,
+            total_record_count: to_i32(total_count),
+            start_index: to_i32(pagination.start_index),
+        })
+    } else {
+        ItemsResponseVariants::Bare(items)
+    }
 }
 
 async fn collect_federated_results(
@@ -1061,6 +1086,40 @@ mod tests {
 
         assert_eq!(total_count, 4);
         assert_eq!(item_ids(&items), vec!["b1", "a2"]);
+    }
+
+    #[test]
+    fn items_response_from_shape_keeps_bare_responses_bare() {
+        let response = items_response_from_shape(
+            vec![media_item("one", None)],
+            1,
+            Pagination {
+                start_index: 0,
+                limit: None,
+            },
+            false,
+        );
+
+        assert!(matches!(response, ItemsResponseVariants::Bare(_)));
+    }
+
+    #[test]
+    fn items_response_from_shape_keeps_counted_responses_counted() {
+        let response = items_response_from_shape(
+            vec![media_item("one", None)],
+            12,
+            Pagination {
+                start_index: 4,
+                limit: Some(1),
+            },
+            true,
+        );
+
+        let ItemsResponseVariants::WithCount(response) = response else {
+            panic!("expected counted response");
+        };
+        assert_eq!(response.total_record_count, 12);
+        assert_eq!(response.start_index, 4);
     }
 
     fn query_pairs(url: &url::Url) -> Vec<(String, String)> {
