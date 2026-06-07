@@ -238,12 +238,14 @@ impl UrlProcessor {
                 } else {
                     value.into_owned()
                 }
-            } else {
+            } else if matches_case_insensitive(&key, MEDIA_ID_QUERY_TAGS) {
                 let remapped = self.remap_delivery_url_query_value(&value, server).await?;
                 if remapped != value {
                     changed = true;
                 }
                 remapped
+            } else {
+                value.into_owned()
             };
 
             pairs.push((key.into_owned(), value));

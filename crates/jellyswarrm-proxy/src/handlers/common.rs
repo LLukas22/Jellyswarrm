@@ -704,6 +704,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn response_processor_preserves_non_media_delivery_url_query_params() {
+        let (state, server) = create_test_state().await;
+        let original_item_id = "71717171717171717171717171717171";
+        let original_source_id = "72727272727272727272727272727272";
+        let start_position_ticks = "1234567890";
+        let play_session_id = "73737373-7373-4737-9373-737373737373";
+        let device_id = "74747474-7474-4747-9474-747474747474";
+        let mut payload = json!({
+            "DeliveryUrl": format!(
+                "/Videos/{original_item_id}/{original_source_id}/Subtitles/3/{start_position_ticks}/Stream.ass?api_key=upstream-token&PlaySessionId={play_session_id}&DeviceId={device_id}&MediaSourceId={original_source_id}"
+            )
+        });
+
+        let was_modified = state
+            .process_response_json(
+                &mut payload,
+                &server,
+                ResponseProcessingProfile::Media,
+                false,
+                Some("proxy-token"),
+            )
+            .await
+            .unwrap();
+
+        assert!(was_modified);
+
+        let remapped_url = payload["DeliveryUrl"].as_str().unwrap();
+        let url = url::Url::parse(&format!("http://localhost{remapped_url}")).unwrap();
+        let segments = url.path_segments().unwrap().collect::<Vec<_>>();
+        assert_eq!(segments[0], "Videos");
+        assert_ne!(segments[1], original_item_id);
+        assert_ne!(segments[2], original_source_id);
+        assert_eq!(segments[3], "Subtitles");
+        assert_eq!(segments[4], "3");
+        assert_eq!(segments[5], start_position_ticks);
+        assert_eq!(segments[6], "Stream.ass");
+
+        let query_pairs = url
+            .query_pairs()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(
+            query_pairs.get("api_key").map(String::as_str),
+            Some("proxy-token")
+        );
+        assert_eq!(
+            query_pairs.get("PlaySessionId").map(String::as_str),
+            Some(play_session_id)
+        );
+        assert_eq!(
+            query_pairs.get("DeviceId").map(String::as_str),
+            Some(device_id)
+        );
+        assert_eq!(
+            query_pairs.get("MediaSourceId").map(String::as_str),
+            Some(segments[2])
+        );
+    }
+
+    #[tokio::test]
     async fn track_play_session_tracks_media_source_and_transcoding_url_ids() {
         let (state, server) = create_test_state().await;
         let source: MediaSource = serde_json::from_value(json!({
