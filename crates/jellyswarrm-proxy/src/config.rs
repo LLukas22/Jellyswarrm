@@ -137,6 +137,10 @@ fn default_auto_create_users_on_login() -> bool {
     true
 }
 
+fn default_merge_libraries() -> bool {
+    true
+}
+
 mod base64_serde {
     use super::*;
     use serde::de::Error as DeError;
@@ -229,6 +233,7 @@ define_fallback_deserializer!(
     bool,
     default_auto_create_users_on_login
 );
+define_fallback_deserializer!(deserialize_merge_libraries, bool, default_merge_libraries);
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PreconfiguredServer {
@@ -297,6 +302,12 @@ pub struct AppConfig {
         deserialize_with = "deserialize_auto_create_users_on_login"
     )]
     pub auto_create_users_on_login: bool,
+
+    #[serde(
+        default = "default_merge_libraries",
+        deserialize_with = "deserialize_merge_libraries"
+    )]
+    pub merge_libraries: bool,
 }
 
 impl fmt::Debug for AppConfig {

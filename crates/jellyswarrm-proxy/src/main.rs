@@ -33,6 +33,7 @@ mod federated_users;
 mod handlers;
 mod legacy_server_identity;
 mod media_storage_service;
+mod merged_library_service;
 mod models;
 mod processors;
 mod proxy_headers;
@@ -49,6 +50,7 @@ use federated_users::FederatedUserService;
 use handlers::syncplay::SyncPlayService;
 use legacy_server_identity::canonicalize_legacy_server_identity;
 use media_storage_service::MediaStorageService;
+use merged_library_service::MergedLibraryService;
 use server_storage::{Server, ServerStorageService};
 use user_authorization_service::UserAuthorizationService;
 
@@ -84,6 +86,7 @@ pub struct AppState {
     pub user_authorization: Arc<UserAuthorizationService>,
     pub server_storage: Arc<ServerStorageService>,
     pub media_storage: Arc<MediaStorageService>,
+    pub merged_library_service: Arc<MergedLibraryService>,
     pub play_sessions: Arc<SessionStorage>,
     pub config: Arc<tokio::sync::RwLock<AppConfig>>,
     pub processors: Arc<ProxyProcessors>,
@@ -115,6 +118,7 @@ impl AppState {
             user_authorization: data_context.user_authorization,
             server_storage: data_context.server_storage,
             media_storage: data_context.media_storage,
+            merged_library_service: data_context.merged_library_service,
             play_sessions: data_context.play_sessions,
             config: data_context.config,
             processors: Arc::new(proxy_processors),
@@ -167,6 +171,10 @@ impl AppState {
         config.auto_create_users_on_login
     }
 
+    pub async fn merge_libraries_enabled(&self) -> bool {
+        self.config.read().await.merge_libraries
+    }
+
     pub async fn process_response_json(
         &self,
         payload: &mut serde_json::Value,
@@ -196,6 +204,7 @@ pub struct DataContext {
     pub user_authorization: Arc<UserAuthorizationService>,
     pub server_storage: Arc<ServerStorageService>,
     pub media_storage: Arc<MediaStorageService>,
+    pub merged_library_service: Arc<MergedLibraryService>,
     pub play_sessions: Arc<SessionStorage>,
     pub config: Arc<tokio::sync::RwLock<AppConfig>>,
 }
@@ -363,6 +372,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize media storage service
     let media_storage = MediaStorageService::new(pool.clone());
 
+    let merged_library_service = MergedLibraryService::new(pool.clone());
+
     if !loaded_config.preconfigured_servers.is_empty() {
         info!(
             "Adding {} preconfigured servers from config",
@@ -417,6 +428,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         user_authorization: Arc::new(user_authorization.clone()),
         server_storage: Arc::new(server_storage.clone()),
         media_storage: Arc::new(media_storage.clone()),
+        merged_library_service: Arc::new(merged_library_service),
         play_sessions: Arc::new(SessionStorage::new()),
         config: Arc::new(tokio::sync::RwLock::new(loaded_config.clone())),
     };

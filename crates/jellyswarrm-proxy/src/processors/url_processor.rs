@@ -2,6 +2,7 @@ use anyhow::Result;
 use tracing::debug;
 
 use crate::{
+    media_storage_service::MediaMapping,
     server_storage::Server,
     url_helper::{contains_id, is_id_like, replace_id},
     user_authorization_service::AuthorizationSession,
@@ -115,13 +116,7 @@ impl UrlProcessor {
     async fn replace_media_ids_in_path(&self, url: &mut url::Url) {
         for &path_segment in MEDIA_ID_PATH_TAGS {
             if let Some(media_id) = contains_id(url, path_segment) {
-                if let Some(media_mapping) = self
-                    .data_context
-                    .media_storage
-                    .get_media_mapping_by_virtual(&media_id)
-                    .await
-                    .unwrap_or_default()
-                {
+                if let Some(media_mapping) = self.client_media_mapping(&media_id).await {
                     debug!(
                         "Replacing media ID in path: {} -> {}",
                         media_id, media_mapping.original_media_id
@@ -172,13 +167,7 @@ impl UrlProcessor {
                 continue;
             }
 
-            if let Some(media_mapping) = self
-                .data_context
-                .media_storage
-                .get_media_mapping_by_virtual(trimmed)
-                .await
-                .unwrap_or_default()
-            {
+            if let Some(media_mapping) = self.client_media_mapping(trimmed).await {
                 debug!(
                     "Replacing media ID in query: {} -> {}",
                     trimmed, media_mapping.original_media_id
@@ -292,16 +281,37 @@ impl UrlProcessor {
             .map_err(Into::into)
     }
 
+    async fn client_media_mapping(&self, virtual_media_id: &str) -> Option<MediaMapping> {
+        if let Some(mapping) = self
+            .data_context
+            .media_storage
+            .get_media_mapping_by_virtual(virtual_media_id)
+            .await
+            .unwrap_or_default()
+        {
+            return Some(mapping);
+        }
+
+        let member_virtual_id = self
+            .data_context
+            .merged_library_service
+            .get_first_member_virtual_id(virtual_media_id)
+            .await
+            .ok()
+            .flatten()?;
+
+        self.data_context
+            .media_storage
+            .get_media_mapping_by_virtual(&member_virtual_id)
+            .await
+            .unwrap_or_default()
+    }
+
     async fn server_from_path_media_ids(&self, url: &url::Url) -> Result<Option<Server>> {
         for &path_segment in MEDIA_ID_PATH_TAGS {
             if let Some(media_id) = contains_id(url, path_segment) {
                 debug!("Found {} ID in request: {}", path_segment, media_id);
-                if let Some((_mapping, server)) = self
-                    .data_context
-                    .media_storage
-                    .get_media_mapping_with_server(&media_id)
-                    .await?
-                {
+                if let Some(server) = self.server_from_client_media_id(&media_id).await? {
                     debug!(
                         "Found server for {} ID {}: {} ({})",
                         path_segment, media_id, server.name, server.url
@@ -328,12 +338,7 @@ impl UrlProcessor {
                     continue;
                 }
 
-                if let Some((_mapping, server)) = self
-                    .data_context
-                    .media_storage
-                    .get_media_mapping_with_server(media_id)
-                    .await?
-                {
+                if let Some(server) = self.server_from_client_media_id(media_id).await? {
                     debug!(
                         "Found server for {} {}: {} ({})",
                         param_name, media_id, server.name, server.url
@@ -345,6 +350,33 @@ impl UrlProcessor {
         }
 
         Ok(None)
+    }
+
+    async fn server_from_client_media_id(&self, media_id: &str) -> Result<Option<Server>> {
+        if let Some((_mapping, server)) = self
+            .data_context
+            .media_storage
+            .get_media_mapping_with_server(media_id)
+            .await?
+        {
+            return Ok(Some(server));
+        }
+
+        let Some(member_media_id) = self
+            .data_context
+            .merged_library_service
+            .get_first_member_virtual_id(media_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+
+        Ok(self
+            .data_context
+            .media_storage
+            .get_media_mapping_with_server(&member_media_id)
+            .await?
+            .map(|(_mapping, server)| server))
     }
 }
 

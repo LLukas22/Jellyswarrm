@@ -308,6 +308,7 @@ impl ItemsResponseVariants {
         }
     }
 
+    /// Consume self and return the inner items as a plain `Vec`.
     pub fn into_items(self) -> Vec<MediaItem> {
         match self {
             ItemsResponseVariants::WithCount(w) => w.items,
