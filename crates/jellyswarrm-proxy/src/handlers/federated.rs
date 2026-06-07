@@ -1,15 +1,13 @@
-use axum::{
-    extract::{Request, State},
-    Json,
-};
+use axum::{extract::State, Json};
 use hyper::StatusCode;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use tokio::task::JoinSet;
 use tracing::{debug, error, trace, warn};
 
 use crate::{
+    extractors::Preprocessed,
     handlers::{
-        common::{execute_json_request, process_items_response, process_media_item},
+        common::{execute_json_request, response_json_to_payload},
         items::get_items,
     },
     merged_library_service::MergedLibraryMember,
@@ -17,7 +15,8 @@ use crate::{
         enums::{BaseItemKind, CollectionType},
         ItemsResponseVariants, ItemsResponseWithCount, MediaItem,
     },
-    request_preprocessing::{apply_to_request, extract_request_infos, JellyfinAuthorization},
+    processors::response_processor::ResponseProcessingProfile,
+    request_preprocessing::{apply_to_request, JellyfinAuthorization, PreprocessedRequest},
     server_storage::Server,
     user_authorization_service::AuthorizationSession,
     AppState,
@@ -29,92 +28,75 @@ struct Pagination {
     limit: Option<usize>,
 }
 
-fn extract_parent_id(query: &str) -> Option<String> {
-    url::Url::parse(&format!("http://x?{}", query))
-        .ok()?
-        .query_pairs()
-        .find(|(k, _)| k.eq_ignore_ascii_case("parentid"))
-        .map(|(_, v)| v.into_owned())
+fn extract_parent_id(url: &url::Url) -> Option<String> {
+    url.query_pairs()
+        .find(|(key, _)| key.eq_ignore_ascii_case("ParentId"))
+        .map(|(_, value)| value.into_owned())
 }
 
 fn replace_parent_id(url: &url::Url, new_id: &str) -> url::Url {
-    let new_query: String = url
+    let pairs = url
         .query_pairs()
-        .map(|(k, v)| {
-            let val = if k.eq_ignore_ascii_case("parentid") {
+        .map(|(key, value)| {
+            let value = if key.eq_ignore_ascii_case("ParentId") {
                 new_id.to_string()
             } else {
-                v.into_owned()
+                value.into_owned()
             };
-            format!(
-                "{}={}",
-                k,
-                percent_encoding::utf8_percent_encode(&val, percent_encoding::NON_ALPHANUMERIC)
-            )
+            (key.into_owned(), value)
         })
-        .collect::<Vec<_>>()
-        .join("&");
+        .collect::<Vec<_>>();
 
     let mut new_url = url.clone();
-    new_url.set_query(if new_query.is_empty() {
-        None
-    } else {
-        Some(&new_query)
-    });
+    new_url.query_pairs_mut().clear().extend_pairs(pairs);
     new_url
 }
 
 pub async fn get_items_from_all_servers_if_not_restricted(
     State(state): State<AppState>,
-    req: Request,
-) -> Result<Json<crate::models::ItemsResponseVariants>, StatusCode> {
-    if let Some(query) = req.uri().query() {
-        if state.merge_libraries_enabled().await {
-            if let Some(parent_id) = extract_parent_id(query) {
-                match state.merged_library_service.resolve(&parent_id).await {
-                    Ok(Some((lib, members))) if !members.is_empty() => {
-                        debug!(
-                            "ParentId {} is merged library '{}' — fanning out to {} servers",
-                            parent_id,
-                            lib.collection_type,
-                            members.len()
-                        );
-                        return get_items_for_merged_library(State(state), req, members).await;
-                    }
-                    Ok(_) => {}
-                    Err(e) => {
-                        error!("Failed to resolve merged library for {}: {}", parent_id, e);
-                    }
+    Preprocessed(preprocessed): Preprocessed,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let original_request = &preprocessed.original_request;
+
+    if state.merge_libraries_enabled().await {
+        if let Some(parent_id) = extract_parent_id(original_request.url()) {
+            match state.merged_library_service.resolve(&parent_id).await {
+                Ok(Some((lib, members))) if !members.is_empty() => {
+                    debug!(
+                        "ParentId {} is merged library '{}' — fanning out to {} servers",
+                        parent_id,
+                        lib.collection_type,
+                        members.len()
+                    );
+                    return get_items_for_merged_library(&state, preprocessed, members).await;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    error!("Failed to resolve merged library for {}: {}", parent_id, e);
                 }
             }
         }
     }
 
-    if has_query_key(req.uri(), &["SeriesId", "ParentId"]) {
-        return get_items(State(state), req).await;
+    if has_query_key(original_request.url(), &["SeriesId", "ParentId"]) {
+        return get_items(State(state), Preprocessed(preprocessed)).await;
     }
 
-    get_items_from_all_servers(State(state), req).await
+    get_items_from_all_servers_preprocessed(&state, preprocessed).await
 }
 
 async fn get_items_for_merged_library(
-    State(state): State<AppState>,
-    req: Request,
+    state: &AppState,
+    preprocessed: PreprocessedRequest,
     members: Vec<MergedLibraryMember>,
-) -> Result<Json<crate::models::ItemsResponseVariants>, StatusCode> {
-    let (original_request, _, _, sessions, _) =
-        extract_request_infos(req, &state).await.map_err(|e| {
-            error!("Failed to preprocess merged-library request: {}", e);
-            StatusCode::BAD_REQUEST
-        })?;
-
-    let sessions = sessions.ok_or(StatusCode::UNAUTHORIZED)?;
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let original_request = preprocessed.original_request;
+    let sessions = preprocessed.sessions.ok_or(StatusCode::UNAUTHORIZED)?;
     if sessions.is_empty() {
         return Err(StatusCode::UNAUTHORIZED);
     }
 
     let pagination = pagination_from_url(original_request.url());
-    let server_id = { state.config.read().await.server_id.clone() };
     let mut join_set = JoinSet::new();
     let mut failures = 0;
 
@@ -132,12 +114,13 @@ async fn get_items_for_merged_library(
             })?;
 
         let (mapping, server) = match resolved {
-            Some(v) => v,
+            Some(value) => value,
             None => {
                 error!(
                     "No media mapping found for virtual library {}",
                     member.virtual_library_id
                 );
+                failures += 1;
                 continue;
             }
         };
@@ -145,37 +128,33 @@ async fn get_items_for_merged_library(
         let session = sessions
             .iter()
             .find(|(_, session_server)| session_server.id == server.id)
-            .map(|(sess, _)| sess.clone());
+            .map(|(session, _)| session.clone());
 
-        let session = match session {
-            Some(s) => s,
-            None => {
-                error!("No active session for server '{}' — skipping", server.name);
-                continue;
-            }
+        let Some(session) = session else {
+            error!("No active session for server '{}' — skipping", server.name);
+            failures += 1;
+            continue;
         };
 
         let mut request = match original_request.try_clone() {
-            Some(r) => r,
+            Some(request) => request,
             None => {
                 error!("Failed to clone request for merged library fan-out");
+                failures += 1;
                 continue;
             }
         };
 
-        let new_url = replace_parent_id(request.url(), &mapping.original_media_id);
-        *request.url_mut() = new_url;
+        *request.url_mut() = replace_parent_id(request.url(), &mapping.original_media_id);
 
         let state_clone = state.clone();
-        let server_id = server_id.clone();
-
         join_set.spawn(async move {
             let result = fetch_items_from_server(
+                index,
                 state_clone,
                 request,
                 session,
                 server,
-                server_id,
                 pagination,
                 false,
             )
@@ -184,10 +163,10 @@ async fn get_items_for_merged_library(
         });
     }
 
-    let mut indexed: Vec<(usize, ItemsResponseVariants)> = Vec::new();
-    while let Some(res) = join_set.join_next().await {
-        match res {
-            Ok((index, Ok(items))) => indexed.push((index, items)),
+    let mut indexed_results: Vec<(usize, ItemsResponseVariants)> = Vec::new();
+    while let Some(result) = join_set.join_next().await {
+        match result {
+            Ok((index, Ok(items))) => indexed_results.push((index, items)),
             Ok((_, Err(e))) => {
                 failures += 1;
                 error!("Merged library fan-out failed: {:?}", e);
@@ -199,7 +178,7 @@ async fn get_items_for_merged_library(
         }
     }
 
-    if indexed.is_empty() {
+    if indexed_results.is_empty() {
         error!("All merged library fan-out requests failed");
         return Err(StatusCode::BAD_GATEWAY);
     }
@@ -211,56 +190,60 @@ async fn get_items_for_merged_library(
         );
     }
 
-    indexed.sort_by_key(|(i, _)| *i);
-
-    let server_responses: Vec<crate::models::ItemsResponseVariants> =
-        indexed.into_iter().map(|(_, v)| v).collect();
-    let mut all_items: Vec<crate::models::MediaItem> = server_responses
+    indexed_results.sort_by_key(|(index, _)| *index);
+    let mut all_items = indexed_results
         .into_iter()
-        .flat_map(|r| r.into_items())
-        .collect();
+        .flat_map(|(_, response)| response.into_items())
+        .collect::<Vec<_>>();
     all_items.sort_by(|a, b| {
-        let ak = a.sort_name.as_deref().or(a.name.as_deref()).unwrap_or("");
-        let bk = b.sort_name.as_deref().or(b.name.as_deref()).unwrap_or("");
-        ak.cmp(bk)
+        let left = a.sort_name.as_deref().or(a.name.as_deref()).unwrap_or("");
+        let right = b.sort_name.as_deref().or(b.name.as_deref()).unwrap_or("");
+        left.cmp(right)
     });
-    let (paged, total) = apply_pagination(all_items, pagination);
-    Ok(Json(crate::models::ItemsResponseVariants::WithCount(
-        ItemsResponseWithCount {
-            items: paged,
-            total_record_count: to_i32(total),
-            start_index: to_i32(pagination.start_index),
-        },
-    )))
+
+    let (paged_items, total_count) = apply_pagination(all_items, pagination);
+    items_response_to_json(ItemsResponseVariants::WithCount(ItemsResponseWithCount {
+        items: paged_items,
+        total_record_count: to_i32(total_count),
+        start_index: to_i32(pagination.start_index),
+    }))
 }
 
 pub async fn get_items_from_all_servers(
     State(state): State<AppState>,
-    req: Request,
-) -> Result<Json<crate::models::ItemsResponseVariants>, StatusCode> {
-    let (original_request, _, _, sessions, _) =
-        extract_request_infos(req, &state).await.map_err(|e| {
-            error!("Failed to preprocess request: {}", e);
-            StatusCode::BAD_REQUEST
-        })?;
+    Preprocessed(preprocessed): Preprocessed,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    get_items_from_all_servers_preprocessed(&state, preprocessed).await
+}
 
-    let sessions = sessions.ok_or(StatusCode::UNAUTHORIZED)?;
+async fn get_items_from_all_servers_preprocessed(
+    state: &AppState,
+    preprocessed: PreprocessedRequest,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    if state.merge_libraries_enabled().await {
+        get_items_from_all_servers_with_merged_libraries(state, preprocessed).await
+    } else {
+        get_items_from_all_servers_interleaved(state, preprocessed).await
+    }
+}
+
+async fn get_items_from_all_servers_interleaved(
+    state: &AppState,
+    preprocessed: PreprocessedRequest,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let original_request = preprocessed.original_request;
+    let sessions = preprocessed.sessions.ok_or(StatusCode::UNAUTHORIZED)?;
     if sessions.is_empty() {
         return Err(StatusCode::UNAUTHORIZED);
     }
 
     let pagination = pagination_from_url(original_request.url());
-    let cfg = state.config.read().await.clone();
-    let server_id = cfg.server_id.clone();
-    let merge_libraries = cfg.merge_libraries;
-    drop(cfg);
-
     let mut join_set = JoinSet::new();
     let mut failures = 0;
 
     for (index, (session, server)) in sessions.into_iter().enumerate() {
-        let mut request = match original_request.try_clone() {
-            Some(r) => r,
+        let request = match original_request.try_clone() {
+            Some(request) => request,
             None => {
                 error!("Failed to clone request for server: {}", server.name);
                 failures += 1;
@@ -268,46 +251,108 @@ pub async fn get_items_from_all_servers(
             }
         };
 
-        let auth = JellyfinAuthorization::Authorization(session.to_authorization());
         let state_clone = state.clone();
-
         join_set.spawn(async move {
-            normalize_upstream_pagination(request.url_mut(), pagination);
-            apply_to_request(
-                &mut request,
-                &server,
-                &Some(session),
-                &Some(auth),
-                &state_clone,
+            let result = fetch_items_from_server(
+                index,
+                state_clone,
+                request,
+                session,
+                server,
+                pagination,
+                true,
             )
             .await;
+            (index, result)
+        });
+    }
 
-            match execute_json_request::<crate::models::ItemsResponseVariants>(
-                &state_clone.reqwest_client,
-                request,
-            )
-            .await
-            {
-                Ok(resp) => {
-                    debug!("Fetched {} raw items from '{}'", resp.len(), server.name);
-                    trace!(
-                        "Raw items from '{}': {}",
-                        server.name,
-                        serde_json::to_string(&resp).unwrap_or_default()
-                    );
-                    (index, Ok((resp, server)))
-                }
-                Err(e) => {
-                    error!("Failed to fetch items from '{}': {:?}", server.name, e);
-                    (index, Err(e))
-                }
+    let (indexed_results, failures) = collect_federated_results(join_set, failures).await?;
+    let wrapped_response = indexed_results
+        .iter()
+        .any(|(_, items)| matches!(items, ItemsResponseVariants::WithCount(_)));
+    let server_count = indexed_results.len();
+    let server_items = indexed_results
+        .into_iter()
+        .map(|(_, items)| items)
+        .collect::<Vec<_>>();
+    let interleaved_items = interleave_items(server_items);
+    let (paged_items, total_count) = apply_pagination(interleaved_items, pagination);
+
+    debug!(
+        "Returning {} of {} interleaved items from {} servers",
+        paged_items.len(),
+        total_count,
+        server_count
+    );
+
+    trace!(
+        "Items: {}",
+        serde_json::to_string(&paged_items).unwrap_or_default()
+    );
+
+    let response = if wrapped_response {
+        ItemsResponseVariants::WithCount(ItemsResponseWithCount {
+            items: paged_items,
+            total_record_count: to_i32(total_count),
+            start_index: to_i32(pagination.start_index),
+        })
+    } else {
+        ItemsResponseVariants::Bare(paged_items)
+    };
+
+    if failures > 0 {
+        warn!(
+            "Returning partial federated response after {} server failure(s)",
+            failures
+        );
+    }
+
+    items_response_to_json(response)
+}
+
+async fn get_items_from_all_servers_with_merged_libraries(
+    state: &AppState,
+    preprocessed: PreprocessedRequest,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let original_request = preprocessed.original_request;
+    let sessions = preprocessed.sessions.ok_or(StatusCode::UNAUTHORIZED)?;
+    if sessions.is_empty() {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let pagination = pagination_from_url(original_request.url());
+    let mut join_set = JoinSet::new();
+    let mut failures = 0;
+
+    for (index, (session, server)) in sessions.into_iter().enumerate() {
+        let request = match original_request.try_clone() {
+            Some(request) => request,
+            None => {
+                error!("Failed to clone request for server: {}", server.name);
+                failures += 1;
+                continue;
             }
+        };
+
+        let state_clone = state.clone();
+        join_set.spawn(async move {
+            let result = fetch_raw_items_from_server(
+                index,
+                state_clone,
+                request,
+                session,
+                server,
+                pagination,
+            )
+            .await;
+            (index, result)
         });
     }
 
     let mut indexed_raw: Vec<(usize, (ItemsResponseVariants, Server))> = Vec::new();
-    while let Some(res) = join_set.join_next().await {
-        match res {
+    while let Some(result) = join_set.join_next().await {
+        match result {
             Ok((index, Ok(raw))) => indexed_raw.push((index, raw)),
             Ok((_, Err(e))) => {
                 failures += 1;
@@ -332,170 +377,127 @@ pub async fn get_items_from_all_servers(
         );
     }
 
-    indexed_raw.sort_by_key(|(i, _)| *i);
+    indexed_raw.sort_by_key(|(index, _)| *index);
 
-    let server_raw: Vec<(
-        crate::models::ItemsResponseVariants,
-        crate::server_storage::Server,
-    )> = indexed_raw.into_iter().map(|(_, v)| v).collect();
-
-    let mut library_groups: std::collections::HashMap<
-        String,
-        Vec<(MediaItem, crate::server_storage::Server)>,
-    > = std::collections::HashMap::new();
-    let mut non_lib_per_server: Vec<crate::models::ItemsResponseVariants> = Vec::new();
-
-    // Deduplicate LiveTv across servers — keep at most one entry.
+    let server_raw = indexed_raw
+        .into_iter()
+        .map(|(_, raw)| raw)
+        .collect::<Vec<_>>();
+    let mut library_groups: HashMap<String, Vec<(MediaItem, Server)>> = HashMap::new();
+    let mut non_lib_per_server: Vec<ItemsResponseVariants> = Vec::new();
     let mut live_tv_seen = false;
+
     for (raw_response, server) in server_raw {
-        let mut non_lib: Vec<MediaItem> = Vec::new();
+        let mut non_library_items = Vec::new();
 
         for item in raw_response.into_items() {
-            let is_mergeable = merge_libraries
-                && matches!(
-                    item.item_type,
-                    BaseItemKind::UserView | BaseItemKind::CollectionFolder
-                )
-                && item
-                    .collection_type
-                    .as_ref()
-                    .map(|ct| *ct != CollectionType::LiveTv)
-                    .unwrap_or(false);
+            let is_mergeable = matches!(
+                item.item_type,
+                BaseItemKind::UserView | BaseItemKind::CollectionFolder
+            ) && item
+                .collection_type
+                .as_ref()
+                .is_some_and(|collection_type| *collection_type != CollectionType::LiveTv);
 
             if is_mergeable {
-                // Group by (collection_type, normalized_name) so "Movies" on server A only
-                // merges with "Movies" on server B, not an unrelated "Spectacles" folder.
-                let ct_str = serde_json::to_string(item.collection_type.as_ref().unwrap())
+                let collection_type = serde_json::to_string(item.collection_type.as_ref().unwrap())
                     .unwrap_or_default()
                     .trim_matches('"')
                     .to_string();
-                let name_lower = item.name.as_deref().unwrap_or("").to_lowercase();
-                let ct_key = format!("{}:{}", ct_str, name_lower);
+                let name = item.name.as_deref().unwrap_or("").to_lowercase();
+                let key = format!("{}:{}", collection_type, name);
                 library_groups
-                    .entry(ct_key)
+                    .entry(key)
                     .or_default()
                     .push((item, server.clone()));
             } else {
-                if let Some(ct) = &item.collection_type {
-                    if *ct == CollectionType::LiveTv && item.item_type == BaseItemKind::UserView {
-                        if live_tv_seen {
-                            continue;
-                        }
-                        live_tv_seen = true;
+                if is_live_tv_user_view(&item) {
+                    if live_tv_seen {
+                        continue;
                     }
+                    live_tv_seen = true;
                 }
-                non_lib.push(item);
+                non_library_items.push(item);
             }
         }
 
-        if !non_lib.is_empty() {
-            let mut processed: Vec<MediaItem> = Vec::new();
-            for item in non_lib {
-                match process_media_item(item, &state, &server, true, &server_id, None).await {
-                    Ok(p) => processed.push(p),
-                    Err(e) => error!(
-                        "Failed to process non-library item from '{}': {:?}",
-                        server.name, e
-                    ),
-                }
-            }
+        if !non_library_items.is_empty() {
+            let processed =
+                process_media_items_for_server(non_library_items, state, &server, true).await?;
             if !processed.is_empty() {
-                non_lib_per_server.push(crate::models::ItemsResponseVariants::Bare(processed));
+                non_lib_per_server.push(ItemsResponseVariants::Bare(processed));
             }
         }
     }
 
-    let mut library_items: Vec<MediaItem> = Vec::new();
-
-    for (ct_key, group) in library_groups {
+    let mut library_items = Vec::new();
+    for (key, group) in library_groups {
         if group.len() == 1 {
             if let Some((item, server)) = group.into_iter().next() {
-                match process_media_item(item, &state, &server, true, &server_id, None).await {
-                    Ok(p) => library_items.push(p),
-                    Err(e) => error!("Failed to process single-server library: {:?}", e),
+                library_items
+                    .push(process_media_item_for_server(item, state, &server, true).await?);
+            }
+            continue;
+        }
+
+        let display_name = group[0].0.name.clone().unwrap_or_else(|| {
+            key.split_once(':')
+                .map(|(_, name)| name.to_string())
+                .unwrap_or_else(|| key.clone())
+        });
+
+        let merged = match state
+            .merged_library_service
+            .get_or_create(&key, &display_name)
+            .await
+        {
+            Ok(merged) => merged,
+            Err(e) => {
+                error!("Failed to get/create merged library for '{}': {}", key, e);
+                for (item, server) in group {
+                    library_items
+                        .push(process_media_item_for_server(item, state, &server, true).await?);
                 }
+                continue;
             }
-        } else {
-            let display_name = group[0].0.name.clone().unwrap_or_else(|| {
-                ct_key
-                    .split_once(':')
-                    .map(|x| x.1.to_string())
-                    .unwrap_or_else(|| ct_key.clone())
-            });
+        };
 
-            let merged = match state
-                .merged_library_service
-                .get_or_create(&ct_key, &display_name)
-                .await
-            {
-                Ok(m) => m,
-                Err(e) => {
-                    error!(
-                        "Failed to get/create merged library for '{}': {}",
-                        ct_key, e
-                    );
-                    for (item, server) in group {
-                        if let Ok(p) =
-                            process_media_item(item, &state, &server, true, &server_id, None).await
-                        {
-                            library_items.push(p);
-                        }
-                    }
-                    continue;
-                }
-            };
+        let mut members = Vec::new();
+        let mut template = None;
+        let mut total_child_count = 0;
 
-            let mut members: Vec<(String, String)> = Vec::new();
-            let mut template: Option<MediaItem> = None;
-            let mut total_child_count: i32 = 0;
-
-            for (item, server) in &group {
-                total_child_count += item.child_count.unwrap_or(0);
-                match process_media_item(
-                    item.clone(),
-                    &state,
-                    server,
-                    false, // no "[Server]" suffix — merged folder has a clean name
-                    &server_id,
-                    None,
-                )
-                .await
-                {
-                    Ok(processed) => {
-                        members.push((server.url.to_string(), processed.id.clone()));
-                        if template.is_none() {
-                            template = Some(processed);
-                        }
-                    }
-                    Err(e) => error!(
-                        "Failed to process library item for '{}': {:?}",
-                        server.name, e
-                    ),
-                }
+        for (item, server) in &group {
+            total_child_count += item.child_count.unwrap_or(0);
+            let processed =
+                process_media_item_for_server(item.clone(), state, server, false).await?;
+            members.push((server.url.to_string(), processed.id.clone()));
+            if template.is_none() {
+                template = Some(processed);
             }
+        }
 
-            if let Err(e) = state
-                .merged_library_service
-                .upsert_members(&merged.virtual_id, &members)
-                .await
-            {
-                error!("Failed to upsert merged library members: {}", e);
-            }
+        if let Err(e) = state
+            .merged_library_service
+            .upsert_members(&merged.virtual_id, &members)
+            .await
+        {
+            error!("Failed to upsert merged library members: {}", e);
+        }
 
-            if let Some(mut tmpl) = template {
-                tmpl.id = merged.virtual_id.clone();
-                tmpl.name = Some(display_name);
-                tmpl.child_count = Some(total_child_count);
-                library_items.push(tmpl);
-            }
+        if let Some(mut item) = template {
+            item.id = merged.virtual_id.clone();
+            item.name = Some(display_name);
+            item.child_count = Some(total_child_count);
+            library_items.push(item);
         }
     }
 
     library_items.sort_by(|a, b| {
-        let ak = a.name.as_deref().unwrap_or("");
-        let bk = b.name.as_deref().unwrap_or("");
-        ak.cmp(bk)
+        let left = a.name.as_deref().unwrap_or("");
+        let right = b.name.as_deref().unwrap_or("");
+        left.cmp(right)
     });
+
     let mut final_items = library_items;
     final_items.extend(interleave_items(non_lib_per_server));
 
@@ -506,51 +508,55 @@ pub async fn get_items_from_all_servers(
         total_count
     );
 
-    Ok(Json(crate::models::ItemsResponseVariants::WithCount(
-        ItemsResponseWithCount {
-            items: paged_items,
-            total_record_count: to_i32(total_count),
-            start_index: to_i32(pagination.start_index),
-        },
-    )))
+    items_response_to_json(ItemsResponseVariants::WithCount(ItemsResponseWithCount {
+        items: paged_items,
+        total_record_count: to_i32(total_count),
+        start_index: to_i32(pagination.start_index),
+    }))
+}
+
+async fn collect_federated_results(
+    mut join_set: JoinSet<(usize, Result<ItemsResponseVariants, StatusCode>)>,
+    mut failures: usize,
+) -> Result<(Vec<(usize, ItemsResponseVariants)>, usize), StatusCode> {
+    let mut indexed_results = Vec::new();
+    while let Some(result) = join_set.join_next().await {
+        match result {
+            Ok((index, Ok(items))) => indexed_results.push((index, items)),
+            Ok((_, Err(e))) => {
+                failures += 1;
+                error!("Federated server request failed: {:?}", e);
+            }
+            Err(e) => {
+                failures += 1;
+                error!("Task failed: {:?}", e);
+            }
+        }
+    }
+
+    if indexed_results.is_empty() {
+        error!("All federated server requests failed");
+        return Err(StatusCode::BAD_GATEWAY);
+    }
+
+    indexed_results.sort_by_key(|(index, _)| *index);
+    Ok((indexed_results, failures))
 }
 
 async fn fetch_items_from_server(
+    index: usize,
     state: AppState,
-    mut request: reqwest::Request,
+    request: reqwest::Request,
     session: AuthorizationSession,
     server: Server,
-    server_id: String,
     pagination: Pagination,
     should_change_name: bool,
 ) -> Result<ItemsResponseVariants, StatusCode> {
-    normalize_upstream_pagination(request.url_mut(), pagination);
+    let (mut items_response, server) =
+        fetch_raw_items_from_server(index, state.clone(), request, session, server, pagination)
+            .await?;
 
-    let auth = JellyfinAuthorization::Authorization(session.to_authorization());
-    apply_to_request(&mut request, &server, &Some(session), &Some(auth), &state).await;
-
-    let mut items_response =
-        execute_json_request::<ItemsResponseVariants>(&state.reqwest_client, request)
-            .await
-            .inspect_err(|e| {
-                error!("Failed to get items from server '{}': {:?}", server.name, e);
-            })?;
-
-    process_items_response(
-        &mut items_response,
-        &state,
-        &server,
-        should_change_name,
-        &server_id,
-        None,
-    )
-    .await
-    .inspect_err(|e| {
-        error!(
-            "Failed to process media items from server '{}': {:?}",
-            server.name, e
-        );
-    })?;
+    process_items_response_json(&mut items_response, &state, &server, should_change_name).await?;
 
     debug!(
         "Successfully retrieved {} items from server: {}",
@@ -558,16 +564,125 @@ async fn fetch_items_from_server(
         server.name
     );
     trace!(
-        "Items from server '{}': {}",
+        "Items from server '{}' at index {}: {}",
         server.name,
+        index,
         serde_json::to_string(&items_response).unwrap_or_default()
     );
 
     Ok(items_response)
 }
 
-fn has_query_key(uri: &axum::http::Uri, keys: &[&str]) -> bool {
-    uri.query()
+async fn fetch_raw_items_from_server(
+    index: usize,
+    state: AppState,
+    mut request: reqwest::Request,
+    session: AuthorizationSession,
+    server: Server,
+    pagination: Pagination,
+) -> Result<(ItemsResponseVariants, Server), StatusCode> {
+    normalize_upstream_pagination(request.url_mut(), pagination);
+
+    let auth = JellyfinAuthorization::Authorization(session.to_authorization());
+    apply_to_request(&mut request, &server, &Some(session), &Some(auth), &state).await;
+
+    let response = execute_json_request::<serde_json::Value>(&state.reqwest_client, request)
+        .await
+        .inspect_err(|e| {
+            error!("Failed to get items from server '{}': {:?}", server.name, e);
+        })?;
+
+    let items_response: ItemsResponseVariants = response_json_to_payload(response)?;
+    debug!(
+        "Fetched {} raw items from server '{}' at index {}",
+        items_response.len(),
+        server.name,
+        index
+    );
+
+    Ok((items_response, server))
+}
+
+async fn process_items_response_json(
+    response: &mut ItemsResponseVariants,
+    state: &AppState,
+    server: &Server,
+    should_change_name: bool,
+) -> Result<(), StatusCode> {
+    let mut response_json = serde_json::to_value(&*response).map_err(|e| {
+        error!("Failed to serialize items response JSON: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    state
+        .process_response_json(
+            &mut response_json,
+            server,
+            ResponseProcessingProfile::Media,
+            should_change_name,
+            None,
+        )
+        .await
+        .inspect_err(|e| {
+            error!(
+                "Failed to process media items from server '{}': {:?}",
+                server.name, e
+            );
+        })?;
+
+    *response = response_json_to_payload(response_json)?;
+    Ok(())
+}
+
+async fn process_media_items_for_server(
+    items: Vec<MediaItem>,
+    state: &AppState,
+    server: &Server,
+    should_change_name: bool,
+) -> Result<Vec<MediaItem>, StatusCode> {
+    let mut processed = Vec::with_capacity(items.len());
+    for item in items {
+        processed
+            .push(process_media_item_for_server(item, state, server, should_change_name).await?);
+    }
+    Ok(processed)
+}
+
+async fn process_media_item_for_server(
+    item: MediaItem,
+    state: &AppState,
+    server: &Server,
+    should_change_name: bool,
+) -> Result<MediaItem, StatusCode> {
+    let mut item_json = serde_json::to_value(item).map_err(|e| {
+        error!("Failed to serialize media item JSON: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    state
+        .process_response_json(
+            &mut item_json,
+            server,
+            ResponseProcessingProfile::Media,
+            should_change_name,
+            None,
+        )
+        .await?;
+
+    response_json_to_payload(item_json)
+}
+
+fn items_response_to_json(
+    response: ItemsResponseVariants,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    serde_json::to_value(response).map(Json).map_err(|e| {
+        error!("Failed to serialize federated items response: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })
+}
+
+fn has_query_key(url: &url::Url, keys: &[&str]) -> bool {
+    url.query()
         .map(|query| {
             url::form_urlencoded::parse(query.as_bytes()).any(|(key, _)| {
                 keys.iter()
@@ -679,18 +794,18 @@ mod tests {
 
     #[test]
     fn has_query_key_matches_keys_not_values() {
-        let uri = "/Items?foo=ParentId".parse().unwrap();
-        assert!(!has_query_key(&uri, &["ParentId"]));
+        let url = url::Url::parse("http://localhost/Items?foo=ParentId").unwrap();
+        assert!(!has_query_key(&url, &["ParentId"]));
 
-        let uri = "/Items?parentid=abc".parse().unwrap();
-        assert!(has_query_key(&uri, &["ParentId"]));
+        let url = url::Url::parse("http://localhost/Items?parentid=abc").unwrap();
+        assert!(has_query_key(&url, &["ParentId"]));
     }
 
     #[test]
     fn has_query_key_decodes_encoded_query_keys() {
-        let uri = "/Items?Parent%49d=abc".parse().unwrap();
+        let url = url::Url::parse("http://localhost/Items?Parent%49d=abc").unwrap();
 
-        assert!(has_query_key(&uri, &["ParentId"]));
+        assert!(has_query_key(&url, &["ParentId"]));
     }
 
     #[test]

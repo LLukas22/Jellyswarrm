@@ -9,9 +9,10 @@ use tracing::{debug, error};
 use crate::models::Authorization;
 use crate::processors::analyze_json;
 use crate::processors::request_analyzer::{RequestAnalysisContext, RequestBodyAnalysisResult};
+use crate::processors::url_processor::{USER_ID_PATH_TAGS, USER_ID_QUERY_TAGS};
 use crate::proxy_headers::remove_hop_by_hop_headers;
 use crate::server_storage::Server;
-use crate::url_helper::{contains_id, join_server_url, replace_id};
+use crate::url_helper::{contains_id, join_server_url};
 use crate::user_authorization_service::{AuthorizationSession, Device, User};
 use crate::AppState;
 
@@ -65,44 +66,6 @@ pub async fn resolve_request_identity_from_headers_uri(
 
     Ok(RequestIdentity { auth, user, device })
 }
-
-// Static configuration for server resolution
-static MEDIA_ID_PATH_TAGS: &[&str] = &[
-    "Items",
-    "Audio",
-    "Shows",
-    "Videos",
-    "PlayedItems",
-    "FavoriteItems",
-    "MediaSegments",
-    "PlayingItems",
-    "Recordings",
-    "Channels",
-    "Programs",
-    "SeriesTimers",
-    "Timers",
-    "UserFavoriteItems",
-    "UserItems",
-    "UserPlayedItems",
-];
-
-static MEDIA_ID_QUERY_TAGS: &[&str] = &[
-    "ParentId",
-    "ItemId",
-    "SeriesId",
-    "MediaSourceId",
-    "Tag",
-    "SeasonId",
-    "startItemId",
-    "IDs",
-    "PersonIds",
-];
-
-static USER_ID_PATH_TAGS: &[&str] = &["Users"];
-
-static USER_ID_QUERY_TAGS: &[&str] = &["UserId"];
-
-static API_KEY_QUERY_TAGS: &[&str] = &["api_key", "ApiKey"];
 
 #[derive(Clone)]
 pub enum JellyfinAuthorization {
@@ -229,7 +192,7 @@ impl JellyfinAuthorization {
 #[derive(Debug)]
 pub struct PreprocessedRequest {
     pub request: reqwest::Request,
-    pub original_request: Option<reqwest::Request>,
+    pub original_request: reqwest::Request,
     pub user: Option<User>,
     pub sessions: Option<Vec<(AuthorizationSession, Server)>>,
     pub server: Server,
@@ -351,7 +314,9 @@ pub async fn preprocess_request(req: Request, state: &AppState) -> Result<Prepro
     debug!("Preprocessing request: {:?}", req.uri());
     let (mut request, auth, user, sessions, request_body_result) =
         extract_request_infos(req, state).await?;
-    let original_request = request.try_clone();
+    let original_request = request
+        .try_clone()
+        .ok_or_else(|| anyhow!("failed to clone preprocessed request body"))?;
 
     let (server, session) =
         resolve_server(&sessions, &request_body_result, state, &request).await?;
@@ -397,148 +362,17 @@ pub async fn apply_new_target_uri(
     let mut orig_url = request.url().clone();
     debug!("Original request URL: {}", orig_url);
 
-    replace_user_ids_in_path(&mut orig_url, session);
-    replace_media_ids_in_path(&mut orig_url, state).await;
-
-    let mut pairs: Vec<(String, String)> = orig_url
-        .query_pairs()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect();
-
-    replace_session_query_values(&mut pairs, session);
-    replace_media_ids_in_query(&mut pairs, state).await;
+    state
+        .processors
+        .url_processor
+        .client_to_server_url(&mut orig_url, session)
+        .await;
 
     let path = state.remove_prefix_from_path(orig_url.path()).await;
     let mut new_url = join_server_url(&server.url, path);
-    new_url.query_pairs_mut().clear().extend_pairs(pairs);
+    new_url.set_query(orig_url.query());
 
     *request.url_mut() = new_url;
-}
-
-fn replace_user_ids_in_path(orig_url: &mut url::Url, session: &Option<AuthorizationSession>) {
-    let Some(session) = session else {
-        return;
-    };
-
-    for &path_segment in USER_ID_PATH_TAGS {
-        if let Some(user_id) = contains_id(orig_url, path_segment) {
-            debug!(
-                "Replacing user ID in path: {} -> {}",
-                user_id, session.original_user_id
-            );
-            *orig_url = replace_id(orig_url.clone(), &user_id, &session.original_user_id);
-        }
-    }
-}
-
-async fn replace_media_ids_in_path(orig_url: &mut url::Url, state: &AppState) {
-    for &path_segment in MEDIA_ID_PATH_TAGS {
-        if let Some(media_id) = contains_id(orig_url, path_segment) {
-            let direct = state
-                .media_storage
-                .get_media_mapping_by_virtual(&media_id)
-                .await
-                .unwrap_or_default();
-
-            // For merged library folders the virtual_id is not in media_mappings directly;
-            // resolve through the first member instead.
-            let media_mapping = match direct {
-                Some(m) => Some(m),
-                None => {
-                    if let Ok(Some(rep_id)) = state
-                        .merged_library_service
-                        .get_first_member_virtual_id(&media_id)
-                        .await
-                    {
-                        state
-                            .media_storage
-                            .get_media_mapping_by_virtual(&rep_id)
-                            .await
-                            .unwrap_or_default()
-                    } else {
-                        None
-                    }
-                }
-            };
-
-            if let Some(media_mapping) = media_mapping {
-                debug!(
-                    "Replacing media ID in path: {} -> {}",
-                    media_id, media_mapping.original_media_id
-                );
-                *orig_url = replace_id(
-                    orig_url.clone(),
-                    &media_id,
-                    &media_mapping.original_media_id,
-                );
-            }
-        }
-    }
-}
-
-fn replace_session_query_values(
-    pairs: &mut [(String, String)],
-    session: &Option<AuthorizationSession>,
-) {
-    let Some(session) = session else {
-        return;
-    };
-
-    for (name, value) in pairs {
-        if matches_case_insensitive(name, USER_ID_QUERY_TAGS) {
-            *value = session.original_user_id.clone();
-        } else if matches_case_insensitive(name, API_KEY_QUERY_TAGS) {
-            *value = session.jellyfin_token.clone();
-        }
-    }
-}
-
-async fn replace_media_ids_in_query(pairs: &mut [(String, String)], state: &AppState) {
-    for (name, value) in pairs {
-        if !matches_case_insensitive(name, MEDIA_ID_QUERY_TAGS) {
-            continue;
-        }
-
-        if let Some(resolved_value) = resolve_media_id_list(value, state).await {
-            *value = resolved_value;
-        }
-    }
-}
-
-async fn resolve_media_id_list(value: &str, state: &AppState) -> Option<String> {
-    let mut changed = false;
-    let mut resolved_ids = Vec::new();
-
-    for raw_id in value.split(',') {
-        let trimmed = raw_id.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        if let Some(media_mapping) = state
-            .media_storage
-            .get_media_mapping_by_virtual(trimmed)
-            .await
-            .unwrap_or_default()
-        {
-            debug!(
-                "Replacing media ID in query: {} -> {}",
-                trimmed, media_mapping.original_media_id
-            );
-            resolved_ids.push(media_mapping.original_media_id);
-            changed = true;
-        } else {
-            resolved_ids.push(trimmed.to_string());
-        }
-    }
-
-    changed.then(|| resolved_ids.join(","))
-}
-
-fn matches_case_insensitive(value: &str, candidates: &[&str]) -> bool {
-    candidates
-        .iter()
-        .any(|candidate| value.eq_ignore_ascii_case(candidate))
 }
 
 pub fn apply_authorization_header(
@@ -677,80 +511,11 @@ async fn server_from_request_media_ids(
     state: &AppState,
     request: &reqwest::Request,
 ) -> Result<Option<Server>> {
-    if let Some(server) = server_from_path_media_ids(state, request.url()).await? {
-        return Ok(Some(server));
-    }
-
-    server_from_query_media_ids(state, request.url()).await
-}
-
-async fn server_from_path_media_ids(state: &AppState, url: &url::Url) -> Result<Option<Server>> {
-    for &path_segment in MEDIA_ID_PATH_TAGS {
-        if let Some(media_id) = contains_id(url, path_segment) {
-            debug!("Found {} ID in request: {}", path_segment, media_id);
-            if let Some(server) = server_from_virtual_media_id(state, &media_id).await? {
-                debug!(
-                    "Found server for {} ID {}: {} ({})",
-                    path_segment, media_id, server.name, server.url
-                );
-                return Ok(Some(server));
-            }
-            debug!("No server found for {} ID: {}", path_segment, media_id);
-        }
-    }
-
-    Ok(None)
-}
-
-async fn server_from_query_media_ids(state: &AppState, url: &url::Url) -> Result<Option<Server>> {
-    for (param_name, param_value) in url.query_pairs() {
-        if !matches_case_insensitive(&param_name, MEDIA_ID_QUERY_TAGS) {
-            continue;
-        }
-
-        debug!("Found {} in query: {}", param_name, param_value);
-        for raw_id in param_value.split(',') {
-            let media_id = raw_id.trim();
-            if media_id.is_empty() {
-                continue;
-            }
-
-            if let Some(server) = server_from_virtual_media_id(state, media_id).await? {
-                debug!(
-                    "Found server for {} {}: {} ({})",
-                    param_name, media_id, server.name, server.url
-                );
-                return Ok(Some(server));
-            }
-            debug!("No server found for {}: {}", param_name, media_id);
-        }
-    }
-
-    Ok(None)
-}
-
-async fn server_from_virtual_media_id(state: &AppState, media_id: &str) -> Result<Option<Server>> {
-    if let Some((_mapping, server)) = state
-        .media_storage
-        .get_media_mapping_with_server(media_id)
-        .await?
-    {
-        return Ok(Some(server));
-    }
-
-    let Some(member_media_id) = state
-        .merged_library_service
-        .get_first_member_virtual_id(media_id)
-        .await?
-    else {
-        return Ok(None);
-    };
-
-    Ok(state
-        .media_storage
-        .get_media_mapping_with_server(&member_media_id)
-        .await?
-        .map(|(_mapping, server)| server))
+    state
+        .processors
+        .url_processor
+        .server_from_client_url(request.url())
+        .await
 }
 
 pub async fn get_user_from_request(
@@ -863,6 +628,9 @@ pub fn body_to_json(request: &reqwest::Request) -> Option<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::processors::url_processor::{
+        matches_case_insensitive, MEDIA_ID_PATH_TAGS, MEDIA_ID_QUERY_TAGS,
+    };
 
     #[test]
     fn media_id_tags_cover_audio_paths_and_item_id_queries() {

@@ -685,11 +685,10 @@ mod tests {
         config::{AppConfig, MediaStreamingMode, MIGRATOR},
         media_storage_service::MediaStorageService,
         models::{AuthenticateResponse, SessionInfo, SyncPlayUserAccessType, User, UserPolicy},
-        processors::{request_analyzer::RequestAnalyzer, request_processor::RequestProcessor},
         server_storage::ServerStorageService,
         session_storage::SessionStorage,
         user_authorization_service::{Device, UserAuthorizationService},
-        AppState, DataContext, JsonProcessors,
+        AppState, DataContext, ProxyProcessors,
     };
     use axum::{extract::Query, Json};
     use hyper::http::HeaderValue;
@@ -715,10 +714,7 @@ mod tests {
             config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
         };
 
-        let processors = JsonProcessors {
-            request_processor: RequestProcessor::new(data_context.clone()),
-            request_analyzer: RequestAnalyzer::new(data_context.clone()),
-        };
+        let processors = ProxyProcessors::new(data_context.clone());
 
         AppState::new(
             reqwest::Client::new(),

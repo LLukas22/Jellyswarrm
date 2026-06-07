@@ -115,10 +115,11 @@ where
     let mut was_modified = false;
 
     if let Value::Object(map) = value {
-        // Clone the map once to avoid borrowing conflicts
-        let map_clone = map.clone();
+        let original_map = std::mem::take(map);
+        let parent_context_object =
+            parent_context_object(&original_map).or_else(|| parent_object.cloned());
 
-        for (key, val) in map.iter_mut() {
+        for (key, mut val) in original_map {
             let current_path = if parent_path.is_empty() {
                 key.clone()
             } else {
@@ -132,53 +133,47 @@ where
                 depth,
                 is_array_item: false,
                 array_index: None,
-                parent_object: parent_object.cloned(),
+                parent_object: parent_context_object.clone(),
             };
 
             // Process nested structures
-            match val {
+            match &mut val {
                 Value::Object(_) => {
                     let (nested_result, nested_modified) = _process_json(
-                        val,
+                        &mut val,
                         processor,
                         context,
                         &current_path,
                         depth + 1,
-                        Some(&map_clone),
+                        parent_context_object.as_ref(),
                         errors,
                     )
                     .await?;
-                    *val = Value::Object(nested_result);
+                    val = Value::Object(nested_result);
                     if nested_modified {
                         was_modified = true;
                     }
                 }
-                Value::Array(arr) => {
-                    for (index, item) in arr.iter_mut().enumerate() {
-                        if let Value::Object(_) = item {
-                            let array_path = format!("{}[{}]", current_path, index);
-                            let (nested_result, nested_modified) = _process_json(
-                                item,
-                                processor,
-                                context,
-                                &array_path,
-                                depth + 1,
-                                Some(&map_clone),
-                                errors,
-                            )
-                            .await?;
-                            *item = Value::Object(nested_result);
-                            if nested_modified {
-                                was_modified = true;
-                            }
-                        }
+                Value::Array(_) => {
+                    if _process_array_items(
+                        &mut val,
+                        processor,
+                        context,
+                        &current_path,
+                        depth + 1,
+                        parent_context_object.as_ref(),
+                        errors,
+                    )
+                    .await?
+                    {
+                        was_modified = true;
                     }
                 }
                 _ => {}
             }
 
             // Process current field
-            let result = processor.process(&json_context, val, context).await;
+            let result = processor.process(&json_context, &mut val, context).await;
 
             // Handle any errors
             for error in result.errors {
@@ -201,7 +196,7 @@ where
                     key.clone()
                 };
 
-                new_map.insert(final_key, val.clone());
+                new_map.insert(final_key, val);
 
                 // Add any additional fields
                 for (add_key, add_value) in result.add_fields {
@@ -213,6 +208,101 @@ where
     }
 
     Ok((new_map, was_modified))
+}
+
+fn parent_context_object(map: &Map<String, Value>) -> Option<Map<String, Value>> {
+    let mut context = Map::new();
+
+    if let Some((key, value)) = map
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("CollectionType"))
+    {
+        context.insert(key.clone(), value.clone());
+    }
+
+    (!context.is_empty()).then_some(context)
+}
+
+#[async_recursion]
+async fn _process_array_items<'a, P, C>(
+    value: &'a mut Value,
+    processor: &'a P,
+    context: &'a C,
+    parent_path: &'a str,
+    depth: usize,
+    parent_object: Option<&'a Map<String, Value>>,
+    errors: &'a mut Vec<String>,
+) -> Result<bool>
+where
+    P: JsonProcessor<C> + Send + Sync,
+    C: Send + Sync,
+{
+    let mut was_modified = false;
+
+    let Value::Array(arr) = value else {
+        return Ok(false);
+    };
+
+    for (index, item) in arr.iter_mut().enumerate() {
+        let array_path = format!("{}[{}]", parent_path, index);
+
+        if let Value::Object(_) = item {
+            let (nested_result, nested_modified) = _process_json(
+                item,
+                processor,
+                context,
+                &array_path,
+                depth,
+                parent_object,
+                errors,
+            )
+            .await?;
+            *item = Value::Object(nested_result);
+            if nested_modified {
+                was_modified = true;
+            }
+            continue;
+        }
+
+        if let Value::Array(_) = item {
+            if _process_array_items(
+                item,
+                processor,
+                context,
+                &array_path,
+                depth + 1,
+                parent_object,
+                errors,
+            )
+            .await?
+            {
+                was_modified = true;
+            }
+            continue;
+        }
+
+        let json_context = JsonProcessingContext {
+            path: array_path,
+            key: index.to_string(),
+            parent_path: parent_path.to_string(),
+            depth,
+            is_array_item: true,
+            array_index: Some(index),
+            parent_object: parent_object.cloned(),
+        };
+
+        let result = processor.process(&json_context, item, context).await;
+
+        for error in result.errors {
+            errors.push(error);
+        }
+
+        if result.modified {
+            was_modified = true;
+        }
+    }
+
+    Ok(was_modified)
 }
 
 /// Process a JSON Value using the provided JsonProcessor and context.
@@ -227,13 +317,17 @@ where
 {
     let mut errors = Vec::new();
 
-    let was_modified = if let Value::Object(_) = data {
-        let (processed_map, modified) =
-            _process_json(data, processor, context, "", 0, None, &mut errors).await?;
-        *data = Value::Object(processed_map);
-        modified
-    } else {
-        false
+    let was_modified = match data {
+        Value::Object(_) => {
+            let (processed_map, modified) =
+                _process_json(data, processor, context, "", 0, None, &mut errors).await?;
+            *data = Value::Object(processed_map);
+            modified
+        }
+        Value::Array(_) => {
+            _process_array_items(data, processor, context, "", 0, None, &mut errors).await?
+        }
+        _ => false,
     };
 
     if errors.is_empty() {

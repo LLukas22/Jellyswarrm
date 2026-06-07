@@ -87,6 +87,7 @@ impl JsonProcessor<RequestProcessingContext> for RequestProcessor {
                         virtual_id, &session.original_user_id, &json_context.key
                     );
                     *value = Value::String(session.original_user_id.clone());
+                    result = result.mark_modified();
                 }
             }
         }
@@ -96,5 +97,95 @@ impl JsonProcessor<RequestProcessingContext> for RequestProcessor {
         }
 
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use serde_json::json;
+    use sqlx::SqlitePool;
+
+    use super::*;
+    use crate::{
+        config::{AppConfig, MediaStreamingMode, MIGRATOR},
+        media_storage_service::MediaStorageService,
+        merged_library_service::MergedLibraryService,
+        processors::process_json,
+        server_id::ServerId,
+        server_storage::ServerStorageService,
+        server_url::ServerUrl,
+        session_storage::SessionStorage,
+        user_authorization_service::{Device, UserAuthorizationService},
+    };
+
+    async fn test_data_context() -> DataContext {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+
+        DataContext {
+            user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
+            server_storage: Arc::new(ServerStorageService::new(pool.clone())),
+            media_storage: Arc::new(MediaStorageService::new(pool.clone())),
+            merged_library_service: Arc::new(MergedLibraryService::new(pool)),
+            play_sessions: Arc::new(SessionStorage::new()),
+            config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
+        }
+    }
+
+    fn test_server() -> Server {
+        let now = chrono::Utc::now();
+        Server {
+            id: ServerId::new(1),
+            name: "Test Server".to_string(),
+            url: ServerUrl::parse("http://server.example:8096").unwrap(),
+            priority: 0,
+            media_streaming_mode: MediaStreamingMode::Redirect,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn test_session() -> AuthorizationSession {
+        let now = chrono::Utc::now();
+        AuthorizationSession {
+            id: 1,
+            user_id: "proxy-user".to_string(),
+            mapping_id: 1,
+            server_url: "http://server.example:8096".to_string(),
+            device: Device {
+                client: "Test".to_string(),
+                device: "Test Device".to_string(),
+                device_id: "device-id".to_string(),
+                version: "1".to_string(),
+            },
+            jellyfin_token: "server-token".to_string(),
+            original_user_id: "upstream-user".to_string(),
+            expires_at: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[tokio::test]
+    async fn user_id_rewrite_marks_request_body_modified() {
+        let processor = RequestProcessor::new(test_data_context().await);
+        let context = RequestProcessingContext {
+            user: None,
+            server: test_server(),
+            sessions: None,
+            auth: None,
+            session: Some(test_session()),
+            new_auth: None,
+        };
+        let mut payload = json!({ "UserId": "proxy-user" });
+
+        let response = process_json(&mut payload, &processor, &context)
+            .await
+            .unwrap();
+
+        assert!(response.was_modified);
+        assert_eq!(payload["UserId"], "upstream-user");
     }
 }

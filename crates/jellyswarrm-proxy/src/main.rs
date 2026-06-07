@@ -1,7 +1,7 @@
 use axum::{
     body::Body,
     extract::{Request, State},
-    http::StatusCode,
+    http::{header, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     routing::{any, get, post},
     Router,
@@ -28,6 +28,7 @@ use axum_login::{
 
 mod config;
 mod encryption;
+mod extractors;
 mod federated_users;
 mod handlers;
 mod legacy_server_identity;
@@ -50,7 +51,7 @@ use handlers::syncplay::SyncPlayService;
 use legacy_server_identity::canonicalize_legacy_server_identity;
 use media_storage_service::MediaStorageService;
 use merged_library_service::MergedLibraryService;
-use server_storage::ServerStorageService;
+use server_storage::{Server, ServerStorageService};
 use user_authorization_service::UserAuthorizationService;
 
 use crate::{
@@ -60,6 +61,10 @@ use crate::{
     processors::{
         request_analyzer::RequestAnalyzer,
         request_processor::{RequestProcessingContext, RequestProcessor},
+        response_processor::{
+            ResponseProcessingContext, ResponseProcessingProfile, ResponseProcessor,
+        },
+        url_processor::UrlProcessor,
     },
     proxy_headers::is_hop_by_hop_header,
     request_preprocessing::body_to_json,
@@ -84,7 +89,7 @@ pub struct AppState {
     pub merged_library_service: Arc<MergedLibraryService>,
     pub play_sessions: Arc<SessionStorage>,
     pub config: Arc<tokio::sync::RwLock<AppConfig>>,
-    pub processors: Arc<JsonProcessors>,
+    pub processors: Arc<ProxyProcessors>,
     pub quick_connect: QuickConnectStorage,
     pub federated_users: Arc<FederatedUserService>,
     pub syncplay: Arc<SyncPlayService>,
@@ -95,7 +100,7 @@ impl AppState {
         reqwest_client: reqwest::Client,
         streaming_reqwest_client: reqwest::Client,
         data_context: DataContext,
-        json_processors: JsonProcessors,
+        proxy_processors: ProxyProcessors,
         quick_connect: QuickConnectStorage,
     ) -> Self {
         // Create temporary state to initialize FederatedUserService
@@ -116,7 +121,7 @@ impl AppState {
             merged_library_service: data_context.merged_library_service,
             play_sessions: data_context.play_sessions,
             config: data_context.config,
-            processors: Arc::new(json_processors),
+            processors: Arc::new(proxy_processors),
             quick_connect,
             federated_users,
             syncplay: Arc::new(SyncPlayService::new()),
@@ -169,6 +174,28 @@ impl AppState {
     pub async fn merge_libraries_enabled(&self) -> bool {
         self.config.read().await.merge_libraries
     }
+
+    pub async fn process_response_json(
+        &self,
+        payload: &mut serde_json::Value,
+        server: &Server,
+        profile: ResponseProcessingProfile,
+        should_change_name: bool,
+        proxy_api_key: Option<&str>,
+    ) -> Result<bool, StatusCode> {
+        let context = ResponseProcessingContext {
+            server: server.clone(),
+            proxy_server_id: self.config.read().await.server_id.clone(),
+            proxy_api_key: proxy_api_key.map(str::to_string),
+            profile,
+            should_change_name,
+            can_change_item_names: self.can_change_item_names().await,
+        };
+
+        self.processors
+            .process_response_json(payload, &context)
+            .await
+    }
 }
 
 #[derive(Clone)]
@@ -182,9 +209,62 @@ pub struct DataContext {
     pub config: Arc<tokio::sync::RwLock<AppConfig>>,
 }
 
-pub struct JsonProcessors {
+pub struct ProxyProcessors {
     pub request_processor: RequestProcessor,
     pub request_analyzer: RequestAnalyzer,
+    pub response_processor: ResponseProcessor,
+    pub url_processor: UrlProcessor,
+}
+
+impl ProxyProcessors {
+    pub fn new(data_context: DataContext) -> Self {
+        Self {
+            request_processor: RequestProcessor::new(data_context.clone()),
+            request_analyzer: RequestAnalyzer::new(data_context.clone()),
+            response_processor: ResponseProcessor::new(data_context.clone()),
+            url_processor: UrlProcessor::new(data_context),
+        }
+    }
+
+    pub async fn process_request_body(
+        &self,
+        request: &mut reqwest::Request,
+        context: &RequestProcessingContext,
+        request_url: &url::Url,
+    ) -> Result<(), StatusCode> {
+        let Some(mut json_value) = body_to_json(request) else {
+            return Ok(());
+        };
+
+        let response = processors::process_json(&mut json_value, &self.request_processor, context)
+            .await
+            .map_err(|e| {
+                error!("Failed to process JSON body: {}", e);
+                StatusCode::BAD_REQUEST
+            })?;
+
+        if response.was_modified {
+            debug!("Modified JSON body for request to {}", request_url);
+            set_json_body(request, &response.data)?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn process_response_json(
+        &self,
+        payload: &mut serde_json::Value,
+        context: &ResponseProcessingContext,
+    ) -> Result<bool, StatusCode> {
+        let processed = processors::process_json(payload, &self.response_processor, context)
+            .await
+            .map_err(|e| {
+                error!("Failed to process response JSON: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+        Ok(processed.was_modified)
+    }
 }
 
 #[derive(RustEmbed)]
@@ -353,16 +433,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config: Arc::new(tokio::sync::RwLock::new(loaded_config.clone())),
     };
 
-    let json_processors = JsonProcessors {
-        request_processor: RequestProcessor::new(data_context.clone()),
-        request_analyzer: RequestAnalyzer::new(data_context.clone()),
-    };
+    let proxy_processors = ProxyProcessors::new(data_context.clone());
 
     let app_state = AppState::new(
         reqwest_client,
         streaming_reqwest_client,
         data_context,
-        json_processors,
+        proxy_processors,
         quick_connect::QuickConnectStorage::new(),
     );
 
@@ -766,6 +843,11 @@ async fn proxy_handler(
     })?;
 
     let request_url = preprocessed.request.url().clone();
+    let response_server = preprocessed.server.clone();
+    let response_proxy_api_key = preprocessed
+        .user
+        .as_ref()
+        .map(|user| user.virtual_key.clone());
     trace!(
         "Proxy request details:\n  Original: {:?}\n  Target URL: {}\n  Transformed: {:?}",
         preprocessed.original_request,
@@ -773,23 +855,12 @@ async fn proxy_handler(
         preprocessed.request
     );
 
-    let payload_processing_context = RequestProcessingContext::new(&preprocessed);
+    let request_processing_context = RequestProcessingContext::new(&preprocessed);
     let mut request = preprocessed.request;
-
-    let preprocessor = &state.processors.request_processor;
-    if let Some(mut json_value) = body_to_json(&request) {
-        let response =
-            processors::process_json(&mut json_value, preprocessor, &payload_processing_context)
-                .await
-                .map_err(|e| {
-                    error!("Failed to process JSON body: {}", e);
-                    StatusCode::BAD_REQUEST
-                })?;
-        if response.was_modified {
-            debug!("Modified JSON body for request to {}", request_url);
-            set_json_body(&mut request, &response.data)?;
-        }
-    }
+    state
+        .processors
+        .process_request_body(&mut request, &request_processing_context, &request_url)
+        .await?;
     let response = state.reqwest_client.execute(request).await.map_err(|e| {
         error!("Failed to execute proxy request: {}", e);
         StatusCode::BAD_GATEWAY
@@ -802,11 +873,52 @@ async fn proxy_handler(
             status, request_url
         );
     }
-    let headers = response.headers().clone();
-    let body_bytes = response.bytes().await.map_err(|e| {
+    let mut headers = response.headers().clone();
+    let mut body_bytes = response.bytes().await.map_err(|e| {
         error!("Failed to read response body: {}", e);
         StatusCode::BAD_GATEWAY
     })?;
+
+    if is_json_response(&headers) && !body_bytes.is_empty() {
+        match serde_json::from_slice::<serde_json::Value>(&body_bytes) {
+            Ok(mut json_value) => {
+                let was_modified = state
+                    .process_response_json(
+                        &mut json_value,
+                        &response_server,
+                        ResponseProcessingProfile::BestEffortMedia,
+                        false,
+                        response_proxy_api_key.as_deref(),
+                    )
+                    .await?;
+
+                if was_modified {
+                    let processed_body = serde_json::to_vec(&json_value).map_err(|e| {
+                        error!("Failed to serialize processed response JSON: {}", e);
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    })?;
+
+                    debug!("Modified JSON response body for request to {}", request_url);
+                    headers.remove(header::CONTENT_LENGTH);
+                    headers.remove(header::TRANSFER_ENCODING);
+                    headers.insert(
+                        header::CONTENT_LENGTH,
+                        HeaderValue::from_str(&processed_body.len().to_string()).map_err(|e| {
+                            error!("Failed to build response Content-Length header: {}", e);
+                            StatusCode::INTERNAL_SERVER_ERROR
+                        })?,
+                    );
+                    body_bytes = processed_body.into();
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "Skipping JSON response processing for {} because body parsing failed: {}",
+                    request_url, e
+                );
+            }
+        }
+    }
 
     let mut response_builder = Response::builder().status(status);
 
@@ -823,6 +935,13 @@ async fn proxy_handler(
     })?;
 
     Ok(response)
+}
+
+fn is_json_response(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|content_type| content_type.contains("application/json"))
 }
 
 async fn shutdown_signal(deletion_task_abort_handle: AbortHandle) {

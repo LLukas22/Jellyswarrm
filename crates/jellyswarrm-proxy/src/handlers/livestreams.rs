@@ -1,17 +1,14 @@
-use axum::{
-    extract::{Request, State},
-    Json,
-};
+use axum::{extract::State, Json};
 use hyper::StatusCode;
 use tracing::{debug, error};
 
 use crate::{
+    extractors::RequireSession,
     handlers::common::{
         execute_json_request, payload_from_request, process_playback_response,
         remap_playback_request, set_json_body,
     },
     models::{PlaybackRequest, PlaybackResponse},
-    request_preprocessing::preprocess_request,
     AppState,
 };
 
@@ -20,21 +17,15 @@ use crate::{
 #[allow(dead_code)]
 pub async fn post_livestream_open(
     State(state): State<AppState>,
-    req: Request,
+    RequireSession {
+        preprocessed,
+        session,
+    }: RequireSession,
 ) -> Result<Json<PlaybackResponse>, StatusCode> {
-    let preprocessed = preprocess_request(req, &state).await.map_err(|e| {
-        error!("Failed to preprocess request: {}", e);
-        StatusCode::BAD_REQUEST
-    })?;
-
-    let original_request = preprocessed
-        .original_request
-        .ok_or(StatusCode::BAD_REQUEST)?;
+    let original_request = preprocessed.original_request;
     let payload: PlaybackRequest = payload_from_request(&original_request)?;
 
     let server = preprocessed.server;
-
-    let session = preprocessed.session.ok_or(StatusCode::UNAUTHORIZED)?;
 
     let mut payload = payload;
     remap_playback_request(&mut payload, &state, &session).await?;
