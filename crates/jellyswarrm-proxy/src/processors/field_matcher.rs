@@ -38,3 +38,48 @@ pub static SESSION_FIELDS: LazyLock<FieldMatcher> =
     LazyLock::new(|| FieldMatcher::new(&["SessionId", "PlaySessionId"]));
 
 pub static USER_FIELDS: LazyLock<FieldMatcher> = LazyLock::new(|| FieldMatcher::new(&["UserId"]));
+
+pub static RESPONSE_MEDIA_ID_FIELDS: LazyLock<FieldMatcher> = LazyLock::new(|| {
+    FieldMatcher::new(&[
+        "Id",
+        "ItemId",
+        "ParentId",
+        "SeriesId",
+        "SeasonId",
+        "MediaSourceId",
+        "PlaylistItemId",
+        "Etag",
+        "DisplayPreferencesId",
+        "ParentLogoItemId",
+        "ParentBackdropItemId",
+        "ParentLogoImageTag",
+        "ParentThumbItemId",
+        "ParentThumbImageTag",
+        "SeriesPrimaryImageTag",
+        "ImageTag",
+    ])
+});
+
+pub static DELIVERY_URL_FIELDS: LazyLock<FieldMatcher> =
+    LazyLock::new(|| FieldMatcher::new(&["DeliveryUrl", "TranscodingUrl", "StreamUrl"]));
+
+pub static DISABLED_BOOL_FIELDS: LazyLock<FieldMatcher> =
+    LazyLock::new(|| FieldMatcher::new(&["CanDelete", "CanDownload"]));
+
+pub static SERVER_ID_FIELDS: LazyLock<FieldMatcher> =
+    LazyLock::new(|| FieldMatcher::new(&["ServerId"]));
+
+pub static MEDIA_ID_ARRAY_FIELDS: LazyLock<FieldMatcher> =
+    LazyLock::new(|| FieldMatcher::new(&["BackdropImageTags", "ParentBackdropImageTags"]));
+
+pub static MEDIA_ID_MAP_VALUE_FIELDS: LazyLock<FieldMatcher> =
+    LazyLock::new(|| FieldMatcher::new(&["ImageTags"]));
+
+pub static MEDIA_ID_MAP_KEY_FIELDS: LazyLock<FieldMatcher> =
+    LazyLock::new(|| FieldMatcher::new(&["Trickplay"]));
+
+pub static MEDIA_ID_NESTED_MAP_KEY_FIELDS: LazyLock<FieldMatcher> =
+    LazyLock::new(|| FieldMatcher::new(&["ImageBlurHashes"]));
+
+pub static NAME_FIELDS: LazyLock<FieldMatcher> =
+    LazyLock::new(|| FieldMatcher::new(&["Name", "SeriesName"]));

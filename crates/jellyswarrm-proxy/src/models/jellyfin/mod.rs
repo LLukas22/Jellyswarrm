@@ -300,13 +300,6 @@ pub enum ItemsResponseVariants {
 }
 
 impl ItemsResponseVariants {
-    pub fn iter_mut_items(&mut self) -> std::slice::IterMut<'_, MediaItem> {
-        match self {
-            ItemsResponseVariants::WithCount(w) => w.items.iter_mut(),
-            ItemsResponseVariants::Bare(v) => v.iter_mut(),
-        }
-    }
-
     /// Return number of items contained in either variant.
     pub fn len(&self) -> usize {
         match self {

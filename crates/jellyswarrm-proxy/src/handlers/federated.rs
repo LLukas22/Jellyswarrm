@@ -1,21 +1,20 @@
-use axum::{
-    extract::{Request, State},
-    Json,
-};
+use axum::{extract::State, Json};
 use hyper::StatusCode;
 use std::collections::VecDeque;
 use tokio::task::JoinSet;
 use tracing::{debug, error, trace, warn};
 
 use crate::{
+    extractors::Preprocessed,
     handlers::{
-        common::{execute_json_request, process_items_response},
+        common::{execute_json_request, response_json_to_payload},
         items::get_items,
     },
     models::enums::{BaseItemKind, CollectionType},
     models::ItemsResponseWithCount,
     models::{ItemsResponseVariants, MediaItem},
-    request_preprocessing::{apply_to_request, extract_request_infos, JellyfinAuthorization},
+    processors::response_processor::ResponseProcessingProfile,
+    request_preprocessing::{apply_to_request, JellyfinAuthorization, PreprocessedRequest},
     server_storage::Server,
     user_authorization_service::AuthorizationSession,
     AppState,
@@ -29,24 +28,30 @@ struct Pagination {
 
 pub async fn get_items_from_all_servers_if_not_restricted(
     State(state): State<AppState>,
-    req: Request,
-) -> Result<Json<crate::models::ItemsResponseVariants>, StatusCode> {
-    if has_query_key(req.uri(), &["SeriesId", "ParentId"]) {
-        return get_items(State(state), req).await;
+    Preprocessed(preprocessed): Preprocessed,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let original_request = &preprocessed.original_request;
+
+    if has_query_key(original_request.url(), &["SeriesId", "ParentId"]) {
+        return get_items(State(state), Preprocessed(preprocessed)).await;
     }
 
-    get_items_from_all_servers(State(state), req).await
+    get_items_from_all_servers_preprocessed(&state, preprocessed).await
 }
 
 pub async fn get_items_from_all_servers(
     State(state): State<AppState>,
-    req: Request,
-) -> Result<Json<crate::models::ItemsResponseVariants>, StatusCode> {
-    let (original_request, _, _, sessions, _) =
-        extract_request_infos(req, &state).await.map_err(|e| {
-            error!("Failed to preprocess request: {}", e);
-            StatusCode::BAD_REQUEST
-        })?;
+    Preprocessed(preprocessed): Preprocessed,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    get_items_from_all_servers_preprocessed(&state, preprocessed).await
+}
+
+async fn get_items_from_all_servers_preprocessed(
+    state: &AppState,
+    preprocessed: PreprocessedRequest,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let original_request = preprocessed.original_request;
+    let sessions = preprocessed.sessions;
 
     let sessions = sessions.ok_or(StatusCode::UNAUTHORIZED)?;
     if sessions.is_empty() {
@@ -54,7 +59,6 @@ pub async fn get_items_from_all_servers(
     }
 
     let pagination = pagination_from_url(original_request.url());
-    let server_id = { state.config.read().await.server_id.clone() };
     let mut join_set = JoinSet::new();
     let mut failures = 0;
 
@@ -69,19 +73,10 @@ pub async fn get_items_from_all_servers(
         };
 
         let state_clone = state.clone();
-        let server_id = server_id.clone();
-
         join_set.spawn(async move {
-            let result = fetch_items_from_server(
-                index,
-                state_clone,
-                request,
-                session,
-                server,
-                server_id,
-                pagination,
-            )
-            .await;
+            let result =
+                fetch_items_from_server(index, state_clone, request, session, server, pagination)
+                    .await;
             (index, result)
         });
     }
@@ -137,19 +132,20 @@ pub async fn get_items_from_all_servers(
         serde_json::to_string(&paged_items).unwrap_or_default()
     );
 
-    if wrapped_response {
-        Ok(Json(crate::models::ItemsResponseVariants::WithCount(
-            ItemsResponseWithCount {
-                items: paged_items,
-                total_record_count: to_i32(total_count),
-                start_index: to_i32(pagination.start_index),
-            },
-        )))
+    let response = if wrapped_response {
+        crate::models::ItemsResponseVariants::WithCount(ItemsResponseWithCount {
+            items: paged_items,
+            total_record_count: to_i32(total_count),
+            start_index: to_i32(pagination.start_index),
+        })
     } else {
-        Ok(Json(crate::models::ItemsResponseVariants::Bare(
-            paged_items,
-        )))
-    }
+        crate::models::ItemsResponseVariants::Bare(paged_items)
+    };
+
+    serde_json::to_value(response).map(Json).map_err(|e| {
+        error!("Failed to serialize federated items response: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })
 }
 
 async fn fetch_items_from_server(
@@ -158,7 +154,6 @@ async fn fetch_items_from_server(
     mut request: reqwest::Request,
     session: AuthorizationSession,
     server: Server,
-    server_id: String,
     pagination: Pagination,
 ) -> Result<ItemsResponseVariants, StatusCode> {
     normalize_upstream_pagination(request.url_mut(), pagination);
@@ -167,13 +162,20 @@ async fn fetch_items_from_server(
     apply_to_request(&mut request, &server, &Some(session), &Some(auth), &state).await;
 
     let mut items_response =
-        execute_json_request::<ItemsResponseVariants>(&state.reqwest_client, request)
+        execute_json_request::<serde_json::Value>(&state.reqwest_client, request)
             .await
             .inspect_err(|e| {
                 error!("Failed to get items from server '{}': {:?}", server.name, e);
             })?;
 
-    process_items_response(&mut items_response, &state, &server, true, &server_id, None)
+    state
+        .process_response_json(
+            &mut items_response,
+            &server,
+            ResponseProcessingProfile::Media,
+            true,
+            None,
+        )
         .await
         .inspect_err(|e| {
             error!(
@@ -181,6 +183,8 @@ async fn fetch_items_from_server(
                 server.name, e
             );
         })?;
+
+    let items_response: ItemsResponseVariants = response_json_to_payload(items_response)?;
 
     debug!(
         "Successfully retrieved {} items from server: {}",
@@ -197,8 +201,8 @@ async fn fetch_items_from_server(
     Ok(items_response)
 }
 
-fn has_query_key(uri: &axum::http::Uri, keys: &[&str]) -> bool {
-    uri.query()
+fn has_query_key(url: &url::Url, keys: &[&str]) -> bool {
+    url.query()
         .map(|query| {
             url::form_urlencoded::parse(query.as_bytes()).any(|(key, _)| {
                 keys.iter()
@@ -310,18 +314,18 @@ mod tests {
 
     #[test]
     fn has_query_key_matches_keys_not_values() {
-        let uri = "/Items?foo=ParentId".parse().unwrap();
-        assert!(!has_query_key(&uri, &["ParentId"]));
+        let url = url::Url::parse("http://localhost/Items?foo=ParentId").unwrap();
+        assert!(!has_query_key(&url, &["ParentId"]));
 
-        let uri = "/Items?parentid=abc".parse().unwrap();
-        assert!(has_query_key(&uri, &["ParentId"]));
+        let url = url::Url::parse("http://localhost/Items?parentid=abc").unwrap();
+        assert!(has_query_key(&url, &["ParentId"]));
     }
 
     #[test]
     fn has_query_key_decodes_encoded_query_keys() {
-        let uri = "/Items?Parent%49d=abc".parse().unwrap();
+        let url = url::Url::parse("http://localhost/Items?Parent%49d=abc").unwrap();
 
-        assert!(has_query_key(&uri, &["ParentId"]));
+        assert!(has_query_key(&url, &["ParentId"]));
     }
 
     #[test]

@@ -1,13 +1,10 @@
-use axum::{
-    extract::{Request, State},
-    Json,
-};
+use axum::{extract::State, Json};
 use hyper::StatusCode;
 use tracing::error;
 
 use crate::{
-    handlers::common::execute_json_request, request_preprocessing::preprocess_request,
-    ui::JELLYFIN_UI_VERSION, AppState,
+    extractors::RequireUser, handlers::common::execute_json_request, ui::JELLYFIN_UI_VERSION,
+    AppState,
 };
 
 pub async fn info_public(
@@ -28,18 +25,8 @@ pub async fn info_public(
 
 pub async fn info(
     State(state): State<AppState>,
-    req: Request,
+    RequireUser { preprocessed, .. }: RequireUser,
 ) -> Result<Json<crate::models::ServerInfo>, StatusCode> {
-    let preprocessed = preprocess_request(req, &state).await.map_err(|e| {
-        error!("Failed to preprocess request: {}", e);
-        StatusCode::BAD_REQUEST
-    })?;
-
-    preprocessed.user.ok_or_else(|| {
-        error!("User not found in request preprocessing");
-        StatusCode::UNAUTHORIZED
-    })?;
-
     // return Err(StatusCode::UNAUTHORIZED);
 
     match execute_json_request::<crate::models::ServerInfo>(
