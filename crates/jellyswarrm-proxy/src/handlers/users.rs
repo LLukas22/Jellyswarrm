@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, Request, State},
+    extract::{Path, State},
     Json,
 };
 use hyper::{HeaderMap, StatusCode};
@@ -7,9 +7,9 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     encryption::Password,
+    extractors::{RequireUser, RequireUserSession},
     handlers::common::execute_json_request,
     models::{AuthenticateRequest, AuthenticateResponse, Authorization, SyncPlayUserAccessType},
-    request_preprocessing::preprocess_request,
     url_helper::join_server_url,
     AppState,
 };
@@ -42,15 +42,8 @@ pub async fn handle_public(
 
 pub async fn handle_get_me(
     State(state): State<AppState>,
-    req: Request,
+    RequireUser { preprocessed, user }: RequireUser,
 ) -> Result<Json<crate::models::User>, StatusCode> {
-    let preprocessed = preprocess_request(req, &state).await.map_err(|e| {
-        error!("Failed to preprocess request: {}", e);
-        StatusCode::BAD_REQUEST
-    })?;
-
-    let user = preprocessed.user.ok_or(StatusCode::UNAUTHORIZED)?;
-
     // Execute request and parse JSON response
     let server_user: crate::models::User =
         execute_json_request(&state.reqwest_client, preprocessed.request).await?;
@@ -68,18 +61,12 @@ pub async fn handle_get_me(
 pub async fn handle_get_user_by_id(
     State(state): State<AppState>,
     Path(_user_id): Path<String>,
-    req: Request,
+    RequireUserSession {
+        preprocessed,
+        user,
+        session,
+    }: RequireUserSession,
 ) -> Result<Json<crate::models::User>, StatusCode> {
-    // Preprocess request and extract required data
-    let preprocessed = preprocess_request(req, &state).await.map_err(|e| {
-        error!("Failed to preprocess request: {}", e);
-        StatusCode::BAD_REQUEST
-    })?;
-
-    let session = preprocessed.session.ok_or(StatusCode::UNAUTHORIZED)?;
-    let user: crate::user_authorization_service::User =
-        preprocessed.user.ok_or(StatusCode::UNAUTHORIZED)?;
-
     // Build request URL using helper function to preserve subdirectories
     let user_path = format!("/Users/{}", session.original_user_id);
     let user_url = join_server_url(&preprocessed.server.url, &user_path);

@@ -1,5 +1,5 @@
 use axum::body::Body;
-use axum::extract::{Request, State};
+use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
 use hyper::StatusCode;
@@ -7,8 +7,9 @@ use tracing::{error, info, warn};
 
 use crate::{
     config::MediaStreamingMode,
+    extractors::Preprocessed,
     proxy_headers::remove_hop_by_hop_headers,
-    request_preprocessing::{apply_to_request, preprocess_request, remap_authorization},
+    request_preprocessing::{apply_to_request, remap_authorization},
     server_storage::Server,
     session_storage::PlaybackSession,
     user_authorization_service::AuthorizationSession,
@@ -117,17 +118,9 @@ fn session_for_server(
 //http://localhost:3000/Videos/71bda5a4-267a-1a6c-49ce-8536d36628d8/71bda5a4267a1a6c49ce8536d36628d8/Subtitles/3/0/Stream.js?api_key=4543ddacf7544d258444677c680d81a5
 pub async fn get_video_resource(
     State(state): State<AppState>,
-    req: Request,
+    Preprocessed(preprocessed): Preprocessed,
 ) -> Result<Response, StatusCode> {
-    let preprocessed = preprocess_request(req, &state).await.map_err(|e| {
-        error!("Failed to preprocess request: {}", e);
-        StatusCode::BAD_REQUEST
-    })?;
-
-    let original_request = preprocessed
-        .original_request
-        .as_ref()
-        .ok_or(StatusCode::BAD_REQUEST)?;
+    let original_request = &preprocessed.original_request;
 
     let id = extract_video_id(original_request.url().path())
         .ok_or(StatusCode::NOT_FOUND)?
@@ -223,9 +216,7 @@ pub async fn get_video_resource(
         }
     };
 
-    let original_request = preprocessed
-        .original_request
-        .ok_or(StatusCode::BAD_REQUEST)?;
+    let original_request = preprocessed.original_request;
 
     let server = match state
         .server_storage
@@ -290,13 +281,8 @@ pub async fn get_video_resource(
 
 pub async fn get_stream(
     State(state): State<AppState>,
-    req: Request,
+    Preprocessed(preprocessed): Preprocessed,
 ) -> Result<Response, StatusCode> {
-    let preprocessed = preprocess_request(req, &state).await.map_err(|e| {
-        error!("Failed to preprocess request: {}", e);
-        StatusCode::BAD_REQUEST
-    })?;
-
     let server = preprocessed.server;
     let request = preprocessed.request;
     forward_video_request(&state, &server, request, "media stream").await
