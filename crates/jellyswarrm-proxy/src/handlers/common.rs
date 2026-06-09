@@ -434,6 +434,7 @@ mod tests {
         config::{AppConfig, MediaStreamingMode, MIGRATOR},
         media_storage_service::MediaStorageService,
         merged_library_service::MergedLibraryService,
+        library_group_service::LibraryGroupService,
         server_id::ServerId,
         server_storage::ServerStorageService,
         server_url::ServerUrl,
@@ -481,7 +482,8 @@ mod tests {
             user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
             server_storage: Arc::new(ServerStorageService::new(pool.clone())),
             media_storage: Arc::new(MediaStorageService::new(pool.clone())),
-            merged_library_service: Arc::new(MergedLibraryService::new(pool)),
+            merged_library_service: Arc::new(MergedLibraryService::new(pool.clone())),
+            library_group_service: Arc::new(LibraryGroupService::new(pool)),
             play_sessions: Arc::new(SessionStorage::new()),
             config: Arc::new(tokio::sync::RwLock::new(config)),
         };

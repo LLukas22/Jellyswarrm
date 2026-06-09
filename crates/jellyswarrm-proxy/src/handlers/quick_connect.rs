@@ -708,7 +708,10 @@ mod tests {
             server_storage: Arc::new(ServerStorageService::new(pool.clone())),
             media_storage: Arc::new(MediaStorageService::new(pool.clone())),
             merged_library_service: Arc::new(
-                crate::merged_library_service::MergedLibraryService::new(pool),
+                crate::merged_library_service::MergedLibraryService::new(pool.clone()),
+            ),
+            library_group_service: Arc::new(
+                crate::library_group_service::LibraryGroupService::new(pool),
             ),
             play_sessions: Arc::new(SessionStorage::new()),
             config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),

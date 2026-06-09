@@ -1,0 +1,36 @@
+<header>
+    <h1>Library Groups</h1>
+    <h3>Combine libraries from multiple servers into one folder in Jellyswarrm.</h3>
+</header>
+
+{% if merge_libraries %}
+<article>
+    <header><h4>Auto-merge is enabled</h4></header>
+    <p>Libraries with the same name and type are merged automatically via <strong>Merge Libraries Across Servers</strong> in Settings.</p>
+    <p>Disable that setting to configure custom library groups here instead.</p>
+</article>
+{% else %}
+
+<section aria-labelledby="create-group-heading">
+    <h2 id="create-group-heading" class="section-heading-tight">Create Group</h2>
+    <form hx-post="/{{ ui_route }}/libraries/groups" hx-target="#library-groups-list" hx-swap="innerHTML" hx-disabled-elt="this" hx-on::after-request="if(event.detail.successful) this.reset()">
+        <div class="server-form-grid">
+            <label class="form-field">
+                <span class="field-label">Group Name</span>
+                <input type="text" name="name" placeholder="e.g. Anime" autocomplete="off" required>
+            </label>
+            <div class="server-form-submit">
+                <span class="field-label field-label-placeholder" aria-hidden="true">Create</span>
+                <button type="submit" class="server-form-button">Create Group</button>
+            </div>
+        </div>
+    </form>
+</section>
+
+<hr />
+
+<section id="library-groups-list" hx-get="/{{ ui_route }}/libraries/list" hx-trigger="load">
+    <p>Loading library groups...</p>
+</section>
+
+{% endif %}
