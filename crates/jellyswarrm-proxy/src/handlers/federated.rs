@@ -223,24 +223,42 @@ async fn get_items_for_merged_library(
         ensure_dedup_fields(request.url_mut());
 
         let state_clone = state.clone();
+        let use_limited_upstream =
+            is_upstream_limited_catalog_request(original_request.url());
+        let max_pages = merged_library_max_pages(pagination);
         join_set.spawn(async move {
-            let result = fetch_all_items_from_server(
-                index,
-                state_clone,
-                request,
-                session,
-                server,
-                false,
-            )
-            .await;
+            let result = if use_limited_upstream {
+                fetch_items_from_server(
+                    index,
+                    state_clone,
+                    request,
+                    session,
+                    server,
+                    pagination,
+                    false,
+                )
+                .await
+                .map(|items| merged_server_fetch_from_response(items, true))
+            } else {
+                fetch_windowed_items_from_server(
+                    index,
+                    state_clone,
+                    request,
+                    session,
+                    server,
+                    max_pages,
+                    false,
+                )
+                .await
+            };
             (index, result)
         });
     }
 
-    let mut indexed_results: Vec<(usize, ItemsResponseVariants)> = Vec::new();
+    let mut indexed_results: Vec<(usize, MergedServerFetch)> = Vec::new();
     while let Some(result) = join_set.join_next().await {
         match result {
-            Ok((index, Ok(items))) => indexed_results.push((index, items)),
+            Ok((index, Ok(fetch))) => indexed_results.push((index, fetch)),
             Ok((_, Err(e))) => {
                 failures += 1;
                 error!("Merged library fan-out failed: {:?}", e);
@@ -267,15 +285,25 @@ async fn get_items_for_merged_library(
     indexed_results.sort_by_key(|(index, _)| *index);
     let wrapped_response = indexed_results
         .iter()
-        .any(|(_, items)| matches!(items, ItemsResponseVariants::WithCount(_)));
-    let all_items: Vec<TaggedMediaItem> = indexed_results
+        .any(|(_, fetch)| matches!(fetch.items, ItemsResponseVariants::WithCount(_)));
+    let mut raw_count = 0usize;
+    let mut upstream_total_sum = 0i32;
+    let mut all_fully_fetched = true;
+    let tagged_items: Vec<TaggedMediaItem> = indexed_results
         .into_iter()
-        .flat_map(|(index, response)| {
+        .flat_map(|(index, fetch)| {
+            raw_count += fetch.raw_count;
+            if let Some(total) = fetch.upstream_total {
+                upstream_total_sum += total.max(0);
+            }
+            all_fully_fetched &= fetch.fully_fetched;
+
             let Some(server) = member_servers.get(&index).cloned() else {
                 error!("Missing server mapping for merged fan-out index {}", index);
                 return Vec::new();
             };
-            response
+            fetch
+                .items
                 .into_items()
                 .into_iter()
                 .map(move |item| TaggedMediaItem { item, server: server.clone() })
@@ -283,14 +311,20 @@ async fn get_items_for_merged_library(
         })
         .collect();
 
-    let mut all_items = deduplicate_tagged_items(all_items, &duplicate_config);
+    let mut all_items = deduplicate_tagged_items(tagged_items, &duplicate_config);
     all_items.sort_by(|a, b| {
         let left = a.sort_name.as_deref().or(a.name.as_deref()).unwrap_or("");
         let right = b.sort_name.as_deref().or(b.name.as_deref()).unwrap_or("");
         left.cmp(right)
     });
 
-    let (paged_items, total_count) = apply_pagination(all_items, pagination);
+    let total_count = estimate_merged_library_total(
+        all_items.len(),
+        raw_count,
+        upstream_total_sum,
+        all_fully_fetched,
+    );
+    let (paged_items, _) = apply_pagination(all_items, pagination);
     items_response_to_json(items_response_from_shape(
         paged_items,
         total_count,
@@ -916,19 +950,162 @@ async fn fetch_items_from_server(
 
 const UPSTREAM_PAGE_SIZE: usize = 100;
 const MAX_PARALLEL_UPSTREAM_PAGES: usize = 8;
+const MAX_MERGED_LIBRARY_PAGES: usize = 12;
 
-async fn fetch_all_items_from_server(
+struct MergedServerFetch {
+    items: ItemsResponseVariants,
+    upstream_total: Option<i32>,
+    fully_fetched: bool,
+    raw_count: usize,
+}
+
+fn is_upstream_limited_catalog_request(url: &url::Url) -> bool {
+    let path = url.path().to_ascii_lowercase();
+    path.contains("/latest") || path.contains("/suggestions")
+}
+
+fn merged_library_max_pages(pagination: Pagination) -> usize {
+    let Some(client_limit) = pagination.limit else {
+        return MAX_MERGED_LIBRARY_PAGES;
+    };
+    let window_end = pagination.start_index.saturating_add(client_limit);
+    let buffered = window_end.saturating_mul(3).div_ceil(2);
+    let pages = buffered.div_ceil(UPSTREAM_PAGE_SIZE).max(1);
+    pages.min(MAX_MERGED_LIBRARY_PAGES)
+}
+
+fn merged_server_fetch_from_response(
+    items: ItemsResponseVariants,
+    fully_fetched: bool,
+) -> MergedServerFetch {
+    let upstream_total = match &items {
+        ItemsResponseVariants::WithCount(response) => Some(response.total_record_count),
+        ItemsResponseVariants::Bare(_) => None,
+    };
+    let raw_count = items.len();
+    MergedServerFetch {
+        items,
+        upstream_total,
+        fully_fetched,
+        raw_count,
+    }
+}
+
+fn estimate_merged_library_total(
+    deduped_len: usize,
+    raw_count: usize,
+    upstream_total_sum: i32,
+    all_fully_fetched: bool,
+) -> usize {
+    if all_fully_fetched {
+        return deduped_len;
+    }
+
+    if raw_count > 0 && upstream_total_sum > 0 {
+        let ratio = deduped_len as f64 / raw_count as f64;
+        let estimated = (f64::from(upstream_total_sum) * ratio).round() as usize;
+        return estimated.max(deduped_len);
+    }
+
+    deduped_len.max(upstream_total_sum.max(0) as usize)
+}
+
+async fn fetch_windowed_items_from_server(
     index: usize,
     state: AppState,
     request: reqwest::Request,
     session: AuthorizationSession,
     server: Server,
+    max_pages: usize,
     should_change_name: bool,
-) -> Result<ItemsResponseVariants, StatusCode> {
-    let (mut items_response, server) =
-        fetch_all_raw_items_from_server(index, state.clone(), request, session, server).await?;
+) -> Result<MergedServerFetch, StatusCode> {
+    let (mut items_response, upstream_total, fully_fetched) = fetch_windowed_raw_items_from_server(
+        index,
+        state.clone(),
+        request,
+        session,
+        server.clone(),
+        max_pages,
+    )
+    .await?;
+    let raw_count = items_response.len();
     process_items_response_json(&mut items_response, &state, &server, should_change_name).await?;
-    Ok(items_response)
+    Ok(MergedServerFetch {
+        items: items_response,
+        upstream_total,
+        fully_fetched,
+        raw_count,
+    })
+}
+
+async fn fetch_windowed_raw_items_from_server(
+    index: usize,
+    state: AppState,
+    request: reqwest::Request,
+    session: AuthorizationSession,
+    server: Server,
+    max_pages: usize,
+) -> Result<(ItemsResponseVariants, Option<i32>, bool), StatusCode> {
+    let first_page = fetch_upstream_page_raw(
+        index,
+        state.clone(),
+        request
+            .try_clone()
+            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?,
+        session.clone(),
+        server.clone(),
+        0,
+    )
+    .await?;
+
+    let had_counted_response = matches!(&first_page, ItemsResponseVariants::WithCount(_));
+    let upstream_total = match &first_page {
+        ItemsResponseVariants::WithCount(response) => Some(response.total_record_count),
+        ItemsResponseVariants::Bare(_) => None,
+    };
+    let first_page_len = first_page.len();
+    let mut all_items = first_page.into_items();
+
+    let mut fully_fetched = first_page_len < UPSTREAM_PAGE_SIZE;
+    if max_pages > 1 && should_continue_upstream_fetch(first_page_len, UPSTREAM_PAGE_SIZE) {
+        let page_starts: Vec<usize> = (1..max_pages)
+            .map(|page| page * UPSTREAM_PAGE_SIZE)
+            .collect();
+        let extra_pages = fetch_upstream_pages_parallel(
+            index,
+            state.clone(),
+            &request,
+            session.clone(),
+            server.clone(),
+            &page_starts,
+        )
+        .await?;
+
+        if let Some((_, last_page)) = extra_pages.last() {
+            fully_fetched = last_page.len() < UPSTREAM_PAGE_SIZE;
+        }
+        for (_, page) in extra_pages {
+            all_items.extend(page.into_items());
+        }
+    }
+
+    if let Some(total) = upstream_total {
+        if all_items.len() >= total.max(0) as usize {
+            fully_fetched = true;
+        }
+    }
+
+    let response = if had_counted_response {
+        ItemsResponseVariants::WithCount(ItemsResponseWithCount {
+            items: all_items,
+            total_record_count: 0,
+            start_index: 0,
+        })
+    } else {
+        ItemsResponseVariants::Bare(all_items)
+    };
+
+    Ok((response, upstream_total, fully_fetched))
 }
 
 async fn fetch_upstream_page_raw(
@@ -954,60 +1131,6 @@ async fn fetch_upstream_page_raw(
     )
     .await?;
     Ok(response)
-}
-
-async fn fetch_all_raw_items_from_server(
-    index: usize,
-    state: AppState,
-    request: reqwest::Request,
-    session: AuthorizationSession,
-    server: Server,
-) -> Result<(ItemsResponseVariants, Server), StatusCode> {
-    let first_page = fetch_upstream_page_raw(
-        index,
-        state.clone(),
-        request
-            .try_clone()
-            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?,
-        session.clone(),
-        server.clone(),
-        0,
-    )
-    .await?;
-
-    let had_counted_response = matches!(&first_page, ItemsResponseVariants::WithCount(_));
-    let first_page_len = first_page.len();
-    let mut all_items = first_page.into_items();
-
-    let extra_pages = if should_continue_upstream_fetch(first_page_len, UPSTREAM_PAGE_SIZE) {
-        fetch_remaining_upstream_pages(
-            index,
-            state.clone(),
-            &request,
-            session.clone(),
-            server.clone(),
-            first_page_len,
-        )
-        .await?
-    } else {
-        Vec::new()
-    };
-
-    for (_, page) in extra_pages {
-        all_items.extend(page.into_items());
-    }
-
-    let response = if had_counted_response {
-        ItemsResponseVariants::WithCount(ItemsResponseWithCount {
-            items: all_items,
-            total_record_count: 0,
-            start_index: 0,
-        })
-    } else {
-        ItemsResponseVariants::Bare(all_items)
-    };
-
-    Ok((response, server))
 }
 
 async fn fetch_upstream_pages_parallel(
@@ -1050,52 +1173,6 @@ async fn fetch_upstream_pages_parallel(
     }
 
     pages.sort_by_key(|(start_index, _)| *start_index);
-    Ok(pages)
-}
-
-async fn fetch_remaining_upstream_pages(
-    index: usize,
-    state: AppState,
-    request: &reqwest::Request,
-    session: AuthorizationSession,
-    server: Server,
-    first_page_len: usize,
-) -> Result<Vec<(usize, ItemsResponseVariants)>, StatusCode> {
-    let mut pages = Vec::new();
-    let mut next_start = first_page_len;
-
-    loop {
-        let batch_starts: Vec<usize> = (0..MAX_PARALLEL_UPSTREAM_PAGES)
-            .map(|offset| next_start + offset * UPSTREAM_PAGE_SIZE)
-            .collect();
-        let batch = fetch_upstream_pages_parallel(
-            index,
-            state.clone(),
-            request,
-            session.clone(),
-            server.clone(),
-            &batch_starts,
-        )
-        .await?;
-        let batch: Vec<(usize, ItemsResponseVariants)> = batch
-            .into_iter()
-            .filter(|(_, page)| page.len() > 0)
-            .collect();
-
-        if batch.is_empty() {
-            break;
-        }
-
-        let saw_partial = batch
-            .iter()
-            .any(|(_, page)| page.len() < UPSTREAM_PAGE_SIZE);
-        pages.extend(batch);
-        if saw_partial {
-            break;
-        }
-        next_start += MAX_PARALLEL_UPSTREAM_PAGES * UPSTREAM_PAGE_SIZE;
-    }
-
     Ok(pages)
 }
 
@@ -1527,6 +1604,60 @@ mod tests {
         let url = url::Url::parse("http://localhost/Items?Parent%49d=abc").unwrap();
 
         assert!(has_query_key(&url, &["ParentId"]));
+    }
+
+    #[test]
+    fn is_upstream_limited_catalog_request_detects_latest_and_suggestions() {
+        let latest = url::Url::parse(
+            "http://localhost/Users/u/Items/Latest?Limit=16&ParentId=abc",
+        )
+        .unwrap();
+        let suggestions =
+            url::Url::parse("http://localhost/Users/u/Items/Suggestions?Limit=12").unwrap();
+        let browse = url::Url::parse(
+            "http://localhost/Users/u/Items?Limit=100&ParentId=abc",
+        )
+        .unwrap();
+
+        assert!(is_upstream_limited_catalog_request(&latest));
+        assert!(is_upstream_limited_catalog_request(&suggestions));
+        assert!(!is_upstream_limited_catalog_request(&browse));
+    }
+
+    #[test]
+    fn merged_library_max_pages_scales_with_client_window() {
+        assert_eq!(
+            merged_library_max_pages(Pagination {
+                start_index: 0,
+                limit: Some(100),
+            }),
+            2
+        );
+        assert_eq!(
+            merged_library_max_pages(Pagination {
+                start_index: 100,
+                limit: Some(100),
+            }),
+            3
+        );
+        assert_eq!(
+            merged_library_max_pages(Pagination {
+                start_index: 0,
+                limit: None,
+            }),
+            MAX_MERGED_LIBRARY_PAGES
+        );
+    }
+
+    #[test]
+    fn estimate_merged_library_total_uses_exact_count_when_fully_fetched() {
+        assert_eq!(estimate_merged_library_total(42, 100, 500, true), 42);
+    }
+
+    #[test]
+    fn estimate_merged_library_total_scales_upstream_totals_when_windowed() {
+        assert_eq!(estimate_merged_library_total(80, 100, 1000, false), 800);
+        assert_eq!(estimate_merged_library_total(5, 10, 200, false), 100);
     }
 
     #[test]
