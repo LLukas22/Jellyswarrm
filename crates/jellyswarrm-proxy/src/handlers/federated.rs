@@ -915,6 +915,7 @@ async fn fetch_items_from_server(
 }
 
 const UPSTREAM_PAGE_SIZE: usize = 100;
+const MAX_PARALLEL_UPSTREAM_PAGES: usize = 8;
 
 async fn fetch_all_items_from_server(
     index: usize,
@@ -930,6 +931,31 @@ async fn fetch_all_items_from_server(
     Ok(items_response)
 }
 
+async fn fetch_upstream_page_raw(
+    index: usize,
+    state: AppState,
+    request: reqwest::Request,
+    session: AuthorizationSession,
+    server: Server,
+    start_index: usize,
+) -> Result<ItemsResponseVariants, StatusCode> {
+    let mut request = request;
+    set_upstream_page(request.url_mut(), start_index, UPSTREAM_PAGE_SIZE);
+    let (response, _) = fetch_raw_items_from_server(
+        index,
+        state,
+        request,
+        session,
+        server,
+        Pagination {
+            start_index: 0,
+            limit: None,
+        },
+    )
+    .await?;
+    Ok(response)
+}
+
 async fn fetch_all_raw_items_from_server(
     index: usize,
     state: AppState,
@@ -937,39 +963,38 @@ async fn fetch_all_raw_items_from_server(
     session: AuthorizationSession,
     server: Server,
 ) -> Result<(ItemsResponseVariants, Server), StatusCode> {
-    let mut all_items = Vec::new();
-    let mut start_index = 0;
-    let mut had_counted_response = false;
-
-    loop {
-        let mut page_request = request
+    let first_page = fetch_upstream_page_raw(
+        index,
+        state.clone(),
+        request
             .try_clone()
-            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-        set_upstream_page(page_request.url_mut(), start_index, UPSTREAM_PAGE_SIZE);
+            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?,
+        session.clone(),
+        server.clone(),
+        0,
+    )
+    .await?;
 
-        let (page, _server) = fetch_raw_items_from_server(
+    let had_counted_response = matches!(&first_page, ItemsResponseVariants::WithCount(_));
+    let first_page_len = first_page.len();
+    let mut all_items = first_page.into_items();
+
+    let extra_pages = if should_continue_upstream_fetch(first_page_len, UPSTREAM_PAGE_SIZE) {
+        fetch_remaining_upstream_pages(
             index,
             state.clone(),
-            page_request,
+            &request,
             session.clone(),
             server.clone(),
-            Pagination {
-                start_index: 0,
-                limit: None,
-            },
+            first_page_len,
         )
-        .await?;
+        .await?
+    } else {
+        Vec::new()
+    };
 
-        let page_len = page.len();
-        if matches!(&page, ItemsResponseVariants::WithCount(_)) {
-            had_counted_response = true;
-        }
+    for (_, page) in extra_pages {
         all_items.extend(page.into_items());
-
-        if !should_continue_upstream_fetch(page_len, UPSTREAM_PAGE_SIZE) {
-            break;
-        }
-        start_index += page_len;
     }
 
     let response = if had_counted_response {
@@ -983,6 +1008,95 @@ async fn fetch_all_raw_items_from_server(
     };
 
     Ok((response, server))
+}
+
+async fn fetch_upstream_pages_parallel(
+    index: usize,
+    state: AppState,
+    request: &reqwest::Request,
+    session: AuthorizationSession,
+    server: Server,
+    page_starts: &[usize],
+) -> Result<Vec<(usize, ItemsResponseVariants)>, StatusCode> {
+    let mut pages = Vec::with_capacity(page_starts.len());
+    for chunk in page_starts.chunks(MAX_PARALLEL_UPSTREAM_PAGES) {
+        let mut join_set = JoinSet::new();
+        for &start_index in chunk {
+            let state = state.clone();
+            let request = request
+                .try_clone()
+                .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+            let session = session.clone();
+            let server = server.clone();
+            join_set.spawn(async move {
+                let page = fetch_upstream_page_raw(
+                    index, state, request, session, server, start_index,
+                )
+                .await?;
+                Ok::<_, StatusCode>((start_index, page))
+            });
+        }
+
+        while let Some(result) = join_set.join_next().await {
+            match result {
+                Ok(Ok((start_index, page))) => pages.push((start_index, page)),
+                Ok(Err(status)) => return Err(status),
+                Err(error) => {
+                    error!("Parallel upstream page fetch failed: {:?}", error);
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                }
+            }
+        }
+    }
+
+    pages.sort_by_key(|(start_index, _)| *start_index);
+    Ok(pages)
+}
+
+async fn fetch_remaining_upstream_pages(
+    index: usize,
+    state: AppState,
+    request: &reqwest::Request,
+    session: AuthorizationSession,
+    server: Server,
+    first_page_len: usize,
+) -> Result<Vec<(usize, ItemsResponseVariants)>, StatusCode> {
+    let mut pages = Vec::new();
+    let mut next_start = first_page_len;
+
+    loop {
+        let batch_starts: Vec<usize> = (0..MAX_PARALLEL_UPSTREAM_PAGES)
+            .map(|offset| next_start + offset * UPSTREAM_PAGE_SIZE)
+            .collect();
+        let batch = fetch_upstream_pages_parallel(
+            index,
+            state.clone(),
+            request,
+            session.clone(),
+            server.clone(),
+            &batch_starts,
+        )
+        .await?;
+        let batch: Vec<(usize, ItemsResponseVariants)> = batch
+            .into_iter()
+            .filter(|(_, page)| page.len() > 0)
+            .collect();
+
+        if batch.is_empty() {
+            break;
+        }
+
+        let saw_partial = batch
+            .iter()
+            .any(|(_, page)| page.len() < UPSTREAM_PAGE_SIZE);
+        pages.extend(batch);
+        if saw_partial {
+            break;
+        }
+        next_start += MAX_PARALLEL_UPSTREAM_PAGES * UPSTREAM_PAGE_SIZE;
+    }
+
+    Ok(pages)
 }
 
 fn set_upstream_page(url: &mut url::Url, start_index: usize, limit: usize) {
