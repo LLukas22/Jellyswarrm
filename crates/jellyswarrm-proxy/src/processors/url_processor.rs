@@ -292,6 +292,10 @@ impl UrlProcessor {
             return Some(mapping);
         }
 
+        if let Some(mapping) = self.library_group_member_mapping(virtual_media_id).await {
+            return Some(mapping);
+        }
+
         let member_virtual_id = self
             .data_context
             .merged_library_service
@@ -305,6 +309,30 @@ impl UrlProcessor {
             .get_media_mapping_by_virtual(&member_virtual_id)
             .await
             .unwrap_or_default()
+    }
+
+    async fn library_group_member_mapping(&self, group_virtual_id: &str) -> Option<MediaMapping> {
+        let group = self
+            .data_context
+            .library_group_service
+            .get_group(group_virtual_id)
+            .await
+            .ok()??;
+
+        let members = self
+            .data_context
+            .library_group_service
+            .list_members(&group.virtual_id)
+            .await
+            .ok()?;
+
+        let first = members.first()?;
+
+        self.data_context
+            .media_storage
+            .get_media_mapping_by_original(&first.original_library_id, first.server_id)
+            .await
+            .ok()?
     }
 
     async fn server_from_path_media_ids(&self, url: &url::Url) -> Result<Option<Server>> {

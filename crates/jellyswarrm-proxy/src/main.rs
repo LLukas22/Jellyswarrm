@@ -27,11 +27,13 @@ use axum_login::{
 };
 
 mod config;
+mod duplicate_policy;
 mod encryption;
 mod extractors;
 mod federated_users;
 mod handlers;
 mod legacy_server_identity;
+mod library_group_service;
 mod media_storage_service;
 mod merged_library_service;
 mod models;
@@ -49,6 +51,7 @@ mod user_authorization_service;
 use federated_users::FederatedUserService;
 use handlers::syncplay::SyncPlayService;
 use legacy_server_identity::canonicalize_legacy_server_identity;
+use library_group_service::LibraryGroupService;
 use media_storage_service::MediaStorageService;
 use merged_library_service::MergedLibraryService;
 use server_storage::{Server, ServerStorageService};
@@ -87,6 +90,7 @@ pub struct AppState {
     pub server_storage: Arc<ServerStorageService>,
     pub media_storage: Arc<MediaStorageService>,
     pub merged_library_service: Arc<MergedLibraryService>,
+    pub library_group_service: Arc<LibraryGroupService>,
     pub play_sessions: Arc<SessionStorage>,
     pub config: Arc<tokio::sync::RwLock<AppConfig>>,
     pub processors: Arc<ProxyProcessors>,
@@ -119,6 +123,7 @@ impl AppState {
             server_storage: data_context.server_storage,
             media_storage: data_context.media_storage,
             merged_library_service: data_context.merged_library_service,
+            library_group_service: data_context.library_group_service,
             play_sessions: data_context.play_sessions,
             config: data_context.config,
             processors: Arc::new(proxy_processors),
@@ -205,6 +210,7 @@ pub struct DataContext {
     pub server_storage: Arc<ServerStorageService>,
     pub media_storage: Arc<MediaStorageService>,
     pub merged_library_service: Arc<MergedLibraryService>,
+    pub library_group_service: Arc<LibraryGroupService>,
     pub play_sessions: Arc<SessionStorage>,
     pub config: Arc<tokio::sync::RwLock<AppConfig>>,
 }
@@ -373,6 +379,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let media_storage = MediaStorageService::new(pool.clone());
 
     let merged_library_service = MergedLibraryService::new(pool.clone());
+    let library_group_service = LibraryGroupService::new(pool.clone());
 
     if !loaded_config.preconfigured_servers.is_empty() {
         info!(
@@ -429,6 +436,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         server_storage: Arc::new(server_storage.clone()),
         media_storage: Arc::new(media_storage.clone()),
         merged_library_service: Arc::new(merged_library_service),
+        library_group_service: Arc::new(library_group_service),
         play_sessions: Arc::new(SessionStorage::new()),
         config: Arc::new(tokio::sync::RwLock::new(loaded_config.clone())),
     };
