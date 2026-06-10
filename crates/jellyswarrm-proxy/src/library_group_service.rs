@@ -292,11 +292,12 @@ impl LibraryGroupService {
     }
 
     pub async fn get_group(&self, virtual_id: &str) -> Result<Option<LibraryGroup>, sqlx::Error> {
+        let virtual_id = normalize_library_id(virtual_id);
         let row: Option<(String, String, i32, String, Option<i64>)> = sqlx::query_as(
             "SELECT virtual_id, name, sort_order, duplicate_policy, preferred_server_id \
              FROM library_groups WHERE virtual_id = ?",
         )
-        .bind(virtual_id)
+        .bind(&virtual_id)
         .fetch_optional(&self.pool)
         .await?;
 

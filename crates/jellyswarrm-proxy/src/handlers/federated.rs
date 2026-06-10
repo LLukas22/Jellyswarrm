@@ -19,7 +19,6 @@ use crate::{
     },
     processors::response_processor::ResponseProcessingProfile,
     request_preprocessing::{apply_to_request, JellyfinAuthorization, PreprocessedRequest},
-    server_id::ServerId,
     server_storage::Server,
     user_authorization_service::AuthorizationSession,
     AppState,
@@ -30,6 +29,8 @@ struct Pagination {
     start_index: usize,
     limit: Option<usize>,
 }
+
+type NamedMediaItemGroup = (String, Vec<(MediaItem, Server)>);
 
 fn extract_parent_id(url: &url::Url) -> Option<String> {
     url.query_pairs()
@@ -61,47 +62,96 @@ pub async fn get_items_from_all_servers_if_not_restricted(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let original_request = &preprocessed.original_request;
 
-    if state.merge_libraries_enabled().await {
-        if let Some(parent_id) = extract_parent_id(original_request.url()) {
-            match state.merged_library_service.resolve(&parent_id).await {
-                Ok(Some((lib, members))) if !members.is_empty() => {
-                    debug!(
-                        "ParentId {} is merged library '{}' — fanning out to {} servers",
-                        parent_id,
-                        lib.collection_type,
-                        members.len()
-                    );
-                    return get_items_for_merged_library(&state, preprocessed, members).await;
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    error!("Failed to resolve merged library for {}: {}", parent_id, e);
-                }
-            }
-        }
-    } else if state.library_group_service.has_groups().await.unwrap_or(false) {
-        if let Some(parent_id) = extract_parent_id(original_request.url()) {
-            if let Ok(Some((lib, members))) =
-                state.library_group_service.resolve(&state, &parent_id).await
-            {
-                if !members.is_empty() {
-                    debug!(
-                        "ParentId {} is custom library group '{}' — fanning out to {} servers",
-                        parent_id,
-                        lib.name,
-                        members.len()
-                    );
-                    return get_items_for_merged_library(&state, preprocessed, members).await;
-                }
-            }
-        }
-    }
-
-    if has_query_key(original_request.url(), &["SeriesId", "ParentId"]) {
+    if has_query_key(original_request.url(), &["SeriesId"]) {
         return get_items(State(state), Preprocessed(preprocessed)).await;
     }
 
+    if let Some(parent_id) = extract_parent_id(original_request.url()) {
+        if is_single_virtual_library_parent(&state, &parent_id).await {
+            return get_items(State(state), Preprocessed(preprocessed)).await;
+        }
+    }
+
     get_items_from_all_servers_preprocessed(&state, preprocessed).await
+}
+
+async fn resolve_library_parent_members(
+    state: &AppState,
+    parent_id: &str,
+) -> Result<Option<Vec<MergedLibraryMember>>, StatusCode> {
+    if state.library_group_service.has_groups().await.unwrap_or(false) {
+        match state.library_group_service.resolve(state, parent_id).await {
+            Ok(Some((lib, members))) if !members.is_empty() => {
+                debug!(
+                    "ParentId {} is custom library group '{}' — fanning out to {} servers",
+                    parent_id,
+                    lib.name,
+                    members.len()
+                );
+                return Ok(Some(members));
+            }
+            Ok(_) => {}
+            Err(e) => {
+                error!(
+                    "Failed to resolve custom library group for {}: {}",
+                    parent_id, e
+                );
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    }
+
+    if state.merge_libraries_enabled().await {
+        match state.merged_library_service.resolve(parent_id).await {
+            Ok(Some((lib, members))) if !members.is_empty() => {
+                debug!(
+                    "ParentId {} is merged library '{}' — fanning out to {} servers",
+                    parent_id,
+                    lib.collection_type,
+                    members.len()
+                );
+                return Ok(Some(members));
+            }
+            Ok(_) => {}
+            Err(e) => {
+                error!("Failed to resolve merged library for {}: {}", parent_id, e);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+async fn is_single_virtual_library_parent(state: &AppState, parent_id: &str) -> bool {
+    let parent_id = normalize_library_id(parent_id);
+    if state
+        .library_group_service
+        .get_group(&parent_id)
+        .await
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return false;
+    }
+    if state
+        .merged_library_service
+        .get_by_virtual_id(&parent_id)
+        .await
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return false;
+    }
+    state
+        .media_storage
+        .get_media_mapping_by_virtual(&parent_id)
+        .await
+        .ok()
+        .flatten()
+        .is_some()
 }
 
 async fn get_items_for_merged_library(
@@ -170,16 +220,16 @@ async fn get_items_for_merged_library(
         };
 
         *request.url_mut() = replace_parent_id(request.url(), &mapping.original_media_id);
+        ensure_dedup_fields(request.url_mut());
 
         let state_clone = state.clone();
         join_set.spawn(async move {
-            let result = fetch_items_from_server(
+            let result = fetch_all_items_from_server(
                 index,
                 state_clone,
                 request,
                 session,
                 server,
-                pagination,
                 false,
             )
             .await;
@@ -218,7 +268,7 @@ async fn get_items_for_merged_library(
     let wrapped_response = indexed_results
         .iter()
         .any(|(_, items)| matches!(items, ItemsResponseVariants::WithCount(_)));
-    let mut all_items: Vec<TaggedMediaItem> = indexed_results
+    let all_items: Vec<TaggedMediaItem> = indexed_results
         .into_iter()
         .flat_map(|(index, response)| {
             let Some(server) = member_servers.get(&index).cloned() else {
@@ -260,15 +310,29 @@ async fn get_items_from_all_servers_preprocessed(
     state: &AppState,
     preprocessed: PreprocessedRequest,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    if state.merge_libraries_enabled().await {
-        get_items_from_all_servers_with_merged_libraries(state, preprocessed).await
-    } else if state
+    if let Some(parent_id) = extract_parent_id(preprocessed.original_request.url()) {
+        match resolve_library_parent_members(state, &parent_id).await {
+            Ok(Some(members)) => {
+                return get_items_for_merged_library(state, preprocessed, members).await;
+            }
+            Ok(None) => {
+                if is_single_virtual_library_parent(state, &parent_id).await {
+                    return get_items(State(state.clone()), Preprocessed(preprocessed)).await;
+                }
+            }
+            Err(status) => return Err(status),
+        }
+    }
+
+    if state
         .library_group_service
         .has_groups()
         .await
         .unwrap_or(false)
     {
         get_items_from_all_servers_with_custom_library_groups(state, preprocessed).await
+    } else if state.merge_libraries_enabled().await {
+        get_items_from_all_servers_with_merged_libraries(state, preprocessed).await
     } else {
         get_items_from_all_servers_interleaved(state, preprocessed).await
     }
@@ -434,7 +498,7 @@ async fn get_items_from_all_servers_with_merged_libraries(
         .iter()
         .any(|(items, _)| matches!(items, ItemsResponseVariants::WithCount(_)));
     let mut library_groups: HashMap<String, Vec<(MediaItem, Server)>> = HashMap::new();
-    let mut non_lib_per_server: Vec<ItemsResponseVariants> = Vec::new();
+    let mut non_lib_per_server: Vec<(ItemsResponseVariants, Server)> = Vec::new();
     let mut live_tv_seen = false;
 
     for (raw_response, server) in server_raw {
@@ -475,7 +539,7 @@ async fn get_items_from_all_servers_with_merged_libraries(
             let processed =
                 process_media_items_for_server(non_library_items, state, &server, true).await?;
             if !processed.is_empty() {
-                non_lib_per_server.push(ItemsResponseVariants::Bare(processed));
+                non_lib_per_server.push((ItemsResponseVariants::Bare(processed), server));
             }
         }
     }
@@ -530,7 +594,7 @@ async fn get_items_from_all_servers_with_merged_libraries(
     });
 
     let mut final_items = library_items;
-    final_items.extend(interleave_items(non_lib_per_server));
+    final_items.extend(interleave_server_items(non_lib_per_server));
 
     let (paged_items, total_count) = apply_pagination(final_items, pagination);
     debug!(
@@ -627,10 +691,9 @@ async fn get_items_from_all_servers_with_custom_library_groups(
         .get_assignments()
         .await
         .unwrap_or_default();
-    let mut custom_library_groups: HashMap<String, (String, Vec<(MediaItem, Server)>)> =
-        HashMap::new();
+    let mut custom_library_groups: HashMap<String, NamedMediaItemGroup> = HashMap::new();
     let mut library_groups: HashMap<String, Vec<(MediaItem, Server)>> = HashMap::new();
-    let mut non_lib_per_server: Vec<ItemsResponseVariants> = Vec::new();
+    let mut non_lib_per_server: Vec<(ItemsResponseVariants, Server)> = Vec::new();
     let mut live_tv_seen = false;
 
     for (raw_response, server) in server_raw {
@@ -661,7 +724,7 @@ async fn get_items_from_all_servers_with_custom_library_groups(
                 }
 
                 library_groups
-                    .entry(format!("single:{}", original_library_id))
+                    .entry(format!("single:{}:{}", server.id, original_library_id))
                     .or_default()
                     .push((item, server.clone()));
             } else {
@@ -679,7 +742,7 @@ async fn get_items_from_all_servers_with_custom_library_groups(
             let processed =
                 process_media_items_for_server(non_library_items, state, &server, true).await?;
             if !processed.is_empty() {
-                non_lib_per_server.push(ItemsResponseVariants::Bare(processed));
+                non_lib_per_server.push((ItemsResponseVariants::Bare(processed), server));
             }
         }
     }
@@ -692,7 +755,7 @@ async fn get_items_from_all_servers_with_custom_library_groups(
         .into_iter()
         .map(|group| (group.virtual_id.clone(), group.sort_order))
         .collect();
-    let mut custom_group_entries: Vec<(String, (String, Vec<(MediaItem, Server)>))> =
+    let mut custom_group_entries: Vec<(String, NamedMediaItemGroup)> =
         custom_library_groups.into_iter().collect();
     custom_group_entries.sort_by(|left, right| {
         let left_order = group_sort_order.get(&left.0).copied().unwrap_or(0);
@@ -702,28 +765,34 @@ async fn get_items_from_all_servers_with_custom_library_groups(
             .then_with(|| left.1.0.cmp(&right.1.0))
     });
 
-    let mut library_items = Vec::new();
-
+    let mut library_join = JoinSet::new();
     for (group_virtual_id, (display_name, group)) in custom_group_entries {
         if group.is_empty() {
             continue;
         }
-
-        let merged_item = build_merged_library_item(
-            state,
-            group,
-            display_name,
-            group_virtual_id,
-            false,
-        )
-        .await?;
-        library_items.push(merged_item);
+        let state = state.clone();
+        library_join.spawn(async move {
+            build_merged_library_item(&state, group, display_name, group_virtual_id, false).await
+        });
     }
-
     for (_key, group) in library_groups {
         if let Some((item, server)) = group.into_iter().next() {
-            library_items
-                .push(process_media_item_for_server(item, state, &server, true).await?);
+            let state = state.clone();
+            library_join.spawn(async move {
+                process_library_folder(&state, item, &server, true).await
+            });
+        }
+    }
+
+    let mut library_items = Vec::new();
+    while let Some(result) = library_join.join_next().await {
+        match result {
+            Ok(Ok(item)) => library_items.push(item),
+            Ok(Err(status)) => return Err(status),
+            Err(e) => {
+                error!("Library folder processing failed: {:?}", e);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
         }
     }
 
@@ -734,7 +803,26 @@ async fn get_items_from_all_servers_with_custom_library_groups(
     });
 
     let mut final_items = library_items;
-    final_items.extend(interleave_items(non_lib_per_server));
+    if is_playback_catalog_request(original_request.url()) {
+        let duplicate_config =
+            resolve_duplicate_policy(state, extract_parent_id(original_request.url()).as_deref())
+                .await;
+        let tagged: Vec<TaggedMediaItem> = non_lib_per_server
+            .into_iter()
+            .flat_map(|(items, server)| {
+                items
+                    .into_items()
+                    .into_iter()
+                    .map(move |item| TaggedMediaItem {
+                        item,
+                        server: server.clone(),
+                    })
+            })
+            .collect();
+        final_items.extend(deduplicate_tagged_items(tagged, &duplicate_config));
+    } else {
+        final_items.extend(interleave_server_items(non_lib_per_server));
+    }
 
     let (paged_items, total_count) = apply_pagination(final_items, pagination);
     debug!(
@@ -826,6 +914,138 @@ async fn fetch_items_from_server(
     Ok(items_response)
 }
 
+const UPSTREAM_PAGE_SIZE: usize = 100;
+
+async fn fetch_all_items_from_server(
+    index: usize,
+    state: AppState,
+    request: reqwest::Request,
+    session: AuthorizationSession,
+    server: Server,
+    should_change_name: bool,
+) -> Result<ItemsResponseVariants, StatusCode> {
+    let (mut items_response, server) =
+        fetch_all_raw_items_from_server(index, state.clone(), request, session, server).await?;
+    process_items_response_json(&mut items_response, &state, &server, should_change_name).await?;
+    Ok(items_response)
+}
+
+async fn fetch_all_raw_items_from_server(
+    index: usize,
+    state: AppState,
+    request: reqwest::Request,
+    session: AuthorizationSession,
+    server: Server,
+) -> Result<(ItemsResponseVariants, Server), StatusCode> {
+    let mut all_items = Vec::new();
+    let mut start_index = 0;
+    let mut had_counted_response = false;
+
+    loop {
+        let mut page_request = request
+            .try_clone()
+            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+        set_upstream_page(page_request.url_mut(), start_index, UPSTREAM_PAGE_SIZE);
+
+        let (page, _server) = fetch_raw_items_from_server(
+            index,
+            state.clone(),
+            page_request,
+            session.clone(),
+            server.clone(),
+            Pagination {
+                start_index: 0,
+                limit: None,
+            },
+        )
+        .await?;
+
+        let page_len = page.len();
+        if matches!(&page, ItemsResponseVariants::WithCount(_)) {
+            had_counted_response = true;
+        }
+        all_items.extend(page.into_items());
+
+        if !should_continue_upstream_fetch(page_len, UPSTREAM_PAGE_SIZE) {
+            break;
+        }
+        start_index += page_len;
+    }
+
+    let response = if had_counted_response {
+        ItemsResponseVariants::WithCount(ItemsResponseWithCount {
+            items: all_items,
+            total_record_count: 0,
+            start_index: 0,
+        })
+    } else {
+        ItemsResponseVariants::Bare(all_items)
+    };
+
+    Ok((response, server))
+}
+
+fn set_upstream_page(url: &mut url::Url, start_index: usize, limit: usize) {
+    let pairs = url
+        .query_pairs()
+        .filter(|(key, _)| !is_pagination_key(key))
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+
+    let mut query = url.query_pairs_mut();
+    query.clear().extend_pairs(pairs);
+    query
+        .append_pair("StartIndex", &start_index.to_string())
+        .append_pair("Limit", &limit.to_string());
+}
+
+fn should_continue_upstream_fetch(page_len: usize, page_size: usize) -> bool {
+    page_len >= page_size
+}
+
+fn ensure_dedup_fields(url: &mut url::Url) {
+    const REQUIRED_FIELDS: &[&str] = &["ChildCount", "ProviderIds"];
+    let pairs = url
+        .query_pairs()
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    let mut fields = pairs
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("Fields"))
+        .map(|(_, value)| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|field| !field.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for required_field in REQUIRED_FIELDS {
+        if !fields
+            .iter()
+            .any(|field| field.eq_ignore_ascii_case(required_field))
+        {
+            fields.push((*required_field).to_string());
+        }
+    }
+    let fields_value = fields.join(",");
+    let mut wrote_fields = false;
+    let mut query = url.query_pairs_mut();
+    query.clear();
+    for (key, value) in pairs {
+        if key.eq_ignore_ascii_case("Fields") {
+            query.append_pair("Fields", &fields_value);
+            wrote_fields = true;
+        } else {
+            query.append_pair(&key, &value);
+        }
+    }
+    if !wrote_fields {
+        query.append_pair("Fields", &fields_value);
+    }
+}
+
 async fn fetch_raw_items_from_server(
     index: usize,
     state: AppState,
@@ -912,6 +1132,10 @@ async fn build_merged_library_item(
     let mut template = None;
     let mut total_child_count = 0;
 
+    let primary_tag = group
+        .first()
+        .and_then(|(item, _)| item.image_tags.as_ref()?.get("Primary").cloned());
+
     for (item, server) in &group {
         total_child_count += item.child_count.unwrap_or(0);
         let processed = process_media_item_for_server(item.clone(), state, server, false).await?;
@@ -938,21 +1162,52 @@ async fn build_merged_library_item(
     item.name = Some(display_name.clone());
     item.sort_name = Some(display_name.to_lowercase());
     item.child_count = Some(total_child_count);
-    attach_library_folder_image_source(&mut item, &image_source_id);
+    attach_library_folder_image_source(&mut item, &image_source_id, primary_tag.as_deref());
     Ok(item)
 }
 
-fn attach_library_folder_image_source(item: &mut MediaItem, image_source_id: &str) {
-    let Some(image_tags) = item.image_tags.as_mut() else {
+async fn process_library_folder(
+    state: &AppState,
+    item: MediaItem,
+    server: &Server,
+    should_change_name: bool,
+) -> Result<MediaItem, StatusCode> {
+    let primary_tag = item
+        .image_tags
+        .as_ref()
+        .and_then(|tags| tags.get("Primary").cloned());
+    let mut processed =
+        process_media_item_for_server(item, state, server, should_change_name).await?;
+    let image_source_id = processed.id.clone();
+    attach_library_folder_image_source(
+        &mut processed,
+        &image_source_id,
+        primary_tag.as_deref(),
+    );
+    Ok(processed)
+}
+
+fn attach_library_folder_image_source(
+    item: &mut MediaItem,
+    image_source_id: &str,
+    primary_tag: Option<&str>,
+) {
+    let Some(primary_tag) = primary_tag
+        .map(str::to_string)
+        .or_else(|| {
+            item.image_tags
+                .as_ref()
+                .and_then(|tags| tags.get("Primary").cloned())
+        })
+    else {
         return;
     };
 
-    let Some(primary_tag) = image_tags.remove("Primary") else {
-        return;
-    };
-
-    if image_tags.is_empty() {
-        item.image_tags = None;
+    if let Some(image_tags) = item.image_tags.as_mut() {
+        image_tags.remove("Primary");
+        if image_tags.is_empty() {
+            item.image_tags = None;
+        }
     }
 
     item.extra.insert(
@@ -961,8 +1216,23 @@ fn attach_library_folder_image_source(item: &mut MediaItem, image_source_id: &st
     );
     item.extra.insert(
         "PrimaryImageTag".to_string(),
-        serde_json::Value::String(primary_tag),
+        serde_json::Value::String(primary_tag.clone()),
     );
+    item.image_tags = Some(HashMap::from([("Primary".to_string(), primary_tag)]));
+}
+
+fn is_playback_catalog_request(url: &url::Url) -> bool {
+    let path = url.path().to_ascii_lowercase();
+    path.contains("/nextup") || path.contains("/resume")
+}
+
+fn interleave_server_items(server_items: Vec<(ItemsResponseVariants, Server)>) -> Vec<MediaItem> {
+    interleave_items(
+        server_items
+            .into_iter()
+            .map(|(items, _)| items)
+            .collect(),
+    )
 }
 
 async fn process_media_item_for_server(
@@ -1109,7 +1379,8 @@ async fn resolve_duplicate_policy(
     parent_id: Option<&str>,
 ) -> DuplicatePolicyConfig {
     if let Some(parent_id) = parent_id {
-        if let Ok(Some(group)) = state.library_group_service.get_group(parent_id).await {
+        let parent_id = normalize_library_id(parent_id);
+        if let Ok(Some(group)) = state.library_group_service.get_group(&parent_id).await {
             return DuplicatePolicyConfig {
                 policy: group.duplicate_policy,
                 preferred_server_id: group.preferred_server_id,
@@ -1118,7 +1389,7 @@ async fn resolve_duplicate_policy(
     }
 
     DuplicatePolicyConfig {
-        policy: DuplicatePolicy::ShowAll,
+        policy: DuplicatePolicy::ServerPriority,
         preferred_server_id: None,
     }
 }
@@ -1468,9 +1739,15 @@ mod tests {
             "tag-123".to_string(),
         )]));
 
-        super::attach_library_folder_image_source(&mut item, "source-library-id");
+        super::attach_library_folder_image_source(&mut item, "source-library-id", Some("tag-123"));
 
-        assert!(item.image_tags.is_none());
+        assert_eq!(
+            item.image_tags
+                .as_ref()
+                .and_then(|tags| tags.get("Primary"))
+                .map(String::as_str),
+            Some("tag-123")
+        );
         assert_eq!(
             item.extra.get("PrimaryImageItemId"),
             Some(&json!("source-library-id"))

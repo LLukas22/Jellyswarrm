@@ -5,7 +5,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    models::MediaItem,
+    models::{enums::BaseItemKind, MediaItem},
     server_id::ServerId,
     server_storage::Server,
 };
@@ -76,10 +76,6 @@ pub fn deduplicate_tagged_items(
     items: Vec<TaggedMediaItem>,
     config: &DuplicatePolicyConfig,
 ) -> Vec<MediaItem> {
-    if config.policy == DuplicatePolicy::ShowAll {
-        return items.into_iter().map(|tagged| tagged.item).collect();
-    }
-
     let mut groups: HashMap<String, Vec<TaggedMediaItem>> = HashMap::new();
     for tagged in items {
         groups
@@ -89,26 +85,47 @@ pub fn deduplicate_tagged_items(
     }
 
     let mut winners = Vec::with_capacity(groups.len());
-    for (_, mut group) in groups {
-        if group.len() == 1 {
-            winners.push(group.remove(0).item);
-            continue;
-        }
-
-        let winner = group
-            .into_iter()
-            .max_by(|left, right| {
-                compare_for_policy(config, left, right)
-                    .then_with(|| left.item.id.cmp(&right.item.id))
-            })
-            .map(|tagged| tagged.item);
-
-        if let Some(item) = winner {
-            winners.push(item);
-        }
+    for (_, group) in groups {
+        winners.extend(select_from_duplicate_group(group, config));
     }
 
     winners
+}
+
+fn select_from_duplicate_group(
+    group: Vec<TaggedMediaItem>,
+    config: &DuplicatePolicyConfig,
+) -> Vec<MediaItem> {
+    if group.len() == 1 {
+        return vec![group[0].item.clone()];
+    }
+
+    let max_score = group
+        .iter()
+        .map(|tagged| duplicate_preference_score(&tagged.item))
+        .max()
+        .unwrap_or(0);
+    let mut best_matches = group
+        .into_iter()
+        .filter(|tagged| duplicate_preference_score(&tagged.item) == max_score)
+        .collect::<Vec<_>>();
+
+    if best_matches.len() == 1 {
+        return vec![best_matches.remove(0).item];
+    }
+
+    if config.policy == DuplicatePolicy::ShowAll {
+        return best_matches.into_iter().map(|tagged| tagged.item).collect();
+    }
+
+    best_matches
+        .into_iter()
+        .max_by(|left, right| {
+            compare_for_policy(config, left, right)
+                .then_with(|| left.item.id.cmp(&right.item.id))
+        })
+        .map(|tagged| vec![tagged.item])
+        .unwrap_or_default()
 }
 
 fn compare_for_policy(
@@ -162,22 +179,90 @@ fn prefer_server(
 }
 
 fn duplicate_key(item: &MediaItem) -> String {
-    if let Some(provider_key) = provider_identity(item) {
-        return format!("provider:{provider_key}:{:?}", item.item_type);
+    if item.item_type == BaseItemKind::Episode {
+        return episode_duplicate_key(item);
     }
 
     let name = normalized_name(item);
-    let year = production_year(item).unwrap_or(0);
-    let series = item.series_id.as_deref().unwrap_or("");
-    format!("fallback:{name}:{year}:{series}:{:?}", item.item_type)
+    format!("content:{name}:{:?}", item.item_type)
+}
+
+fn episode_duplicate_key(item: &MediaItem) -> String {
+    if let Some(user_key) = item.user_data.as_ref().and_then(|data| {
+        let key = data.key.trim();
+        if key.is_empty() || key.chars().all(|character| character == '0') {
+            None
+        } else {
+            Some(key.to_string())
+        }
+    }) {
+        return format!("episode:userkey:{user_key}");
+    }
+
+    if let Some(provider_key) = provider_identity(item) {
+        let season = episode_number(item, "ParentIndexNumber");
+        let episode = episode_number(item, "IndexNumber");
+        return format!("episode:provider:{provider_key}:s{season}:e{episode}");
+    }
+
+    let series = item
+        .series_name
+        .as_deref()
+        .map(normalize_title)
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| normalized_name(item));
+    let season = episode_number(item, "ParentIndexNumber");
+    let episode = episode_number(item, "IndexNumber");
+    format!("episode:fallback:{series}:s{season}:e{episode}")
+}
+
+fn episode_number(item: &MediaItem, field: &str) -> i32 {
+    item.extra
+        .get(field)
+        .or_else(|| {
+            item.extra.get(match field {
+                "ParentIndexNumber" => "parentIndexNumber",
+                _ => "indexNumber",
+            })
+        })
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0) as i32
+}
+
+fn duplicate_preference_score(item: &MediaItem) -> i64 {
+    if item.item_type == BaseItemKind::Episode {
+        if let Some(user_data) = &item.user_data {
+            if user_data.playback_position_ticks > 0 {
+                return user_data.playback_position_ticks;
+            }
+            if user_data.play_count > 0 {
+                return i64::from(user_data.play_count);
+            }
+        }
+        return 0;
+    }
+
+    item.child_count
+        .map(|count| i64::from(count.max(0)))
+        .or_else(|| {
+            item.extra
+                .get("ChildCount")
+                .or_else(|| item.extra.get("childCount"))
+                .and_then(|value| value.as_i64())
+        })
+        .unwrap_or(0)
 }
 
 fn provider_identity(item: &MediaItem) -> Option<String> {
     let provider_ids = item.provider_ids.as_ref()?.as_object()?;
-    for key in ["Tmdb", "Imdb", "Tvdb", "TmdbCollection"] {
-        if let Some(value) = provider_ids.get(key).and_then(|value| value.as_str()) {
-            if !value.is_empty() {
-                return Some(format!("{key}:{value}"));
+    for preferred in ["Tmdb", "Imdb", "Tvdb", "TmdbCollection"] {
+        for (key, value) in provider_ids {
+            if key.eq_ignore_ascii_case(preferred) {
+                if let Some(id) = value.as_str() {
+                    if !id.is_empty() {
+                        return Some(format!("{}:{id}", preferred.to_ascii_lowercase()));
+                    }
+                }
             }
         }
     }
@@ -185,20 +270,37 @@ fn provider_identity(item: &MediaItem) -> Option<String> {
 }
 
 fn normalized_name(item: &MediaItem) -> String {
-    item.sort_name
+    let raw = item
+        .sort_name
         .as_deref()
+        .or(item.original_title.as_deref())
         .or(item.name.as_deref())
-        .unwrap_or("")
-        .trim()
-        .to_ascii_lowercase()
+        .unwrap_or("");
+    normalize_title(raw)
 }
 
-fn production_year(item: &MediaItem) -> Option<i32> {
-    item.extra
-        .get("ProductionYear")
-        .or_else(|| item.extra.get("productionYear"))
-        .and_then(|value| value.as_i64())
-        .map(|value| value as i32)
+fn normalize_title(value: &str) -> String {
+    let value = value.trim();
+    let value = value
+        .rsplit_once('[')
+        .filter(|(_, suffix)| suffix.ends_with(']'))
+        .map(|(prefix, _)| prefix.trim_end())
+        .unwrap_or(value);
+
+    value
+        .to_ascii_lowercase()
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn media_size(item: &MediaItem) -> i64 {
@@ -306,19 +408,42 @@ mod tests {
     }
 
     #[test]
-    fn prefers_selected_server() {
-        let items = vec![
-            tagged(1, 100, "Movie", 5000, "abc"),
-            tagged(2, 50, "Movie", 1000, "abc"),
-        ];
+    fn prefers_more_complete_series() {
+        let mut less: MediaItem = serde_json::from_value(serde_json::json!({
+            "Id": "left",
+            "Name": "Wistoria",
+            "Type": "Series",
+            "ChildCount": 12,
+            "ProviderIds": { "Tmdb": "abc" }
+        }))
+        .unwrap();
+        let more: MediaItem = serde_json::from_value(serde_json::json!({
+            "Id": "right",
+            "Name": "Wistoria",
+            "Type": "Series",
+            "ChildCount": 21,
+            "ProviderIds": { "Tmdb": "abc" }
+        }))
+        .unwrap();
+        let _ = &mut less;
+
         let result = deduplicate_tagged_items(
-            items,
+            vec![
+                TaggedMediaItem {
+                    item: less,
+                    server: tagged(1, 100, "x", 1, "abc").server,
+                },
+                TaggedMediaItem {
+                    item: more,
+                    server: tagged(2, 50, "x", 1, "abc").server,
+                },
+            ],
             &DuplicatePolicyConfig {
-                policy: DuplicatePolicy::PreferServer,
-                preferred_server_id: Some(ServerId::new(2)),
+                policy: DuplicatePolicy::ShowAll,
+                preferred_server_id: None,
             },
         );
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].id, "2-Movie");
+        assert_eq!(result[0].id, "right");
     }
 }
