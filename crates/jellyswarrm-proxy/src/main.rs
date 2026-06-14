@@ -571,6 +571,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "/UserViews",
                 get(handlers::federated::get_items_from_all_servers),
             )
+            // Newer Jellyfin SDKs (e.g. jellyfin-sdk-kotlin, used by the Android TV
+            // client) request Continue Watching from /UserItems/Resume instead of the
+            // legacy /Users/{userId}/Items/Resume. Federate it the same way so resume
+            // items merge across all servers; otherwise it falls through to the
+            // single-server proxy fallback and only one backend's items appear.
+            .route(
+                "/UserItems/Resume",
+                get(handlers::federated::get_items_from_all_servers),
+            )
             // System info routes
             .nest(
                 "/System",
