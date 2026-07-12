@@ -8,7 +8,7 @@ mod tests {
 
     /// Regression test: canonical Jellyfin casing ("Pw") must deserialize correctly.
     #[test]
-    fn test_authenticate_request_uppercase_pw() {
+    fn test_authenticate_request_canonical_pw() {
         let json = r#"{"Username":"alice","Pw":"s3cr3t"}"#;
         let req: AuthenticateRequest =
             serde_json::from_str(json).expect("Failed to deserialize with uppercase 'Pw'");
