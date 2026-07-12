@@ -35,14 +35,17 @@ mod tests {
             username: "carol".to_string(),
             password: Password::from("pass123"),
         };
-        let json = serde_json::to_string(&req).expect("Failed to serialize AuthenticateRequest");
+        let value = serde_json::to_value(&req).expect("Failed to serialize AuthenticateRequest");
+        let obj = value
+            .as_object()
+            .expect("AuthenticateRequest should serialize to a JSON object");
         assert!(
-            json.contains(r#""Pw""#),
-            "Serialized JSON should use canonical 'Pw' key, got: {json}"
+            obj.contains_key("Pw"),
+            "Serialized JSON should use canonical 'Pw' key, got: {value}"
         );
         assert!(
-            !json.contains(r#""pw""#),
-            "Serialized JSON must not use lowercase 'pw' key, got: {json}"
+            !obj.contains_key("pw"),
+            "Serialized JSON must not use lowercase 'pw' key, got: {value}"
         );
     }
 
