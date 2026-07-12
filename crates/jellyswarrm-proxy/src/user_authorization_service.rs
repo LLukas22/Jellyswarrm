@@ -122,8 +122,23 @@ impl Device {
 
         // 1) Strict match when both sides have a known device id.
         if self_has_known_device_id && other_has_known_device_id {
-            return self_device_id == other_device_id
-                || short_self_device_id == short_other_device_id;
+            if self_device_id == other_device_id {
+                return true;
+            }
+
+            // Web clients derive device_id from base64(user-agent + "|" + timestamp).
+            // normalize_device() lowercases it, so every browser's device_id starts with
+            // the lowercased base64 of "Mozilla/5.0 (" ("tw96awxs..."), making the 16-char
+            // prefix fallback below collide across ALL web sessions of a user. Require an
+            // exact device_id match for those instead of falling back to the short prefix.
+            const WEB_DEVICE_ID_PREFIX: &str = "tw96awxs";
+            if self_device_id.starts_with(WEB_DEVICE_ID_PREFIX)
+                || other_device_id.starts_with(WEB_DEVICE_ID_PREFIX)
+            {
+                return false;
+            }
+
+            return short_self_device_id == short_other_device_id;
         }
 
         // 2) Fallback to device name only when at least one side has no usable device id.
@@ -1777,6 +1792,52 @@ mod tests {
             sessions5.len(),
             0,
             "Should not find any match when client and version differ"
+        );
+
+        // Test 6: Two distinct web (browser) device ids sharing the same 16-char base64
+        // prefix ("Mozilla/5.0 (") must NOT fall back to a prefix match - every browser's
+        // device_id starts with that prefix, so this used to collide across all of a
+        // user's web sessions and let requests reuse another session's stale token.
+        let web_device_stored = Device {
+            client: "Jellyfin Web".to_string(),
+            device: "Chrome".to_string(),
+            device_id: "TW96aWxsYS81LjAgKFdpbmRvd3MgTlQgMTAuMCkgQ2hyb21lLzE0Ny4wfDE3ODM4NTg5NzQ1Mjc1"
+                .to_string(),
+            version: "10.11.10".to_string(),
+        };
+        service
+            .store_authorization_session(
+                &user.id,
+                "http://localhost:8096",
+                &Authorization {
+                    client: web_device_stored.client.clone(),
+                    device: web_device_stored.device.clone(),
+                    device_id: web_device_stored.device_id.clone(),
+                    version: web_device_stored.version.clone(),
+                    token: None,
+                },
+                "jellyfin-token-web".to_string(),
+                "original-jellyfin-user-id".to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let web_device_query = Device {
+            client: "Jellyfin Web".to_string(),
+            device: "Chrome Android".to_string(),
+            device_id: "TW96aWxsYS81LjAgKExpbnV4OyBBbmRyb2lkIDEwKSBDaHJvbWUvMTUwLjB8MTc4MzQ0MTUzNjM2NQ=="
+                .to_string(),
+            version: "10.11.10".to_string(),
+        };
+        let sessions6 = service
+            .get_user_sessions(&user.id, Some(web_device_query))
+            .await
+            .unwrap();
+        assert_eq!(
+            sessions6.len(),
+            0,
+            "Distinct web device ids sharing the base64 'Mozilla/5.0 (' prefix must not match"
         );
     }
 
