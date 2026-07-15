@@ -111,26 +111,30 @@ mod tests {
     use crate::{
         config::{AppConfig, MediaStreamingMode, MIGRATOR},
         media_storage_service::MediaStorageService,
-        merged_library_service::MergedLibraryService,
-        library_group_service::LibraryGroupService,
         processors::process_json,
         server_id::ServerId,
         server_storage::ServerStorageService,
         server_url::ServerUrl,
         session_storage::SessionStorage,
         user_authorization_service::{Device, UserAuthorizationService},
+        virtual_library_service::VirtualLibraryService,
     };
 
     async fn test_data_context() -> DataContext {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         MIGRATOR.run(&pool).await.unwrap();
+        let server_storage = ServerStorageService::new(pool.clone());
+        let media_storage = MediaStorageService::new(pool.clone());
 
         DataContext {
             user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
-            server_storage: Arc::new(ServerStorageService::new(pool.clone())),
-            media_storage: Arc::new(MediaStorageService::new(pool.clone())),
-            merged_library_service: Arc::new(MergedLibraryService::new(pool.clone())),
-            library_group_service: Arc::new(LibraryGroupService::new(pool)),
+            server_storage: Arc::new(server_storage.clone()),
+            media_storage: Arc::new(media_storage.clone()),
+            virtual_library_service: Arc::new(VirtualLibraryService::new(
+                pool,
+                server_storage,
+                media_storage,
+            )),
             play_sessions: Arc::new(SessionStorage::new()),
             config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
         }

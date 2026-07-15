@@ -5,14 +5,14 @@ use tokio::task::JoinSet;
 use tracing::{debug, error, trace, warn};
 
 use crate::{
-    duplicate_policy::{deduplicate_tagged_items, DuplicatePolicy, DuplicatePolicyConfig, TaggedMediaItem},
+    duplicate_policy::{
+        deduplicate_tagged_items, DuplicatePolicy, DuplicatePolicyConfig, TaggedMediaItem,
+    },
     extractors::Preprocessed,
     handlers::{
         common::{execute_json_request, response_json_to_payload},
         items::get_items,
     },
-    library_group_service::{normalize_library_id, LibraryAssignment},
-    merged_library_service::MergedLibraryMember,
     models::{
         enums::{BaseItemKind, CollectionType},
         ItemsResponseVariants, ItemsResponseWithCount, MediaItem,
@@ -21,6 +21,10 @@ use crate::{
     request_preprocessing::{apply_to_request, JellyfinAuthorization, PreprocessedRequest},
     server_storage::Server,
     user_authorization_service::AuthorizationSession,
+    virtual_library_service::{
+        normalize_library_id, LibraryAssignment, VirtualLibrary, VirtualLibraryMember,
+        VirtualLibraryMode, VirtualLibraryResolution,
+    },
     AppState,
 };
 
@@ -31,6 +35,15 @@ struct Pagination {
 }
 
 type NamedMediaItemGroup = (String, Vec<(MediaItem, Server)>);
+
+enum LibraryParentResolution {
+    Unknown,
+    Empty,
+    Resolved {
+        members: Vec<VirtualLibraryMember>,
+        duplicate_config: DuplicatePolicyConfig,
+    },
+}
 
 fn extract_parent_id(url: &url::Url) -> Option<String> {
     url.query_pairs()
@@ -66,85 +79,60 @@ pub async fn get_items_from_all_servers_if_not_restricted(
         return get_items(State(state), Preprocessed(preprocessed)).await;
     }
 
-    if let Some(parent_id) = extract_parent_id(original_request.url()) {
-        if is_single_virtual_library_parent(&state, &parent_id).await {
-            return get_items(State(state), Preprocessed(preprocessed)).await;
-        }
-    }
-
     get_items_from_all_servers_preprocessed(&state, preprocessed).await
 }
 
 async fn resolve_library_parent_members(
     state: &AppState,
     parent_id: &str,
-) -> Result<Option<Vec<MergedLibraryMember>>, StatusCode> {
-    if state.library_group_service.has_groups().await.unwrap_or(false) {
-        match state.library_group_service.resolve(state, parent_id).await {
-            Ok(Some((lib, members))) if !members.is_empty() => {
-                debug!(
-                    "ParentId {} is custom library group '{}' — fanning out to {} servers",
-                    parent_id,
-                    lib.name,
-                    members.len()
-                );
-                return Ok(Some(members));
-            }
-            Ok(_) => {}
-            Err(e) => {
-                error!(
-                    "Failed to resolve custom library group for {}: {}",
-                    parent_id, e
-                );
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            }
+) -> Result<LibraryParentResolution, StatusCode> {
+    match state.virtual_library_service.resolve(parent_id).await {
+        Ok(VirtualLibraryResolution::Resolved(resolved)) => {
+            let (name, duplicate_config) = match &resolved.library {
+                VirtualLibrary::Automatic(library) => (
+                    &library.name,
+                    DuplicatePolicyConfig {
+                        policy: DuplicatePolicy::ServerPriority,
+                        preferred_server_id: None,
+                    },
+                ),
+                VirtualLibrary::Manual(group) => (
+                    &group.name,
+                    DuplicatePolicyConfig {
+                        policy: group.duplicate_policy,
+                        preferred_server_id: group.preferred_server_id,
+                    },
+                ),
+            };
+            debug!(
+                "ParentId {} is virtual library '{}' — fanning out to {} servers",
+                parent_id,
+                name,
+                resolved.members.len()
+            );
+            Ok(LibraryParentResolution::Resolved {
+                members: resolved.members,
+                duplicate_config,
+            })
+        }
+        Ok(VirtualLibraryResolution::Empty(library)) => {
+            let name = match library {
+                VirtualLibrary::Automatic(library) => library.name,
+                VirtualLibrary::Manual(group) => group.name,
+            };
+            debug!("Virtual library '{}' has no resolvable members", name);
+            Ok(LibraryParentResolution::Empty)
+        }
+        Ok(VirtualLibraryResolution::Unknown) => Ok(LibraryParentResolution::Unknown),
+        Err(e) => {
+            error!("Failed to resolve virtual library for {}: {}", parent_id, e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
-
-    if state.merge_libraries_enabled().await {
-        match state.merged_library_service.resolve(parent_id).await {
-            Ok(Some((lib, members))) if !members.is_empty() => {
-                debug!(
-                    "ParentId {} is merged library '{}' — fanning out to {} servers",
-                    parent_id,
-                    lib.collection_type,
-                    members.len()
-                );
-                return Ok(Some(members));
-            }
-            Ok(_) => {}
-            Err(e) => {
-                error!("Failed to resolve merged library for {}: {}", parent_id, e);
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            }
-        }
-    }
-
-    Ok(None)
 }
 
 async fn is_single_virtual_library_parent(state: &AppState, parent_id: &str) -> bool {
     let parent_id = normalize_library_id(parent_id);
-    if state
-        .library_group_service
-        .get_group(&parent_id)
-        .await
-        .ok()
-        .flatten()
-        .is_some()
-    {
-        return false;
-    }
-    if state
-        .merged_library_service
-        .get_by_virtual_id(&parent_id)
-        .await
-        .ok()
-        .flatten()
-        .is_some()
-    {
-        return false;
-    }
     state
         .media_storage
         .get_media_mapping_by_virtual(&parent_id)
@@ -154,10 +142,11 @@ async fn is_single_virtual_library_parent(state: &AppState, parent_id: &str) -> 
         .is_some()
 }
 
-async fn get_items_for_merged_library(
+async fn get_items_for_virtual_library(
     state: &AppState,
     preprocessed: PreprocessedRequest,
-    members: Vec<MergedLibraryMember>,
+    members: Vec<VirtualLibraryMember>,
+    duplicate_config: DuplicatePolicyConfig,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let original_request = preprocessed.original_request;
     let sessions = preprocessed.sessions.ok_or(StatusCode::UNAUTHORIZED)?;
@@ -166,8 +155,6 @@ async fn get_items_for_merged_library(
     }
 
     let pagination = pagination_from_url(original_request.url());
-    let parent_id = extract_parent_id(original_request.url());
-    let duplicate_config = resolve_duplicate_policy(state, parent_id.as_deref()).await;
     let mut join_set = JoinSet::new();
     let mut failures = 0;
     let mut member_servers: HashMap<usize, Server> = HashMap::new();
@@ -346,29 +333,61 @@ async fn get_items_from_all_servers_preprocessed(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     if let Some(parent_id) = extract_parent_id(preprocessed.original_request.url()) {
         match resolve_library_parent_members(state, &parent_id).await {
-            Ok(Some(members)) => {
-                return get_items_for_merged_library(state, preprocessed, members).await;
+            Ok(LibraryParentResolution::Resolved {
+                members,
+                duplicate_config,
+            }) => {
+                return get_items_for_virtual_library(
+                    state,
+                    preprocessed,
+                    members,
+                    duplicate_config,
+                )
+                .await;
             }
-            Ok(None) => {
+            Ok(LibraryParentResolution::Unknown) => {
                 if is_single_virtual_library_parent(state, &parent_id).await {
                     return get_items(State(state.clone()), Preprocessed(preprocessed)).await;
                 }
+            }
+            Ok(LibraryParentResolution::Empty) => {
+                let pagination = pagination_from_url(preprocessed.original_request.url());
+                let wrapped_response = !preprocessed
+                    .original_request
+                    .url()
+                    .path()
+                    .to_ascii_lowercase()
+                    .ends_with("/latest");
+                return items_response_to_json(items_response_from_shape(
+                    Vec::new(),
+                    0,
+                    pagination,
+                    wrapped_response,
+                ));
             }
             Err(status) => return Err(status),
         }
     }
 
-    if state
-        .library_group_service
-        .has_groups()
+    let mode = state
+        .virtual_library_service
+        .presentation_mode(state.merge_libraries_enabled().await)
         .await
-        .unwrap_or(false)
-    {
-        get_items_from_all_servers_with_custom_library_groups(state, preprocessed).await
-    } else if state.merge_libraries_enabled().await {
-        get_items_from_all_servers_with_merged_libraries(state, preprocessed).await
-    } else {
-        get_items_from_all_servers_interleaved(state, preprocessed).await
+        .map_err(|e| {
+            error!("Failed to determine virtual library mode: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    match mode {
+        VirtualLibraryMode::Automatic => {
+            get_items_from_all_servers_with_merged_libraries(state, preprocessed).await
+        }
+        VirtualLibraryMode::Manual => {
+            get_items_from_all_servers_with_custom_library_groups(state, preprocessed).await
+        }
+        VirtualLibraryMode::Disabled => {
+            get_items_from_all_servers_interleaved(state, preprocessed).await
+        }
     }
 }
 
@@ -595,8 +614,8 @@ async fn get_items_from_all_servers_with_merged_libraries(
         });
 
         let merged = match state
-            .merged_library_service
-            .get_or_create(&key, &display_name)
+            .virtual_library_service
+            .get_or_create_automatic_library(&key, &display_name)
             .await
         {
             Ok(merged) => merged,
@@ -610,7 +629,7 @@ async fn get_items_from_all_servers_with_merged_libraries(
             }
         };
 
-        let merged_item = build_merged_library_item(
+        let merged_item = build_virtual_library_item(
             state,
             group,
             display_name,
@@ -721,7 +740,7 @@ async fn get_items_from_all_servers_with_custom_library_groups(
         .iter()
         .any(|(items, _)| matches!(items, ItemsResponseVariants::WithCount(_)));
     let custom_assignments = state
-        .library_group_service
+        .virtual_library_service
         .get_assignments()
         .await
         .unwrap_or_default();
@@ -782,7 +801,7 @@ async fn get_items_from_all_servers_with_custom_library_groups(
     }
 
     let group_sort_order: HashMap<String, i32> = state
-        .library_group_service
+        .virtual_library_service
         .list_groups()
         .await
         .unwrap_or_default()
@@ -806,7 +825,7 @@ async fn get_items_from_all_servers_with_custom_library_groups(
         }
         let state = state.clone();
         library_join.spawn(async move {
-            build_merged_library_item(&state, group, display_name, group_virtual_id, false).await
+            build_virtual_library_item(&state, group, display_name, group_virtual_id, false).await
         });
     }
     for (_key, group) in library_groups {
@@ -838,9 +857,10 @@ async fn get_items_from_all_servers_with_custom_library_groups(
 
     let mut final_items = library_items;
     if is_playback_catalog_request(original_request.url()) {
-        let duplicate_config =
-            resolve_duplicate_policy(state, extract_parent_id(original_request.url()).as_deref())
-                .await;
+        let duplicate_config = DuplicatePolicyConfig {
+            policy: DuplicatePolicy::ServerPriority,
+            preferred_server_id: None,
+        };
         let tagged: Vec<TaggedMediaItem> = non_lib_per_server
             .into_iter()
             .flat_map(|(items, server)| {
@@ -1312,7 +1332,7 @@ async fn process_media_items_for_server(
     Ok(processed)
 }
 
-async fn build_merged_library_item(
+async fn build_virtual_library_item(
     state: &AppState,
     group: Vec<(MediaItem, Server)>,
     display_name: String,
@@ -1338,8 +1358,8 @@ async fn build_merged_library_item(
 
     if persist_members {
         if let Err(e) = state
-            .merged_library_service
-            .upsert_members(&virtual_id, &members)
+            .virtual_library_service
+            .upsert_automatic_library_members(&virtual_id, &members)
             .await
         {
             error!("Failed to upsert merged library members: {}", e);
@@ -1563,26 +1583,6 @@ fn apply_pagination(items: Vec<MediaItem>, pagination: Pagination) -> (Vec<Media
 
 fn to_i32(value: usize) -> i32 {
     value.min(i32::MAX as usize) as i32
-}
-
-async fn resolve_duplicate_policy(
-    state: &AppState,
-    parent_id: Option<&str>,
-) -> DuplicatePolicyConfig {
-    if let Some(parent_id) = parent_id {
-        let parent_id = normalize_library_id(parent_id);
-        if let Ok(Some(group)) = state.library_group_service.get_group(&parent_id).await {
-            return DuplicatePolicyConfig {
-                policy: group.duplicate_policy,
-                preferred_server_id: group.preferred_server_id,
-            };
-        }
-    }
-
-    DuplicatePolicyConfig {
-        policy: DuplicatePolicy::ServerPriority,
-        preferred_server_id: None,
-    }
 }
 
 #[cfg(test)]

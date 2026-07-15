@@ -13,8 +13,8 @@ use crate::{
     config::CLIENT_INFO,
     duplicate_policy::DuplicatePolicy,
     encryption::{decrypt_password, HashedPassword},
-    library_group_service::{normalize_library_id, LibraryGroupMemberRecord},
     server_id::ServerId,
+    virtual_library_service::{normalize_library_id, LibraryGroupMemberRecord},
     AppState,
 };
 
@@ -133,7 +133,7 @@ async fn render_library_groups_list(state: &AppState) -> Result<String, String> 
     }
 
     let groups = state
-        .library_group_service
+        .virtual_library_service
         .list_groups()
         .await
         .map_err(|e| format!("Failed to load groups: {e}"))?;
@@ -141,7 +141,7 @@ async fn render_library_groups_list(state: &AppState) -> Result<String, String> 
     let mut group_views = Vec::new();
     for group in groups {
         let members = state
-            .library_group_service
+            .virtual_library_service
             .list_members(&group.virtual_id)
             .await
             .map_err(|e| format!("Failed to load group members: {e}"))?;
@@ -195,7 +195,7 @@ async fn render_library_groups_list(state: &AppState) -> Result<String, String> 
 
     let discovered = discover_libraries(state).await;
     let assignments = state
-        .library_group_service
+        .virtual_library_service
         .get_assignments()
         .await
         .unwrap_or_default();
@@ -363,7 +363,7 @@ pub async fn create_group(
     }
 
     match state
-        .library_group_service
+        .virtual_library_service
         .create_group(form.name.trim())
         .await
     {
@@ -398,7 +398,7 @@ pub async fn delete_group(
         return library_groups_blocked_response();
     }
 
-    match state.library_group_service.delete_group(&virtual_id).await {
+    match state.virtual_library_service.delete_group(&virtual_id).await {
         Ok(true) => match render_library_groups_list(&state).await {
             Ok(html) => Html(html).into_response(),
             Err(message) => (StatusCode::INTERNAL_SERVER_ERROR, message).into_response(),
@@ -430,7 +430,7 @@ pub async fn assign_library(
     let server_id = ServerId::new(form.server_id);
 
     match state
-        .library_group_service
+        .virtual_library_service
         .add_member(
             &form.group_virtual_id,
             server_id,
@@ -481,7 +481,7 @@ pub async fn update_group_policy(
         .map(ServerId::new);
 
     match state
-        .library_group_service
+        .virtual_library_service
         .update_group_policy(&virtual_id, policy, preferred_server_id)
         .await
     {
@@ -523,7 +523,7 @@ pub async fn rename_group(
     }
 
     match state
-        .library_group_service
+        .virtual_library_service
         .rename_group(&virtual_id, form.name.trim())
         .await
     {
@@ -559,7 +559,7 @@ pub async fn remove_member(
     let server_id = ServerId::new(form.server_id);
 
     match state
-        .library_group_service
+        .virtual_library_service
         .remove_member(&group_virtual_id, server_id, &form.library_id)
         .await
     {
