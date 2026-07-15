@@ -21,8 +21,8 @@ mod tests {
     #[test]
     fn test_authenticate_request_lowercase_pw() {
         let json = r#"{"Username":"bob","pw":"hunter2"}"#;
-        let req: AuthenticateRequest =
-            serde_json::from_str(json).expect("Failed to deserialize with lowercase 'pw' (Kodi/JellyCon)");
+        let req: AuthenticateRequest = serde_json::from_str(json)
+            .expect("Failed to deserialize with lowercase 'pw' (Kodi/JellyCon)");
         assert_eq!(req.username, "bob");
         assert_eq!(req.password.as_str(), "hunter2");
     }
