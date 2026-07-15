@@ -145,11 +145,13 @@ impl JellyfinClient {
     ) -> Result<reqwest::RequestBuilder, Error> {
         let url = self.base_url.join(path)?;
         let auth_header = self.build_auth_header().await;
+        let user_agent = format!("Jellyswarrm API Client/{}", env!("CARGO_PKG_VERSION"));
 
         Ok(self
             .http_client
             .request(method, url)
-            .header(header::AUTHORIZATION, auth_header))
+            .header(header::AUTHORIZATION, auth_header)
+            .header(header::USER_AGENT, user_agent))
     }
 
     async fn parse_response<T: DeserializeOwned>(response: reqwest::Response) -> Result<T, Error> {
@@ -352,7 +354,7 @@ impl JellyfinClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{header as header_matcher, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
@@ -402,6 +404,10 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(path("/Library/MediaFolders"))
+            .and(header_matcher(
+                "user-agent",
+                format!("Jellyswarrm API Client/{}", env!("CARGO_PKG_VERSION")),
+            ))
             //.and(header("Authorization", "MediaBrowser Client=\"Jellyfin API Client\", Device=\"Unknown\", DeviceId=\"unknown-device-id\", Version=\"0.0.0\", Token=\"test_token\""))
             .respond_with(ResponseTemplate::new(200).set_body_json(folders_response))
             .mount(&mock_server)

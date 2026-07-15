@@ -155,7 +155,7 @@ where
                     }
                 }
                 Value::Array(_) => {
-                    if _process_array_items(
+                    was_modified |= _process_array_items(
                         &mut val,
                         processor,
                         context,
@@ -164,10 +164,7 @@ where
                         parent_context_object.as_ref(),
                         errors,
                     )
-                    .await?
-                    {
-                        was_modified = true;
-                    }
+                    .await?;
                 }
                 _ => {}
             }
