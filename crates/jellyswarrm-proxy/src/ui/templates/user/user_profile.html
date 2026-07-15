@@ -35,7 +35,7 @@
             {% let pw_input_name = "current_password" %}
             {% let pw_input_placeholder = "Current password" %}
             {% let pw_input_autocomplete = "current-password" %}
-            {% let pw_input_required = true %}
+            {% let pw_input_required = false %}
             {% include "components/password_input.html" %}
         </label>
         <label>
@@ -43,7 +43,7 @@
             {% let pw_input_name = "new_password" %}
             {% let pw_input_placeholder = "New password" %}
             {% let pw_input_autocomplete = "new-password" %}
-            {% let pw_input_required = true %}
+            {% let pw_input_required = false %}
             {% include "components/password_input.html" %}
         </label>
         <label>
@@ -51,7 +51,7 @@
             {% let pw_input_name = "confirm_password" %}
             {% let pw_input_placeholder = "Confirm new password" %}
             {% let pw_input_autocomplete = "new-password" %}
-            {% let pw_input_required = true %}
+            {% let pw_input_required = false %}
             {% include "components/password_input.html" %}
         </label>
         
