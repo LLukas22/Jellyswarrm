@@ -1801,8 +1801,9 @@ mod tests {
         let web_device_stored = Device {
             client: "Jellyfin Web".to_string(),
             device: "Chrome".to_string(),
-            device_id: "TW96aWxsYS81LjAgKFdpbmRvd3MgTlQgMTAuMCkgQ2hyb21lLzE0Ny4wfDE3ODM4NTg5NzQ1Mjc1"
-                .to_string(),
+            device_id:
+                "TW96aWxsYS81LjAgKFdpbmRvd3MgTlQgMTAuMCkgQ2hyb21lLzE0Ny4wfDE3ODM4NTg5NzQ1Mjc1"
+                    .to_string(),
             version: "10.11.10".to_string(),
         };
         service
@@ -1826,8 +1827,9 @@ mod tests {
         let web_device_query = Device {
             client: "Jellyfin Web".to_string(),
             device: "Chrome Android".to_string(),
-            device_id: "TW96aWxsYS81LjAgKExpbnV4OyBBbmRyb2lkIDEwKSBDaHJvbWUvMTUwLjB8MTc4MzQ0MTUzNjM2NQ=="
-                .to_string(),
+            device_id:
+                "TW96aWxsYS81LjAgKExpbnV4OyBBbmRyb2lkIDEwKSBDaHJvbWUvMTUwLjB8MTc4MzQ0MTUzNjM2NQ=="
+                    .to_string(),
             version: "10.11.10".to_string(),
         };
         let sessions6 = service
