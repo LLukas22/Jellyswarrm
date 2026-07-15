@@ -1,6 +1,6 @@
 use axum::{extract::State, Json};
 use hyper::StatusCode;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use tokio::task::JoinSet;
 use tracing::{debug, error, trace, warn};
 
@@ -23,7 +23,7 @@ use crate::{
     user_authorization_service::AuthorizationSession,
     virtual_library_service::{
         normalize_library_id, LibraryAssignment, VirtualLibrary, VirtualLibraryMember,
-        VirtualLibraryMode, VirtualLibraryResolution,
+        VirtualLibraryAccessScope, VirtualLibraryMode, VirtualLibraryResolution,
     },
     AppState,
 };
@@ -49,6 +49,24 @@ fn extract_parent_id(url: &url::Url) -> Option<String> {
     url.query_pairs()
         .find(|(key, _)| key.eq_ignore_ascii_case("ParentId"))
         .map(|(_, value)| value.into_owned())
+}
+
+fn virtual_library_access_scope(
+    preprocessed: &PreprocessedRequest,
+) -> Option<VirtualLibraryAccessScope> {
+    let user_id = preprocessed
+        .sessions
+        .as_ref()
+        .and_then(|sessions| sessions.first())
+        .map(|(session, _server)| session.user_id.clone())
+        .or_else(|| preprocessed.user.as_ref().map(|user| user.id.clone()))?;
+    let server_ids = preprocessed
+        .sessions
+        .as_ref()
+        .map(|sessions| sessions.iter().map(|(_session, server)| server.id))
+        .into_iter()
+        .flatten();
+    Some(VirtualLibraryAccessScope::new(user_id, server_ids))
 }
 
 fn replace_parent_id(url: &url::Url, new_id: &str) -> url::Url {
@@ -85,8 +103,13 @@ pub async fn get_items_from_all_servers_if_not_restricted(
 async fn resolve_library_parent_members(
     state: &AppState,
     parent_id: &str,
+    access_scope: Option<&VirtualLibraryAccessScope>,
 ) -> Result<LibraryParentResolution, StatusCode> {
-    match state.virtual_library_service.resolve(parent_id).await {
+    match state
+        .virtual_library_service
+        .resolve(parent_id, access_scope)
+        .await
+    {
         Ok(VirtualLibraryResolution::Resolved(resolved)) => {
             let (name, duplicate_config) = match &resolved.library {
                 VirtualLibrary::Automatic(library) => (
@@ -149,10 +172,12 @@ async fn get_items_for_virtual_library(
     duplicate_config: DuplicatePolicyConfig,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let original_request = preprocessed.original_request;
-    let sessions = preprocessed.sessions.ok_or(StatusCode::UNAUTHORIZED)?;
+    let mut sessions = preprocessed.sessions.ok_or(StatusCode::UNAUTHORIZED)?;
     if sessions.is_empty() {
         return Err(StatusCode::UNAUTHORIZED);
     }
+    let mut seen_servers = HashSet::new();
+    sessions.retain(|(_session, server)| seen_servers.insert(server.id));
 
     let pagination = pagination_from_url(original_request.url());
     let mut join_set = JoinSet::new();
@@ -332,7 +357,8 @@ async fn get_items_from_all_servers_preprocessed(
     preprocessed: PreprocessedRequest,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     if let Some(parent_id) = extract_parent_id(preprocessed.original_request.url()) {
-        match resolve_library_parent_members(state, &parent_id).await {
+        let access_scope = virtual_library_access_scope(&preprocessed);
+        match resolve_library_parent_members(state, &parent_id, access_scope.as_ref()).await {
             Ok(LibraryParentResolution::Resolved {
                 members,
                 duplicate_config,
@@ -400,7 +426,6 @@ async fn get_items_from_all_servers_interleaved(
     if sessions.is_empty() {
         return Err(StatusCode::UNAUTHORIZED);
     }
-
     let pagination = pagination_from_url(original_request.url());
     let mut join_set = JoinSet::new();
     let mut failures = 0;
@@ -480,10 +505,16 @@ async fn get_items_from_all_servers_with_merged_libraries(
     preprocessed: PreprocessedRequest,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let original_request = preprocessed.original_request;
-    let sessions = preprocessed.sessions.ok_or(StatusCode::UNAUTHORIZED)?;
+    let mut sessions = preprocessed.sessions.ok_or(StatusCode::UNAUTHORIZED)?;
     if sessions.is_empty() {
         return Err(StatusCode::UNAUTHORIZED);
     }
+    let mut seen_servers = HashSet::new();
+    sessions.retain(|(_session, server)| seen_servers.insert(server.id));
+    let access_scope = VirtualLibraryAccessScope::new(
+        sessions[0].0.user_id.clone(),
+        sessions.iter().map(|(_session, server)| server.id),
+    );
 
     let pagination = pagination_from_url(original_request.url());
     let mut join_set = JoinSet::new();
@@ -598,14 +629,57 @@ async fn get_items_from_all_servers_with_merged_libraries(
     }
 
     let mut library_items = Vec::new();
+    let mut active_automatic_keys = Vec::new();
     for (key, group) in library_groups {
         if group.len() == 1 {
+            if failures == 0 {
+                state
+                    .virtual_library_service
+                    .clear_automatic_library_snapshot(&key, &access_scope)
+                    .await
+                    .map_err(|e| {
+                        error!("Failed to clear automatic library snapshot: {}", e);
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    })?;
+            } else if let Some(automatic) = state
+                .virtual_library_service
+                .get_automatic_library_by_collection_type(&key)
+                .await
+                .map_err(|e| {
+                    error!("Failed to load automatic library: {}", e);
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?
+            {
+                if state
+                    .virtual_library_service
+                    .has_automatic_library_snapshot(&automatic.virtual_id, &access_scope)
+                    .await
+                    .map_err(|e| {
+                        error!("Failed to load automatic library snapshot: {}", e);
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    })?
+                {
+                    let display_name = group[0].0.name.clone().unwrap_or_else(|| key.clone());
+                    library_items.push(
+                        build_virtual_library_item(
+                            state,
+                            group,
+                            display_name,
+                            automatic.virtual_id,
+                            None,
+                        )
+                        .await?,
+                    );
+                    continue;
+                }
+            }
             if let Some((item, server)) = group.into_iter().next() {
                 library_items
                     .push(process_media_item_for_server(item, state, &server, true).await?);
             }
             continue;
         }
+        active_automatic_keys.push(key.clone());
 
         let display_name = group[0].0.name.clone().unwrap_or_else(|| {
             key.split_once(':')
@@ -629,15 +703,46 @@ async fn get_items_from_all_servers_with_merged_libraries(
             }
         };
 
+        let persist_scope = if failures == 0 {
+            Some(&access_scope)
+        } else if state
+            .virtual_library_service
+            .has_automatic_library_snapshot(&merged.virtual_id, &access_scope)
+            .await
+            .map_err(|e| {
+                error!("Failed to load automatic library snapshot: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+        {
+            None
+        } else {
+            for (item, server) in group {
+                library_items
+                    .push(process_media_item_for_server(item, state, &server, true).await?);
+            }
+            continue;
+        };
+
         let merged_item = build_virtual_library_item(
             state,
             group,
             display_name,
             merged.virtual_id,
-            true,
+            persist_scope,
         )
         .await?;
         library_items.push(merged_item);
+    }
+
+    if failures == 0 {
+        state
+            .virtual_library_service
+            .reconcile_automatic_library_snapshots(&access_scope, &active_automatic_keys)
+            .await
+            .map_err(|e| {
+                error!("Failed to reconcile automatic library snapshots: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
     }
 
     library_items.sort_by(|a, b| {
@@ -825,7 +930,7 @@ async fn get_items_from_all_servers_with_custom_library_groups(
         }
         let state = state.clone();
         library_join.spawn(async move {
-            build_virtual_library_item(&state, group, display_name, group_virtual_id, false).await
+            build_virtual_library_item(&state, group, display_name, group_virtual_id, None).await
         });
     }
     for (_key, group) in library_groups {
@@ -1268,7 +1373,15 @@ async fn fetch_raw_items_from_server(
     normalize_upstream_pagination(request.url_mut(), pagination);
 
     let auth = JellyfinAuthorization::Authorization(session.to_authorization());
-    apply_to_request(&mut request, &server, &Some(session), &Some(auth), &state).await;
+    apply_to_request(
+        &mut request,
+        &server,
+        &Some(session),
+        &Some(auth),
+        &state,
+        None,
+    )
+    .await;
 
     let response = execute_json_request::<serde_json::Value>(&state.reqwest_client, request)
         .await
@@ -1337,7 +1450,7 @@ async fn build_virtual_library_item(
     group: Vec<(MediaItem, Server)>,
     display_name: String,
     virtual_id: String,
-    persist_members: bool,
+    automatic_access_scope: Option<&VirtualLibraryAccessScope>,
 ) -> Result<MediaItem, StatusCode> {
     let mut members = Vec::new();
     let mut template = None;
@@ -1350,20 +1463,21 @@ async fn build_virtual_library_item(
     for (item, server) in &group {
         total_child_count += item.child_count.unwrap_or(0);
         let processed = process_media_item_for_server(item.clone(), state, server, false).await?;
-        members.push((server.url.to_string(), processed.id.clone()));
+        members.push((server.id, server.url.to_string(), processed.id.clone()));
         if template.is_none() {
             template = Some(processed);
         }
     }
 
-    if persist_members {
-        if let Err(e) = state
+    if let Some(access_scope) = automatic_access_scope {
+        state
             .virtual_library_service
-            .upsert_automatic_library_members(&virtual_id, &members)
+            .upsert_automatic_library_members(&virtual_id, access_scope, &members)
             .await
-        {
-            error!("Failed to upsert merged library members: {}", e);
-        }
+            .map_err(|e| {
+                error!("Failed to persist automatic library members: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
     }
 
     let mut item = template.ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;

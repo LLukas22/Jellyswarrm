@@ -3,9 +3,11 @@ use tracing::debug;
 
 use crate::{
     media_storage_service::MediaMapping,
+    server_id::ServerId,
     server_storage::Server,
     url_helper::{contains_id, is_id_like, replace_id},
     user_authorization_service::AuthorizationSession,
+    virtual_library_service::{VirtualLibraryAccessScope, VirtualLibraryResolution},
     DataContext,
 };
 
@@ -57,9 +59,12 @@ impl UrlProcessor {
         &self,
         url: &mut url::Url,
         session: &Option<AuthorizationSession>,
+        access_scope: Option<&VirtualLibraryAccessScope>,
+        required_server_id: Option<ServerId>,
     ) {
         self.replace_user_ids_in_path(url, session);
-        self.replace_media_ids_in_path(url).await;
+        self.replace_media_ids_in_path(url, access_scope, required_server_id)
+            .await;
 
         let mut pairs: Vec<(String, String)> = url
             .query_pairs()
@@ -67,7 +72,8 @@ impl UrlProcessor {
             .collect();
 
         self.replace_session_query_values(&mut pairs, session);
-        self.replace_media_ids_in_query(&mut pairs).await;
+        self.replace_media_ids_in_query(&mut pairs, access_scope, required_server_id)
+            .await;
 
         url.query_pairs_mut().clear().extend_pairs(pairs);
     }
@@ -89,12 +95,20 @@ impl UrlProcessor {
         Ok(Some(format_delivery_url(url, style)))
     }
 
-    pub async fn server_from_client_url(&self, url: &url::Url) -> Result<Option<Server>> {
-        if let Some(server) = self.server_from_path_media_ids(url).await? {
+    pub async fn server_from_client_url(
+        &self,
+        url: &url::Url,
+        access_scope: Option<&VirtualLibraryAccessScope>,
+    ) -> Result<Option<Server>> {
+        if let Some(server) = self
+            .server_from_path_media_ids(url, access_scope)
+            .await?
+        {
             return Ok(Some(server));
         }
 
-        self.server_from_query_media_ids(url).await
+        self.server_from_query_media_ids(url, access_scope)
+            .await
     }
 
     fn replace_user_ids_in_path(&self, url: &mut url::Url, session: &Option<AuthorizationSession>) {
@@ -113,10 +127,18 @@ impl UrlProcessor {
         }
     }
 
-    async fn replace_media_ids_in_path(&self, url: &mut url::Url) {
+    async fn replace_media_ids_in_path(
+        &self,
+        url: &mut url::Url,
+        access_scope: Option<&VirtualLibraryAccessScope>,
+        required_server_id: Option<ServerId>,
+    ) {
         for &path_segment in MEDIA_ID_PATH_TAGS {
             if let Some(media_id) = contains_id(url, path_segment) {
-                if let Some(media_mapping) = self.client_media_mapping(&media_id).await {
+                if let Some(media_mapping) = self
+                    .client_media_mapping(&media_id, access_scope, required_server_id)
+                    .await
+                {
                     debug!(
                         "Replacing media ID in path: {} -> {}",
                         media_id, media_mapping.original_media_id
@@ -145,19 +167,32 @@ impl UrlProcessor {
         }
     }
 
-    async fn replace_media_ids_in_query(&self, pairs: &mut [(String, String)]) {
+    async fn replace_media_ids_in_query(
+        &self,
+        pairs: &mut [(String, String)],
+        access_scope: Option<&VirtualLibraryAccessScope>,
+        required_server_id: Option<ServerId>,
+    ) {
         for (name, value) in pairs {
             if !matches_case_insensitive(name, MEDIA_ID_QUERY_TAGS) {
                 continue;
             }
 
-            if let Some(resolved_value) = self.resolve_client_media_id_list(value).await {
+            if let Some(resolved_value) = self
+                .resolve_client_media_id_list(value, access_scope, required_server_id)
+                .await
+            {
                 *value = resolved_value;
             }
         }
     }
 
-    async fn resolve_client_media_id_list(&self, value: &str) -> Option<String> {
+    async fn resolve_client_media_id_list(
+        &self,
+        value: &str,
+        access_scope: Option<&VirtualLibraryAccessScope>,
+        required_server_id: Option<ServerId>,
+    ) -> Option<String> {
         let mut changed = false;
         let mut resolved_ids = Vec::new();
 
@@ -167,7 +202,10 @@ impl UrlProcessor {
                 continue;
             }
 
-            if let Some(media_mapping) = self.client_media_mapping(trimmed).await {
+            if let Some(media_mapping) = self
+                .client_media_mapping(trimmed, access_scope, required_server_id)
+                .await
+            {
                 debug!(
                     "Replacing media ID in query: {} -> {}",
                     trimmed, media_mapping.original_media_id
@@ -281,7 +319,12 @@ impl UrlProcessor {
             .map_err(Into::into)
     }
 
-    async fn client_media_mapping(&self, virtual_media_id: &str) -> Option<MediaMapping> {
+    async fn client_media_mapping(
+        &self,
+        virtual_media_id: &str,
+        access_scope: Option<&VirtualLibraryAccessScope>,
+        required_server_id: Option<ServerId>,
+    ) -> Option<MediaMapping> {
         if let Some(mapping) = self
             .data_context
             .media_storage
@@ -289,23 +332,33 @@ impl UrlProcessor {
             .await
             .unwrap_or_default()
         {
+            if !server_is_allowed(mapping.server_id, access_scope, required_server_id) {
+                return None;
+            }
             return Some(mapping);
         }
 
         self.data_context
             .virtual_library_service
-            .routing_target(virtual_media_id)
+            .routing_target(virtual_media_id, access_scope, required_server_id)
             .await
             .ok()
             .flatten()
             .map(|target| target.mapping)
     }
 
-    async fn server_from_path_media_ids(&self, url: &url::Url) -> Result<Option<Server>> {
+    async fn server_from_path_media_ids(
+        &self,
+        url: &url::Url,
+        access_scope: Option<&VirtualLibraryAccessScope>,
+    ) -> Result<Option<Server>> {
         for &path_segment in MEDIA_ID_PATH_TAGS {
             if let Some(media_id) = contains_id(url, path_segment) {
                 debug!("Found {} ID in request: {}", path_segment, media_id);
-                if let Some(server) = self.server_from_client_media_id(&media_id).await? {
+                if let Some(server) = self
+                    .server_from_client_media_id(&media_id, access_scope)
+                    .await?
+                {
                     debug!(
                         "Found server for {} ID {}: {} ({})",
                         path_segment, media_id, server.name, server.url
@@ -319,7 +372,11 @@ impl UrlProcessor {
         Ok(None)
     }
 
-    async fn server_from_query_media_ids(&self, url: &url::Url) -> Result<Option<Server>> {
+    async fn server_from_query_media_ids(
+        &self,
+        url: &url::Url,
+        access_scope: Option<&VirtualLibraryAccessScope>,
+    ) -> Result<Option<Server>> {
         for (param_name, param_value) in url.query_pairs() {
             if !matches_case_insensitive(&param_name, MEDIA_ID_QUERY_TAGS) {
                 continue;
@@ -332,7 +389,10 @@ impl UrlProcessor {
                     continue;
                 }
 
-                if let Some(server) = self.server_from_client_media_id(media_id).await? {
+                if let Some(server) = self
+                    .server_from_client_media_id(media_id, access_scope)
+                    .await?
+                {
                     debug!(
                         "Found server for {} {}: {} ({})",
                         param_name, media_id, server.name, server.url
@@ -346,23 +406,57 @@ impl UrlProcessor {
         Ok(None)
     }
 
-    async fn server_from_client_media_id(&self, media_id: &str) -> Result<Option<Server>> {
+    async fn server_from_client_media_id(
+        &self,
+        media_id: &str,
+        access_scope: Option<&VirtualLibraryAccessScope>,
+    ) -> Result<Option<Server>> {
         if let Some((_mapping, server)) = self
             .data_context
             .media_storage
             .get_media_mapping_with_server(media_id)
             .await?
         {
+            if !server_is_allowed(server.id, access_scope, None) {
+                return Err(anyhow::anyhow!(
+                    "media ID is not available in the current user's server scope"
+                ));
+            }
             return Ok(Some(server));
         }
 
-        Ok(self
+        let target = self
             .data_context
             .virtual_library_service
-            .routing_target(media_id)
+            .routing_target(media_id, access_scope, None)
+            .await?;
+        if let Some(target) = target {
+            return Ok(Some(target.server));
+        }
+
+        match self
+            .data_context
+            .virtual_library_service
+            .resolve(media_id, access_scope)
             .await?
-            .map(|target| target.server))
+        {
+            VirtualLibraryResolution::Unknown => Ok(None),
+            VirtualLibraryResolution::Empty(_) | VirtualLibraryResolution::Resolved(_) => {
+                Err(anyhow::anyhow!(
+                    "virtual library has no member in the current user's server scope"
+                ))
+            }
+        }
     }
+}
+
+fn server_is_allowed(
+    server_id: ServerId,
+    access_scope: Option<&VirtualLibraryAccessScope>,
+    required_server_id: Option<ServerId>,
+) -> bool {
+    required_server_id.is_none_or(|required| required == server_id)
+        && access_scope.is_none_or(|scope| scope.allows(server_id))
 }
 
 #[derive(Clone, Copy)]

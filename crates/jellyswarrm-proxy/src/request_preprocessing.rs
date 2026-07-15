@@ -14,6 +14,7 @@ use crate::proxy_headers::remove_hop_by_hop_headers;
 use crate::server_storage::Server;
 use crate::url_helper::{contains_id, join_server_url};
 use crate::user_authorization_service::{AuthorizationSession, Device, User};
+use crate::virtual_library_service::VirtualLibraryAccessScope;
 use crate::AppState;
 
 pub struct RequestIdentity {
@@ -256,7 +257,9 @@ pub async fn extract_request_infos(
         None
     };
 
-    let sessions = if let Some(user) = &user {
+    let sessions = if auth.is_none() {
+        None
+    } else if let Some(user) = &user {
         let mut sessions = state
             .user_authorization
             .get_user_sessions(&user.id, device.clone())
@@ -317,13 +320,42 @@ pub async fn preprocess_request(req: Request, state: &AppState) -> Result<Prepro
     let original_request = request
         .try_clone()
         .ok_or_else(|| anyhow!("failed to clone preprocessed request body"))?;
+    let access_scope_user_id = sessions
+        .as_ref()
+        .and_then(|sessions| sessions.first())
+        .map(|(session, _server)| session.user_id.clone())
+        .or_else(|| user.as_ref().map(|user| user.id.clone()));
+    let access_scope = access_scope_user_id.map(|user_id| {
+        VirtualLibraryAccessScope::new(
+            user_id,
+            sessions
+                .as_ref()
+                .map(|sessions| sessions.iter().map(|(_session, server)| server.id))
+                .into_iter()
+                .flatten(),
+        )
+    });
 
-    let (server, session) =
-        resolve_server(&sessions, &request_body_result, state, &request).await?;
+    let (server, session) = resolve_server(
+        &sessions,
+        &request_body_result,
+        state,
+        &request,
+        access_scope.as_ref(),
+    )
+    .await?;
 
     let new_auth = remap_authorization(&auth, &session).await?;
 
-    apply_to_request(&mut request, &server, &session, &new_auth, state).await;
+    apply_to_request(
+        &mut request,
+        &server,
+        &session,
+        &new_auth,
+        state,
+        access_scope.as_ref(),
+    )
+    .await;
 
     Ok(PreprocessedRequest {
         request,
@@ -343,6 +375,7 @@ pub async fn apply_to_request(
     session: &Option<AuthorizationSession>,
     auth: &Option<JellyfinAuthorization>,
     state: &AppState,
+    access_scope: Option<&VirtualLibraryAccessScope>,
 ) {
     remove_hop_by_hop_headers(request.headers_mut());
 
@@ -350,7 +383,7 @@ pub async fn apply_to_request(
 
     apply_authorization_header(request, auth);
 
-    apply_new_target_uri(request, server, session, state).await;
+    apply_new_target_uri(request, server, session, state, access_scope).await;
 }
 
 pub async fn apply_new_target_uri(
@@ -358,6 +391,7 @@ pub async fn apply_new_target_uri(
     server: &Server,
     session: &Option<AuthorizationSession>,
     state: &AppState,
+    access_scope: Option<&VirtualLibraryAccessScope>,
 ) {
     let mut orig_url = request.url().clone();
     debug!("Original request URL: {}", orig_url);
@@ -365,7 +399,7 @@ pub async fn apply_new_target_uri(
     state
         .processors
         .url_processor
-        .client_to_server_url(&mut orig_url, session)
+        .client_to_server_url(&mut orig_url, session, access_scope, Some(server.id))
         .await;
 
     let path = state.remove_prefix_from_path(orig_url.path()).await;
@@ -465,17 +499,20 @@ pub async fn resolve_server(
     request_body_result: &Option<RequestBodyAnalysisResult>,
     state: &AppState,
     request: &reqwest::Request,
+    access_scope: Option<&VirtualLibraryAccessScope>,
 ) -> Result<(Server, Option<AuthorizationSession>)> {
-    let mut request_server = server_from_request_media_ids(state, request).await?;
+    let mut request_server = server_from_request_media_ids(state, request, access_scope).await?;
 
     if request_server.is_none() {
         if let Some(request_body_result) = request_body_result {
             if let Some(found_server) = request_body_result.get_server() {
-                debug!(
-                    "Using server found in request body analysis: {} ({})",
-                    found_server.name, found_server.url
-                );
-                request_server = Some(found_server);
+                if access_scope.is_none_or(|scope| scope.allows(found_server.id)) {
+                    debug!(
+                        "Using server found in request body analysis: {} ({})",
+                        found_server.name, found_server.url
+                    );
+                    request_server = Some(found_server);
+                }
             }
         }
     }
@@ -497,6 +534,10 @@ pub async fn resolve_server(
         return Ok((server.clone(), Some(session.clone())));
     }
 
+    if access_scope.is_some() {
+        return Err(anyhow!("no authorization sessions available"));
+    }
+
     if let Some(request_server) = request_server {
         debug!("Using request server: {}", request_server.url);
         return Ok((request_server, None));
@@ -510,11 +551,12 @@ pub async fn resolve_server(
 async fn server_from_request_media_ids(
     state: &AppState,
     request: &reqwest::Request,
+    access_scope: Option<&VirtualLibraryAccessScope>,
 ) -> Result<Option<Server>> {
     state
         .processors
         .url_processor
-        .server_from_client_url(request.url())
+        .server_from_client_url(request.url(), access_scope)
         .await
 }
 

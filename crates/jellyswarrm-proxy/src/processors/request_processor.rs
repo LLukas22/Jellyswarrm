@@ -63,6 +63,9 @@ impl JsonProcessor<RequestProcessingContext> for RequestProcessor {
                     .await
                     .unwrap_or_default()
                 {
+                    if media_mapping.server_id != context.server.id {
+                        return result;
+                    }
                     debug!(
                         "Replacing virtual id  {} -> {} for field: {} in payload",
                         virtual_id, &media_mapping.original_media_id, &json_context.key
