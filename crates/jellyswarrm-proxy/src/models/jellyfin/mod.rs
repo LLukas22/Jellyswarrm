@@ -116,7 +116,7 @@ pub struct NowPlayingQueueItem {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AuthenticateRequest {
     pub username: String,
-    #[serde(rename = "Pw")]
+    #[serde(rename = "Pw", alias = "pw")]
     pub password: Password,
 }
 
