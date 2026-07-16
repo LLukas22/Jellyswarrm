@@ -40,5 +40,5 @@ The table below lists all available configuration options:
 
 ### Notes
 - The `session_key` is generated as a secure 64-byte key if not specified, and is stored in the config file for reuse.  
-- Each server now has its own streaming mode (`Redirect` or `Proxy`). For preconfigured servers, omit `media_streaming_mode` to use the default `Redirect`.
+- Each server now has its own streaming mode (`Redirect` or `Proxy`). For preconfigured servers, omit `media_streaming_mode` to use the default `Proxy` (media tunnels through Jellyswarrm so clients do not need direct access to backend Jellyfin hosts). Use `Redirect` only when every client can reach that backend directly.
 - Configuration files are resolved from the data directory (`./data` by default), which can be overridden with `JELLYSWARRM_DATA_DIR`.
