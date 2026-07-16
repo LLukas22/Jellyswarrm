@@ -164,14 +164,10 @@ fn rewrite_hls_line_absolute_urls(line: &str, server: &Server) -> Option<String>
     }
 
     // Attribute form: URI="https://upstream/..."
-    let Some(uri_pos) = line.find("URI=\"") else {
-        return None;
-    };
+    let uri_pos = line.find("URI=\"")?;
     let value_start = uri_pos + 5;
     let rest = &line[value_start..];
-    let Some(value_end) = rest.find('"') else {
-        return None;
-    };
+    let value_end = rest.find('"')?;
     let value = &rest[..value_end];
     if !(value.starts_with("http://") || value.starts_with("https://")) {
         return None;
