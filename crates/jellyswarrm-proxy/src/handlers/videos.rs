@@ -9,7 +9,7 @@ use crate::{
     config::MediaStreamingMode,
     extractors::Preprocessed,
     proxy_headers::remove_hop_by_hop_headers,
-    request_preprocessing::{apply_to_request, remap_authorization},
+    request_preprocessing::{apply_to_request, remap_authorization, PreprocessedRequest},
     server_storage::Server,
     session_storage::PlaybackSession,
     user_authorization_service::AuthorizationSession,
@@ -53,7 +53,27 @@ fn single_matching_play_session(
 
 fn looks_like_hls_playlist(url: &url::Url, headers: &reqwest::header::HeaderMap) -> bool {
     let path = url.path().to_ascii_lowercase();
-    if path.ends_with(".m3u8") || path.ends_with(".m3u") {
+    // /Audio/{id}/universal often returns an HLS master playlist when the client
+    // requests TranscodingProtocol=hls — treat that as a playlist too.
+    if path.ends_with(".m3u8")
+        || path.ends_with(".m3u")
+        || path.ends_with("/universal")
+        || path.contains("/universal?")
+    {
+        // Still require playlist-ish content-type for /universal to avoid buffering
+        // progressive audio streams into memory.
+        if path.ends_with("/universal") || path.contains("/universal?") {
+            return headers
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|content_type| {
+                    let content_type = content_type.to_ascii_lowercase();
+                    content_type.contains("mpegurl")
+                        || content_type.contains("m3u8")
+                        || content_type.contains("application/vnd.apple")
+                        || content_type.starts_with("text/")
+                });
+        }
         return true;
     }
 
@@ -361,6 +381,53 @@ async fn resolve_play_session_server(
     Ok(server)
 }
 
+async fn forward_resource_by_media_mapping(
+    state: &AppState,
+    preprocessed: PreprocessedRequest,
+    id: &str,
+    reason: &str,
+) -> Result<Response, StatusCode> {
+    if state
+        .media_storage
+        .get_media_mapping_with_server(id)
+        .await
+        .map_err(|e| {
+            error!(
+                "Failed to resolve media mapping for media resource {}: {}",
+                id, e
+            );
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .is_none()
+    {
+        error!(
+            "No play session or media mapping for media resource {} ({})",
+            id, reason
+        );
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let server = preprocessed.server;
+    if !state
+        .server_storage
+        .server_status(server.id)
+        .await
+        .is_available()
+    {
+        error!(
+            "Server {} for media resource {} is not available",
+            server.name, id
+        );
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    warn!(
+        "Media resource {} {}; routing by virtual media mapping via {}",
+        id, reason, server.name
+    );
+    forward_media_request(state, &server, preprocessed.request, "media resource").await
+}
+
 //http://localhost:3000/Videos/82fe5aab-29ff-9630-05c2-da1a5a640428/82fe5aab29ff963005c2da1a5a640428/Attachments/5
 //http://localhost:3000/Videos/71bda5a4-267a-1a6c-49ce-8536d36628d8/71bda5a4267a1a6c49ce8536d36628d8/Subtitles/3/0/Stream.js?api_key=...
 //http://localhost:3000/Audio/{id}/master.m3u8?MediaSourceId=...&PlaySessionId=...
@@ -376,17 +443,24 @@ pub async fn get_video_resource(
         .to_string();
     let play_session_id = extract_play_session_id(original_request.url());
     let play_session = if let Some(play_session_id) = play_session_id.as_deref() {
-        state
+        // Audio /universal often uses a client-generated PlaySessionId we never track
+        // (no prior PlaybackInfo). Fall back to media mapping instead of hard 404.
+        match state
             .play_sessions
             .get_session_by_session_and_item_id(play_session_id, &id)
             .await
-            .ok_or_else(|| {
-                error!(
-                    "No play session found for resource: {} and session: {}",
-                    id, play_session_id
-                );
-                StatusCode::NOT_FOUND
-            })?
+        {
+            Some(session) => session,
+            None => {
+                return forward_resource_by_media_mapping(
+                    &state,
+                    preprocessed,
+                    &id,
+                    &format!("unknown play session id {play_session_id}"),
+                )
+                .await;
+            }
+        }
     } else {
         let candidates = state.play_sessions.get_sessions_by_item_id(&id).await;
         let user_id = preprocessed
@@ -409,58 +483,13 @@ pub async fn get_video_resource(
                 play_session
             }
             Err(count) => {
-                if state
-                    .media_storage
-                    .get_media_mapping_with_server(&id)
-                    .await
-                    .map_err(|e| {
-                        error!(
-                            "Failed to resolve media mapping for media resource {}: {}",
-                            id, e
-                        );
-                        StatusCode::INTERNAL_SERVER_ERROR
-                    })?
-                    .is_some()
-                {
-                    let server = preprocessed.server;
-                    if !state
-                        .server_storage
-                        .server_status(server.id)
-                        .await
-                        .is_healthy()
-                    {
-                        error!(
-                            "Server {} for media resource {} is not healthy",
-                            server.name, id
-                        );
-                        return Err(StatusCode::NOT_FOUND);
-                    }
-
-                    warn!(
-                        "Media resource {} arrived without play session id; routing by virtual media mapping",
-                        id
-                    );
-                    return forward_media_request(
-                        &state,
-                        &server,
-                        preprocessed.request,
-                        "media resource",
-                    )
-                    .await;
-                }
-
-                if count == 0 {
-                    error!(
-                        "No play session found for media resource without session id: {}",
-                        id
-                    );
-                } else {
-                    error!(
-                        "Ambiguous media resource {} without play session id matched {} active sessions",
-                        id, count
-                    );
-                }
-                return Err(StatusCode::NOT_FOUND);
+                return forward_resource_by_media_mapping(
+                    &state,
+                    preprocessed,
+                    &id,
+                    &format!("no unique play session (matched {count})"),
+                )
+                .await;
             }
         }
     };
