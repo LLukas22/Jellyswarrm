@@ -350,9 +350,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create a dedicated client for proxied media streams.
     // Avoid a global request timeout on long-lived responses and disable automatic
     // response decompression so we forward bytes as-is with less CPU overhead.
+    // Tuned for many concurrent progressive/HLS connections (audio playlists, seeking).
     let streaming_reqwest_client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(loaded_config.timeout))
         .tcp_nodelay(true)
+        .tcp_keepalive(Duration::from_secs(60))
+        .pool_max_idle_per_host(32)
+        .pool_idle_timeout(Duration::from_secs(90))
         .no_gzip()
         .no_brotli()
         .no_deflate()
@@ -663,6 +667,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ),
             )
             // Video streaming routes
+            // axum's get() also accepts HEAD (empty body), which clients use to probe
+            // Content-Length / Accept-Ranges before progressive download.
+            // The catch-all covers HLS (master.m3u8, main.m3u8, hls1/...), subtitles,
+            // and attachments the same way Jellyfin exposes them under /Videos/{id}/...
             .nest(
                 "/Videos",
                 Router::new()
@@ -672,17 +680,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .route("/{item_id}/stream.mp4", get(handlers::videos::get_stream))
                     .route("/{item_id}/stream.mov", get(handlers::videos::get_stream))
                     .route(
+                        "/{item_id}/stream.{container}",
+                        get(handlers::videos::get_stream),
+                    )
+                    .route(
                         "/{stream_id}/{*path}",
                         get(handlers::videos::get_video_resource),
                     ),
             )
             // Audio streaming routes
+            // Jellyfin serves progressive audio under /Audio/{id}/stream[.{container}] and
+            // /universal, and HLS under /Audio/{id}/master.m3u8, main.m3u8, hls1/... .
+            // Without the catch-all, HLS audio falls through to the generic proxy which
+            // buffers full responses and applies API timeouts — breaking music playback.
             .nest(
                 "/Audio",
                 Router::new()
                     .route("/{item_id}/universal", get(handlers::videos::get_stream))
                     .route("/{item_id}/stream", get(handlers::videos::get_stream))
-                    .route("/{item_id}/stream.{container}", get(handlers::videos::get_stream)),
+                    .route(
+                        "/{item_id}/stream.{container}",
+                        get(handlers::videos::get_stream),
+                    )
+                    .route(
+                        "/{stream_id}/{*path}",
+                        get(handlers::videos::get_video_resource),
+                    ),
             )
             // Persons
             .nest(

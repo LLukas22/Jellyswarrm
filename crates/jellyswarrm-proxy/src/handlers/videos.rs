@@ -3,7 +3,7 @@ use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
 use hyper::StatusCode;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{
     config::MediaStreamingMode,
@@ -16,11 +16,12 @@ use crate::{
     AppState,
 };
 
-fn extract_video_id(path: &str) -> Option<&str> {
+/// Extract the media item id from `/Videos/{id}/...` or `/Audio/{id}/...` paths.
+fn extract_stream_item_id(path: &str) -> Option<&str> {
     let mut segments = path.trim_matches('/').split('/');
 
     while let Some(segment) = segments.next() {
-        if segment.eq_ignore_ascii_case("Videos") {
+        if segment.eq_ignore_ascii_case("Videos") || segment.eq_ignore_ascii_case("Audio") {
             return segments.next().filter(|segment| !segment.is_empty());
         }
     }
@@ -82,7 +83,7 @@ async fn proxy_request(
     Ok(response)
 }
 
-async fn forward_video_request(
+async fn forward_media_request(
     state: &AppState,
     server: &Server,
     request: reqwest::Request,
@@ -92,11 +93,11 @@ async fn forward_video_request(
 
     match server.media_streaming_mode {
         MediaStreamingMode::Redirect => {
-            info!("Redirecting {} to: {}", log_label, url);
+            debug!("Redirecting {} to: {}", log_label, url);
             Ok(axum::response::Redirect::temporary(url.as_ref()).into_response())
         }
         MediaStreamingMode::Proxy => {
-            info!("Proxying {} from: {}", log_label, url);
+            debug!("Proxying {} from: {}", log_label, url);
             proxy_request(&state.streaming_reqwest_client, request).await
         }
     }
@@ -114,110 +115,53 @@ fn session_for_server(
     })
 }
 
-//http://localhost:3000/Videos/82fe5aab-29ff-9630-05c2-da1a5a640428/82fe5aab29ff963005c2da1a5a640428/Attachments/5
-//http://localhost:3000/Videos/71bda5a4-267a-1a6c-49ce-8536d36628d8/71bda5a4267a1a6c49ce8536d36628d8/Subtitles/3/0/Stream.js?api_key=4543ddacf7544d258444677c680d81a5
-pub async fn get_video_resource(
-    State(state): State<AppState>,
-    Preprocessed(preprocessed): Preprocessed,
-) -> Result<Response, StatusCode> {
-    let original_request = &preprocessed.original_request;
-
-    let id = extract_video_id(original_request.url().path())
-        .ok_or(StatusCode::NOT_FOUND)?
-        .to_string();
-    let play_session_id = extract_play_session_id(original_request.url());
-    let play_session = if let Some(play_session_id) = play_session_id.as_deref() {
-        state
+async fn resolve_server_for_stream_item(
+    state: &AppState,
+    item_id: &str,
+    play_session_id: Option<&str>,
+    user_id: Option<&str>,
+    fallback_server: &Server,
+) -> Result<Server, StatusCode> {
+    if let Some(play_session_id) = play_session_id {
+        if let Some(play_session) = state
             .play_sessions
-            .get_session_by_session_and_item_id(play_session_id, &id)
+            .get_session_by_session_and_item_id(play_session_id, item_id)
             .await
-            .ok_or_else(|| {
-                error!(
-                    "No play session found for resource: {} and session: {}",
-                    id, play_session_id
-                );
-                StatusCode::NOT_FOUND
-            })?
-    } else {
-        let candidates = state.play_sessions.get_sessions_by_item_id(&id).await;
-        let user_id = preprocessed
-            .user
-            .as_ref()
-            .map(|user| user.id.as_str())
-            .or_else(|| {
-                preprocessed
-                    .session
-                    .as_ref()
-                    .map(|session| session.user_id.as_str())
-            });
-
-        match single_matching_play_session(candidates, user_id) {
-            Ok(play_session) => {
-                warn!(
-                    "Video resource {} arrived without play session id; using only matching active session {}",
-                    id, play_session.session_id
-                );
-                play_session
-            }
-            Err(count) => {
-                if state
-                    .media_storage
-                    .get_media_mapping_with_server(&id)
-                    .await
-                    .map_err(|e| {
-                        error!(
-                            "Failed to resolve media mapping for video resource {}: {}",
-                            id, e
-                        );
-                        StatusCode::INTERNAL_SERVER_ERROR
-                    })?
-                    .is_some()
-                {
-                    let server = preprocessed.server;
-                    if !state
-                        .server_storage
-                        .server_status(server.id)
-                        .await
-                        .is_healthy()
-                    {
-                        error!(
-                            "Server {} for video resource {} is not healthy",
-                            server.name, id
-                        );
-                        return Err(StatusCode::NOT_FOUND);
-                    }
-
-                    warn!(
-                        "Video resource {} arrived without play session id; routing by virtual media mapping",
-                        id
-                    );
-                    return forward_video_request(
-                        &state,
-                        &server,
-                        preprocessed.request,
-                        "video resource",
-                    )
-                    .await;
-                }
-
-                if count == 0 {
-                    error!(
-                        "No play session found for video resource without session id: {}",
-                        id
-                    );
-                } else {
-                    error!(
-                        "Ambiguous video resource {} without play session id matched {} active sessions",
-                        id, count
-                    );
-                }
-                return Err(StatusCode::NOT_FOUND);
-            }
+        {
+            return resolve_play_session_server(state, &play_session).await;
         }
-    };
+    }
 
-    let original_request = preprocessed.original_request;
+    let candidates = state.play_sessions.get_sessions_by_item_id(item_id).await;
+    if let Ok(play_session) = single_matching_play_session(candidates, user_id) {
+        return resolve_play_session_server(state, &play_session).await;
+    }
 
+    // Prefer the virtual media mapping when available; preprocessing already selected a
+    // server from the path/query id, so fall back to that.
+    if state
+        .media_storage
+        .get_media_mapping_with_server(item_id)
+        .await
+        .map_err(|e| {
+            error!(
+                "Failed to resolve media mapping for stream item {}: {}",
+                item_id, e
+            );
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .is_some()
+    {
+        return Ok(fallback_server.clone());
+    }
+
+    Ok(fallback_server.clone())
+}
+
+async fn resolve_play_session_server(
+    state: &AppState,
+    play_session: &PlaybackSession,
+) -> Result<Server, StatusCode> {
     let server = match state
         .server_storage
         .get_server_by_id(play_session.server_id)
@@ -256,6 +200,117 @@ pub async fn get_video_resource(
         return Err(StatusCode::NOT_FOUND);
     }
 
+    Ok(server)
+}
+
+//http://localhost:3000/Videos/82fe5aab-29ff-9630-05c2-da1a5a640428/82fe5aab29ff963005c2da1a5a640428/Attachments/5
+//http://localhost:3000/Videos/71bda5a4-267a-1a6c-49ce-8536d36628d8/71bda5a4267a1a6c49ce8536d36628d8/Subtitles/3/0/Stream.js?api_key=...
+//http://localhost:3000/Audio/{id}/master.m3u8?MediaSourceId=...&PlaySessionId=...
+//http://localhost:3000/Audio/{id}/hls1/main/0.ts?...
+pub async fn get_video_resource(
+    State(state): State<AppState>,
+    Preprocessed(preprocessed): Preprocessed,
+) -> Result<Response, StatusCode> {
+    let original_request = &preprocessed.original_request;
+
+    let id = extract_stream_item_id(original_request.url().path())
+        .ok_or(StatusCode::NOT_FOUND)?
+        .to_string();
+    let play_session_id = extract_play_session_id(original_request.url());
+    let play_session = if let Some(play_session_id) = play_session_id.as_deref() {
+        state
+            .play_sessions
+            .get_session_by_session_and_item_id(play_session_id, &id)
+            .await
+            .ok_or_else(|| {
+                error!(
+                    "No play session found for resource: {} and session: {}",
+                    id, play_session_id
+                );
+                StatusCode::NOT_FOUND
+            })?
+    } else {
+        let candidates = state.play_sessions.get_sessions_by_item_id(&id).await;
+        let user_id = preprocessed
+            .user
+            .as_ref()
+            .map(|user| user.id.as_str())
+            .or_else(|| {
+                preprocessed
+                    .session
+                    .as_ref()
+                    .map(|session| session.user_id.as_str())
+            });
+
+        match single_matching_play_session(candidates, user_id) {
+            Ok(play_session) => {
+                warn!(
+                    "Media resource {} arrived without play session id; using only matching active session {}",
+                    id, play_session.session_id
+                );
+                play_session
+            }
+            Err(count) => {
+                if state
+                    .media_storage
+                    .get_media_mapping_with_server(&id)
+                    .await
+                    .map_err(|e| {
+                        error!(
+                            "Failed to resolve media mapping for media resource {}: {}",
+                            id, e
+                        );
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    })?
+                    .is_some()
+                {
+                    let server = preprocessed.server;
+                    if !state
+                        .server_storage
+                        .server_status(server.id)
+                        .await
+                        .is_healthy()
+                    {
+                        error!(
+                            "Server {} for media resource {} is not healthy",
+                            server.name, id
+                        );
+                        return Err(StatusCode::NOT_FOUND);
+                    }
+
+                    warn!(
+                        "Media resource {} arrived without play session id; routing by virtual media mapping",
+                        id
+                    );
+                    return forward_media_request(
+                        &state,
+                        &server,
+                        preprocessed.request,
+                        "media resource",
+                    )
+                    .await;
+                }
+
+                if count == 0 {
+                    error!(
+                        "No play session found for media resource without session id: {}",
+                        id
+                    );
+                } else {
+                    error!(
+                        "Ambiguous media resource {} without play session id matched {} active sessions",
+                        id, count
+                    );
+                }
+                return Err(StatusCode::NOT_FOUND);
+            }
+        }
+    };
+
+    let original_request = preprocessed.original_request;
+
+    let server = resolve_play_session_server(&state, &play_session).await?;
+
     info!(
         "Found play session for resource: {}, session: {}, server: {}",
         id, play_session.session_id, server.name
@@ -276,16 +331,77 @@ pub async fn get_video_resource(
 
     apply_to_request(&mut upstream_request, &server, &session, &new_auth, &state).await;
 
-    forward_video_request(&state, &server, upstream_request, "HLS stream").await
+    forward_media_request(&state, &server, upstream_request, "media resource").await
 }
 
+/// Progressive and universal media streams under `/Videos/{id}/stream*` and
+/// `/Audio/{id}/stream*|/universal`.
+///
+/// Prefer play-session / media-mapping routing so multi-server setups send audio and video
+/// to the correct upstream even when preprocessing falls back to the "best" server.
 pub async fn get_stream(
     State(state): State<AppState>,
     Preprocessed(preprocessed): Preprocessed,
 ) -> Result<Response, StatusCode> {
-    let server = preprocessed.server;
-    let request = preprocessed.request;
-    forward_video_request(&state, &server, request, "media stream").await
+    let original_url = preprocessed.original_request.url().clone();
+    let item_id = extract_stream_item_id(original_url.path()).map(str::to_string);
+    let play_session_id = extract_play_session_id(&original_url);
+    let user_id = preprocessed
+        .user
+        .as_ref()
+        .map(|user| user.id.as_str())
+        .or_else(|| {
+            preprocessed
+                .session
+                .as_ref()
+                .map(|session| session.user_id.as_str())
+        });
+
+    let server = if let Some(item_id) = item_id.as_deref() {
+        resolve_server_for_stream_item(
+            &state,
+            item_id,
+            play_session_id.as_deref(),
+            user_id,
+            &preprocessed.server,
+        )
+        .await?
+    } else {
+        preprocessed.server.clone()
+    };
+
+    if !state
+        .server_storage
+        .server_status(server.id)
+        .await
+        .is_healthy()
+    {
+        error!("Server {} for media stream is not healthy", server.name);
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    // If play-session routing selected a different server than preprocessing, rebuild the
+    // upstream request against that server with the matching session credentials.
+    let request = if server.id != preprocessed.server.id {
+        let mut upstream_request = preprocessed.original_request;
+        let session = session_for_server(&preprocessed.sessions, &server).or_else(|| {
+            (preprocessed.server.id == server.id)
+                .then(|| preprocessed.session.clone())
+                .flatten()
+        });
+        let new_auth = remap_authorization(&preprocessed.auth, &session)
+            .await
+            .map_err(|e| {
+                error!("Failed to remap authorization for media stream: {}", e);
+                StatusCode::BAD_REQUEST
+            })?;
+        apply_to_request(&mut upstream_request, &server, &session, &new_auth, &state).await;
+        upstream_request
+    } else {
+        preprocessed.request
+    };
+
+    forward_media_request(&state, &server, request, "media stream").await
 }
 
 #[cfg(test)]
@@ -300,6 +416,23 @@ mod tests {
             user_id: user_id.to_string(),
             server_id: ServerId::new(server_id),
         }
+    }
+
+    #[test]
+    fn extract_stream_item_id_from_videos_and_audio() {
+        assert_eq!(
+            extract_stream_item_id("/Videos/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/master.m3u8"),
+            Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        );
+        assert_eq!(
+            extract_stream_item_id("/Audio/11111111111111111111111111111111/universal"),
+            Some("11111111111111111111111111111111")
+        );
+        assert_eq!(
+            extract_stream_item_id("/Audio/11111111111111111111111111111111/hls1/main/0.ts"),
+            Some("11111111111111111111111111111111")
+        );
+        assert_eq!(extract_stream_item_id("/Items/abc/PlaybackInfo"), None);
     }
 
     #[test]
