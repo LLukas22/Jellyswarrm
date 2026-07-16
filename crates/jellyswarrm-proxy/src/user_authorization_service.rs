@@ -121,9 +121,21 @@ impl Device {
             || Self::has_known_device_id(short_other_device_id);
 
         // 1) Strict match when both sides have a known device id.
+        // Jellyfin Web builds device ids like base64(UA)+timestamp; the first 16
+        // chars are often identical across logins, so a short-prefix match would
+        // reuse a *stale* session/token and cause post-login 401 storms (slow UI).
         if self_has_known_device_id && other_has_known_device_id {
-            return self_device_id == other_device_id
-                || short_self_device_id == short_other_device_id;
+            if self_device_id == other_device_id {
+                return true;
+            }
+            // Allow prefix match only when at least one side looks truncated.
+            let min_len = self_device_id.len().min(other_device_id.len());
+            if min_len <= 16 {
+                return short_self_device_id == short_other_device_id;
+            }
+            // One id is a proper prefix of the other (partial client truncation).
+            return self_device_id.starts_with(&other_device_id)
+                || other_device_id.starts_with(&self_device_id);
         }
 
         // 2) Fallback to device name only when at least one side has no usable device id.
@@ -1711,7 +1723,8 @@ mod tests {
             .unwrap();
         assert_eq!(sessions1.len(), 1, "Should find exact match");
 
-        // Test 2: Strict match when known device ids share the same short prefix
+        // Test 2: Long device ids that only share a short prefix must NOT match.
+        // Jellyfin Web rotates the suffix each login; reusing a stale token causes 401s.
         let query_device2 = Device {
             client: "Switchfin".to_string(),
             device: "Linux".to_string(),
@@ -1724,8 +1737,25 @@ mod tests {
             .unwrap();
         assert_eq!(
             sessions2.len(),
+            0,
+            "Long device ids with only a shared prefix must not match"
+        );
+
+        // Truncated (≤16 char) ids may still match by prefix.
+        let query_device2b = Device {
+            client: "Switchfin".to_string(),
+            device: "Linux".to_string(),
+            device_id: "1234567890abcdef".to_string(),
+            version: "0.7.4".to_string(),
+        };
+        let sessions2b = service
+            .get_user_sessions(&user.id, Some(query_device2b))
+            .await
+            .unwrap();
+        assert_eq!(
+            sessions2b.len(),
             1,
-            "Should find strict match by short device id prefix"
+            "Truncated device id may match by short prefix"
         );
 
         // Test 3: Fallback to device name + client when device id is truly unknown

@@ -33,7 +33,9 @@ pub static MEDIA_ID_QUERY_TAGS: &[&str] = &[
     "ItemId",
     "SeriesId",
     "MediaSourceId",
-    "Tag",
+    // Note: do NOT remap "Tag" — image cache-busting tags are not media IDs.
+    // Remapping them breaks /Items/{id}/Images/* (404) when the tag collides
+    // with or maps through the media mapping table.
     "SeasonId",
     "startItemId",
     "IDs",

@@ -39,6 +39,7 @@ Jellyswarrm is a reverse proxy that lets you combine multiple Jellyfin servers i
 
 * **Unified Library Access** – Browse media from multiple Jellyfin servers in one place.
 * **Direct Playback** – Play content straight from the original server without extra overhead.
+* **Audio Streaming** – Progressive and HLS audio under `/Audio/...` (including `universal`, `master.m3u8`, and segment paths).
 * **User Mapping** – Link accounts across servers for a consistent user experience.
 * **API Compatibility** – Appears as a normal Jellyfin server, so existing apps and tools still work.
 * **Server Federation** – Automatically sync users across connected servers.
@@ -48,7 +49,6 @@ Jellyswarrm is a reverse proxy that lets you combine multiple Jellyfin servers i
 
 * **QuickConnect** – Sign in on one device by approving the code from another authenticated device.
 * **Websocket Support** – Needed for real-time features like SyncPlay (not fully reliable yet).
-* **Audio Streaming** – May not function correctly (still untested in many cases).
 * **Automatic Bitrate Adjustment** – Stream quality based on network conditions isn’t supported yet.
 * **Media Management** – Features like adding or deleting media libraries through Jellyswarrm are not implemented yet.
 

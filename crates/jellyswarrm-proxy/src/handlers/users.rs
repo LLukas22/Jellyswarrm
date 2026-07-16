@@ -207,21 +207,30 @@ pub async fn handle_authenticate_by_name(
         auth_tasks.append(&mut leftover_tasks);
     }
 
-    // Wait for all authentication attempts to complete
+    // Wait for all authentication attempts (with a per-server cap so one slow
+    // remote backend cannot stall login indefinitely).
     let mut successful_auths: Vec<SuccessfulServerAuth> = Vec::new();
     let total_servers = auth_tasks.len();
+    const AUTH_TASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
 
     for task in auth_tasks {
-        match task.await {
-            Ok(Ok(auth_response)) => {
+        match tokio::time::timeout(AUTH_TASK_TIMEOUT, task).await {
+            Ok(Ok(Ok(auth_response))) => {
                 info!("Successfully authenticated user: {}", payload.username);
                 successful_auths.push(auth_response);
             }
-            Ok(Err(e)) => {
+            Ok(Ok(Err(e))) => {
                 tracing::debug!("Authentication attempt failed: {:?}", e);
             }
-            Err(join_err) => {
+            Ok(Err(join_err)) => {
                 tracing::error!("Authentication task failed: {}", join_err);
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "Authentication attempt for user '{}' timed out after {:?}",
+                    payload.username,
+                    AUTH_TASK_TIMEOUT
+                );
             }
         }
     }
