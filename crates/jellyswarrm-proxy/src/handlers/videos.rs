@@ -412,7 +412,7 @@ async fn forward_resource_by_media_mapping(
         .server_storage
         .server_status(server.id)
         .await
-        .is_available()
+        .is_healthy()
     {
         error!(
             "Server {} for media resource {} is not available",
