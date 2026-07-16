@@ -106,16 +106,19 @@ impl MergedLibraryService {
         members: &[(String, String)],
     ) -> Result<(), sqlx::Error> {
         let mut tx = self.pool.begin().await?;
-        // Delete-then-insert so servers that no longer carry a library don't leave
-        // stale rows that would route fan-out requests to the wrong place.
-        sqlx::query("DELETE FROM merged_library_members WHERE merged_virtual_id = ?")
-            .bind(merged_virtual_id)
-            .execute(&mut *tx)
-            .await?;
+        // Concurrent federated /Views requests used to race on DELETE+INSERT and hit
+        // UNIQUE(merged_virtual_id, server_url). Upsert in place, then prune stale rows.
+        let mut keep_urls: Vec<String> = Vec::with_capacity(members.len());
         for (server_url, virtual_library_id) in members {
+            keep_urls.push(server_url.clone());
             sqlx::query(
-                "INSERT INTO merged_library_members \
-                 (merged_virtual_id, server_url, virtual_library_id) VALUES (?, ?, ?)",
+                r#"
+                INSERT INTO merged_library_members
+                    (merged_virtual_id, server_url, virtual_library_id)
+                VALUES (?, ?, ?)
+                ON CONFLICT(merged_virtual_id, server_url) DO UPDATE SET
+                    virtual_library_id = excluded.virtual_library_id
+                "#,
             )
             .bind(merged_virtual_id)
             .bind(server_url)
@@ -123,6 +126,27 @@ impl MergedLibraryService {
             .execute(&mut *tx)
             .await?;
         }
+
+        if keep_urls.is_empty() {
+            sqlx::query("DELETE FROM merged_library_members WHERE merged_virtual_id = ?")
+                .bind(merged_virtual_id)
+                .execute(&mut *tx)
+                .await?;
+        } else {
+            let placeholders = std::iter::repeat_n("?", keep_urls.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "DELETE FROM merged_library_members \
+                 WHERE merged_virtual_id = ? AND server_url NOT IN ({placeholders})"
+            );
+            let mut query = sqlx::query(&sql).bind(merged_virtual_id);
+            for url in &keep_urls {
+                query = query.bind(url);
+            }
+            query.execute(&mut *tx).await?;
+        }
+
         tx.commit().await?;
         debug!(
             "Upserted {} members for merged library {}",

@@ -68,18 +68,28 @@ pub async fn execute_json_request<T>(
 where
     T: serde::de::DeserializeOwned,
 {
-    let response = client
-        .execute(request)
-        .await
-        .map_err(|e| {
-            error!("Failed to execute request: {}", e);
-            StatusCode::BAD_GATEWAY
-        })?
-        .error_for_status()
-        .map_err(|e| {
-            error!("Request failed with status: {}", e);
-            StatusCode::UNAUTHORIZED
-        })?;
+    let response = client.execute(request).await.map_err(|e| {
+        error!("Failed to execute request: {}", e);
+        StatusCode::BAD_GATEWAY
+    })?;
+
+    let status = response.status();
+    if !status.is_success() {
+        error!(
+            "Request failed with status: {} for {}",
+            status,
+            response.url()
+        );
+        return Err(match status.as_u16() {
+            400 => StatusCode::BAD_REQUEST,
+            401 | 403 => StatusCode::UNAUTHORIZED,
+            404 => StatusCode::NOT_FOUND,
+            408 | 504 => StatusCode::GATEWAY_TIMEOUT,
+            429 => StatusCode::TOO_MANY_REQUESTS,
+            s if (500..600).contains(&s) => StatusCode::BAD_GATEWAY,
+            _ => StatusCode::BAD_GATEWAY,
+        });
+    }
 
     let response_text = response.text().await.map_err(|e| {
         error!("Failed to get response text: {}", e);
