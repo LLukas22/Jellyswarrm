@@ -198,11 +198,9 @@ async fn get_items_for_merged_library(
         .into_iter()
         .flat_map(|(_, response)| response.into_items())
         .collect::<Vec<_>>();
-    all_items.sort_by(|a, b| {
-        let left = a.sort_name.as_deref().or(a.name.as_deref()).unwrap_or("");
-        let right = b.sort_name.as_deref().or(b.name.as_deref()).unwrap_or("");
-        left.cmp(right)
-    });
+        
+    // Apply dynamic sorting based on the request URL
+    apply_dynamic_sort(&mut all_items, original_request.url());
 
     let (paged_items, total_count) = apply_pagination(all_items, pagination);
     items_response_to_json(items_response_from_shape(
@@ -280,7 +278,11 @@ async fn get_items_from_all_servers_interleaved(
         .into_iter()
         .map(|(_, items)| items)
         .collect::<Vec<_>>();
-    let interleaved_items = interleave_items(server_items);
+    let mut interleaved_items = interleave_items(server_items);
+    
+    // Apply dynamic sorting before pagination
+    apply_dynamic_sort(&mut interleaved_items, original_request.url());
+    
     let (paged_items, total_count) = apply_pagination(interleaved_items, pagination);
 
     debug!(
@@ -499,14 +501,11 @@ async fn get_items_from_all_servers_with_merged_libraries(
         }
     }
 
-    library_items.sort_by(|a, b| {
-        let left = a.name.as_deref().unwrap_or("");
-        let right = b.name.as_deref().unwrap_or("");
-        left.cmp(right)
-    });
-
     let mut final_items = library_items;
     final_items.extend(interleave_items(non_lib_per_server));
+
+    // Apply dynamic sorting based on the request URL for the complete federated payload
+    apply_dynamic_sort(&mut final_items, original_request.url());
 
     let (paged_items, total_count) = apply_pagination(final_items, pagination);
     debug!(
@@ -1147,5 +1146,137 @@ mod tests {
         }
 
         serde_json::from_value(item).unwrap()
+    }
+}
+use std::cmp::Ordering;
+
+/// Extracts the `SortBy` and `SortOrder` arrays from the query string.
+fn extract_sorting_params(url: &url::Url) -> (Vec<String>, Vec<String>) {
+    let mut sort_by = Vec::new();
+    let mut sort_order = Vec::new();
+
+    for (key, value) in url.query_pairs() {
+        if key.eq_ignore_ascii_case("SortBy") {
+            sort_by = value.split(',').map(|s| s.to_string()).collect();
+        } else if key.eq_ignore_ascii_case("SortOrder") {
+            sort_order = value.split(',').map(|s| s.to_string()).collect();
+        }
+    }
+
+    if sort_order.is_empty() {
+        sort_order.push("Ascending".to_string());
+    }
+
+    (sort_by, sort_order)
+}
+
+/// Sorts a vector of MediaItems in-place using serialized JSON keys to bypass hidden struct fields.
+pub fn apply_dynamic_sort(items: &mut [MediaItem], url: &url::Url) {
+    if items.is_empty() {
+        return;
+    }
+
+    let (sort_by_fields, sort_orders) = extract_sorting_params(url);
+
+    // Cache serialized representations to maximize lookup speed during sorting
+    let json_values: Vec<serde_json::Value> = items
+        .iter()
+        .map(|item| serde_json::to_value(item).unwrap_or_default())
+        .collect();
+
+    let mut indices: Vec<usize> = (0..items.len()).collect();
+
+    indices.sort_by(|&a_idx, &b_idx| {
+        let a = &json_values[a_idx];
+        let b = &json_values[b_idx];
+
+        // Fallback layout when no parameters are provided
+        if sort_by_fields.is_empty() {
+            let left = a.get("SortName").and_then(|v| v.as_str())
+                .or_else(|| a.get("Name").and_then(|v| v.as_str()))
+                .unwrap_or("");
+            let right = b.get("SortName").and_then(|v| v.as_str())
+                .or_else(|| b.get("Name").and_then(|v| v.as_str()))
+                .unwrap_or("");
+            return left.cmp(right);
+        }
+
+        for (i, field) in sort_by_fields.iter().enumerate() {
+            let order = sort_orders.get(i)
+                .or_else(|| sort_orders.first())
+                .map(|s| s.as_str())
+                .unwrap_or("Ascending");
+            
+            let is_descending = order.eq_ignore_ascii_case("Descending");
+
+            let cmp = match field.as_str() {
+                "SortName" | "Name" => {
+                    let left = a.get("SortName").and_then(|v| v.as_str())
+                        .or_else(|| a.get("Name").and_then(|v| v.as_str()))
+                        .unwrap_or("");
+                    let right = b.get("SortName").and_then(|v| v.as_str())
+                        .or_else(|| b.get("Name").and_then(|v| v.as_str()))
+                        .unwrap_or("");
+                    left.cmp(right)
+                }
+                "ProductionYear" => {
+                    let left = a.get("ProductionYear").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let right = b.get("ProductionYear").and_then(|v| v.as_i64()).unwrap_or(0);
+                    left.cmp(&right)
+                }
+                "Runtime" => {
+                    let left = a.get("RunTimeTicks").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let right = b.get("RunTimeTicks").and_then(|v| v.as_i64()).unwrap_or(0);
+                    left.cmp(&right)
+                }
+                "CommunityRating" => {
+                    let left = a.get("CommunityRating").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let right = b.get("CommunityRating").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    left.partial_cmp(&right).unwrap_or(Ordering::Equal)
+                }
+                "CriticRating" => {
+                    let left = a.get("CriticRating").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let right = b.get("CriticRating").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    left.partial_cmp(&right).unwrap_or(Ordering::Equal)
+                }
+                "OfficialRating" => {
+                    let left = a.get("OfficialRating").and_then(|v| v.as_str()).unwrap_or("");
+                    let right = b.get("OfficialRating").and_then(|v| v.as_str()).unwrap_or("");
+                    left.cmp(right)
+                }
+                "PremiereDate" => {
+                    let left = a.get("PremiereDate").and_then(|v| v.as_str()).unwrap_or("");
+                    let right = b.get("PremiereDate").and_then(|v| v.as_str()).unwrap_or("");
+                    left.cmp(right)
+                }
+                "DateCreated" => {
+                    let left = a.get("DateCreated").and_then(|v| v.as_str()).unwrap_or("");
+                    let right = b.get("DateCreated").and_then(|v| v.as_str()).unwrap_or("");
+                    left.cmp(right)
+                }
+                "PlayCount" => {
+                    let left = a.get("UserData").and_then(|v| v.get("PlayCount")).and_then(|v| v.as_i64()).unwrap_or(0);
+                    let right = b.get("UserData").and_then(|v| v.get("PlayCount")).and_then(|v| v.as_i64()).unwrap_or(0);
+                    left.cmp(&right)
+                }
+                "DatePlayed" => {
+                    let left = a.get("UserData").and_then(|v| v.get("LastPlayedDate")).and_then(|v| v.as_str()).unwrap_or("");
+                    let right = b.get("UserData").and_then(|v| v.get("LastPlayedDate")).and_then(|v| v.as_str()).unwrap_or("");
+                    left.cmp(right)
+                }
+                _ => Ordering::Equal,
+            };
+
+            if cmp != Ordering::Equal {
+                return if is_descending { cmp.reverse() } else { cmp };
+            }
+        }
+        Ordering::Equal
+    });
+
+    // Rearrange original items array safely based on the calculated sort indices
+    let cloned_items = items.to_vec();
+    for (target_idx, &source_idx) in indices.iter().enumerate() {
+        items[target_idx] = cloned_items[source_idx].clone();
     }
 }
