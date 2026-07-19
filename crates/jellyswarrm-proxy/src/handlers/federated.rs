@@ -198,7 +198,7 @@ async fn get_items_for_merged_library(
         .into_iter()
         .flat_map(|(_, response)| response.into_items())
         .collect::<Vec<_>>();
-        
+
     // Apply dynamic sorting based on the request URL
     apply_dynamic_sort(&mut all_items, original_request.url());
 
@@ -279,10 +279,10 @@ async fn get_items_from_all_servers_interleaved(
         .map(|(_, items)| items)
         .collect::<Vec<_>>();
     let mut interleaved_items = interleave_items(server_items);
-    
+
     // Apply dynamic sorting before pagination
     apply_dynamic_sort(&mut interleaved_items, original_request.url());
-    
+
     let (paged_items, total_count) = apply_pagination(interleaved_items, pagination);
 
     debug!(
@@ -1192,36 +1192,51 @@ pub fn apply_dynamic_sort(items: &mut [MediaItem], url: &url::Url) {
 
         // Fallback layout when no parameters are provided
         if sort_by_fields.is_empty() {
-            let left = a.get("SortName").and_then(|v| v.as_str())
+            let left = a
+                .get("SortName")
+                .and_then(|v| v.as_str())
                 .or_else(|| a.get("Name").and_then(|v| v.as_str()))
                 .unwrap_or("");
-            let right = b.get("SortName").and_then(|v| v.as_str())
+            let right = b
+                .get("SortName")
+                .and_then(|v| v.as_str())
                 .or_else(|| b.get("Name").and_then(|v| v.as_str()))
                 .unwrap_or("");
             return left.cmp(right);
         }
 
         for (i, field) in sort_by_fields.iter().enumerate() {
-            let order = sort_orders.get(i)
+            let order = sort_orders
+                .get(i)
                 .or_else(|| sort_orders.first())
                 .map(|s| s.as_str())
                 .unwrap_or("Ascending");
-            
+
             let is_descending = order.eq_ignore_ascii_case("Descending");
 
             let cmp = match field.as_str() {
                 "SortName" | "Name" => {
-                    let left = a.get("SortName").and_then(|v| v.as_str())
+                    let left = a
+                        .get("SortName")
+                        .and_then(|v| v.as_str())
                         .or_else(|| a.get("Name").and_then(|v| v.as_str()))
                         .unwrap_or("");
-                    let right = b.get("SortName").and_then(|v| v.as_str())
+                    let right = b
+                        .get("SortName")
+                        .and_then(|v| v.as_str())
                         .or_else(|| b.get("Name").and_then(|v| v.as_str()))
                         .unwrap_or("");
                     left.cmp(right)
                 }
                 "ProductionYear" => {
-                    let left = a.get("ProductionYear").and_then(|v| v.as_i64()).unwrap_or(0);
-                    let right = b.get("ProductionYear").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let left = a
+                        .get("ProductionYear")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+                    let right = b
+                        .get("ProductionYear")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
                     left.cmp(&right)
                 }
                 "Runtime" => {
@@ -1230,18 +1245,36 @@ pub fn apply_dynamic_sort(items: &mut [MediaItem], url: &url::Url) {
                     left.cmp(&right)
                 }
                 "CommunityRating" => {
-                    let left = a.get("CommunityRating").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                    let right = b.get("CommunityRating").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let left = a
+                        .get("CommunityRating")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0);
+                    let right = b
+                        .get("CommunityRating")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0);
                     left.partial_cmp(&right).unwrap_or(Ordering::Equal)
                 }
                 "CriticRating" => {
-                    let left = a.get("CriticRating").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                    let right = b.get("CriticRating").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let left = a
+                        .get("CriticRating")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0);
+                    let right = b
+                        .get("CriticRating")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0);
                     left.partial_cmp(&right).unwrap_or(Ordering::Equal)
                 }
                 "OfficialRating" => {
-                    let left = a.get("OfficialRating").and_then(|v| v.as_str()).unwrap_or("");
-                    let right = b.get("OfficialRating").and_then(|v| v.as_str()).unwrap_or("");
+                    let left = a
+                        .get("OfficialRating")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let right = b
+                        .get("OfficialRating")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
                     left.cmp(right)
                 }
                 "PremiereDate" => {
@@ -1255,13 +1288,29 @@ pub fn apply_dynamic_sort(items: &mut [MediaItem], url: &url::Url) {
                     left.cmp(right)
                 }
                 "PlayCount" => {
-                    let left = a.get("UserData").and_then(|v| v.get("PlayCount")).and_then(|v| v.as_i64()).unwrap_or(0);
-                    let right = b.get("UserData").and_then(|v| v.get("PlayCount")).and_then(|v| v.as_i64()).unwrap_or(0);
+                    let left = a
+                        .get("UserData")
+                        .and_then(|v| v.get("PlayCount"))
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+                    let right = b
+                        .get("UserData")
+                        .and_then(|v| v.get("PlayCount"))
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
                     left.cmp(&right)
                 }
                 "DatePlayed" => {
-                    let left = a.get("UserData").and_then(|v| v.get("LastPlayedDate")).and_then(|v| v.as_str()).unwrap_or("");
-                    let right = b.get("UserData").and_then(|v| v.get("LastPlayedDate")).and_then(|v| v.as_str()).unwrap_or("");
+                    let left = a
+                        .get("UserData")
+                        .and_then(|v| v.get("LastPlayedDate"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let right = b
+                        .get("UserData")
+                        .and_then(|v| v.get("LastPlayedDate"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
                     left.cmp(right)
                 }
                 _ => Ordering::Equal,
