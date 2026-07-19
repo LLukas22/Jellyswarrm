@@ -76,20 +76,22 @@ pub fn deduplicate_tagged_items(
     items: Vec<TaggedMediaItem>,
     config: &DuplicatePolicyConfig,
 ) -> Vec<MediaItem> {
-    let mut groups: HashMap<String, Vec<TaggedMediaItem>> = HashMap::new();
+    let mut group_indexes: HashMap<String, usize> = HashMap::new();
+    let mut groups: Vec<Vec<TaggedMediaItem>> = Vec::new();
     for tagged in items {
-        groups
-            .entry(duplicate_key(&tagged.item))
-            .or_default()
-            .push(tagged);
+        let key = duplicate_key(&tagged.item);
+        if let Some(&index) = group_indexes.get(&key) {
+            groups[index].push(tagged);
+        } else {
+            group_indexes.insert(key, groups.len());
+            groups.push(vec![tagged]);
+        }
     }
 
-    let mut winners = Vec::with_capacity(groups.len());
-    for (_, group) in groups {
-        winners.extend(select_from_duplicate_group(group, config));
-    }
-
-    winners
+    groups
+        .into_iter()
+        .flat_map(|group| select_from_duplicate_group(group, config))
+        .collect()
 }
 
 fn select_from_duplicate_group(
@@ -97,28 +99,14 @@ fn select_from_duplicate_group(
     config: &DuplicatePolicyConfig,
 ) -> Vec<MediaItem> {
     if group.len() == 1 {
-        return vec![group[0].item.clone()];
-    }
-
-    let max_score = group
-        .iter()
-        .map(|tagged| duplicate_preference_score(&tagged.item))
-        .max()
-        .unwrap_or(0);
-    let mut best_matches = group
-        .into_iter()
-        .filter(|tagged| duplicate_preference_score(&tagged.item) == max_score)
-        .collect::<Vec<_>>();
-
-    if best_matches.len() == 1 {
-        return vec![best_matches.remove(0).item];
+        return group.into_iter().map(|tagged| tagged.item).collect();
     }
 
     if config.policy == DuplicatePolicy::ShowAll {
-        return best_matches.into_iter().map(|tagged| tagged.item).collect();
+        return group.into_iter().map(item_with_server_suffix).collect();
     }
 
-    best_matches
+    group
         .into_iter()
         .max_by(|left, right| {
             compare_for_policy(config, left, right).then_with(|| left.item.id.cmp(&right.item.id))
@@ -180,8 +168,30 @@ fn duplicate_key(item: &MediaItem) -> String {
         return episode_duplicate_key(item);
     }
 
+    if let Some(provider) = provider_identity(item) {
+        return format!("content:provider:{provider}:{:?}", item.item_type);
+    }
+
     let name = normalized_name(item);
-    format!("content:{name}:{:?}", item.item_type)
+    let year = item
+        .extra
+        .get("ProductionYear")
+        .or_else(|| item.extra.get("productionYear"))
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or_default();
+    format!("content:title:{name}:{year}:{:?}", item.item_type)
+}
+
+fn item_with_server_suffix(mut tagged: TaggedMediaItem) -> MediaItem {
+    if matches!(
+        tagged.item.item_type,
+        BaseItemKind::Movie | BaseItemKind::Series
+    ) {
+        if let Some(name) = tagged.item.name.as_mut() {
+            *name = format!("{name} [{}]", tagged.server.name);
+        }
+    }
+    tagged.item
 }
 
 fn episode_duplicate_key(item: &MediaItem) -> String {
@@ -224,30 +234,6 @@ fn episode_number(item: &MediaItem, field: &str) -> i32 {
         })
         .and_then(|value| value.as_i64())
         .unwrap_or(0) as i32
-}
-
-fn duplicate_preference_score(item: &MediaItem) -> i64 {
-    if item.item_type == BaseItemKind::Episode {
-        if let Some(user_data) = &item.user_data {
-            if user_data.playback_position_ticks > 0 {
-                return user_data.playback_position_ticks;
-            }
-            if user_data.play_count > 0 {
-                return i64::from(user_data.play_count);
-            }
-        }
-        return 0;
-    }
-
-    item.child_count
-        .map(|count| i64::from(count.max(0)))
-        .or_else(|| {
-            item.extra
-                .get("ChildCount")
-                .or_else(|| item.extra.get("childCount"))
-                .and_then(|value| value.as_i64())
-        })
-        .unwrap_or(0)
 }
 
 fn provider_identity(item: &MediaItem) -> Option<String> {
@@ -408,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn prefers_more_complete_series() {
+    fn show_all_keeps_every_series_copy_and_adds_server_name() {
         let mut less: MediaItem = serde_json::from_value(serde_json::json!({
             "Id": "left",
             "Name": "Wistoria",
@@ -443,7 +429,47 @@ mod tests {
                 preferred_server_id: None,
             },
         );
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].id, "right");
+        assert_eq!(result.len(), 2);
+        assert_eq!(
+            result
+                .iter()
+                .filter_map(|item| item.name.as_deref())
+                .collect::<Vec<_>>(),
+            vec!["Wistoria [Server 1]", "Wistoria [Server 2]"]
+        );
+    }
+
+    #[test]
+    fn same_title_with_different_provider_ids_is_not_a_duplicate() {
+        let result = deduplicate_tagged_items(
+            vec![
+                tagged(1, 100, "Crash", 1_000, "1996"),
+                tagged(2, 100, "Crash", 2_000, "2004"),
+            ],
+            &DuplicatePolicyConfig {
+                policy: DuplicatePolicy::ServerPriority,
+                preferred_server_id: None,
+            },
+        );
+
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn configured_policy_is_not_overridden_by_child_count() {
+        let mut smaller = tagged(1, 100, "Movie", 1_000, "same");
+        smaller.item.child_count = Some(100);
+        let mut larger = tagged(2, 100, "Movie", 5_000, "same");
+        larger.item.child_count = Some(1);
+
+        let result = deduplicate_tagged_items(
+            vec![smaller, larger],
+            &DuplicatePolicyConfig {
+                policy: DuplicatePolicy::LargestSize,
+                preferred_server_id: None,
+            },
+        );
+
+        assert_eq!(result[0].id, "2-Movie");
     }
 }

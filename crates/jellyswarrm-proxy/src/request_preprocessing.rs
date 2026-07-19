@@ -200,6 +200,7 @@ pub struct PreprocessedRequest {
     pub auth: Option<JellyfinAuthorization>,
     pub session: Option<AuthorizationSession>,
     pub new_auth: Option<JellyfinAuthorization>,
+    pub access_scope: Option<VirtualLibraryAccessScope>,
 }
 
 pub async fn extract_request_infos(
@@ -366,6 +367,7 @@ pub async fn preprocess_request(req: Request, state: &AppState) -> Result<Prepro
         auth,
         session,
         new_auth,
+        access_scope,
     })
 }
 

@@ -11,6 +11,7 @@ use crate::{
     models::{PlaybackRequest, PlaybackResponse},
     processors::response_processor::ResponseProcessingProfile,
     request_preprocessing::PreprocessedRequest,
+    virtual_library_service::VirtualLibraryResolution,
     AppState,
 };
 
@@ -18,13 +19,19 @@ async fn get_processed_item_json(
     state: &AppState,
     preprocessed: PreprocessedRequest,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    let virtual_library = preprocessed
+        .original_request
+        .url()
+        .path_segments()
+        .and_then(Iterator::last)
+        .map(str::to_string);
     let server = preprocessed.server;
     let proxy_api_key = preprocessed
         .user
         .as_ref()
         .map(|user| user.virtual_key.clone());
 
-    let response = execute_processed_json_request(
+    let mut response = execute_processed_json_request(
         state,
         preprocessed.request,
         &server,
@@ -33,6 +40,24 @@ async fn get_processed_item_json(
         proxy_api_key.as_deref(),
     )
     .await?;
+
+    if let Some(virtual_id) = virtual_library {
+        let resolution = state
+            .virtual_library_service
+            .resolve(&virtual_id, preprocessed.access_scope.as_ref())
+            .await
+            .map_err(|error| {
+                error!("Failed to resolve virtual library item: {error}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        if let VirtualLibraryResolution::Resolved(resolved) = resolution {
+            let name = resolved.library.name();
+            response["Id"] = serde_json::Value::String(virtual_id.clone());
+            response["DisplayPreferencesId"] = serde_json::Value::String(virtual_id);
+            response["Name"] = serde_json::Value::String(name.to_string());
+            response["SortName"] = serde_json::Value::String(name.to_lowercase());
+        }
+    }
 
     Ok(Json(response))
 }

@@ -280,7 +280,7 @@ pub async fn get_video_resource(
         &session,
         &new_auth,
         &state,
-        None,
+        preprocessed.access_scope.as_ref(),
     )
     .await;
 
