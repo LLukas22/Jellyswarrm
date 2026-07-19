@@ -121,8 +121,7 @@ fn select_from_duplicate_group(
     best_matches
         .into_iter()
         .max_by(|left, right| {
-            compare_for_policy(config, left, right)
-                .then_with(|| left.item.id.cmp(&right.item.id))
+            compare_for_policy(config, left, right).then_with(|| left.item.id.cmp(&right.item.id))
         })
         .map(|tagged| vec![tagged.item])
         .unwrap_or_default()
@@ -141,9 +140,7 @@ fn compare_for_policy(
         DuplicatePolicy::LowestQuality => {
             quality_score(&right.item).cmp(&quality_score(&left.item))
         }
-        DuplicatePolicy::PreferServer => {
-            prefer_server(left, right, config.preferred_server_id)
-        }
+        DuplicatePolicy::PreferServer => prefer_server(left, right, config.preferred_server_id),
         DuplicatePolicy::ServerPriority => left
             .server
             .priority
@@ -361,12 +358,15 @@ fn quality_score(item: &MediaItem) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        config::MediaStreamingMode,
-        server_url::ServerUrl,
-    };
+    use crate::{config::MediaStreamingMode, server_url::ServerUrl};
 
-    fn tagged(server_id: i64, priority: i32, name: &str, size: i64, provider: &str) -> TaggedMediaItem {
+    fn tagged(
+        server_id: i64,
+        priority: i32,
+        name: &str,
+        size: i64,
+        provider: &str,
+    ) -> TaggedMediaItem {
         let item: MediaItem = serde_json::from_value(serde_json::json!({
             "Id": format!("{server_id}-{name}"),
             "Name": name,

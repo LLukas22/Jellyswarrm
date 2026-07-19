@@ -238,7 +238,9 @@ async fn render_library_groups_list(state: &AppState) -> Result<String, String> 
         ui_route: state.get_ui_route().await,
     };
 
-    template.render().map_err(|e| format!("Template error: {e}"))
+    template
+        .render()
+        .map_err(|e| format!("Template error: {e}"))
 }
 
 struct DiscoveredLibrary {
@@ -288,7 +290,10 @@ async fn discover_libraries(state: &AppState) -> Vec<DiscoveredLibrary> {
         let client = match JellyfinClient::new(server.url.as_str(), CLIENT_INFO.clone()) {
             Ok(client) => client,
             Err(e) => {
-                error!("Failed to create Jellyfin client for {}: {}", server.name, e);
+                error!(
+                    "Failed to create Jellyfin client for {}: {}",
+                    server.name, e
+                );
                 continue;
             }
         };
@@ -398,7 +403,11 @@ pub async fn delete_group(
         return library_groups_blocked_response();
     }
 
-    match state.virtual_library_service.delete_group(&virtual_id).await {
+    match state
+        .virtual_library_service
+        .delete_group(&virtual_id)
+        .await
+    {
         Ok(true) => match render_library_groups_list(&state).await {
             Ok(html) => Html(html).into_response(),
             Err(message) => (StatusCode::INTERNAL_SERVER_ERROR, message).into_response(),

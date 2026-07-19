@@ -22,8 +22,8 @@ use crate::{
     server_storage::Server,
     user_authorization_service::AuthorizationSession,
     virtual_library_service::{
-        normalize_library_id, LibraryAssignment, VirtualLibrary, VirtualLibraryMember,
-        VirtualLibraryAccessScope, VirtualLibraryMode, VirtualLibraryResolution,
+        normalize_library_id, LibraryAssignment, VirtualLibrary, VirtualLibraryAccessScope,
+        VirtualLibraryMember, VirtualLibraryMode, VirtualLibraryResolution,
     },
     AppState,
 };
@@ -235,8 +235,7 @@ async fn get_items_for_virtual_library(
         ensure_dedup_fields(request.url_mut());
 
         let state_clone = state.clone();
-        let use_limited_upstream =
-            is_upstream_limited_catalog_request(original_request.url());
+        let use_limited_upstream = is_upstream_limited_catalog_request(original_request.url());
         let max_pages = merged_library_max_pages(pagination);
         join_set.spawn(async move {
             let result = if use_limited_upstream {
@@ -318,7 +317,10 @@ async fn get_items_for_virtual_library(
                 .items
                 .into_items()
                 .into_iter()
-                .map(move |item| TaggedMediaItem { item, server: server.clone() })
+                .map(move |item| TaggedMediaItem {
+                    item,
+                    server: server.clone(),
+                })
                 .collect::<Vec<_>>()
         })
         .collect();
@@ -920,7 +922,7 @@ async fn get_items_from_all_servers_with_custom_library_groups(
         let right_order = group_sort_order.get(&right.0).copied().unwrap_or(0);
         left_order
             .cmp(&right_order)
-            .then_with(|| left.1.0.cmp(&right.1.0))
+            .then_with(|| left.1 .0.cmp(&right.1 .0))
     });
 
     let mut library_join = JoinSet::new();
@@ -936,9 +938,8 @@ async fn get_items_from_all_servers_with_custom_library_groups(
     for (_key, group) in library_groups {
         if let Some((item, server)) = group.into_iter().next() {
             let state = state.clone();
-            library_join.spawn(async move {
-                process_library_folder(&state, item, &server, true).await
-            });
+            library_join
+                .spawn(async move { process_library_folder(&state, item, &server, true).await });
         }
     }
 
@@ -1277,10 +1278,9 @@ async fn fetch_upstream_pages_parallel(
             let session = session.clone();
             let server = server.clone();
             join_set.spawn(async move {
-                let page = fetch_upstream_page_raw(
-                    index, state, request, session, server, start_index,
-                )
-                .await?;
+                let page =
+                    fetch_upstream_page_raw(index, state, request, session, server, start_index)
+                        .await?;
                 Ok::<_, StatusCode>((start_index, page))
             });
         }
@@ -1504,11 +1504,7 @@ async fn process_library_folder(
     let mut processed =
         process_media_item_for_server(item, state, server, should_change_name).await?;
     let image_source_id = processed.id.clone();
-    attach_library_folder_image_source(
-        &mut processed,
-        &image_source_id,
-        primary_tag.as_deref(),
-    );
+    attach_library_folder_image_source(&mut processed, &image_source_id, primary_tag.as_deref());
     Ok(processed)
 }
 
@@ -1517,14 +1513,11 @@ fn attach_library_folder_image_source(
     image_source_id: &str,
     primary_tag: Option<&str>,
 ) {
-    let Some(primary_tag) = primary_tag
-        .map(str::to_string)
-        .or_else(|| {
-            item.image_tags
-                .as_ref()
-                .and_then(|tags| tags.get("Primary").cloned())
-        })
-    else {
+    let Some(primary_tag) = primary_tag.map(str::to_string).or_else(|| {
+        item.image_tags
+            .as_ref()
+            .and_then(|tags| tags.get("Primary").cloned())
+    }) else {
         return;
     };
 
@@ -1552,12 +1545,7 @@ fn is_playback_catalog_request(url: &url::Url) -> bool {
 }
 
 fn interleave_server_items(server_items: Vec<(ItemsResponseVariants, Server)>) -> Vec<MediaItem> {
-    interleave_items(
-        server_items
-            .into_iter()
-            .map(|(items, _)| items)
-            .collect(),
-    )
+    interleave_items(server_items.into_iter().map(|(items, _)| items).collect())
 }
 
 async fn process_media_item_for_server(
@@ -1722,16 +1710,12 @@ mod tests {
 
     #[test]
     fn is_upstream_limited_catalog_request_detects_latest_and_suggestions() {
-        let latest = url::Url::parse(
-            "http://localhost/Users/u/Items/Latest?Limit=16&ParentId=abc",
-        )
-        .unwrap();
+        let latest =
+            url::Url::parse("http://localhost/Users/u/Items/Latest?Limit=16&ParentId=abc").unwrap();
         let suggestions =
             url::Url::parse("http://localhost/Users/u/Items/Suggestions?Limit=12").unwrap();
-        let browse = url::Url::parse(
-            "http://localhost/Users/u/Items?Limit=100&ParentId=abc",
-        )
-        .unwrap();
+        let browse =
+            url::Url::parse("http://localhost/Users/u/Items?Limit=100&ParentId=abc").unwrap();
 
         assert!(is_upstream_limited_catalog_request(&latest));
         assert!(is_upstream_limited_catalog_request(&suggestions));

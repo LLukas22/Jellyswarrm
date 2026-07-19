@@ -100,15 +100,11 @@ impl UrlProcessor {
         url: &url::Url,
         access_scope: Option<&VirtualLibraryAccessScope>,
     ) -> Result<Option<Server>> {
-        if let Some(server) = self
-            .server_from_path_media_ids(url, access_scope)
-            .await?
-        {
+        if let Some(server) = self.server_from_path_media_ids(url, access_scope).await? {
             return Ok(Some(server));
         }
 
-        self.server_from_query_media_ids(url, access_scope)
-            .await
+        self.server_from_query_media_ids(url, access_scope).await
     }
 
     fn replace_user_ids_in_path(&self, url: &mut url::Url, session: &Option<AuthorizationSession>) {
@@ -441,11 +437,9 @@ impl UrlProcessor {
             .await?
         {
             VirtualLibraryResolution::Unknown => Ok(None),
-            VirtualLibraryResolution::Empty(_) | VirtualLibraryResolution::Resolved(_) => {
-                Err(anyhow::anyhow!(
-                    "virtual library has no member in the current user's server scope"
-                ))
-            }
+            VirtualLibraryResolution::Empty(_) | VirtualLibraryResolution::Resolved(_) => Err(
+                anyhow::anyhow!("virtual library has no member in the current user's server scope"),
+            ),
         }
     }
 }

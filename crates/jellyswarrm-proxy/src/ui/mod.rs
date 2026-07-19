@@ -133,7 +133,10 @@ pub fn ui_routes() -> axum::Router<AppState> {
             axum::routing::delete(admin::servers::delete_server_admin),
         )
         .route("/libraries", get(admin::libraries::libraries_page))
-        .route("/libraries/list", get(admin::libraries::library_groups_list))
+        .route(
+            "/libraries/list",
+            get(admin::libraries::library_groups_list),
+        )
         .route("/libraries/groups", post(admin::libraries::create_group))
         .route(
             "/libraries/groups/{virtual_id}",
