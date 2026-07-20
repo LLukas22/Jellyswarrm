@@ -126,7 +126,9 @@ impl Device {
                 return true;
             }
 
-            // Web clients derive device_id from base64(user-agent + "|" + timestamp).
+            // Web clients derive device_id from base64(user-agent + "|" + timestamp) — see
+            // generateDeviceId() in jellyfin-web:
+            // https://github.com/jellyfin/jellyfin-web/blob/1363b749b5e01202919f8a35a2caabdaca6a18e0/src/components/apphost.js#L125-L133
             // normalize_device() lowercases it, so every browser's device_id starts with
             // the lowercased base64 of "Mozilla/5.0 (" ("tw96awxs..."), making the 16-char
             // prefix fallback below collide across ALL web sessions of a user. Require an
