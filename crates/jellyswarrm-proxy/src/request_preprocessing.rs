@@ -9,10 +9,9 @@ use tracing::{debug, error};
 use crate::models::Authorization;
 use crate::processors::analyze_json;
 use crate::processors::request_analyzer::{RequestAnalysisContext, RequestBodyAnalysisResult};
-use crate::processors::url_processor::{USER_ID_PATH_TAGS, USER_ID_QUERY_TAGS};
 use crate::proxy_headers::remove_hop_by_hop_headers;
 use crate::server_storage::Server;
-use crate::url_helper::{contains_id, join_server_url};
+use crate::url_helper::join_server_url;
 use crate::user_authorization_service::{AuthorizationSession, Device, User};
 use crate::AppState;
 
@@ -62,7 +61,7 @@ pub async fn resolve_request_identity_from_headers_uri(
             });
         }
     }
-    let user = get_user_from_request(&request, &auth, state).await?;
+    let user = get_user_from_request(&auth, state).await?;
 
     Ok(RequestIdentity { auth, user, device })
 }
@@ -227,7 +226,7 @@ pub async fn extract_request_infos(
         None
     };
 
-    let mut user = get_user_from_request(&request, &auth, state).await?;
+    let mut user = get_user_from_request(&auth, state).await?;
 
     // look into the body for information
     let request_body_result = if let Some(json) = body_to_json(&request) {
@@ -519,36 +518,10 @@ async fn server_from_request_media_ids(
 }
 
 pub async fn get_user_from_request(
-    request: &reqwest::Request,
     auth: &Option<JellyfinAuthorization>,
     state: &AppState,
 ) -> Result<Option<User>> {
     let Some(auth) = auth else {
-        // No auth, check for user ID in path
-        for &path_segment in USER_ID_PATH_TAGS {
-            if let Some(user_id) = contains_id(request.url(), path_segment) {
-                debug!("Found {} ID in request: {}", path_segment, user_id);
-                let user = state.user_authorization.get_user_by_id(&user_id).await?;
-                return Ok(user);
-            }
-        }
-
-        // If that fails, check query parameters
-        for &param_name in USER_ID_QUERY_TAGS {
-            if let Some(param_value) = request
-                .url()
-                .query_pairs()
-                .find(|(k, _)| k.eq_ignore_ascii_case(param_name))
-                .map(|(_, v)| v.to_string())
-            {
-                debug!("Found {} in query: {}", param_name, param_value);
-                let user = state
-                    .user_authorization
-                    .get_user_by_id(&param_value)
-                    .await?;
-                return Ok(user);
-            }
-        }
         return Ok(None);
     };
 
@@ -631,6 +604,7 @@ mod tests {
     use crate::processors::url_processor::{
         matches_case_insensitive, MEDIA_ID_PATH_TAGS, MEDIA_ID_QUERY_TAGS,
     };
+    use crate::url_helper::contains_id;
 
     #[test]
     fn media_id_tags_cover_audio_paths_and_item_id_queries() {
