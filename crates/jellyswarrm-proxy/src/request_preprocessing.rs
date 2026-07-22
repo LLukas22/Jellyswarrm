@@ -9,10 +9,9 @@ use tracing::{debug, error};
 use crate::models::Authorization;
 use crate::processors::analyze_json;
 use crate::processors::request_analyzer::{RequestAnalysisContext, RequestBodyAnalysisResult};
-use crate::processors::url_processor::{USER_ID_PATH_TAGS, USER_ID_QUERY_TAGS};
 use crate::proxy_headers::remove_hop_by_hop_headers;
 use crate::server_storage::Server;
-use crate::url_helper::{contains_id, join_server_url};
+use crate::url_helper::join_server_url;
 use crate::user_authorization_service::{AuthorizationSession, Device, User};
 use crate::AppState;
 
@@ -62,7 +61,7 @@ pub async fn resolve_request_identity_from_headers_uri(
             });
         }
     }
-    let user = get_user_from_request(&request, &auth, state).await?;
+    let user = get_user_from_request(&auth, state).await?;
 
     Ok(RequestIdentity { auth, user, device })
 }
@@ -227,7 +226,7 @@ pub async fn extract_request_infos(
         None
     };
 
-    let mut user = get_user_from_request(&request, &auth, state).await?;
+    let mut user = get_user_from_request(&auth, state).await?;
 
     // look into the body for information
     let request_body_result = if let Some(json) = body_to_json(&request) {
@@ -519,36 +518,10 @@ async fn server_from_request_media_ids(
 }
 
 pub async fn get_user_from_request(
-    request: &reqwest::Request,
     auth: &Option<JellyfinAuthorization>,
     state: &AppState,
 ) -> Result<Option<User>> {
     let Some(auth) = auth else {
-        // No auth, check for user ID in path
-        for &path_segment in USER_ID_PATH_TAGS {
-            if let Some(user_id) = contains_id(request.url(), path_segment) {
-                debug!("Found {} ID in request: {}", path_segment, user_id);
-                let user = state.user_authorization.get_user_by_id(&user_id).await?;
-                return Ok(user);
-            }
-        }
-
-        // If that fails, check query parameters
-        for &param_name in USER_ID_QUERY_TAGS {
-            if let Some(param_value) = request
-                .url()
-                .query_pairs()
-                .find(|(k, _)| k.eq_ignore_ascii_case(param_name))
-                .map(|(_, v)| v.to_string())
-            {
-                debug!("Found {} in query: {}", param_name, param_value);
-                let user = state
-                    .user_authorization
-                    .get_user_by_id(&param_value)
-                    .await?;
-                return Ok(user);
-            }
-        }
         return Ok(None);
     };
 
@@ -631,6 +604,7 @@ mod tests {
     use crate::processors::url_processor::{
         matches_case_insensitive, MEDIA_ID_PATH_TAGS, MEDIA_ID_QUERY_TAGS,
     };
+    use crate::url_helper::contains_id;
 
     #[test]
     fn media_id_tags_cover_audio_paths_and_item_id_queries() {
@@ -646,5 +620,159 @@ mod tests {
 
         assert_eq!(matched_path_id.as_deref(), Some(audio_id));
         assert!(matches_case_insensitive("ItemId", MEDIA_ID_QUERY_TAGS));
+    }
+
+    use crate::config::{AppConfig, MIGRATOR};
+    use crate::handlers::quick_connect::QuickConnectStorage;
+    use crate::media_storage_service::MediaStorageService;
+    use crate::merged_library_service::MergedLibraryService;
+    use crate::server_storage::ServerStorageService;
+    use crate::session_storage::SessionStorage;
+    use crate::user_authorization_service::UserAuthorizationService;
+    use crate::{DataContext, ProxyProcessors};
+    use sqlx::SqlitePool;
+    use std::sync::Arc;
+
+    async fn create_test_app_state() -> AppState {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+
+        let data_context = DataContext {
+            user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
+            server_storage: Arc::new(ServerStorageService::new(pool.clone())),
+            media_storage: Arc::new(MediaStorageService::new(pool.clone())),
+            merged_library_service: Arc::new(MergedLibraryService::new(pool)),
+            play_sessions: Arc::new(SessionStorage::new()),
+            config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
+        };
+        let processors = ProxyProcessors::new(data_context.clone());
+
+        AppState::new(
+            reqwest::Client::new(),
+            reqwest::Client::new(),
+            data_context,
+            processors,
+            QuickConnectStorage::new(),
+        )
+    }
+
+    #[tokio::test]
+    async fn resolve_identity_ignores_valid_userid_path_segment_without_auth() {
+        let state = create_test_app_state().await;
+        let victim = state
+            .user_authorization
+            .get_or_create_user("victim", &"password123".into())
+            .await
+            .unwrap();
+
+        let headers = http::HeaderMap::new();
+        let uri: http::Uri = format!("/Users/{}", victim.id).parse().unwrap();
+
+        let identity = resolve_request_identity_from_headers_uri(&headers, &uri, &state)
+            .await
+            .unwrap();
+
+        assert!(identity.user.is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_identity_ignores_valid_userid_query_on_user_views_without_auth() {
+        let state = create_test_app_state().await;
+        let victim = state
+            .user_authorization
+            .get_or_create_user("victim", &"password123".into())
+            .await
+            .unwrap();
+
+        let headers = http::HeaderMap::new();
+        let uri: http::Uri = format!("/UserViews?userId={}", victim.id).parse().unwrap();
+
+        let identity = resolve_request_identity_from_headers_uri(&headers, &uri, &state)
+            .await
+            .unwrap();
+
+        assert!(identity.user.is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_identity_ignores_valid_userid_query_on_user_items_resume_without_auth() {
+        let state = create_test_app_state().await;
+        let victim = state
+            .user_authorization
+            .get_or_create_user("victim", &"password123".into())
+            .await
+            .unwrap();
+
+        let headers = http::HeaderMap::new();
+        let uri: http::Uri = format!("/UserItems/Resume?userId={}", victim.id)
+            .parse()
+            .unwrap();
+
+        let identity = resolve_request_identity_from_headers_uri(&headers, &uri, &state)
+            .await
+            .unwrap();
+
+        assert!(identity.user.is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_identity_treats_malformed_authorization_header_as_unauthenticated() {
+        let state = create_test_app_state().await;
+        let victim = state
+            .user_authorization
+            .get_or_create_user("victim", &"password123".into())
+            .await
+            .unwrap();
+
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            http::header::AUTHORIZATION,
+            http::HeaderValue::from_static("Bearer sometoken"),
+        );
+        let uri: http::Uri = format!("/UserViews?userId={}", victim.id).parse().unwrap();
+
+        let identity = resolve_request_identity_from_headers_uri(&headers, &uri, &state)
+            .await
+            .unwrap();
+
+        assert!(identity.auth.is_none());
+        assert!(identity.user.is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_identity_resolves_authenticated_user_ignoring_different_userid_in_url() {
+        let state = create_test_app_state().await;
+        let caller = state
+            .user_authorization
+            .get_or_create_user("caller", &"password123".into())
+            .await
+            .unwrap();
+        let other = state
+            .user_authorization
+            .get_or_create_user("other", &"password456".into())
+            .await
+            .unwrap();
+
+        let auth_header = Authorization {
+            client: "Test".to_string(),
+            device: "Test".to_string(),
+            device_id: "test-device".to_string(),
+            version: "1.0.0".to_string(),
+            token: Some(caller.virtual_key.clone()),
+        }
+        .to_header_value();
+
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            http::header::AUTHORIZATION,
+            http::HeaderValue::from_str(&auth_header).unwrap(),
+        );
+        let uri: http::Uri = format!("/UserViews?userId={}", other.id).parse().unwrap();
+
+        let identity = resolve_request_identity_from_headers_uri(&headers, &uri, &state)
+            .await
+            .unwrap();
+
+        assert_eq!(identity.user.unwrap().id, caller.id);
     }
 }
