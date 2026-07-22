@@ -274,7 +274,15 @@ pub async fn get_video_resource(
             StatusCode::BAD_REQUEST
         })?;
 
-    apply_to_request(&mut upstream_request, &server, &session, &new_auth, &state).await;
+    apply_to_request(
+        &mut upstream_request,
+        &server,
+        &session,
+        &new_auth,
+        &state,
+        preprocessed.access_scope.as_ref(),
+    )
+    .await;
 
     forward_video_request(&state, &server, upstream_request, "HLS stream").await
 }

@@ -1,0 +1,137 @@
+{% if groups.is_empty() && discovered_libraries.is_empty() %}
+<article>
+    <header><h4>No libraries discovered</h4></header>
+    <p>Add Jellyfin servers with federation admin credentials configured, then refresh this page.</p>
+</article>
+{% else %}
+
+{% if !groups.is_empty() %}
+<h2 class="section-heading-tight">Configured Groups</h2>
+{% for group in groups %}
+<article class="library-group-card">
+    <div class="library-group-header">
+        <form class="library-group-name-form" hx-post="/{{ ui_route }}/libraries/groups/{{ group.virtual_id }}/rename" hx-target="#library-groups-list" hx-swap="innerHTML">
+            <label class="form-field">
+                <span class="field-label">Shown name</span>
+                <input type="text" name="name" value="{{ group.name }}" autocomplete="off" required>
+            </label>
+            <button type="submit" class="outline">Save Name</button>
+        </form>
+        <button type="button" class="icon-btn danger"
+                hx-delete="/{{ ui_route }}/libraries/groups/{{ group.virtual_id }}"
+                hx-target="#library-groups-list" hx-swap="innerHTML"
+                hx-confirm="Delete group '{{ group.name }}'?"
+                title="Delete group">
+            <i class="fas fa-trash" aria-hidden="true"></i>
+        </button>
+    </div>
+    <form class="library-group-policy-form" hx-post="/{{ ui_route }}/libraries/groups/{{ group.virtual_id }}/policy" hx-target="#library-groups-list" hx-swap="innerHTML">
+        <div class="library-group-policy-grid">
+            <label class="form-field">
+                <span class="field-label">Duplicate handling</span>
+                <select name="duplicate_policy" required>
+                    {% for policy in duplicate_policies %}
+                    <option value="{{ policy.value }}" {% if group.duplicate_policy == policy.value %}selected{% endif %}>{{ policy.label }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label class="form-field">
+                <span class="field-label">Preferred server</span>
+                <select name="preferred_server_id">
+                    <option value="">Auto / use server priority</option>
+                    {% for server in servers %}
+                    <option value="{{ server.id }}" {% match group.preferred_server_id %}{% when Some with (preferred) %}{% if *preferred == server.id %}selected{% endif %}{% when None %}{% endmatch %}>{{ server.name }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <button type="submit" class="secondary">Save Policy</button>
+        </div>
+    </form>
+    {% if group.members.is_empty() %}
+    <p>No libraries assigned yet.</p>
+    {% else %}
+    <table aria-label="Libraries in {{ group.name }}">
+        <thead>
+            <tr>
+                <th>Server</th>
+                <th>Library</th>
+                <th style="text-align:center;">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for member in group.members %}
+            <tr>
+                <td>{{ member.server_name }}</td>
+                <td>{{ member.library_name }}</td>
+                <td style="text-align:center;">
+                    <button type="button" class="icon-btn danger"
+                            hx-post="/{{ ui_route }}/libraries/groups/{{ group.virtual_id }}/remove"
+                            hx-target="#library-groups-list" hx-swap="innerHTML"
+                            hx-vals='{"server_id":"{{ member.server_id }}","library_id":"{{ member.original_library_id }}"}'
+                            title="Remove from group">
+                        <i class="fas fa-unlink" aria-hidden="true"></i>
+                    </button>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</article>
+{% endfor %}
+<hr />
+{% endif %}
+
+<h2 class="section-heading-tight">Available Libraries</h2>
+<p>Assign libraries from your connected servers into a group. Each library can belong to one group.</p>
+
+{% if discovered_libraries.is_empty() %}
+<p>No libraries found. Configure federation admin credentials on your servers first.</p>
+{% else %}
+<table aria-label="Available libraries">
+    <thead>
+        <tr>
+            <th>Server</th>
+            <th>Library</th>
+            <th>Type</th>
+            <th>Assigned To</th>
+            <th>Add To Group</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for library in discovered_libraries %}
+        <tr>
+            <td>{{ library.server_name }}</td>
+            <td>{{ library.library_name }}</td>
+            <td>{{ library.collection_type }}</td>
+            <td>
+                {% if let Some(group_name) = library.assigned_group %}
+                    <span class="badge success">{{ group_name }}</span>
+                {% else %}
+                    <span class="badge secondary">Unassigned</span>
+                {% endif %}
+            </td>
+            <td>
+                {% if groups.is_empty() %}
+                    <small class="secondary">Create a group first</small>
+                {% else %}
+                <form hx-post="/{{ ui_route }}/libraries/assign" hx-target="#library-groups-list" hx-swap="innerHTML" style="display:flex; gap:0.5rem; align-items:center; margin:0;">
+                    <input type="hidden" name="server_id" value="{{ library.server_id }}">
+                    <input type="hidden" name="library_id" value="{{ library.library_id }}">
+                    <input type="hidden" name="library_name" value="{{ library.library_name }}">
+                    <select name="group_virtual_id" required style="margin-bottom:0; min-width: 10rem;">
+                        {% for group in groups %}
+                        <option value="{{ group.virtual_id }}">{{ group.name }}</option>
+                        {% endfor %}
+                    </select>
+                    <button type="submit" class="outline" style="margin-bottom:0; white-space:nowrap;">Assign</button>
+                </form>
+                {% endif %}
+            </td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+{% endif %}

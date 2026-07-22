@@ -101,6 +101,51 @@
   margin-bottom: 0.5rem;
 }
 
+.library-group-card {
+  margin-bottom: 1.25rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--pico-muted-border-color);
+}
+
+.library-group-card:last-of-type {
+  border-bottom: none;
+}
+
+.library-group-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: end;
+  margin-bottom: 1rem;
+}
+
+.library-group-name-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: end;
+  margin: 0;
+}
+
+.library-group-policy-form {
+  margin: 0 0 1rem;
+}
+
+.library-group-policy-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+  gap: 1rem;
+  align-items: end;
+}
+
+@media (max-width: 900px) {
+  .library-group-header,
+  .library-group-name-form,
+  .library-group-policy-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .server-form-grid {
   display: grid;
   grid-template-columns: minmax(10rem, 1fr) minmax(13rem, 1.35fr) minmax(7.5rem, 0.7fr) minmax(12rem, 1fr) auto;

@@ -166,27 +166,33 @@ pub enum CollectionType {
     UnknownVariant(String),
 }
 
+impl CollectionType {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Movies => "movies",
+            Self::TvShows => "tvshows",
+            Self::Music => "music",
+            Self::MusicVideos => "musicvideos",
+            Self::Trailers => "trailers",
+            Self::HomeVideos => "homevideos",
+            Self::BoxSets => "boxsets",
+            Self::Books => "books",
+            Self::Photos => "photos",
+            Self::LiveTv => "livetv",
+            Self::Playlists => "playlists",
+            Self::Folders => "folders",
+            Self::UnknownVariant(value) => value,
+        }
+    }
+}
+
 impl Serialize for CollectionType {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        match self {
-            CollectionType::Unknown => serializer.serialize_str("unknown"),
-            CollectionType::Movies => serializer.serialize_str("movies"),
-            CollectionType::TvShows => serializer.serialize_str("tvshows"),
-            CollectionType::Music => serializer.serialize_str("music"),
-            CollectionType::MusicVideos => serializer.serialize_str("musicvideos"),
-            CollectionType::Trailers => serializer.serialize_str("trailers"),
-            CollectionType::HomeVideos => serializer.serialize_str("homevideos"),
-            CollectionType::BoxSets => serializer.serialize_str("boxsets"),
-            CollectionType::Books => serializer.serialize_str("books"),
-            CollectionType::Photos => serializer.serialize_str("photos"),
-            CollectionType::LiveTv => serializer.serialize_str("livetv"),
-            CollectionType::Playlists => serializer.serialize_str("playlists"),
-            CollectionType::Folders => serializer.serialize_str("folders"),
-            CollectionType::UnknownVariant(s) => serializer.serialize_str(s),
-        }
+        serializer.serialize_str(self.as_str())
     }
 }
 
