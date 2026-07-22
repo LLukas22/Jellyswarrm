@@ -1,7 +1,8 @@
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::str::FromStr;
+
 use axum::{extract::State, Json};
 use hyper::StatusCode;
-use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet, VecDeque};
 use tokio::task::JoinSet;
 use tracing::{debug, error, trace, warn};
 
@@ -15,7 +16,7 @@ use crate::{
         items::get_items,
     },
     models::{
-        enums::{BaseItemKind, CollectionType},
+        enums::{BaseItemKind, CollectionType, ItemSortBy, SortOrder},
         ItemsResponseVariants, ItemsResponseWithCount, MediaItem,
     },
     processors::response_processor::ResponseProcessingProfile,
@@ -236,7 +237,7 @@ async fn get_virtual_library_items(
         .collect();
 
     let mut all_items = deduplicate_tagged_items(tagged_items, &duplicate_config);
-    sort_merged_items(&mut all_items, original_request.url());
+    apply_dynamic_sort(&mut all_items, original_request.url());
 
     let total_count = estimate_merged_library_total(
         all_items.len(),
@@ -373,7 +374,11 @@ async fn get_interleaved_root(
         .into_iter()
         .map(|(_, items)| items)
         .collect::<Vec<_>>();
-    let interleaved_items = interleave_items(server_items);
+    let mut interleaved_items = interleave_items(server_items);
+
+    // Apply dynamic sorting before pagination
+    apply_dynamic_sort(&mut interleaved_items, original_request.url());
+
     let (paged_items, total_count) = apply_pagination(interleaved_items, pagination);
 
     debug!(
@@ -659,15 +664,14 @@ async fn get_automatic_library_root(
             })?;
     }
 
-    library_items.sort_by(|a, b| {
-        let left = a.name.as_deref().unwrap_or("");
-        let right = b.name.as_deref().unwrap_or("");
-        left.cmp(right)
-    });
-
     let mut final_items = library_items;
     final_items.extend(interleave_server_items(non_lib_per_server));
-    root_catalog_response(final_items, pagination, wrapped_response)
+    root_catalog_response(
+        final_items,
+        original_request.url(),
+        pagination,
+        wrapped_response,
+    )
 }
 
 async fn get_configured_library_root(
@@ -787,12 +791,6 @@ async fn get_configured_library_root(
         }
     }
 
-    library_items.sort_by(|a, b| {
-        let left = a.name.as_deref().unwrap_or("");
-        let right = b.name.as_deref().unwrap_or("");
-        left.cmp(right)
-    });
-
     let mut final_items = library_items;
     if is_playback_catalog_request(original_request.url()) {
         let duplicate_config = DuplicatePolicyConfig {
@@ -816,14 +814,21 @@ async fn get_configured_library_root(
         final_items.extend(interleave_server_items(non_lib_per_server));
     }
 
-    root_catalog_response(final_items, pagination, wrapped_response)
+    root_catalog_response(
+        final_items,
+        original_request.url(),
+        pagination,
+        wrapped_response,
+    )
 }
 
 fn root_catalog_response(
-    items: Vec<MediaItem>,
+    mut items: Vec<MediaItem>,
+    url: &url::Url,
     pagination: Pagination,
     wrapped_response: bool,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    apply_dynamic_sort(&mut items, url);
     let (items, total_count) = apply_pagination(items, pagination);
     debug!(
         "Returning {} of {} federated items",
@@ -1468,116 +1473,67 @@ fn pagination_from_url(url: &url::Url) -> Pagination {
     pagination
 }
 
-fn sort_merged_items(items: &mut [MediaItem], url: &url::Url) {
-    let mut fields = url
-        .query_pairs()
-        .find(|(key, _)| key.eq_ignore_ascii_case("SortBy"))
-        .map(|(_, value)| {
-            value
-                .split(',')
-                .map(str::trim)
-                .filter(|field| !field.is_empty())
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let mut descending = url.query_pairs().any(|(key, value)| {
-        key.eq_ignore_ascii_case("SortOrder") && value.eq_ignore_ascii_case("Descending")
-    });
+fn extract_sorting_params(url: &url::Url) -> (Vec<ItemSortBy>, Vec<SortOrder>) {
+    let mut sort_by = Vec::new();
+    let mut sort_order = Vec::new();
 
-    if fields.is_empty() {
-        if url.path().to_ascii_lowercase().ends_with("/latest") {
-            fields.push("DateCreated".to_string());
-            descending = true;
-        } else {
-            fields.push("SortName".to_string());
+    for (key, value) in url.query_pairs() {
+        if key.eq_ignore_ascii_case("SortBy") {
+            sort_by = value
+                .split(',')
+                .filter_map(|value| ItemSortBy::from_str(value.trim()).ok())
+                .collect();
+        } else if key.eq_ignore_ascii_case("SortOrder") {
+            sort_order = value
+                .split(',')
+                .filter_map(|value| SortOrder::from_str(value.trim()).ok())
+                .collect();
         }
     }
-    if fields
-        .iter()
-        .any(|field| field.eq_ignore_ascii_case("Random"))
-    {
+
+    if sort_order.is_empty() {
+        sort_order.push(SortOrder::Ascending);
+    }
+
+    (sort_by, sort_order)
+}
+
+pub fn apply_dynamic_sort(items: &mut [MediaItem], url: &url::Url) {
+    if items.is_empty() {
         return;
     }
 
-    items.sort_by(|left, right| {
-        let ordering = fields
-            .iter()
-            .map(|field| compare_media_field(left, right, field))
-            .find(|ordering| *ordering != Ordering::Equal)
-            .unwrap_or(Ordering::Equal);
-        if descending {
-            ordering.reverse()
+    let (mut sort_by_fields, mut sort_orders) = extract_sorting_params(url);
+    if sort_by_fields.is_empty() {
+        if url.path().to_ascii_lowercase().ends_with("/latest") {
+            sort_by_fields.push(ItemSortBy::DateCreated);
+            if let Some(order) = sort_orders.first_mut() {
+                *order = SortOrder::Descending;
+            }
         } else {
-            ordering
+            sort_by_fields.push(ItemSortBy::SortName);
         }
+    }
+
+    items.sort_by(|left, right| {
+        for (index, field) in sort_by_fields.iter().enumerate() {
+            let order = sort_orders
+                .get(index)
+                .copied()
+                .unwrap_or_else(|| sort_orders.first().copied().unwrap_or_default());
+            let ordering = left.cmp_by(right, *field);
+
+            if !ordering.is_eq() {
+                return if order == SortOrder::Descending {
+                    ordering.reverse()
+                } else {
+                    ordering
+                };
+            }
+        }
+
+        std::cmp::Ordering::Equal
     });
-}
-
-fn compare_media_field(left: &MediaItem, right: &MediaItem, field: &str) -> Ordering {
-    if field.eq_ignore_ascii_case("SortName") || field.eq_ignore_ascii_case("Name") {
-        return media_name(left).cmp(media_name(right));
-    }
-    if field.eq_ignore_ascii_case("DateCreated") {
-        return left.date_created.cmp(&right.date_created);
-    }
-    if field.eq_ignore_ascii_case("PlayCount") {
-        return left
-            .user_data
-            .as_ref()
-            .map(|data| data.play_count)
-            .cmp(&right.user_data.as_ref().map(|data| data.play_count));
-    }
-    if field.eq_ignore_ascii_case("DatePlayed") {
-        return left
-            .user_data
-            .as_ref()
-            .and_then(|data| data.last_played_date.as_deref())
-            .cmp(
-                &right
-                    .user_data
-                    .as_ref()
-                    .and_then(|data| data.last_played_date.as_deref()),
-            );
-    }
-
-    compare_json_values(extra_field(left, field), extra_field(right, field))
-}
-
-fn media_name(item: &MediaItem) -> &str {
-    item.sort_name
-        .as_deref()
-        .or(item.name.as_deref())
-        .unwrap_or("")
-}
-
-fn extra_field<'a>(item: &'a MediaItem, field: &str) -> Option<&'a serde_json::Value> {
-    item.extra
-        .iter()
-        .find(|(key, _)| key.eq_ignore_ascii_case(field))
-        .map(|(_, value)| value)
-}
-
-fn compare_json_values(
-    left: Option<&serde_json::Value>,
-    right: Option<&serde_json::Value>,
-) -> Ordering {
-    match (left, right) {
-        (Some(serde_json::Value::Number(left)), Some(serde_json::Value::Number(right))) => left
-            .as_f64()
-            .zip(right.as_f64())
-            .map(|(left, right)| left.total_cmp(&right))
-            .unwrap_or(Ordering::Equal),
-        (Some(serde_json::Value::String(left)), Some(serde_json::Value::String(right))) => {
-            left.cmp(right)
-        }
-        (Some(serde_json::Value::Bool(left)), Some(serde_json::Value::Bool(right))) => {
-            left.cmp(right)
-        }
-        (Some(_), None) => Ordering::Greater,
-        (None, Some(_)) => Ordering::Less,
-        _ => Ordering::Equal,
-    }
 }
 
 fn normalize_upstream_pagination(url: &mut url::Url, pagination: Pagination) {
@@ -1780,7 +1736,7 @@ mod tests {
     }
 
     #[test]
-    fn sort_merged_items_honors_requested_order() {
+    fn apply_dynamic_sort_honors_requested_order() {
         let url =
             url::Url::parse("http://localhost/Items?SortBy=SortName&SortOrder=Descending").unwrap();
         let mut items = vec![
@@ -1788,13 +1744,13 @@ mod tests {
             named_media_item("b", "Beta"),
         ];
 
-        sort_merged_items(&mut items, &url);
+        apply_dynamic_sort(&mut items, &url);
 
         assert_eq!(item_ids(&items), vec!["b", "a"]);
     }
 
     #[test]
-    fn sort_merged_items_orders_latest_by_date_created() {
+    fn apply_dynamic_sort_orders_latest_by_date_created() {
         let url = url::Url::parse("http://localhost/Users/u/Items/Latest").unwrap();
         let mut older = named_media_item("old", "Older");
         older.date_created = Some("2025-01-01T00:00:00Z".to_string());
@@ -1802,20 +1758,20 @@ mod tests {
         newer.date_created = Some("2026-01-01T00:00:00Z".to_string());
         let mut items = vec![older, newer];
 
-        sort_merged_items(&mut items, &url);
+        apply_dynamic_sort(&mut items, &url);
 
         assert_eq!(item_ids(&items), vec!["new", "old"]);
     }
 
     #[test]
-    fn sort_merged_items_defaults_to_sort_name() {
+    fn apply_dynamic_sort_defaults_to_sort_name() {
         let url = url::Url::parse("http://localhost/Items").unwrap();
         let mut items = vec![
             named_media_item("b", "Beta"),
             named_media_item("a", "Alpha"),
         ];
 
-        sort_merged_items(&mut items, &url);
+        apply_dynamic_sort(&mut items, &url);
 
         assert_eq!(item_ids(&items), vec!["a", "b"]);
     }
