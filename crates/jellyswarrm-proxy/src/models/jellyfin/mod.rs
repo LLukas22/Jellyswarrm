@@ -376,13 +376,21 @@ pub struct MediaItem {
 
 impl MediaItem {
     pub fn cmp_by(&self, other: &Self, sort_by: enums::ItemSortBy) -> std::cmp::Ordering {
-        use std::cmp::Ordering;
         use enums::ItemSortBy;
+        use std::cmp::Ordering;
 
         match sort_by {
             ItemSortBy::SortName | ItemSortBy::Name => {
-                let left = self.sort_name.as_deref().or(self.name.as_deref()).unwrap_or("");
-                let right = other.sort_name.as_deref().or(other.name.as_deref()).unwrap_or("");
+                let left = self
+                    .sort_name
+                    .as_deref()
+                    .or(self.name.as_deref())
+                    .unwrap_or("");
+                let right = other
+                    .sort_name
+                    .as_deref()
+                    .or(other.name.as_deref())
+                    .unwrap_or("");
                 left.cmp(right)
             }
             ItemSortBy::ProductionYear => self.production_year.cmp(&other.production_year),
@@ -406,8 +414,16 @@ impl MediaItem {
                 left.cmp(&right)
             }
             ItemSortBy::DatePlayed => {
-                let left = self.user_data.as_ref().and_then(|u| u.last_played_date.as_deref()).unwrap_or("");
-                let right = other.user_data.as_ref().and_then(|u| u.last_played_date.as_deref()).unwrap_or("");
+                let left = self
+                    .user_data
+                    .as_ref()
+                    .and_then(|u| u.last_played_date.as_deref())
+                    .unwrap_or("");
+                let right = other
+                    .user_data
+                    .as_ref()
+                    .and_then(|u| u.last_played_date.as_deref())
+                    .unwrap_or("");
                 left.cmp(right)
             }
             _ => Ordering::Equal,

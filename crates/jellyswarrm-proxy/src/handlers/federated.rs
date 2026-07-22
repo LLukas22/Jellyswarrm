@@ -1148,8 +1148,8 @@ mod tests {
         serde_json::from_value(item).unwrap()
     }
 }
+use crate::models::enums::{ItemSortBy, SortOrder};
 use std::str::FromStr;
-use crate::models::enums::{ItemSortBy, SortOrder}; 
 
 fn extract_sorting_params(url: &url::Url) -> (Vec<ItemSortBy>, Vec<SortOrder>) {
     let mut sort_by = Vec::new();
