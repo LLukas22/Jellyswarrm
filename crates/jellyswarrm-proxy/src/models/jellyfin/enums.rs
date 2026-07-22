@@ -214,3 +214,67 @@ impl<'de> Deserialize<'de> for CollectionType {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum ItemSortBy {
+    Default,
+    AiredSeasonOrder,
+    Album,
+    AlbumArtist,
+    Artist,
+    Budget,
+    CommunityRating,
+    CriticRating,
+    DateCreated,
+    DatePlayed,
+    EpisodeOrder,
+    InheritedParentalRating,
+    IsFolder,
+    IsUnplayed,
+    Name,
+    OfficialRating,
+    Overview,
+    ParentIndexNumber,
+    Path,
+    PlayCount,
+    PremiereDate,
+    ProductionYear,
+    Random,
+    Revenue,
+    Runtime,
+    SeriesSortName,
+    SortName,
+    Studio,
+    #[serde(other)]
+    Unknown,
+}
+
+impl std::str::FromStr for ItemSortBy {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let json_str = format!("\"{}\"", s);
+        Ok(serde_json::from_str(&json_str).unwrap_or(ItemSortBy::Unknown))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub enum SortOrder {
+    #[default]
+    Ascending,
+    Descending,
+}
+
+impl std::str::FromStr for SortOrder {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.eq_ignore_ascii_case("Descending") {
+            Ok(SortOrder::Descending)
+        } else {
+            Ok(SortOrder::Ascending)
+        }
+    }
+}

@@ -363,9 +363,72 @@ pub struct MediaItem {
     pub chapters: Option<Vec<Chapter>>,
     pub people: Option<Vec<Person>>,
     pub trickplay: Option<std::collections::HashMap<String, serde_json::Value>>,
+    pub production_year: Option<i32>,
+    pub run_time_ticks: Option<i64>,
+    pub community_rating: Option<f32>,
+    pub critic_rating: Option<f32>,
+    pub official_rating: Option<String>,
+    pub premiere_date: Option<String>,
 
     #[serde(flatten)]
     pub extra: std::collections::HashMap<String, serde_json::Value>,
+}
+
+impl MediaItem {
+    pub fn cmp_by(&self, other: &Self, sort_by: enums::ItemSortBy) -> std::cmp::Ordering {
+        use enums::ItemSortBy;
+        use std::cmp::Ordering;
+
+        match sort_by {
+            ItemSortBy::SortName | ItemSortBy::Name => {
+                let left = self
+                    .sort_name
+                    .as_deref()
+                    .or(self.name.as_deref())
+                    .unwrap_or("");
+                let right = other
+                    .sort_name
+                    .as_deref()
+                    .or(other.name.as_deref())
+                    .unwrap_or("");
+                left.cmp(right)
+            }
+            ItemSortBy::ProductionYear => self.production_year.cmp(&other.production_year),
+            ItemSortBy::Runtime => self.run_time_ticks.cmp(&other.run_time_ticks),
+            ItemSortBy::CommunityRating => {
+                let left = self.community_rating.unwrap_or(0.0);
+                let right = other.community_rating.unwrap_or(0.0);
+                left.partial_cmp(&right).unwrap_or(Ordering::Equal)
+            }
+            ItemSortBy::CriticRating => {
+                let left = self.critic_rating.unwrap_or(0.0);
+                let right = other.critic_rating.unwrap_or(0.0);
+                left.partial_cmp(&right).unwrap_or(Ordering::Equal)
+            }
+            ItemSortBy::OfficialRating => self.official_rating.cmp(&other.official_rating),
+            ItemSortBy::PremiereDate => self.premiere_date.cmp(&other.premiere_date),
+            ItemSortBy::DateCreated => self.date_created.cmp(&other.date_created),
+            ItemSortBy::PlayCount => {
+                let left = self.user_data.as_ref().map(|u| u.play_count).unwrap_or(0);
+                let right = other.user_data.as_ref().map(|u| u.play_count).unwrap_or(0);
+                left.cmp(&right)
+            }
+            ItemSortBy::DatePlayed => {
+                let left = self
+                    .user_data
+                    .as_ref()
+                    .and_then(|u| u.last_played_date.as_deref())
+                    .unwrap_or("");
+                let right = other
+                    .user_data
+                    .as_ref()
+                    .and_then(|u| u.last_played_date.as_deref())
+                    .unwrap_or("");
+                left.cmp(right)
+            }
+            _ => Ordering::Equal,
+        }
+    }
 }
 
 #[skip_serializing_none]

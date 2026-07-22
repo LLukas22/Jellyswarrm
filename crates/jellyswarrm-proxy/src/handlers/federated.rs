@@ -198,11 +198,9 @@ async fn get_items_for_merged_library(
         .into_iter()
         .flat_map(|(_, response)| response.into_items())
         .collect::<Vec<_>>();
-    all_items.sort_by(|a, b| {
-        let left = a.sort_name.as_deref().or(a.name.as_deref()).unwrap_or("");
-        let right = b.sort_name.as_deref().or(b.name.as_deref()).unwrap_or("");
-        left.cmp(right)
-    });
+
+    // Apply dynamic sorting based on the request URL
+    apply_dynamic_sort(&mut all_items, original_request.url());
 
     let (paged_items, total_count) = apply_pagination(all_items, pagination);
     items_response_to_json(items_response_from_shape(
@@ -280,7 +278,11 @@ async fn get_items_from_all_servers_interleaved(
         .into_iter()
         .map(|(_, items)| items)
         .collect::<Vec<_>>();
-    let interleaved_items = interleave_items(server_items);
+    let mut interleaved_items = interleave_items(server_items);
+
+    // Apply dynamic sorting before pagination
+    apply_dynamic_sort(&mut interleaved_items, original_request.url());
+
     let (paged_items, total_count) = apply_pagination(interleaved_items, pagination);
 
     debug!(
@@ -499,14 +501,11 @@ async fn get_items_from_all_servers_with_merged_libraries(
         }
     }
 
-    library_items.sort_by(|a, b| {
-        let left = a.name.as_deref().unwrap_or("");
-        let right = b.name.as_deref().unwrap_or("");
-        left.cmp(right)
-    });
-
     let mut final_items = library_items;
     final_items.extend(interleave_items(non_lib_per_server));
+
+    // Apply dynamic sorting based on the request URL for the complete federated payload
+    apply_dynamic_sort(&mut final_items, original_request.url());
 
     let (paged_items, total_count) = apply_pagination(final_items, pagination);
     debug!(
@@ -1148,4 +1147,64 @@ mod tests {
 
         serde_json::from_value(item).unwrap()
     }
+}
+use crate::models::enums::{ItemSortBy, SortOrder};
+use std::str::FromStr;
+
+fn extract_sorting_params(url: &url::Url) -> (Vec<ItemSortBy>, Vec<SortOrder>) {
+    let mut sort_by = Vec::new();
+    let mut sort_order = Vec::new();
+
+    for (key, value) in url.query_pairs() {
+        if key.eq_ignore_ascii_case("SortBy") {
+            sort_by = value
+                .split(',')
+                .filter_map(|s| ItemSortBy::from_str(s).ok())
+                .collect();
+        } else if key.eq_ignore_ascii_case("SortOrder") {
+            sort_order = value
+                .split(',')
+                .filter_map(|s| SortOrder::from_str(s).ok())
+                .collect();
+        }
+    }
+
+    if sort_order.is_empty() {
+        sort_order.push(SortOrder::Ascending);
+    }
+
+    (sort_by, sort_order)
+}
+
+pub fn apply_dynamic_sort(items: &mut [MediaItem], url: &url::Url) {
+    if items.is_empty() {
+        return;
+    }
+
+    let (sort_by_fields, sort_orders) = extract_sorting_params(url);
+
+    items.sort_by(|a, b| {
+        if sort_by_fields.is_empty() {
+            return a.cmp_by(b, ItemSortBy::SortName);
+        }
+
+        for (i, field) in sort_by_fields.iter().enumerate() {
+            let order = sort_orders
+                .get(i)
+                .copied()
+                .unwrap_or_else(|| sort_orders.first().copied().unwrap_or_default());
+
+            let cmp = a.cmp_by(b, *field);
+
+            if cmp != std::cmp::Ordering::Equal {
+                return if order == SortOrder::Descending {
+                    cmp.reverse()
+                } else {
+                    cmp
+                };
+            }
+        }
+
+        std::cmp::Ordering::Equal
+    });
 }
