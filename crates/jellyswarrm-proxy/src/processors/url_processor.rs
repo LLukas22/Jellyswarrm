@@ -436,10 +436,10 @@ impl UrlProcessor {
             .resolve(media_id, access_scope)
             .await?
         {
-            VirtualLibraryResolution::Unknown => Ok(None),
-            VirtualLibraryResolution::Empty(_) | VirtualLibraryResolution::Resolved(_) => Err(
-                anyhow::anyhow!("virtual library has no member in the current user's server scope"),
-            ),
+            VirtualLibraryResolution::Unknown | VirtualLibraryResolution::Empty(_) => Ok(None),
+            VirtualLibraryResolution::Resolved(_) => Err(anyhow::anyhow!(
+                "failed to select a routing target for the resolved virtual library"
+            )),
         }
     }
 }
@@ -504,4 +504,56 @@ pub fn matches_case_insensitive(value: &str, candidates: &[&str]) -> bool {
     candidates
         .iter()
         .any(|candidate| value.eq_ignore_ascii_case(candidate))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use sqlx::SqlitePool;
+
+    use super::*;
+    use crate::{
+        config::{AppConfig, MIGRATOR},
+        media_storage_service::MediaStorageService,
+        server_storage::ServerStorageService,
+        session_storage::SessionStorage,
+        user_authorization_service::UserAuthorizationService,
+        virtual_library_service::VirtualLibraryService,
+    };
+
+    #[tokio::test]
+    async fn empty_virtual_library_does_not_force_a_routing_server() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let server_storage = ServerStorageService::new(pool.clone());
+        let media_storage = MediaStorageService::new(pool.clone());
+        let virtual_libraries =
+            VirtualLibraryService::new(pool.clone(), server_storage.clone(), media_storage.clone());
+        let library = virtual_libraries
+            .create_group("Empty library")
+            .await
+            .unwrap();
+        let processor = UrlProcessor::new(DataContext {
+            user_authorization: Arc::new(UserAuthorizationService::new(pool)),
+            server_storage: Arc::new(server_storage),
+            media_storage: Arc::new(media_storage),
+            virtual_library_service: Arc::new(virtual_libraries),
+            play_sessions: Arc::new(SessionStorage::new()),
+            config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
+        });
+        let scope = VirtualLibraryAccessScope::new("user", [ServerId::new(1)]);
+        let url = url::Url::parse(&format!(
+            "http://localhost/Users/user/Items?ParentId={}",
+            library.virtual_id
+        ))
+        .unwrap();
+
+        let server = processor
+            .server_from_client_url(&url, Some(&scope))
+            .await
+            .unwrap();
+
+        assert!(server.is_none());
+    }
 }
