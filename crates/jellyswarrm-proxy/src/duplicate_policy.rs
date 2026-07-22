@@ -72,7 +72,7 @@ pub struct TaggedMediaItem {
     pub server: Server,
 }
 
-pub fn deduplicate_tagged_items(
+pub fn apply_duplicate_policy(
     items: Vec<TaggedMediaItem>,
     config: &DuplicatePolicyConfig,
 ) -> Vec<MediaItem> {
@@ -174,10 +174,14 @@ fn duplicate_key(item: &MediaItem) -> String {
 
     let name = normalized_name(item);
     let year = item
-        .extra
-        .get("ProductionYear")
-        .or_else(|| item.extra.get("productionYear"))
-        .and_then(serde_json::Value::as_i64)
+        .production_year
+        .map(i64::from)
+        .or_else(|| {
+            item.extra
+                .get("ProductionYear")
+                .or_else(|| item.extra.get("productionYear"))
+                .and_then(serde_json::Value::as_i64)
+        })
         .unwrap_or_default();
     format!("content:title:{name}:{year}:{:?}", item.item_type)
 }
@@ -382,7 +386,7 @@ mod tests {
             tagged(1, 100, "Movie", 1000, "abc"),
             tagged(2, 100, "Movie", 5000, "abc"),
         ];
-        let result = deduplicate_tagged_items(
+        let result = apply_duplicate_policy(
             items,
             &DuplicatePolicyConfig {
                 policy: DuplicatePolicy::LargestSize,
@@ -395,7 +399,7 @@ mod tests {
 
     #[test]
     fn show_all_keeps_every_series_copy_and_adds_server_name() {
-        let mut less: MediaItem = serde_json::from_value(serde_json::json!({
+        let less: MediaItem = serde_json::from_value(serde_json::json!({
             "Id": "left",
             "Name": "Wistoria",
             "Type": "Series",
@@ -411,9 +415,7 @@ mod tests {
             "ProviderIds": { "Tmdb": "abc" }
         }))
         .unwrap();
-        let _ = &mut less;
-
-        let result = deduplicate_tagged_items(
+        let result = apply_duplicate_policy(
             vec![
                 TaggedMediaItem {
                     item: less,
@@ -441,7 +443,7 @@ mod tests {
 
     #[test]
     fn same_title_with_different_provider_ids_is_not_a_duplicate() {
-        let result = deduplicate_tagged_items(
+        let result = apply_duplicate_policy(
             vec![
                 tagged(1, 100, "Crash", 1_000, "1996"),
                 tagged(2, 100, "Crash", 2_000, "2004"),
@@ -456,13 +458,33 @@ mod tests {
     }
 
     #[test]
+    fn same_title_with_different_production_years_is_not_a_duplicate() {
+        let mut original = tagged(1, 100, "The Thing", 1_000, "unused");
+        original.item.provider_ids = None;
+        original.item.production_year = Some(1982);
+        let mut remake = tagged(2, 100, "The Thing", 2_000, "unused");
+        remake.item.provider_ids = None;
+        remake.item.production_year = Some(2011);
+
+        let result = apply_duplicate_policy(
+            vec![original, remake],
+            &DuplicatePolicyConfig {
+                policy: DuplicatePolicy::LargestSize,
+                preferred_server_id: None,
+            },
+        );
+
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
     fn configured_policy_is_not_overridden_by_child_count() {
         let mut smaller = tagged(1, 100, "Movie", 1_000, "same");
         smaller.item.child_count = Some(100);
         let mut larger = tagged(2, 100, "Movie", 5_000, "same");
         larger.item.child_count = Some(1);
 
-        let result = deduplicate_tagged_items(
+        let result = apply_duplicate_policy(
             vec![smaller, larger],
             &DuplicatePolicyConfig {
                 policy: DuplicatePolicy::LargestSize,
