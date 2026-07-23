@@ -49,14 +49,14 @@
                     {% let pw_input_name = "mapped_password" %}
                     {% let pw_input_placeholder = "Mapped password" %}
                     {% let pw_input_autocomplete = "new-password" %}
-                    {% let pw_input_required = true %}
+                    {% let pw_input_required = false %}
                     {% include "components/password_input.html" %}
                 </label>
                 <label>&nbsp;
                     <button type="submit" style="margin-bottom:0;">Add</button>
                 </label>
             </div>
-            <small style="display:block; margin-top:0.35rem;">Credentials are validated on the selected server before this mapping is saved.</small>
+            <small style="display:block; margin-top:0.35rem;">Credentials are validated on the selected server before this mapping is saved. Leave password empty for passwordless users.</small>
         </form>
     </section>
     {% endif %}

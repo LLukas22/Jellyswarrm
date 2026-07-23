@@ -1482,6 +1482,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_create_user_allows_empty_password() {
+        let (_pool, service) = setup_service().await;
+
+        let user = service
+            .create_user("passwordless", &"".into())
+            .await
+            .unwrap();
+
+        assert!(service
+            .verify_user_password(&user.id, &"".into())
+            .await
+            .unwrap());
+        assert!(!service
+            .verify_user_password(&user.id, &"not-empty".into())
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_add_server_mapping_allows_empty_password() {
+        let (pool, service) = setup_service().await;
+        let server_id = insert_test_server(&pool, "Test Server", "http://localhost:8096").await;
+        let user = service
+            .create_user("passwordless", &"".into())
+            .await
+            .unwrap();
+        let master_password = HashedPassword::from_password("");
+
+        service
+            .add_server_mapping(
+                &user.id,
+                "http://localhost:8096",
+                "mappeduser",
+                &"".into(),
+                Some(&master_password),
+            )
+            .await
+            .unwrap();
+
+        let mapping = service
+            .get_server_mapping_by_server_id(&user.id, server_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let mapped_password = service.decrypt_server_mapping_password(
+            &mapping,
+            &master_password,
+            &master_password,
+            None,
+            None,
+        );
+
+        assert_eq!(mapped_password.as_str(), "");
+    }
+
+    #[tokio::test]
     async fn test_store_authorization_session_upserts_existing_device_session() {
         let (pool, service) = setup_service().await;
         insert_test_server(&pool, "Test Server", "http://localhost:8096").await;

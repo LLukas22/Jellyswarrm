@@ -220,7 +220,13 @@ impl FederatedUserService {
                     }
                 } else {
                     // Create user
-                    match client.create_user(username, Some(password.as_str())).await {
+                    let remote_password = if password.as_str().is_empty() {
+                        None
+                    } else {
+                        Some(password.as_str())
+                    };
+
+                    match client.create_user(username, remote_password).await {
                         Ok(new_user) => {
                             info!(
                                 "Synced user {} to server {} (Remote ID: {}, Status: Created)",
