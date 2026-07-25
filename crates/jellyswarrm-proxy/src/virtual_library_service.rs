@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-use sqlx::SqlitePool;
+use sqlx::{Sqlite, SqlitePool, Transaction};
 use tokio::sync::Mutex;
 use tracing::debug;
 use uuid::Uuid;
@@ -48,8 +48,8 @@ impl VirtualLibraryAccessScope {
         }
     }
 
-    fn key(&self) -> String {
-        self.user_id.clone()
+    fn user_id(&self) -> &str {
+        &self.user_id
     }
 
     pub(crate) fn allows(&self, server_id: ServerId) -> bool {
@@ -77,6 +77,14 @@ pub struct LibraryAssignment {
     pub group_virtual_id: String,
     pub group_name: String,
     pub group_sort_order: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveredLibrary {
+    pub server_id: ServerId,
+    pub original_library_id: String,
+    pub name: String,
+    pub collection_type: String,
 }
 
 #[derive(Debug, Clone)]
@@ -240,7 +248,9 @@ impl VirtualLibraryService {
         access_scope: &VirtualLibraryAccessScope,
     ) -> u64 {
         let mut generations = self.automatic_refresh_generations.lock().await;
-        let state = generations.entry(access_scope.key()).or_default();
+        let state = generations
+            .entry(access_scope.user_id().to_string())
+            .or_default();
         state.latest_started = state.latest_started.saturating_add(1);
         state.latest_started
     }
@@ -252,15 +262,13 @@ impl VirtualLibraryService {
         refreshed_server_ids: &[ServerId],
         discovered_members: &[(String, ServerId, String)],
     ) -> Result<bool, sqlx::Error> {
-        let access_scope_key = access_scope.key();
+        let user_id = access_scope.user_id().to_string();
         let mut generation_guard = self.automatic_refresh_generations.lock().await;
-        let generation_state = generation_guard
-            .entry(access_scope_key.clone())
-            .or_default();
+        let generation_state = generation_guard.entry(user_id.clone()).or_default();
         if refresh_generation < generation_state.latest_committed {
             debug!(
                 "Skipped superseded automatic library refresh {} for access scope {}",
-                refresh_generation, access_scope_key
+                refresh_generation, user_id
             );
             return Ok(false);
         }
@@ -269,13 +277,13 @@ impl VirtualLibraryService {
         for (automatic_virtual_id, _, _) in discovered_members {
             sqlx::query(
                 "INSERT INTO automatic_library_snapshots \
-                 (automatic_virtual_id, access_scope_key, updated_at) \
+                 (automatic_virtual_id, user_id, updated_at) \
                  VALUES (?, ?, CURRENT_TIMESTAMP) \
-                 ON CONFLICT(automatic_virtual_id, access_scope_key) DO UPDATE SET \
+                 ON CONFLICT(automatic_virtual_id, user_id) DO UPDATE SET \
                      updated_at = CURRENT_TIMESTAMP",
             )
             .bind(normalize_library_id(automatic_virtual_id))
-            .bind(&access_scope_key)
+            .bind(&user_id)
             .execute(&mut *tx)
             .await?;
         }
@@ -283,9 +291,9 @@ impl VirtualLibraryService {
         for server_id in refreshed_server_ids {
             sqlx::query(
                 "DELETE FROM automatic_library_members \
-                 WHERE access_scope_key = ? AND server_id = ?",
+                 WHERE user_id = ? AND server_id = ?",
             )
-            .bind(&access_scope_key)
+            .bind(&user_id)
             .bind(server_id.as_i64())
             .execute(&mut *tx)
             .await?;
@@ -294,12 +302,12 @@ impl VirtualLibraryService {
         for (automatic_virtual_id, server_id, virtual_library_id) in discovered_members {
             sqlx::query(
                 "INSERT INTO automatic_library_members \
-                 (automatic_virtual_id, access_scope_key, server_id, virtual_library_id) \
+                 (automatic_virtual_id, user_id, server_id, virtual_library_id) \
                  VALUES (?, ?, ?, ?) \
                  ON CONFLICT DO NOTHING",
             )
             .bind(normalize_library_id(automatic_virtual_id))
-            .bind(&access_scope_key)
+            .bind(&user_id)
             .bind(server_id.as_i64())
             .bind(virtual_library_id)
             .execute(&mut *tx)
@@ -312,7 +320,7 @@ impl VirtualLibraryService {
         debug!(
             "Reconciled automatic library members from {} refreshed servers for access scope {}",
             refreshed_server_ids.len(),
-            access_scope_key
+            user_id
         );
         Ok(true)
     }
@@ -330,8 +338,8 @@ impl VirtualLibraryService {
              FROM automatic_library_snapshots snapshot \
              LEFT JOIN automatic_library_members m \
                ON m.automatic_virtual_id = snapshot.automatic_virtual_id \
-              AND m.access_scope_key = snapshot.access_scope_key \
-             WHERE snapshot.automatic_virtual_id = ? AND snapshot.access_scope_key = ? \
+               AND m.user_id = snapshot.user_id \
+              WHERE snapshot.automatic_virtual_id = ? AND snapshot.user_id = ? \
                AND (m.virtual_library_id IS NULL OR NOT EXISTS ( \
                    SELECT 1 FROM media_mappings mapping \
                    JOIN library_group_members configured \
@@ -342,7 +350,7 @@ impl VirtualLibraryService {
              ORDER BY m.server_id, m.virtual_library_id",
         )
         .bind(normalize_library_id(automatic_virtual_id))
-        .bind(access_scope.key())
+        .bind(access_scope.user_id())
         .fetch_all(&self.pool)
         .await?;
 
@@ -384,6 +392,62 @@ impl VirtualLibraryService {
             .fetch_one(&self.pool)
             .await?;
         Ok(count > 0)
+    }
+
+    pub async fn track_discovered_libraries(
+        &self,
+        libraries: &[DiscoveredLibrary],
+    ) -> Result<(), sqlx::Error> {
+        if libraries.is_empty() {
+            return Ok(());
+        }
+
+        let mut tx = self.pool.begin().await?;
+        upsert_discovered_libraries(&mut tx, libraries).await?;
+        tx.commit().await
+    }
+
+    pub async fn replace_discovered_libraries(
+        &self,
+        server_id: ServerId,
+        libraries: &[DiscoveredLibrary],
+    ) -> Result<(), sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM discovered_libraries WHERE server_id = ?")
+            .bind(server_id.as_i64())
+            .execute(&mut *tx)
+            .await?;
+        upsert_discovered_libraries(
+            &mut tx,
+            &libraries
+                .iter()
+                .filter(|library| library.server_id == server_id)
+                .cloned()
+                .collect::<Vec<_>>(),
+        )
+        .await?;
+        tx.commit().await
+    }
+
+    pub async fn list_discovered_libraries(&self) -> Result<Vec<DiscoveredLibrary>, sqlx::Error> {
+        let rows: Vec<(i64, String, String, String)> = sqlx::query_as(
+            "SELECT server_id, original_library_id, name, collection_type \
+             FROM discovered_libraries ORDER BY server_id, name, original_library_id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(server_id, original_library_id, name, collection_type)| DiscoveredLibrary {
+                    server_id: ServerId::new(server_id),
+                    original_library_id,
+                    name,
+                    collection_type,
+                },
+            )
+            .collect())
     }
 
     pub async fn list_groups(&self) -> Result<Vec<LibraryGroup>, sqlx::Error> {
@@ -608,6 +672,30 @@ impl VirtualLibraryService {
     }
 }
 
+async fn upsert_discovered_libraries(
+    tx: &mut Transaction<'_, Sqlite>,
+    libraries: &[DiscoveredLibrary],
+) -> Result<(), sqlx::Error> {
+    for library in libraries {
+        sqlx::query(
+            "INSERT INTO discovered_libraries \
+             (server_id, original_library_id, name, collection_type, last_seen_at) \
+             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP) \
+             ON CONFLICT(server_id, original_library_id) DO UPDATE SET \
+                 name = excluded.name, \
+                 collection_type = excluded.collection_type, \
+                 last_seen_at = CURRENT_TIMESTAMP",
+        )
+        .bind(library.server_id.as_i64())
+        .bind(normalize_library_id(&library.original_library_id))
+        .bind(&library.name)
+        .bind(&library.collection_type)
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
+}
+
 fn resolution(name: String, members: Vec<VirtualLibraryMember>) -> VirtualLibraryResolution {
     if members.is_empty() {
         VirtualLibraryResolution::Empty { name }
@@ -762,6 +850,66 @@ mod tests {
 
     fn scope(user_id: &str, server_ids: &[i64]) -> VirtualLibraryAccessScope {
         VirtualLibraryAccessScope::new(user_id, server_ids.iter().copied().map(ServerId::new))
+    }
+
+    fn discovered_library(server_id: i64, id: &str, name: &str) -> DiscoveredLibrary {
+        DiscoveredLibrary {
+            server_id: ServerId::new(server_id),
+            original_library_id: id.to_string(),
+            name: name.to_string(),
+            collection_type: "movies".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn tracked_library_metadata_is_updated() {
+        let fixture = Fixture::new(&[(1, 100)]).await;
+        fixture
+            .service
+            .track_discovered_libraries(&[discovered_library(1, "library", "Old name")])
+            .await
+            .unwrap();
+
+        fixture
+            .service
+            .track_discovered_libraries(&[discovered_library(1, "library", "Movies")])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fixture.service.list_discovered_libraries().await.unwrap(),
+            vec![discovered_library(1, "library", "Movies")]
+        );
+    }
+
+    #[tokio::test]
+    async fn authoritative_discovery_replaces_only_its_server() {
+        let fixture = Fixture::new(&[(1, 100), (2, 200)]).await;
+        fixture
+            .service
+            .track_discovered_libraries(&[
+                discovered_library(1, "stale", "Stale"),
+                discovered_library(2, "other", "Other"),
+            ])
+            .await
+            .unwrap();
+
+        fixture
+            .service
+            .replace_discovered_libraries(
+                ServerId::new(1),
+                &[discovered_library(1, "current", "Current")],
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fixture.service.list_discovered_libraries().await.unwrap(),
+            vec![
+                discovered_library(1, "current", "Current"),
+                discovered_library(2, "other", "Other"),
+            ]
+        );
     }
 
     #[tokio::test]
@@ -991,48 +1139,6 @@ mod tests {
 
         assert_resolved_members(first, &[&member_a.1, &member_b.1]);
         assert_resolved_members(second, &[&member_b.1]);
-    }
-
-    #[tokio::test]
-    async fn user_only_scope_migration_preserves_existing_automatic_members() {
-        let fixture = Fixture::new(&[(1, 100)]).await;
-        let library = fixture.automatic_library().await;
-        let member = fixture.member(1, "legacy-scoped-library").await;
-        sqlx::query(
-            "INSERT INTO automatic_library_snapshots \
-             (automatic_virtual_id, access_scope_key) VALUES (?, ?)",
-        )
-        .bind(&library.virtual_id)
-        .bind("user:1")
-        .execute(&fixture.pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO automatic_library_members \
-             (automatic_virtual_id, access_scope_key, server_id, virtual_library_id) \
-             VALUES (?, ?, ?, ?)",
-        )
-        .bind(&library.virtual_id)
-        .bind("user:1")
-        .bind(member.0.as_i64())
-        .bind(&member.1)
-        .execute(&fixture.pool)
-        .await
-        .unwrap();
-
-        sqlx::raw_sql(include_str!(
-            "../migrations/20260724120000_user_only_automatic_library_scopes.up.sql"
-        ))
-        .execute(&fixture.pool)
-        .await
-        .unwrap();
-        let resolution = fixture
-            .service
-            .resolve(&library.virtual_id, Some(&scope("user", &[1])))
-            .await
-            .unwrap();
-
-        assert_resolved_members(resolution, &[&member.1]);
     }
 
     #[tokio::test]

@@ -22,7 +22,8 @@ use crate::{
     server_storage::Server,
     user_authorization_service::AuthorizationSession,
     virtual_library_service::{
-        normalize_library_id, VirtualLibraryAccessScope, VirtualLibraryResolution,
+        normalize_library_id, DiscoveredLibrary, VirtualLibraryAccessScope,
+        VirtualLibraryResolution,
     },
     AppState,
 };
@@ -1059,6 +1060,7 @@ async fn execute_raw_items_request(
         })?;
 
     let items_response: ItemsResponseVariants = response_json_to_payload(response)?;
+    track_discovered_libraries(&state, &server, &items_response).await;
     debug!(
         "Fetched {} raw items from server '{}' at index {}",
         items_response.len(),
@@ -1070,6 +1072,47 @@ async fn execute_raw_items_request(
         response: items_response,
         server,
     })
+}
+
+async fn track_discovered_libraries(
+    state: &AppState,
+    server: &Server,
+    response: &ItemsResponseVariants,
+) {
+    let libraries = discovered_libraries_from_response(server.id, response);
+    if let Err(error) = state
+        .virtual_library_service
+        .track_discovered_libraries(&libraries)
+        .await
+    {
+        warn!(
+            "Failed to track libraries observed on server '{}': {error}",
+            server.name
+        );
+    }
+}
+
+fn discovered_libraries_from_response(
+    server_id: ServerId,
+    response: &ItemsResponseVariants,
+) -> Vec<DiscoveredLibrary> {
+    let items = match response {
+        ItemsResponseVariants::WithCount(response) => &response.items,
+        ItemsResponseVariants::Bare(items) => items,
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let collection_type = presentable_library_collection_type(item)?;
+            let name = item.name.as_deref()?.trim();
+            (!name.is_empty()).then(|| DiscoveredLibrary {
+                server_id,
+                original_library_id: item.id.clone(),
+                name: name.to_string(),
+                collection_type: collection_type.as_str().to_string(),
+            })
+        })
+        .collect()
 }
 
 async fn process_items_response_json(
@@ -1318,6 +1361,29 @@ mod tests {
         assert_eq!(
             automatic_library_key(&item).as_deref(),
             Some("movies:anime")
+        );
+    }
+
+    #[test]
+    fn raw_library_responses_expose_real_libraries_for_tracking() {
+        let mut library = typed_media_item("real-library-id", "CollectionFolder", Some("movies"));
+        library.name = Some("Movies".to_string());
+        let mut live_tv = typed_media_item("live-tv", "UserView", Some("livetv"));
+        live_tv.name = Some("Live TV".to_string());
+        let response = ItemsResponseVariants::Bare(vec![
+            library,
+            live_tv,
+            typed_media_item("movie", "Movie", None),
+        ]);
+
+        assert_eq!(
+            discovered_libraries_from_response(ServerId::new(7), &response),
+            vec![DiscoveredLibrary {
+                server_id: ServerId::new(7),
+                original_library_id: "real-library-id".to_string(),
+                name: "Movies".to_string(),
+                collection_type: "movies".to_string(),
+            }]
         );
     }
 

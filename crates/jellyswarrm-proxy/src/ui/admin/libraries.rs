@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use askama::Template;
 use axum::{
     extract::{Path, State},
@@ -13,7 +15,9 @@ use crate::{
     config::{save_config, CLIENT_INFO},
     encryption::{decrypt_password, HashedPassword},
     server_id::ServerId,
-    virtual_library_service::{normalize_library_id, LibraryGroupMemberRecord},
+    virtual_library_service::{
+        normalize_library_id, DiscoveredLibrary as StoredLibrary, LibraryGroupMemberRecord,
+    },
     AppState,
 };
 
@@ -255,7 +259,7 @@ async fn render_library_groups_list(state: &AppState) -> Result<String, String> 
         .map_err(|e| format!("Template error: {e}"))
 }
 
-struct DiscoveredLibrary {
+struct AvailableLibrary {
     server_id: ServerId,
     server_name: String,
     library_id: String,
@@ -263,7 +267,7 @@ struct DiscoveredLibrary {
     collection_type: String,
 }
 
-async fn discover_libraries(state: &AppState) -> Vec<DiscoveredLibrary> {
+async fn discover_libraries(state: &AppState) -> Vec<AvailableLibrary> {
     let servers = match state.server_storage.list_servers().await {
         Ok(servers) => servers,
         Err(e) => {
@@ -272,11 +276,37 @@ async fn discover_libraries(state: &AppState) -> Vec<DiscoveredLibrary> {
         }
     };
 
+    let server_names = servers
+        .iter()
+        .map(|server| (server.id, server.name.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut discovered = state
+        .virtual_library_service
+        .list_discovered_libraries()
+        .await
+        .unwrap_or_else(|error| {
+            error!("Failed to load user-observed libraries: {error}");
+            Vec::new()
+        })
+        .into_iter()
+        .filter_map(|library| {
+            let server_name = server_names.get(&library.server_id)?.clone();
+            Some((
+                (library.server_id, library.original_library_id.clone()),
+                AvailableLibrary {
+                    server_id: library.server_id,
+                    server_name,
+                    library_id: library.original_library_id,
+                    library_name: library.name,
+                    collection_type: library.collection_type,
+                },
+            ))
+        })
+        .collect::<HashMap<_, _>>();
+
     let config = state.config.read().await;
     let admin_password: HashedPassword = config.password.clone().into();
     drop(config);
-
-    let mut discovered = Vec::new();
 
     for server in servers {
         let Some(admin) = state
@@ -327,6 +357,7 @@ async fn discover_libraries(state: &AppState) -> Vec<DiscoveredLibrary> {
             }
         };
 
+        let mut authoritative_libraries = Vec::new();
         for folder in folders {
             if folder
                 .collection_type
@@ -336,16 +367,41 @@ async fn discover_libraries(state: &AppState) -> Vec<DiscoveredLibrary> {
                 continue;
             }
 
-            discovered.push(DiscoveredLibrary {
+            authoritative_libraries.push(StoredLibrary {
                 server_id: server.id,
-                server_name: server.name.clone(),
-                library_id: folder.id,
-                library_name: folder.name,
+                original_library_id: folder.id,
+                name: folder.name,
                 collection_type: folder.collection_type.unwrap_or_default(),
             });
         }
+
+        if let Err(error) = state
+            .virtual_library_service
+            .replace_discovered_libraries(server.id, &authoritative_libraries)
+            .await
+        {
+            error!(
+                "Failed to cache admin-discovered libraries for server {}: {error}",
+                server.name
+            );
+        }
+        discovered.retain(|(server_id, _), _| *server_id != server.id);
+        for library in authoritative_libraries {
+            let library_id = normalize_library_id(&library.original_library_id);
+            discovered.insert(
+                (server.id, library_id.clone()),
+                AvailableLibrary {
+                    server_id: server.id,
+                    server_name: server.name.clone(),
+                    library_id,
+                    library_name: library.name,
+                    collection_type: library.collection_type,
+                },
+            );
+        }
     }
 
+    let mut discovered = discovered.into_values().collect::<Vec<_>>();
     discovered.sort_by(|left, right| {
         left.server_name
             .cmp(&right.server_name)
@@ -540,6 +596,32 @@ mod tests {
         .unwrap()
     }
 
+    fn render_library_board() -> String {
+        LibraryGroupsListTemplate {
+            groups: vec![LibraryGroupView {
+                virtual_id: "group-id".to_string(),
+                name: "Movies".to_string(),
+                members: vec![LibraryGroupMemberView {
+                    server_id: 1,
+                    server_name: "Primary".to_string(),
+                    original_library_id: "library-id".to_string(),
+                    library_name: "Movies".to_string(),
+                }],
+            }],
+            discovered_libraries: vec![DiscoveredLibraryView {
+                server_id: 1,
+                server_name: "Primary".to_string(),
+                library_id: "library-id".to_string(),
+                library_name: "Movies".to_string(),
+                collection_type: "movies".to_string(),
+                assigned_group: Some("Movies".to_string()),
+            }],
+            ui_route: "admin".to_string(),
+        }
+        .render()
+        .unwrap()
+    }
+
     #[test]
     fn automatic_merge_control_is_checked_when_enabled() {
         let html = render_control(true);
@@ -588,5 +670,24 @@ mod tests {
 
         assert!(!html.contains("duplicate_policy"));
         assert!(!html.contains("Preferred server"));
+    }
+
+    #[test]
+    fn library_board_renders_draggable_libraries_and_drop_zones() {
+        let html = render_library_board();
+
+        assert!(html.contains("data-library-card"));
+        assert!(html.contains("draggable=\"true\""));
+        assert!(html.contains("data-library-dropzone"));
+        assert!(html.contains("data-group-id=\"group-id\""));
+    }
+
+    #[test]
+    fn library_board_keeps_an_accessible_assignment_form() {
+        let html = render_library_board();
+
+        assert!(html.contains("class=\"library-assignment-form\""));
+        assert!(html.contains("name=\"group_virtual_id\""));
+        assert!(html.contains("hx-post=\"/admin/libraries/assign\""));
     }
 }
