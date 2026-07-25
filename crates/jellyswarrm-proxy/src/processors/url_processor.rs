@@ -436,7 +436,7 @@ impl UrlProcessor {
             .resolve(media_id, access_scope)
             .await?
         {
-            VirtualLibraryResolution::Unknown | VirtualLibraryResolution::Empty(_) => Ok(None),
+            VirtualLibraryResolution::Unknown | VirtualLibraryResolution::Empty { .. } => Ok(None),
             VirtualLibraryResolution::Resolved(_) => Err(anyhow::anyhow!(
                 "failed to select a routing target for the resolved virtual library"
             )),

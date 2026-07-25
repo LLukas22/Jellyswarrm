@@ -51,10 +51,10 @@ async fn get_processed_item_json(
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
         if let VirtualLibraryResolution::Resolved(resolved) = resolution {
-            let name = resolved.library.name();
+            let name = resolved.name;
             response["Id"] = serde_json::Value::String(virtual_id.clone());
             response["DisplayPreferencesId"] = serde_json::Value::String(virtual_id);
-            response["Name"] = serde_json::Value::String(name.to_string());
+            response["Name"] = serde_json::Value::String(name.clone());
             response["SortName"] = serde_json::Value::String(name.to_lowercase());
         }
     }

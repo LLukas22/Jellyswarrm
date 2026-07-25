@@ -14,20 +14,13 @@ use crate::{
 pub(super) enum CatalogPlan {
     EmptyVirtual,
     SingleServer,
-    Federated(FederatedCatalogPlan),
-}
-
-pub(super) struct FederatedCatalogPlan {
-    pub(super) kind: FederatedCatalogKind,
-    pub(super) targets: Vec<CatalogFetchTarget>,
-    pub(super) skipped_targets: usize,
-}
-
-pub(super) enum FederatedCatalogKind {
-    Virtual,
-    Servers {
-        root_grouping: Option<LibraryGrouping>,
+    Virtual {
+        targets: Vec<CatalogFetchTarget>,
+        skipped_targets: usize,
     },
+    Interleaved(Vec<CatalogFetchTarget>),
+    AutomaticRoot(Vec<CatalogFetchTarget>),
+    ConfiguredRoot(Vec<CatalogFetchTarget>),
 }
 
 pub(super) struct CatalogFetchTarget {
@@ -82,21 +75,15 @@ pub(super) async fn resolve_catalog_plan(
 
                 debug!(
                     "ParentId {} is virtual library '{}' - fanning out to {} members",
-                    parent_id,
-                    resolved.library.name(),
-                    member_count
+                    parent_id, resolved.name, member_count
                 );
-                return Ok(CatalogPlan::Federated(FederatedCatalogPlan {
-                    kind: FederatedCatalogKind::Virtual,
+                return Ok(CatalogPlan::Virtual {
                     targets,
                     skipped_targets,
-                }));
+                });
             }
-            VirtualLibraryResolution::Empty(library) => {
-                debug!(
-                    "Virtual library '{}' has no resolvable members",
-                    library.name()
-                );
+            VirtualLibraryResolution::Empty { name } => {
+                debug!("Virtual library '{name}' has no resolvable members");
                 return Ok(CatalogPlan::EmptyVirtual);
             }
             VirtualLibraryResolution::Unknown => {
@@ -107,22 +94,20 @@ pub(super) async fn resolve_catalog_plan(
         }
     }
 
-    let root_grouping = if is_library_root_request(
+    let grouping = if is_library_root_request(
         preprocessed.original_request.url(),
         state.get_url_prefix().await.as_deref(),
     ) {
-        Some(
-            state
-                .virtual_library_service
-                .library_grouping(state.merge_libraries_enabled().await)
-                .await
-                .map_err(|error| {
-                    error!("Failed to determine library grouping: {error}");
-                    StatusCode::INTERNAL_SERVER_ERROR
-                })?,
-        )
+        state
+            .virtual_library_service
+            .library_grouping(state.merge_libraries_enabled().await)
+            .await
+            .map_err(|error| {
+                error!("Failed to determine library grouping: {error}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
     } else {
-        None
+        LibraryGrouping::None
     };
 
     let targets = available_sessions(preprocessed)?
@@ -134,11 +119,11 @@ pub(super) async fn resolve_catalog_plan(
         })
         .collect();
 
-    Ok(CatalogPlan::Federated(FederatedCatalogPlan {
-        kind: FederatedCatalogKind::Servers { root_grouping },
-        targets,
-        skipped_targets: 0,
-    }))
+    Ok(match grouping {
+        LibraryGrouping::Automatic => CatalogPlan::AutomaticRoot(targets),
+        LibraryGrouping::Configured => CatalogPlan::ConfiguredRoot(targets),
+        LibraryGrouping::None => CatalogPlan::Interleaved(targets),
+    })
 }
 
 fn available_sessions(

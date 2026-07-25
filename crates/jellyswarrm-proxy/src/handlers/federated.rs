@@ -22,8 +22,7 @@ use crate::{
     server_storage::Server,
     user_authorization_service::AuthorizationSession,
     virtual_library_service::{
-        normalize_library_id, LibraryAssignment, LibraryGrouping, VirtualLibraryAccessScope,
-        VirtualLibraryResolution,
+        normalize_library_id, VirtualLibraryAccessScope, VirtualLibraryResolution,
     },
     AppState,
 };
@@ -31,11 +30,8 @@ use crate::{
 mod library_resolution;
 mod postprocessing;
 
-use library_resolution::{
-    resolve_catalog_plan, CatalogFetchTarget, CatalogPlan, FederatedCatalogKind,
-    FederatedCatalogPlan,
-};
-use postprocessing::{FederatedItems, MergeStrategy, Pagination, ResponseShape, ServerItems};
+use library_resolution::{resolve_catalog_plan, CatalogFetchTarget, CatalogPlan};
+use postprocessing::{FederatedItems, Pagination, ResponseShape, ServerItems};
 
 struct FetchedCatalog {
     server_items: Vec<FetchedServerItems>,
@@ -45,12 +41,7 @@ struct FetchedCatalog {
 
 struct AutomaticGroupPresentation {
     items: Vec<MediaItem>,
-    update: Option<AutomaticLibraryUpdate>,
-}
-
-struct AutomaticLibraryUpdate {
-    virtual_id: String,
-    members: Vec<(ServerId, String)>,
+    discovered_members: Vec<(String, ServerId, String)>,
 }
 
 struct BuiltVirtualLibrary {
@@ -60,17 +51,19 @@ struct BuiltVirtualLibrary {
 
 struct NamedMediaItemGroup {
     name: String,
+    sort_order: i32,
     items: Vec<ServerMediaItem>,
+}
+
+struct LibraryRootInventory {
+    configured_groups: HashMap<String, NamedMediaItemGroup>,
+    unassigned_libraries: Vec<ServerMediaItem>,
+    non_library_per_server: Vec<ServerItems>,
 }
 
 struct ServerMediaItem {
     item: MediaItem,
     server: Server,
-}
-
-enum LibraryGroupDestination<'a> {
-    Configured(&'a LibraryAssignment),
-    Automatic(String),
 }
 
 fn replace_parent_id(url: &url::Url, new_id: &str) -> url::Url {
@@ -138,26 +131,19 @@ async fn get_items_from_all_servers_preprocessed(
         CatalogPlan::SingleServer => {
             get_items(State(state.clone()), Preprocessed(preprocessed)).await
         }
-        CatalogPlan::Federated(FederatedCatalogPlan {
-            kind: FederatedCatalogKind::Virtual,
+        CatalogPlan::Virtual {
             targets,
             skipped_targets,
-        }) => get_virtual_library_items(state, preprocessed, targets, skipped_targets).await,
-        CatalogPlan::Federated(FederatedCatalogPlan {
-            kind: FederatedCatalogKind::Servers { root_grouping },
-            targets,
-            ..
-        }) => match root_grouping {
-            Some(LibraryGrouping::Automatic) => {
-                get_automatic_library_root(state, preprocessed, targets).await
-            }
-            Some(LibraryGrouping::Configured) => {
-                get_configured_library_root(state, preprocessed, targets).await
-            }
-            Some(LibraryGrouping::None) | None => {
-                get_interleaved_root(state, preprocessed, targets).await
-            }
-        },
+        } => get_virtual_library_items(state, preprocessed, targets, skipped_targets).await,
+        CatalogPlan::Interleaved(targets) => {
+            get_interleaved_root(state, preprocessed, targets).await
+        }
+        CatalogPlan::AutomaticRoot(targets) => {
+            get_automatic_library_root(state, preprocessed, targets).await
+        }
+        CatalogPlan::ConfiguredRoot(targets) => {
+            get_configured_library_root(state, preprocessed, targets).await
+        }
     }
 }
 
@@ -182,13 +168,11 @@ async fn get_virtual_library_items(
     )
     .await?;
 
-    let mut raw_count = 0usize;
     let mut upstream_total_sum = 0i32;
     let mut all_fully_fetched = true;
     let tagged_items: Vec<TaggedMediaItem> = server_items
         .into_iter()
         .flat_map(|fetch| {
-            raw_count += fetch.raw_count;
             if let Some(total) = fetch.upstream_total {
                 upstream_total_sum += total.max(0);
             }
@@ -207,12 +191,8 @@ async fn get_virtual_library_items(
         .collect();
 
     let items = FederatedItems::from_tagged_items(tagged_items);
-    let total_count = estimate_merged_library_total(
-        items.len(),
-        raw_count,
-        upstream_total_sum,
-        all_fully_fetched,
-    );
+    let total_count =
+        estimate_merged_library_total(items.len(), upstream_total_sum, all_fully_fetched);
 
     finalize_items_response(
         items.with_reported_total(total_count),
@@ -276,7 +256,7 @@ async fn fetch_catalog(
         };
         if let Some(parent_id) = target.parent_id {
             *request.url_mut() = replace_parent_id(request.url(), &parent_id);
-            ensure_dedup_fields(request.url_mut());
+            ensure_duplicate_identity_field(request.url_mut());
         }
 
         let state = state.clone();
@@ -410,12 +390,16 @@ async fn present_automatic_library_group(
                         automatic.virtual_id.clone(),
                     )
                     .await?;
+                    let discovered_members = built
+                        .members
+                        .into_iter()
+                        .map(|(server_id, member_id)| {
+                            (automatic.virtual_id.clone(), server_id, member_id)
+                        })
+                        .collect();
                     return Ok(AutomaticGroupPresentation {
                         items: vec![built.item],
-                        update: Some(AutomaticLibraryUpdate {
-                            virtual_id: automatic.virtual_id,
-                            members: built.members,
-                        }),
+                        discovered_members,
                     });
                 }
             }
@@ -423,7 +407,7 @@ async fn present_automatic_library_group(
 
         return Ok(AutomaticGroupPresentation {
             items: process_library_group_individually(state, group).await?,
-            update: None,
+            discovered_members: Vec::new(),
         });
     }
 
@@ -445,19 +429,95 @@ async fn present_automatic_library_group(
             error!("Failed to get/create merged library for '{key}': {error}");
             return Ok(AutomaticGroupPresentation {
                 items: process_library_group_individually(state, group).await?,
-                update: None,
+                discovered_members: Vec::new(),
             });
         }
     };
     let built =
         build_virtual_library_item(state, group, display_name, automatic.virtual_id.clone())
             .await?;
+    let discovered_members = built
+        .members
+        .into_iter()
+        .map(|(server_id, member_id)| (automatic.virtual_id.clone(), server_id, member_id))
+        .collect();
     Ok(AutomaticGroupPresentation {
         items: vec![built.item],
-        update: Some(AutomaticLibraryUpdate {
-            virtual_id: automatic.virtual_id,
-            members: built.members,
-        }),
+        discovered_members,
+    })
+}
+
+async fn partition_library_root_inventory(
+    state: &AppState,
+    server_items: Vec<FetchedServerItems>,
+) -> Result<LibraryRootInventory, StatusCode> {
+    let assignments = state
+        .virtual_library_service
+        .get_assignments()
+        .await
+        .map_err(|error| {
+            error!("Failed to load configured library assignments: {error}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let mut configured_groups: HashMap<String, NamedMediaItemGroup> = HashMap::new();
+    let mut unassigned_libraries = Vec::new();
+    let mut non_library_per_server = Vec::new();
+    let mut live_tv_seen = false;
+
+    for fetched in server_items {
+        let ServerItems { response, server } = fetched.server_items;
+        let mut non_library_items = Vec::new();
+
+        for item in response.into_items() {
+            if presentable_library_collection_type(&item).is_some() {
+                let original_library_id = normalize_library_id(&item.id);
+                if let Some(assignment) = assignments.get(&(server.id, original_library_id)) {
+                    configured_groups
+                        .entry(assignment.group_virtual_id.clone())
+                        .or_insert_with(|| NamedMediaItemGroup {
+                            name: assignment.group_name.clone(),
+                            sort_order: assignment.group_sort_order,
+                            items: Vec::new(),
+                        })
+                        .items
+                        .push(ServerMediaItem {
+                            item,
+                            server: server.clone(),
+                        });
+                } else {
+                    unassigned_libraries.push(ServerMediaItem {
+                        item,
+                        server: server.clone(),
+                    });
+                }
+                continue;
+            }
+
+            if is_live_tv_user_view(&item) {
+                if live_tv_seen {
+                    continue;
+                }
+                live_tv_seen = true;
+            }
+            non_library_items.push(item);
+        }
+
+        if !non_library_items.is_empty() {
+            let processed =
+                process_media_items_for_server(non_library_items, state, &server, true).await?;
+            if !processed.is_empty() {
+                non_library_per_server.push(ServerItems {
+                    response: ItemsResponseVariants::Bare(processed),
+                    server,
+                });
+            }
+        }
+    }
+
+    Ok(LibraryRootInventory {
+        configured_groups,
+        unassigned_libraries,
+        non_library_per_server,
     })
 }
 
@@ -486,80 +546,20 @@ async fn get_automatic_library_root(
         .iter()
         .map(|items| items.server_items.server.id)
         .collect::<Vec<_>>();
-    let assignments = state
-        .virtual_library_service
-        .get_assignments()
-        .await
-        .map_err(|error| {
-            error!("Failed to load configured library assignments: {error}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-    let mut configured_library_groups: HashMap<String, NamedMediaItemGroup> = HashMap::new();
+    let LibraryRootInventory {
+        configured_groups,
+        unassigned_libraries,
+        non_library_per_server,
+    } = partition_library_root_inventory(state, server_items).await?;
     let mut library_groups: HashMap<String, Vec<ServerMediaItem>> = HashMap::new();
-    let mut non_lib_per_server = Vec::new();
-    let mut live_tv_seen = false;
-
-    for FetchedServerItems {
-        server_items:
-            ServerItems {
-                response: raw_response,
-                server,
-            },
-        ..
-    } in server_items
-    {
-        let mut non_library_items = Vec::new();
-
-        for item in raw_response.into_items() {
-            match library_group_destination(&item, server.id, &assignments) {
-                Some(LibraryGroupDestination::Configured(assignment)) => {
-                    configured_library_groups
-                        .entry(assignment.group_virtual_id.clone())
-                        .or_insert_with(|| NamedMediaItemGroup {
-                            name: assignment.group_name.clone(),
-                            items: Vec::new(),
-                        })
-                        .items
-                        .push(ServerMediaItem {
-                            item,
-                            server: server.clone(),
-                        });
-                }
-                Some(LibraryGroupDestination::Automatic(key)) => {
-                    library_groups
-                        .entry(key)
-                        .or_default()
-                        .push(ServerMediaItem {
-                            item,
-                            server: server.clone(),
-                        });
-                }
-                None => {
-                    if is_live_tv_user_view(&item) {
-                        if live_tv_seen {
-                            continue;
-                        }
-                        live_tv_seen = true;
-                    }
-                    non_library_items.push(item);
-                }
-            }
-        }
-
-        if !non_library_items.is_empty() {
-            let processed =
-                process_media_items_for_server(non_library_items, state, &server, true).await?;
-            if !processed.is_empty() {
-                non_lib_per_server.push(ServerItems {
-                    response: ItemsResponseVariants::Bare(processed),
-                    server,
-                });
-            }
-        }
+    for source in unassigned_libraries {
+        let Some(key) = automatic_library_key(&source.item) else {
+            continue;
+        };
+        library_groups.entry(key).or_default().push(source);
     }
 
-    let mut library_items =
-        present_configured_library_groups(state, configured_library_groups).await?;
+    let mut library_items = present_configured_library_groups(state, configured_groups).await?;
     let mut discovered_members = Vec::new();
     let mut automatic_groups = library_groups.into_iter().collect::<Vec<_>>();
     automatic_groups.sort_by(|left, right| left.0.cmp(&right.0));
@@ -568,13 +568,7 @@ async fn get_automatic_library_root(
             present_automatic_library_group(state, key, group, &access_scope, failures == 0)
                 .await?;
         library_items.extend(presentation.items);
-        if let Some(update) = presentation.update {
-            discovered_members.extend(
-                update.members.into_iter().map(|(server_id, member_id)| {
-                    (update.virtual_id.clone(), server_id, member_id)
-                }),
-            );
-        }
+        discovered_members.extend(presentation.discovered_members);
     }
 
     state
@@ -591,8 +585,7 @@ async fn get_automatic_library_root(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    let items = FederatedItems::new(library_items)
-        .merge_server_items(non_lib_per_server, MergeStrategy::Interleave);
+    let items = FederatedItems::new(library_items).merge_interleaved(non_library_per_server);
     finalize_items_response(items, original_request.url(), response_shape)
 }
 
@@ -600,23 +593,11 @@ async fn present_configured_library_groups(
     state: &AppState,
     configured_library_groups: HashMap<String, NamedMediaItemGroup>,
 ) -> Result<Vec<MediaItem>, StatusCode> {
-    let group_sort_order: HashMap<String, i32> = state
-        .virtual_library_service
-        .list_groups()
-        .await
-        .map_err(|error| {
-            error!("Failed to load configured library groups: {error}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?
-        .into_iter()
-        .map(|group| (group.virtual_id, group.sort_order))
-        .collect();
     let mut group_entries = configured_library_groups.into_iter().collect::<Vec<_>>();
     group_entries.sort_by(|left, right| {
-        let left_order = group_sort_order.get(&left.0).copied().unwrap_or(0);
-        let right_order = group_sort_order.get(&right.0).copied().unwrap_or(0);
-        left_order
-            .cmp(&right_order)
+        left.1
+            .sort_order
+            .cmp(&right.1.sort_order)
             .then_with(|| left.1.name.cmp(&right.1.name))
             .then_with(|| left.0.cmp(&right.0))
     });
@@ -662,99 +643,28 @@ async fn get_configured_library_root(
         response_shape,
         ..
     } = fetch_catalog(state, &original_request, targets, FetchMode::Inventory, 0).await?;
-    let custom_assignments = state
-        .virtual_library_service
-        .get_assignments()
-        .await
-        .map_err(|error| {
-            error!("Failed to load configured library assignments: {error}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-    let mut custom_library_groups: HashMap<String, NamedMediaItemGroup> = HashMap::new();
-    let mut library_groups: HashMap<String, Vec<ServerMediaItem>> = HashMap::new();
-    let mut non_lib_per_server = Vec::new();
-    let mut live_tv_seen = false;
-
-    for FetchedServerItems {
-        server_items:
-            ServerItems {
-                response: raw_response,
-                server,
-            },
-        ..
-    } in server_items
-    {
-        let mut non_library_items = Vec::new();
-
-        for item in raw_response.into_items() {
-            if presentable_library_collection_type(&item).is_some() {
-                let original_library_id = normalize_library_id(&item.id);
-                if let Some(LibraryAssignment {
-                    group_virtual_id,
-                    group_name,
-                }) = custom_assignments.get(&(server.id, original_library_id.clone()))
-                {
-                    custom_library_groups
-                        .entry(group_virtual_id.clone())
-                        .or_insert_with(|| NamedMediaItemGroup {
-                            name: group_name.clone(),
-                            items: Vec::new(),
-                        })
-                        .items
-                        .push(ServerMediaItem {
-                            item,
-                            server: server.clone(),
-                        });
-                    continue;
-                }
-
-                library_groups
-                    .entry(format!("single:{}:{}", server.id, original_library_id))
-                    .or_default()
-                    .push(ServerMediaItem {
-                        item,
-                        server: server.clone(),
-                    });
-            } else {
-                if is_live_tv_user_view(&item) {
-                    if live_tv_seen {
-                        continue;
-                    }
-                    live_tv_seen = true;
-                }
-                non_library_items.push(item);
-            }
-        }
-
-        if !non_library_items.is_empty() {
-            let processed =
-                process_media_items_for_server(non_library_items, state, &server, true).await?;
-            if !processed.is_empty() {
-                non_lib_per_server.push(ServerItems {
-                    response: ItemsResponseVariants::Bare(processed),
-                    server,
-                });
-            }
-        }
+    let LibraryRootInventory {
+        configured_groups,
+        unassigned_libraries,
+        non_library_per_server,
+    } = partition_library_root_inventory(state, server_items).await?;
+    let mut library_items = present_configured_library_groups(state, configured_groups).await?;
+    let mut single_groups = HashMap::new();
+    for source in unassigned_libraries {
+        let key = format!(
+            "single:{}:{}",
+            source.server.id,
+            normalize_library_id(&source.item.id)
+        );
+        single_groups.entry(key).or_insert(source);
     }
-
-    let mut library_items = present_configured_library_groups(state, custom_library_groups).await?;
-
-    let mut single_groups = library_groups.into_iter().collect::<Vec<_>>();
+    let mut single_groups = single_groups.into_iter().collect::<Vec<_>>();
     single_groups.sort_by(|left, right| left.0.cmp(&right.0));
-    for (_key, group) in single_groups {
-        if let Some(ServerMediaItem { item, server }) = group.into_iter().next() {
-            library_items.push(process_library_folder(state, item, &server, true).await?);
-        }
+    for (_key, ServerMediaItem { item, server }) in single_groups {
+        library_items.push(process_library_folder(state, item, &server, true).await?);
     }
 
-    let items = if is_playback_catalog_request(original_request.url()) {
-        FederatedItems::new(library_items)
-            .merge_server_items(non_lib_per_server, MergeStrategy::LabelDuplicates)
-    } else {
-        FederatedItems::new(library_items)
-            .merge_server_items(non_lib_per_server, MergeStrategy::Interleave)
-    };
+    let items = FederatedItems::new(library_items).merge_interleaved(non_library_per_server);
 
     finalize_items_response(items, original_request.url(), response_shape)
 }
@@ -826,7 +736,6 @@ struct FetchedServerItems {
     server_items: ServerItems,
     upstream_total: Option<i32>,
     fully_fetched: bool,
-    raw_count: usize,
 }
 
 impl FetchedServerItems {
@@ -835,12 +744,10 @@ impl FetchedServerItems {
             ItemsResponseVariants::WithCount(response) => Some(response.total_record_count),
             ItemsResponseVariants::Bare(_) => None,
         };
-        let raw_count = server_items.response.len();
         Self {
             server_items,
             upstream_total,
             fully_fetched: true,
-            raw_count,
         }
     }
 }
@@ -868,22 +775,15 @@ fn merged_library_max_pages(pagination: Pagination) -> Option<usize> {
 }
 
 fn estimate_merged_library_total(
-    deduped_len: usize,
-    raw_count: usize,
+    fetched_len: usize,
     upstream_total_sum: i32,
     all_fully_fetched: bool,
 ) -> usize {
     if all_fully_fetched {
-        return deduped_len;
+        return fetched_len;
     }
 
-    if raw_count > 0 && upstream_total_sum > 0 {
-        let ratio = deduped_len as f64 / raw_count as f64;
-        let estimated = (f64::from(upstream_total_sum) * ratio).round() as usize;
-        return estimated.max(deduped_len);
-    }
-
-    deduped_len.max(upstream_total_sum.max(0) as usize)
+    fetched_len.max(upstream_total_sum.max(0) as usize)
 }
 
 async fn fetch_windowed_items_from_server(
@@ -908,13 +808,11 @@ async fn fetch_windowed_items_from_server(
         max_pages,
     )
     .await?;
-    let raw_count = response.len();
     process_items_response_json(&mut response, &state, &server, should_change_name).await?;
     Ok(FetchedServerItems {
         server_items: ServerItems { response, server },
         upstream_total,
         fully_fetched,
-        raw_count,
     })
 }
 
@@ -1083,8 +981,8 @@ fn set_upstream_page(url: &mut url::Url, start_index: usize, limit: usize) {
         .append_pair("Limit", &limit.to_string());
 }
 
-fn ensure_dedup_fields(url: &mut url::Url) {
-    const REQUIRED_FIELDS: &[&str] = &["ChildCount", "ProviderIds", "MediaSources", "MediaStreams"];
+fn ensure_duplicate_identity_field(url: &mut url::Url) {
+    const REQUIRED_FIELD: &str = "ProviderIds";
     let pairs = url
         .query_pairs()
         .map(|(key, value)| (key.into_owned(), value.into_owned()))
@@ -1101,13 +999,11 @@ fn ensure_dedup_fields(url: &mut url::Url) {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    for required_field in REQUIRED_FIELDS {
-        if !fields
-            .iter()
-            .any(|field| field.eq_ignore_ascii_case(required_field))
-        {
-            fields.push((*required_field).to_string());
-        }
+    if !fields
+        .iter()
+        .any(|field| field.eq_ignore_ascii_case(REQUIRED_FIELD))
+    {
+        fields.push(REQUIRED_FIELD.to_string());
     }
     let fields_value = fields.join(",");
     let mut wrote_fields = false;
@@ -1303,11 +1199,6 @@ fn attach_library_folder_image_source(
     item.image_tags = Some(HashMap::from([("Primary".to_string(), primary_tag)]));
 }
 
-fn is_playback_catalog_request(url: &url::Url) -> bool {
-    let path = url.path().to_ascii_lowercase();
-    path.contains("/nextup") || path.contains("/resume")
-}
-
 async fn process_media_item_for_server(
     item: MediaItem,
     state: &AppState,
@@ -1382,22 +1273,10 @@ fn is_live_tv_user_view(item: &MediaItem) -> bool {
     item.collection_type == Some(CollectionType::LiveTv) && item.item_type == BaseItemKind::UserView
 }
 
-fn library_group_destination<'a>(
-    item: &MediaItem,
-    server_id: ServerId,
-    assignments: &'a HashMap<(ServerId, String), LibraryAssignment>,
-) -> Option<LibraryGroupDestination<'a>> {
+fn automatic_library_key(item: &MediaItem) -> Option<String> {
     let collection_type = presentable_library_collection_type(item)?;
-    let original_library_id = normalize_library_id(&item.id);
-    if let Some(assignment) = assignments.get(&(server_id, original_library_id)) {
-        return Some(LibraryGroupDestination::Configured(assignment));
-    }
-
     let name = item.name.as_deref().unwrap_or("").to_lowercase();
-    Some(LibraryGroupDestination::Automatic(format!(
-        "{}:{name}",
-        collection_type.as_str()
-    )))
+    Some(format!("{}:{name}", collection_type.as_str()))
 }
 
 fn presentable_library_collection_type(item: &MediaItem) -> Option<&CollectionType> {
@@ -1432,37 +1311,14 @@ mod tests {
     }
 
     #[test]
-    fn configured_assignment_takes_precedence_over_automatic_grouping() {
-        let mut item = typed_media_item("library-id", "CollectionFolder", Some("movies"));
-        item.name = Some("Anime".to_string());
-        let assignment = LibraryAssignment {
-            group_virtual_id: "configured-id".to_string(),
-            group_name: "Animation".to_string(),
-        };
-        let assignments =
-            HashMap::from([((ServerId::new(1), "library-id".to_string()), assignment)]);
-
-        let destination = library_group_destination(&item, ServerId::new(1), &assignments);
-
-        assert!(matches!(
-            destination,
-            Some(LibraryGroupDestination::Configured(assignment))
-                if assignment.group_virtual_id == "configured-id"
-        ));
-    }
-
-    #[test]
     fn unassigned_library_uses_automatic_grouping() {
         let mut item = typed_media_item("library-id", "CollectionFolder", Some("movies"));
         item.name = Some("Anime".to_string());
-        let assignments = HashMap::new();
 
-        let destination = library_group_destination(&item, ServerId::new(1), &assignments);
-
-        assert!(matches!(
-            destination,
-            Some(LibraryGroupDestination::Automatic(key)) if key == "movies:anime"
-        ));
+        assert_eq!(
+            automatic_library_key(&item).as_deref(),
+            Some("movies:anime")
+        );
     }
 
     #[test]
@@ -1513,13 +1369,12 @@ mod tests {
 
     #[test]
     fn estimate_merged_library_total_uses_exact_count_when_fully_fetched() {
-        assert_eq!(estimate_merged_library_total(42, 100, 500, true), 42);
+        assert_eq!(estimate_merged_library_total(42, 500, true), 42);
     }
 
     #[test]
-    fn estimate_merged_library_total_scales_upstream_totals_when_windowed() {
-        assert_eq!(estimate_merged_library_total(80, 100, 1000, false), 800);
-        assert_eq!(estimate_merged_library_total(5, 10, 200, false), 100);
+    fn estimate_merged_library_total_uses_upstream_total_when_windowed() {
+        assert_eq!(estimate_merged_library_total(80, 1000, false), 1000);
     }
 
     #[test]
@@ -1602,6 +1457,18 @@ mod tests {
                 ("StartIndex".to_string(), "300".to_string()),
                 ("Limit".to_string(), "100".to_string()),
             ]
+        );
+    }
+
+    #[test]
+    fn duplicate_identity_field_only_adds_provider_ids() {
+        let mut url = url::Url::parse("http://localhost/Items?Fields=Genres").unwrap();
+
+        ensure_duplicate_identity_field(&mut url);
+
+        assert_eq!(
+            query_pairs(&url),
+            vec![("Fields".to_string(), "Genres,ProviderIds".to_string())]
         );
     }
 

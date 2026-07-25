@@ -93,11 +93,6 @@ impl ResponseShape {
     }
 }
 
-pub(super) enum MergeStrategy {
-    Interleave,
-    LabelDuplicates,
-}
-
 pub(super) struct ServerItems {
     pub(super) response: ItemsResponseVariants,
     pub(super) server: Server,
@@ -125,21 +120,13 @@ impl FederatedItems {
         Self::new(label_duplicates(items))
     }
 
-    pub(super) fn merge_server_items(
-        mut self,
-        server_items: Vec<ServerItems>,
-        strategy: MergeStrategy,
-    ) -> Self {
-        let items = match strategy {
-            MergeStrategy::Interleave => interleave(
-                server_items
-                    .into_iter()
-                    .map(|items| items.response)
-                    .collect(),
-            ),
-            MergeStrategy::LabelDuplicates => label_duplicates(tag_server_items(server_items)),
-        };
-        self.items.extend(items);
+    pub(super) fn merge_interleaved(mut self, server_items: Vec<ServerItems>) -> Self {
+        self.items.extend(interleave(
+            server_items
+                .into_iter()
+                .map(|items| items.response)
+                .collect(),
+        ));
         self
     }
 
@@ -257,22 +244,6 @@ fn interleave(responses: Vec<ItemsResponseVariants>) -> Vec<MediaItem> {
     items
 }
 
-fn tag_server_items(server_items: Vec<ServerItems>) -> Vec<TaggedMediaItem> {
-    server_items
-        .into_iter()
-        .flat_map(|server_items| {
-            server_items
-                .response
-                .into_items()
-                .into_iter()
-                .map(move |item| TaggedMediaItem {
-                    item,
-                    server: server_items.server.clone(),
-                })
-        })
-        .collect()
-}
-
 fn is_live_tv_user_view(item: &MediaItem) -> bool {
     item.collection_type == Some(CollectionType::LiveTv) && item.item_type == BaseItemKind::UserView
 }
@@ -284,7 +255,6 @@ fn to_i32(value: usize) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{config::MediaStreamingMode, server_id::ServerId, server_url::ServerUrl};
     use serde_json::json;
 
     #[test]
@@ -527,38 +497,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn merge_server_items_labels_and_keeps_duplicates() {
-        let items = FederatedItems::default().merge_server_items(
-            vec![
-                ServerItems {
-                    response: ItemsResponseVariants::Bare(vec![duplicate_media_item("low")]),
-                    server: server(1, 10),
-                },
-                ServerItems {
-                    response: ItemsResponseVariants::Bare(vec![duplicate_media_item("high")]),
-                    server: server(2, 20),
-                },
-            ],
-            MergeStrategy::LabelDuplicates,
-        );
-
-        assert_eq!(
-            (
-                item_ids(&items.items),
-                items
-                    .items
-                    .iter()
-                    .filter_map(|item| item.name.as_deref())
-                    .collect::<Vec<_>>(),
-            ),
-            (
-                vec!["low", "high"],
-                vec!["Movie [Server 1]", "Movie [Server 2]"]
-            )
-        );
-    }
-
     fn item_ids(items: &[MediaItem]) -> Vec<&str> {
         items.iter().map(|item| item.id.as_str()).collect()
     }
@@ -577,16 +515,6 @@ mod tests {
         .unwrap()
     }
 
-    fn duplicate_media_item(id: &str) -> MediaItem {
-        serde_json::from_value(json!({
-            "Id": id,
-            "Name": "Movie",
-            "Type": "Movie",
-            "ProviderIds": { "Tmdb": "same" },
-        }))
-        .unwrap()
-    }
-
     fn typed_media_item(id: &str, item_type: &str, collection_type: Option<&str>) -> MediaItem {
         let mut item = json!({
             "Id": id,
@@ -596,18 +524,5 @@ mod tests {
             item["CollectionType"] = json!(collection_type);
         }
         serde_json::from_value(item).unwrap()
-    }
-
-    fn server(id: i64, priority: i32) -> Server {
-        let now = chrono::Utc::now();
-        Server {
-            id: ServerId::new(id),
-            name: format!("Server {id}"),
-            url: ServerUrl::parse("http://example:8096").unwrap(),
-            priority,
-            media_streaming_mode: MediaStreamingMode::Redirect,
-            created_at: now,
-            updated_at: now,
-        }
     }
 }

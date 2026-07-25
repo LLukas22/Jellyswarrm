@@ -162,19 +162,12 @@ mod tests {
     use super::*;
     use crate::{config::MediaStreamingMode, server_id::ServerId, server_url::ServerUrl};
 
-    fn tagged(
-        server_id: i64,
-        priority: i32,
-        name: &str,
-        size: i64,
-        provider: &str,
-    ) -> TaggedMediaItem {
+    fn tagged(server_id: i64, priority: i32, name: &str, provider: &str) -> TaggedMediaItem {
         let item: MediaItem = serde_json::from_value(serde_json::json!({
             "Id": format!("{server_id}-{name}"),
             "Name": name,
             "Type": "Movie",
-            "ProviderIds": { "Tmdb": provider },
-            "MediaSources": [{ "Id": "1", "Size": size }]
+            "ProviderIds": { "Tmdb": provider }
         }))
         .unwrap();
 
@@ -213,11 +206,11 @@ mod tests {
         let result = label_duplicates(vec![
             TaggedMediaItem {
                 item: less,
-                server: tagged(1, 100, "x", 1, "abc").server,
+                server: tagged(1, 100, "x", "abc").server,
             },
             TaggedMediaItem {
                 item: more,
-                server: tagged(2, 50, "x", 1, "abc").server,
+                server: tagged(2, 50, "x", "abc").server,
             },
         ]);
         assert_eq!(
@@ -232,8 +225,8 @@ mod tests {
     #[test]
     fn same_title_with_different_provider_ids_is_not_a_duplicate() {
         let result = label_duplicates(vec![
-            tagged(1, 100, "Crash", 1_000, "1996"),
-            tagged(2, 100, "Crash", 2_000, "2004"),
+            tagged(1, 100, "Crash", "1996"),
+            tagged(2, 100, "Crash", "2004"),
         ]);
 
         assert_eq!(
@@ -247,10 +240,10 @@ mod tests {
 
     #[test]
     fn same_title_with_different_production_years_is_not_a_duplicate() {
-        let mut original = tagged(1, 100, "The Thing", 1_000, "unused");
+        let mut original = tagged(1, 100, "The Thing", "unused");
         original.item.provider_ids = None;
         original.item.production_year = Some(1982);
-        let mut remake = tagged(2, 100, "The Thing", 2_000, "unused");
+        let mut remake = tagged(2, 100, "The Thing", "unused");
         remake.item.provider_ids = None;
         remake.item.production_year = Some(2011);
 
@@ -267,9 +260,9 @@ mod tests {
 
     #[test]
     fn duplicate_episodes_are_also_labeled_with_their_server() {
-        let mut first = tagged(1, 100, "Pilot", 1_000, "same");
+        let mut first = tagged(1, 100, "Pilot", "same");
         first.item.item_type = BaseItemKind::Episode;
-        let mut second = tagged(2, 100, "Pilot", 2_000, "same");
+        let mut second = tagged(2, 100, "Pilot", "same");
         second.item.item_type = BaseItemKind::Episode;
 
         let result = label_duplicates(vec![first, second]);
