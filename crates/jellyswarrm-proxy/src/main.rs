@@ -27,7 +27,7 @@ use axum_login::{
 };
 
 mod config;
-mod duplicate_policy;
+mod duplicate_handling;
 mod encryption;
 mod extractors;
 mod federated_users;

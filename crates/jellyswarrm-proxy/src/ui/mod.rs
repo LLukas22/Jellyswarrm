@@ -152,10 +152,6 @@ pub fn ui_routes() -> axum::Router<AppState> {
             post(admin::libraries::remove_member),
         )
         .route(
-            "/libraries/groups/{virtual_id}/policy",
-            post(admin::libraries::update_group_policy),
-        )
-        .route(
             "/libraries/groups/{virtual_id}/rename",
             post(admin::libraries::rename_group),
         )

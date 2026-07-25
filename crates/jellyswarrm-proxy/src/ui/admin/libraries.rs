@@ -11,7 +11,6 @@ use tracing::{error, info};
 
 use crate::{
     config::{save_config, CLIENT_INFO},
-    duplicate_policy::DuplicatePolicy,
     encryption::{decrypt_password, HashedPassword},
     server_id::ServerId,
     virtual_library_service::{normalize_library_id, LibraryGroupMemberRecord},
@@ -41,26 +40,12 @@ struct MergeLibrariesControlTemplate {
 pub struct LibraryGroupsListTemplate {
     pub groups: Vec<LibraryGroupView>,
     pub discovered_libraries: Vec<DiscoveredLibraryView>,
-    pub servers: Vec<ServerOptionView>,
-    pub duplicate_policies: Vec<DuplicatePolicyOptionView>,
     pub ui_route: String,
-}
-
-pub struct ServerOptionView {
-    pub id: i64,
-    pub name: String,
-}
-
-pub struct DuplicatePolicyOptionView {
-    pub value: String,
-    pub label: String,
 }
 
 pub struct LibraryGroupView {
     pub virtual_id: String,
     pub name: String,
-    pub duplicate_policy: String,
-    pub preferred_server_id: Option<i64>,
     pub members: Vec<LibraryGroupMemberView>,
 }
 
@@ -97,12 +82,6 @@ pub struct AssignLibraryForm {
 pub struct RemoveMemberForm {
     pub server_id: i64,
     pub library_id: String,
-}
-
-#[derive(Deserialize)]
-pub struct UpdateGroupPolicyForm {
-    pub duplicate_policy: String,
-    pub preferred_server_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -224,39 +203,9 @@ async fn render_library_groups_list(state: &AppState) -> Result<String, String> 
         group_views.push(LibraryGroupView {
             virtual_id: group.virtual_id,
             name: group.name,
-            duplicate_policy: group.duplicate_policy.to_string(),
-            preferred_server_id: group.preferred_server_id.map(|id| id.as_i64()),
             members: member_views,
         });
     }
-
-    let servers = state
-        .server_storage
-        .list_servers()
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|server| ServerOptionView {
-            id: server.id.as_i64(),
-            name: server.name,
-        })
-        .collect::<Vec<_>>();
-
-    let duplicate_policies = [
-        DuplicatePolicy::ShowAll,
-        DuplicatePolicy::LargestSize,
-        DuplicatePolicy::SmallestSize,
-        DuplicatePolicy::BestQuality,
-        DuplicatePolicy::LowestQuality,
-        DuplicatePolicy::PreferServer,
-        DuplicatePolicy::ServerPriority,
-    ]
-    .into_iter()
-    .map(|policy| DuplicatePolicyOptionView {
-        value: policy.to_string(),
-        label: policy.label().to_string(),
-    })
-    .collect();
 
     let discovered = discover_libraries(state).await;
     let assignments = state
@@ -298,8 +247,6 @@ async fn render_library_groups_list(state: &AppState) -> Result<String, String> 
     let template = LibraryGroupsListTemplate {
         groups: group_views,
         discovered_libraries: discovered_views,
-        servers,
-        duplicate_policies,
         ui_route: state.get_ui_route().await,
     };
 
@@ -508,53 +455,6 @@ pub async fn assign_library(
     }
 }
 
-pub async fn update_group_policy(
-    State(state): State<AppState>,
-    Path(virtual_id): Path<String>,
-    Form(form): Form<UpdateGroupPolicyForm>,
-) -> Response {
-    let policy = match form.duplicate_policy.parse::<DuplicatePolicy>() {
-        Ok(policy) => policy,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Html("<div class=\"alert alert-error\">Invalid duplicate policy</div>"),
-            )
-                .into_response();
-        }
-    };
-
-    let preferred_server_id = form
-        .preferred_server_id
-        .filter(|value| !value.trim().is_empty())
-        .and_then(|value| value.parse::<i64>().ok())
-        .map(ServerId::new);
-
-    match state
-        .virtual_library_service
-        .update_group_policy(&virtual_id, policy, preferred_server_id)
-        .await
-    {
-        Ok(true) => match render_library_groups_list(&state).await {
-            Ok(html) => Html(html).into_response(),
-            Err(message) => (StatusCode::INTERNAL_SERVER_ERROR, message).into_response(),
-        },
-        Ok(false) => (
-            StatusCode::NOT_FOUND,
-            Html("<div class=\"alert alert-error\">Group not found</div>"),
-        )
-            .into_response(),
-        Err(e) => {
-            error!("Failed to update library group policy: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Html("<div class=\"alert alert-error\">Failed to update duplicate policy</div>"),
-            )
-                .into_response()
-        }
-    }
-}
-
 pub async fn rename_group(
     State(state): State<AppState>,
     Path(virtual_id): Path<String>,
@@ -670,5 +570,23 @@ mod tests {
         .unwrap();
 
         assert_eq!(html.matches("name=\"merge_libraries\"").count(), 1);
+    }
+
+    #[test]
+    fn configured_groups_do_not_offer_duplicate_policies() {
+        let html = LibraryGroupsListTemplate {
+            groups: vec![LibraryGroupView {
+                virtual_id: "group-id".to_string(),
+                name: "Movies".to_string(),
+                members: Vec::new(),
+            }],
+            discovered_libraries: Vec::new(),
+            ui_route: "admin".to_string(),
+        }
+        .render()
+        .unwrap();
+
+        assert!(!html.contains("duplicate_policy"));
+        assert!(!html.contains("Preferred server"));
     }
 }

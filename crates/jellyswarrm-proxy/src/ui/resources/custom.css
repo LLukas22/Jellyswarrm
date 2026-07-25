@@ -203,21 +203,9 @@
   margin: 0;
 }
 
-.library-group-policy-form {
-  margin: 0 0 1rem;
-}
-
-.library-group-policy-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
-  gap: 1rem;
-  align-items: end;
-}
-
 @media (max-width: 900px) {
   .library-group-header,
-  .library-group-name-form,
-  .library-group-policy-grid {
+  .library-group-name-form {
     grid-template-columns: minmax(0, 1fr);
   }
 }

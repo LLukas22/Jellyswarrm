@@ -6,7 +6,7 @@ use tokio::task::JoinSet;
 use tracing::{debug, error, trace, warn};
 
 use crate::{
-    duplicate_policy::{DuplicatePolicy, DuplicatePolicyConfig, TaggedMediaItem},
+    duplicate_handling::TaggedMediaItem,
     extractors::Preprocessed,
     handlers::{
         common::{execute_json_request, response_json_to_payload},
@@ -22,18 +22,23 @@ use crate::{
     server_storage::Server,
     user_authorization_service::AuthorizationSession,
     virtual_library_service::{
-        normalize_library_id, LibraryAssignment, LibraryGrouping, ResolvedVirtualLibrary,
-        VirtualLibraryAccessScope, VirtualLibraryResolution,
+        normalize_library_id, LibraryAssignment, LibraryGrouping, VirtualLibraryAccessScope,
+        VirtualLibraryResolution,
     },
     AppState,
 };
 
+mod library_resolution;
 mod postprocessing;
 
+use library_resolution::{
+    resolve_catalog_plan, CatalogFetchTarget, CatalogPlan, FederatedCatalogKind,
+    FederatedCatalogPlan,
+};
 use postprocessing::{FederatedItems, MergeStrategy, Pagination, ResponseShape, ServerItems};
 
-struct RawFederatedCatalog {
-    server_items: Vec<ServerItems>,
+struct FetchedCatalog {
+    server_items: Vec<FetchedServerItems>,
     failures: usize,
     response_shape: ResponseShape,
 }
@@ -68,22 +73,6 @@ enum LibraryGroupDestination<'a> {
     Automatic(String),
 }
 
-fn unique_server_sessions(
-    sessions: Vec<(AuthorizationSession, Server)>,
-) -> Vec<(AuthorizationSession, Server)> {
-    let mut seen_servers = HashSet::new();
-    sessions
-        .into_iter()
-        .filter(|(_, server)| seen_servers.insert(server.id))
-        .collect()
-}
-
-fn extract_parent_id(url: &url::Url) -> Option<String> {
-    url.query_pairs()
-        .find(|(key, _)| key.eq_ignore_ascii_case("ParentId"))
-        .map(|(_, value)| value.into_owned())
-}
-
 fn replace_parent_id(url: &url::Url, new_id: &str) -> url::Url {
     let pairs = url
         .query_pairs()
@@ -115,112 +104,90 @@ pub async fn get_items_from_all_servers_if_not_restricted(
     get_items_from_all_servers_preprocessed(&state, preprocessed).await
 }
 
-async fn is_single_virtual_library_parent(state: &AppState, parent_id: &str) -> bool {
-    let parent_id = normalize_library_id(parent_id);
-    state
-        .media_storage
-        .get_media_mapping_by_virtual(&parent_id)
-        .await
-        .ok()
-        .flatten()
-        .is_some()
+pub async fn get_items_from_all_servers(
+    State(state): State<AppState>,
+    Preprocessed(preprocessed): Preprocessed,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    get_items_from_all_servers_preprocessed(&state, preprocessed).await
+}
+
+async fn get_items_from_all_servers_preprocessed(
+    state: &AppState,
+    preprocessed: PreprocessedRequest,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let plan = resolve_catalog_plan(state, &preprocessed).await?;
+    match plan {
+        CatalogPlan::EmptyVirtual => {
+            let response_shape = if preprocessed
+                .original_request
+                .url()
+                .path()
+                .to_ascii_lowercase()
+                .ends_with("/latest")
+            {
+                ResponseShape::Bare
+            } else {
+                ResponseShape::Counted
+            };
+            finalize_items_response(
+                FederatedItems::default(),
+                preprocessed.original_request.url(),
+                response_shape,
+            )
+        }
+        CatalogPlan::SingleServer => {
+            get_items(State(state.clone()), Preprocessed(preprocessed)).await
+        }
+        CatalogPlan::Federated(FederatedCatalogPlan {
+            kind: FederatedCatalogKind::Virtual,
+            targets,
+            skipped_targets,
+        }) => get_virtual_library_items(state, preprocessed, targets, skipped_targets).await,
+        CatalogPlan::Federated(FederatedCatalogPlan {
+            kind: FederatedCatalogKind::Servers { root_grouping },
+            targets,
+            ..
+        }) => match root_grouping {
+            Some(LibraryGrouping::Automatic) => {
+                get_automatic_library_root(state, preprocessed, targets).await
+            }
+            Some(LibraryGrouping::Configured) => {
+                get_configured_library_root(state, preprocessed, targets).await
+            }
+            Some(LibraryGrouping::None) | None => {
+                get_interleaved_root(state, preprocessed, targets).await
+            }
+        },
+    }
 }
 
 async fn get_virtual_library_items(
     state: &AppState,
     preprocessed: PreprocessedRequest,
-    resolved: ResolvedVirtualLibrary,
+    targets: Vec<CatalogFetchTarget>,
+    skipped_targets: usize,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let duplicate_config = resolved.library.duplicate_config();
     let original_request = preprocessed.original_request;
-    let sessions = unique_server_sessions(preprocessed.sessions.ok_or(StatusCode::UNAUTHORIZED)?);
-    if sessions.is_empty() {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-
     let pagination = Pagination::from_url(original_request.url());
-    let mut join_set = JoinSet::new();
-    let mut failures = 0;
+    let FetchedCatalog {
+        server_items,
+        response_shape,
+        ..
+    } = fetch_catalog(
+        state,
+        &original_request,
+        targets,
+        FetchMode::VirtualLibrary { pagination },
+        skipped_targets,
+    )
+    .await?;
 
-    for (index, member) in resolved.members.into_iter().enumerate() {
-        let mapping = member.mapping;
-        let server = member.server;
-
-        let session = sessions
-            .iter()
-            .find(|(_, session_server)| session_server.id == server.id)
-            .map(|(session, _)| session.clone());
-
-        let Some(session) = session else {
-            error!("No active session for server '{}' — skipping", server.name);
-            failures += 1;
-            continue;
-        };
-
-        let mut request = match original_request.try_clone() {
-            Some(request) => request,
-            None => {
-                error!("Failed to clone request for merged library fan-out");
-                failures += 1;
-                continue;
-            }
-        };
-
-        *request.url_mut() = replace_parent_id(request.url(), &mapping.original_media_id);
-        ensure_dedup_fields(request.url_mut());
-
-        let state_clone = state.clone();
-        let use_limited_upstream = is_upstream_limited_catalog_request(original_request.url());
-        let max_pages = merged_library_max_pages(pagination);
-        join_set.spawn(async move {
-            let result = if use_limited_upstream {
-                fetch_items_from_server(
-                    index,
-                    state_clone,
-                    request,
-                    session,
-                    server,
-                    pagination,
-                    false,
-                )
-                .await
-                .map(MergedServerFetch::complete)
-            } else {
-                fetch_windowed_items_from_server(
-                    index,
-                    state_clone,
-                    request,
-                    session,
-                    server,
-                    max_pages,
-                    false,
-                )
-                .await
-            };
-            (index, result)
-        });
-    }
-
-    let (indexed_results, failures) = collect_federated_results(join_set, failures).await?;
-
-    if failures > 0 {
-        warn!(
-            "Returning partial merged library response after {} server failure(s)",
-            failures
-        );
-    }
-
-    let response_shape = ResponseShape::from_responses(
-        indexed_results
-            .iter()
-            .map(|(_, fetch)| &fetch.server_items.response),
-    );
     let mut raw_count = 0usize;
     let mut upstream_total_sum = 0i32;
     let mut all_fully_fetched = true;
-    let tagged_items: Vec<TaggedMediaItem> = indexed_results
+    let tagged_items: Vec<TaggedMediaItem> = server_items
         .into_iter()
-        .flat_map(|(_, fetch)| {
+        .flat_map(|fetch| {
             raw_count += fetch.raw_count;
             if let Some(total) = fetch.upstream_total {
                 upstream_total_sum += total.max(0);
@@ -239,180 +206,130 @@ async fn get_virtual_library_items(
         })
         .collect();
 
-    let items = FederatedItems::from_tagged_items(tagged_items, &duplicate_config);
-
+    let items = FederatedItems::from_tagged_items(tagged_items);
     let total_count = estimate_merged_library_total(
         items.len(),
         raw_count,
         upstream_total_sum,
         all_fully_fetched,
     );
-    items_response_to_json(items.with_reported_total(total_count).into_response(
+
+    finalize_items_response(
+        items.with_reported_total(total_count),
         original_request.url(),
-        pagination,
         response_shape,
-    ))
-}
-
-pub async fn get_items_from_all_servers(
-    State(state): State<AppState>,
-    Preprocessed(preprocessed): Preprocessed,
-) -> Result<Json<serde_json::Value>, StatusCode> {
-    get_items_from_all_servers_preprocessed(&state, preprocessed).await
-}
-
-async fn get_items_from_all_servers_preprocessed(
-    state: &AppState,
-    preprocessed: PreprocessedRequest,
-) -> Result<Json<serde_json::Value>, StatusCode> {
-    if let Some(parent_id) = extract_parent_id(preprocessed.original_request.url()) {
-        let resolution = state
-            .virtual_library_service
-            .resolve(&parent_id, preprocessed.access_scope.as_ref())
-            .await
-            .map_err(|error| {
-                error!("Failed to resolve virtual library for {parent_id}: {error}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-        match resolution {
-            VirtualLibraryResolution::Resolved(resolved) => {
-                debug!(
-                    "ParentId {} is virtual library '{}' — fanning out to {} members",
-                    parent_id,
-                    resolved.library.name(),
-                    resolved.members.len()
-                );
-                return get_virtual_library_items(state, preprocessed, resolved).await;
-            }
-            VirtualLibraryResolution::Empty(library) => {
-                debug!(
-                    "Virtual library '{}' has no resolvable members",
-                    library.name()
-                );
-                let pagination = Pagination::from_url(preprocessed.original_request.url());
-                let response_shape = if preprocessed
-                    .original_request
-                    .url()
-                    .path()
-                    .to_ascii_lowercase()
-                    .ends_with("/latest")
-                {
-                    ResponseShape::Bare
-                } else {
-                    ResponseShape::Counted
-                };
-                return items_response_to_json(FederatedItems::default().into_response(
-                    preprocessed.original_request.url(),
-                    pagination,
-                    response_shape,
-                ));
-            }
-            VirtualLibraryResolution::Unknown => {
-                if is_single_virtual_library_parent(state, &parent_id).await {
-                    return get_items(State(state.clone()), Preprocessed(preprocessed)).await;
-                }
-            }
-        }
-    }
-
-    let url_prefix = state.get_url_prefix().await;
-    if !is_library_root_request(preprocessed.original_request.url(), url_prefix.as_deref()) {
-        return get_interleaved_root(state, preprocessed).await;
-    }
-
-    let grouping = state
-        .virtual_library_service
-        .library_grouping(state.merge_libraries_enabled().await)
-        .await
-        .map_err(|error| {
-            error!("Failed to determine library grouping: {error}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-    match grouping {
-        LibraryGrouping::Automatic => get_automatic_library_root(state, preprocessed).await,
-        LibraryGrouping::Configured => get_configured_library_root(state, preprocessed).await,
-        LibraryGrouping::None => get_interleaved_root(state, preprocessed).await,
-    }
+    )
 }
 
 async fn get_interleaved_root(
     state: &AppState,
     preprocessed: PreprocessedRequest,
+    targets: Vec<CatalogFetchTarget>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let original_request = preprocessed.original_request;
-    let sessions = unique_server_sessions(preprocessed.sessions.ok_or(StatusCode::UNAUTHORIZED)?);
-    if sessions.is_empty() {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
     let pagination = Pagination::from_url(original_request.url());
-    let mut join_set = JoinSet::new();
-    let mut failures = 0;
-
-    for (index, (session, server)) in sessions.into_iter().enumerate() {
-        let Some(request) = original_request.try_clone() else {
-            error!("Failed to clone request for server: {}", server.name);
-            failures += 1;
-            continue;
-        };
-
-        let state_clone = state.clone();
-        join_set.spawn(async move {
-            let result = fetch_items_from_server(
-                index,
-                state_clone,
-                request,
-                session,
-                server,
-                pagination,
-                true,
-            )
-            .await;
-            (index, result)
-        });
-    }
-
-    let (indexed_results, failures) = collect_federated_results(join_set, failures).await?;
-    let response_shape =
-        ResponseShape::from_responses(indexed_results.iter().map(|(_, items)| &items.response));
-    let server_count = indexed_results.len();
-    let server_items = indexed_results
+    let FetchedCatalog {
+        server_items,
+        response_shape,
+        ..
+    } = fetch_catalog(
+        state,
+        &original_request,
+        targets,
+        FetchMode::ClientWindow(pagination),
+        0,
+    )
+    .await?;
+    let server_count = server_items.len();
+    let responses = server_items
         .into_iter()
-        .map(|(_, items)| items.response)
+        .map(|items| items.server_items.response)
         .collect::<Vec<_>>();
-    let items = FederatedItems::interleaved(server_items);
+    let items = FederatedItems::interleaved(responses);
 
     debug!("Combined items from {server_count} servers");
 
-    if failures > 0 {
-        warn!(
-            "Returning partial federated response after {} server failure(s)",
-            failures
-        );
-    }
-
-    items_response_to_json(items.into_response(original_request.url(), pagination, response_shape))
+    finalize_items_response(items, original_request.url(), response_shape)
 }
 
-async fn fetch_raw_federated_catalog(
+#[derive(Clone, Copy)]
+enum FetchMode {
+    ClientWindow(Pagination),
+    VirtualLibrary { pagination: Pagination },
+    Inventory,
+}
+
+async fn fetch_catalog(
     state: &AppState,
     original_request: &reqwest::Request,
-    sessions: Vec<(AuthorizationSession, Server)>,
-    pagination: Pagination,
-) -> Result<RawFederatedCatalog, StatusCode> {
+    targets: Vec<CatalogFetchTarget>,
+    mode: FetchMode,
+    mut failures: usize,
+) -> Result<FetchedCatalog, StatusCode> {
     let mut join_set = JoinSet::new();
-    let mut failures = 0;
 
-    for (index, (session, server)) in sessions.into_iter().enumerate() {
-        let Some(request) = original_request.try_clone() else {
-            error!("Failed to clone request for server: {}", server.name);
+    for (index, target) in targets.into_iter().enumerate() {
+        let Some(mut request) = original_request.try_clone() else {
+            error!("Failed to clone request for server: {}", target.server.name);
             failures += 1;
             continue;
         };
+        if let Some(parent_id) = target.parent_id {
+            *request.url_mut() = replace_parent_id(request.url(), &parent_id);
+            ensure_dedup_fields(request.url_mut());
+        }
+
         let state = state.clone();
         join_set.spawn(async move {
-            let result =
-                fetch_raw_items_from_server(index, state, request, session, server, pagination)
-                    .await;
+            let result = match mode {
+                FetchMode::ClientWindow(pagination) => fetch_items_from_server(
+                    index,
+                    state,
+                    request,
+                    target.session,
+                    target.server,
+                    pagination,
+                    true,
+                )
+                .await
+                .map(FetchedServerItems::complete),
+                FetchMode::VirtualLibrary { pagination } => {
+                    if is_upstream_limited_catalog_request(request.url()) {
+                        fetch_items_from_server(
+                            index,
+                            state,
+                            request,
+                            target.session,
+                            target.server,
+                            pagination,
+                            false,
+                        )
+                        .await
+                        .map(FetchedServerItems::complete)
+                    } else {
+                        fetch_windowed_items_from_server(
+                            index,
+                            state,
+                            request,
+                            target.session,
+                            target.server,
+                            merged_library_max_pages(pagination),
+                            false,
+                        )
+                        .await
+                    }
+                }
+                FetchMode::Inventory => fetch_raw_items_from_server(
+                    index,
+                    state,
+                    request,
+                    target.session,
+                    target.server,
+                    Pagination::unbounded(),
+                )
+                .await
+                .map(FetchedServerItems::complete),
+            };
             (index, result)
         });
     }
@@ -428,10 +345,13 @@ async fn fetch_raw_federated_catalog(
         .into_iter()
         .map(|(_, items)| items)
         .collect::<Vec<_>>();
-    let response_shape =
-        ResponseShape::from_responses(server_items.iter().map(|items| &items.response));
+    let response_shape = ResponseShape::from_responses(
+        server_items
+            .iter()
+            .map(|items| &items.server_items.response),
+    );
 
-    Ok(RawFederatedCatalog {
+    Ok(FetchedCatalog {
         server_items,
         failures,
         response_shape,
@@ -544,37 +464,27 @@ async fn present_automatic_library_group(
 async fn get_automatic_library_root(
     state: &AppState,
     preprocessed: PreprocessedRequest,
+    targets: Vec<CatalogFetchTarget>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let PreprocessedRequest {
         original_request,
-        sessions,
         access_scope,
         ..
     } = preprocessed;
-    let sessions = unique_server_sessions(sessions.ok_or(StatusCode::UNAUTHORIZED)?);
-    if sessions.is_empty() {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
     let access_scope = access_scope.ok_or(StatusCode::UNAUTHORIZED)?;
     let refresh_generation = state
         .virtual_library_service
         .begin_automatic_library_refresh(&access_scope)
         .await;
 
-    let pagination = Pagination::from_url(original_request.url());
-    let inventory_pagination = Pagination {
-        start_index: 0,
-        limit: None,
-    };
-    let RawFederatedCatalog {
+    let FetchedCatalog {
         server_items,
         failures,
         response_shape,
-    } = fetch_raw_federated_catalog(state, &original_request, sessions, inventory_pagination)
-        .await?;
+    } = fetch_catalog(state, &original_request, targets, FetchMode::Inventory, 0).await?;
     let refreshed_server_ids = server_items
         .iter()
-        .map(|items| items.server.id)
+        .map(|items| items.server_items.server.id)
         .collect::<Vec<_>>();
     let assignments = state
         .virtual_library_service
@@ -589,9 +499,13 @@ async fn get_automatic_library_root(
     let mut non_lib_per_server = Vec::new();
     let mut live_tv_seen = false;
 
-    for ServerItems {
-        response: raw_response,
-        server,
+    for FetchedServerItems {
+        server_items:
+            ServerItems {
+                response: raw_response,
+                server,
+            },
+        ..
     } in server_items
     {
         let mut non_library_items = Vec::new();
@@ -679,7 +593,7 @@ async fn get_automatic_library_root(
 
     let items = FederatedItems::new(library_items)
         .merge_server_items(non_lib_per_server, MergeStrategy::Interleave);
-    items_response_to_json(items.into_response(original_request.url(), pagination, response_shape))
+    finalize_items_response(items, original_request.url(), response_shape)
 }
 
 async fn present_configured_library_groups(
@@ -740,24 +654,14 @@ async fn present_configured_library_groups(
 async fn get_configured_library_root(
     state: &AppState,
     preprocessed: PreprocessedRequest,
+    targets: Vec<CatalogFetchTarget>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let original_request = preprocessed.original_request;
-    let sessions = unique_server_sessions(preprocessed.sessions.ok_or(StatusCode::UNAUTHORIZED)?);
-    if sessions.is_empty() {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-
-    let pagination = Pagination::from_url(original_request.url());
-    let inventory_pagination = Pagination {
-        start_index: 0,
-        limit: None,
-    };
-    let RawFederatedCatalog {
+    let FetchedCatalog {
         server_items,
         response_shape,
         ..
-    } = fetch_raw_federated_catalog(state, &original_request, sessions, inventory_pagination)
-        .await?;
+    } = fetch_catalog(state, &original_request, targets, FetchMode::Inventory, 0).await?;
     let custom_assignments = state
         .virtual_library_service
         .get_assignments()
@@ -771,9 +675,13 @@ async fn get_configured_library_root(
     let mut non_lib_per_server = Vec::new();
     let mut live_tv_seen = false;
 
-    for ServerItems {
-        response: raw_response,
-        server,
+    for FetchedServerItems {
+        server_items:
+            ServerItems {
+                response: raw_response,
+                server,
+            },
+        ..
     } in server_items
     {
         let mut non_library_items = Vec::new();
@@ -841,20 +749,14 @@ async fn get_configured_library_root(
     }
 
     let items = if is_playback_catalog_request(original_request.url()) {
-        let duplicate_config = DuplicatePolicyConfig {
-            policy: DuplicatePolicy::ServerPriority,
-            preferred_server_id: None,
-        };
-        FederatedItems::new(library_items).merge_server_items(
-            non_lib_per_server,
-            MergeStrategy::DuplicatePolicy(&duplicate_config),
-        )
+        FederatedItems::new(library_items)
+            .merge_server_items(non_lib_per_server, MergeStrategy::LabelDuplicates)
     } else {
         FederatedItems::new(library_items)
             .merge_server_items(non_lib_per_server, MergeStrategy::Interleave)
     };
 
-    items_response_to_json(items.into_response(original_request.url(), pagination, response_shape))
+    finalize_items_response(items, original_request.url(), response_shape)
 }
 
 async fn collect_federated_results<T: Send + 'static>(
@@ -920,14 +822,14 @@ async fn fetch_items_from_server(
 const UPSTREAM_PAGE_SIZE: usize = 100;
 const MAX_PARALLEL_UPSTREAM_PAGES: usize = 8;
 
-struct MergedServerFetch {
+struct FetchedServerItems {
     server_items: ServerItems,
     upstream_total: Option<i32>,
     fully_fetched: bool,
     raw_count: usize,
 }
 
-impl MergedServerFetch {
+impl FetchedServerItems {
     fn complete(server_items: ServerItems) -> Self {
         let upstream_total = match &server_items.response {
             ItemsResponseVariants::WithCount(response) => Some(response.total_record_count),
@@ -992,7 +894,7 @@ async fn fetch_windowed_items_from_server(
     server: Server,
     max_pages: Option<usize>,
     should_change_name: bool,
-) -> Result<MergedServerFetch, StatusCode> {
+) -> Result<FetchedServerItems, StatusCode> {
     let WindowedItems {
         mut response,
         upstream_total,
@@ -1008,7 +910,7 @@ async fn fetch_windowed_items_from_server(
     .await?;
     let raw_count = response.len();
     process_items_response_json(&mut response, &state, &server, should_change_name).await?;
-    Ok(MergedServerFetch {
+    Ok(FetchedServerItems {
         server_items: ServerItems { response, server },
         upstream_total,
         fully_fetched,
@@ -1430,13 +1332,17 @@ async fn process_media_item_for_server(
     response_json_to_payload(item_json)
 }
 
-fn items_response_to_json(
-    response: ItemsResponseVariants,
+fn finalize_items_response(
+    items: FederatedItems,
+    url: &url::Url,
+    response_shape: ResponseShape,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    serde_json::to_value(response).map(Json).map_err(|e| {
-        error!("Failed to serialize federated items response: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })
+    serde_json::to_value(items.into_response(url, response_shape))
+        .map(Json)
+        .map_err(|e| {
+            error!("Failed to serialize federated items response: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
 }
 
 fn has_query_key(url: &url::Url, keys: &[&str]) -> bool {
@@ -1474,30 +1380,6 @@ fn is_pagination_key(key: &str) -> bool {
 
 fn is_live_tv_user_view(item: &MediaItem) -> bool {
     item.collection_type == Some(CollectionType::LiveTv) && item.item_type == BaseItemKind::UserView
-}
-
-fn is_library_root_request(url: &url::Url, url_prefix: Option<&str>) -> bool {
-    let prefixed_path;
-    let path = if let Some(url_prefix) = url_prefix {
-        prefixed_path = format!("/{url_prefix}");
-        url.path()
-            .strip_prefix(&prefixed_path)
-            .unwrap_or(url.path())
-    } else {
-        url.path()
-    };
-    let segments = path
-        .split('/')
-        .filter(|segment| !segment.is_empty())
-        .collect::<Vec<_>>();
-
-    match segments.as_slice() {
-        [user_views] => user_views.eq_ignore_ascii_case("UserViews"),
-        [users, _, views] => {
-            users.eq_ignore_ascii_case("Users") && views.eq_ignore_ascii_case("Views")
-        }
-        _ => false,
-    }
 }
 
 fn library_group_destination<'a>(
@@ -1547,22 +1429,6 @@ mod tests {
         let url = url::Url::parse("http://localhost/Items?Parent%49d=abc").unwrap();
 
         assert!(has_query_key(&url, &["ParentId"]));
-    }
-
-    #[test]
-    fn library_root_detection_excludes_non_inventory_catalog_requests() {
-        let views = url::Url::parse("http://localhost/Users/user/Views").unwrap();
-        let user_views = url::Url::parse("http://localhost/UserViews?userId=user").unwrap();
-        let resume = url::Url::parse("http://localhost/Users/user/Items/Resume").unwrap();
-        let suggestions = url::Url::parse("http://localhost/Items/Suggestions").unwrap();
-
-        let prefixed_views = url::Url::parse("http://localhost/jellyfin/Users/user/Views").unwrap();
-
-        assert!(is_library_root_request(&views, None));
-        assert!(is_library_root_request(&user_views, None));
-        assert!(is_library_root_request(&prefixed_views, Some("jellyfin")));
-        assert!(!is_library_root_request(&resume, None));
-        assert!(!is_library_root_request(&suggestions, None));
     }
 
     #[test]

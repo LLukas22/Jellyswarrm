@@ -6,7 +6,6 @@ use tracing::debug;
 use uuid::Uuid;
 
 use crate::{
-    duplicate_policy::{DuplicatePolicy, DuplicatePolicyConfig},
     media_storage_service::{MediaMapping, MediaStorageService},
     server_id::ServerId,
     server_storage::{Server, ServerStorageService},
@@ -63,8 +62,6 @@ pub struct LibraryGroup {
     pub virtual_id: String,
     pub name: String,
     pub sort_order: i32,
-    pub duplicate_policy: DuplicatePolicy,
-    pub preferred_server_id: Option<ServerId>,
 }
 
 #[derive(Debug, Clone)]
@@ -92,19 +89,6 @@ impl VirtualLibrary {
         match self {
             Self::Automatic(library) => &library.name,
             Self::Configured(group) => &group.name,
-        }
-    }
-
-    pub fn duplicate_config(&self) -> DuplicatePolicyConfig {
-        match self {
-            Self::Automatic(_) => DuplicatePolicyConfig {
-                policy: DuplicatePolicy::ShowAll,
-                preferred_server_id: None,
-            },
-            Self::Configured(group) => DuplicatePolicyConfig {
-                policy: group.duplicate_policy,
-                preferred_server_id: group.preferred_server_id,
-            },
         }
     }
 }
@@ -208,25 +192,14 @@ impl VirtualLibraryService {
         else {
             return Ok(None);
         };
-        let preferred_server = match resolved.library {
-            VirtualLibrary::Configured(group)
-                if group.duplicate_policy == DuplicatePolicy::PreferServer =>
-            {
-                group.preferred_server_id
-            }
-            _ => None,
-        };
-
         Ok(resolved
             .members
             .into_iter()
             .filter(|member| server_is_allowed(member.server.id, access_scope, required_server_id))
             .max_by(|left, right| {
-                let left_preferred = Some(left.server.id) == preferred_server;
-                let right_preferred = Some(right.server.id) == preferred_server;
-                left_preferred
-                    .cmp(&right_preferred)
-                    .then_with(|| left.server.priority.cmp(&right.server.priority))
+                left.server
+                    .priority
+                    .cmp(&right.server.priority)
                     .then_with(|| right.server.name.cmp(&left.server.name))
                     .then_with(|| right.server.id.as_i64().cmp(&left.server.id.as_i64()))
             })
@@ -558,64 +531,36 @@ impl VirtualLibraryService {
     }
 
     pub async fn list_groups(&self) -> Result<Vec<LibraryGroup>, sqlx::Error> {
-        let rows: Vec<(String, String, i32, String, Option<i64>)> = sqlx::query_as(
-            "SELECT virtual_id, name, sort_order, duplicate_policy, preferred_server_id \
-             FROM library_groups ORDER BY sort_order, name",
+        let rows: Vec<(String, String, i32)> = sqlx::query_as(
+            "SELECT virtual_id, name, sort_order FROM library_groups ORDER BY sort_order, name",
         )
         .fetch_all(&self.pool)
         .await?;
 
         Ok(rows
             .into_iter()
-            .map(
-                |(virtual_id, name, sort_order, duplicate_policy, preferred_server_id)| {
-                    LibraryGroup {
-                        virtual_id,
-                        name,
-                        sort_order,
-                        duplicate_policy: duplicate_policy
-                            .parse()
-                            .unwrap_or(DuplicatePolicy::ServerPriority),
-                        preferred_server_id: preferred_server_id.map(ServerId::new),
-                    }
-                },
-            )
+            .map(|(virtual_id, name, sort_order)| LibraryGroup {
+                virtual_id,
+                name,
+                sort_order,
+            })
             .collect())
     }
 
     pub async fn create_group(&self, name: &str) -> Result<LibraryGroup, sqlx::Error> {
         let virtual_id = Uuid::new_v4().simple().to_string();
         sqlx::query(
-            "INSERT INTO library_groups (virtual_id, name, sort_order, duplicate_policy) \
-             SELECT ?, ?, COALESCE(MAX(sort_order), -1) + 1, ? FROM library_groups",
+            "INSERT INTO library_groups (virtual_id, name, sort_order) \
+             SELECT ?, ?, COALESCE(MAX(sort_order), -1) + 1 FROM library_groups",
         )
         .bind(&virtual_id)
         .bind(name.trim())
-        .bind(DuplicatePolicy::ServerPriority.to_string())
         .execute(&self.pool)
         .await?;
 
         self.get_group(&virtual_id)
             .await?
             .ok_or(sqlx::Error::RowNotFound)
-    }
-
-    pub async fn update_group_policy(
-        &self,
-        virtual_id: &str,
-        duplicate_policy: DuplicatePolicy,
-        preferred_server_id: Option<ServerId>,
-    ) -> Result<bool, sqlx::Error> {
-        let virtual_id = normalize_library_id(virtual_id);
-        let result = sqlx::query(
-            "UPDATE library_groups SET duplicate_policy = ?, preferred_server_id = ? WHERE virtual_id = ?",
-        )
-        .bind(duplicate_policy.to_string())
-        .bind(preferred_server_id.map(|id| id.as_i64()))
-        .bind(virtual_id)
-        .execute(&self.pool)
-        .await?;
-        Ok(result.rows_affected() > 0)
     }
 
     pub async fn rename_group(&self, virtual_id: &str, name: &str) -> Result<bool, sqlx::Error> {
@@ -785,25 +730,18 @@ impl VirtualLibraryService {
 
     pub async fn get_group(&self, virtual_id: &str) -> Result<Option<LibraryGroup>, sqlx::Error> {
         let virtual_id = normalize_library_id(virtual_id);
-        let row: Option<(String, String, i32, String, Option<i64>)> = sqlx::query_as(
-            "SELECT virtual_id, name, sort_order, duplicate_policy, preferred_server_id \
-             FROM library_groups WHERE virtual_id = ?",
+        let row: Option<(String, String, i32)> = sqlx::query_as(
+            "SELECT virtual_id, name, sort_order FROM library_groups WHERE virtual_id = ?",
         )
         .bind(&virtual_id)
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(
-            |(virtual_id, name, sort_order, duplicate_policy, preferred_server_id)| LibraryGroup {
-                virtual_id,
-                name,
-                sort_order,
-                duplicate_policy: duplicate_policy
-                    .parse()
-                    .unwrap_or(DuplicatePolicy::ServerPriority),
-                preferred_server_id: preferred_server_id.map(ServerId::new),
-            },
-        ))
+        Ok(row.map(|(virtual_id, name, sort_order)| LibraryGroup {
+            virtual_id,
+            name,
+            sort_order,
+        }))
     }
 }
 
@@ -949,17 +887,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn automatic_library_presentation_shows_all_duplicates() {
-        let library = VirtualLibrary::Automatic(AutomaticVirtualLibrary {
-            virtual_id: "id".to_string(),
-            collection_type: "movies".to_string(),
-            name: "Movies".to_string(),
-        });
-
-        assert_eq!(library.duplicate_config().policy, DuplicatePolicy::ShowAll);
-    }
-
     fn scope(user_id: &str, server_ids: &[i64]) -> VirtualLibraryAccessScope {
         VirtualLibraryAccessScope::new(user_id, server_ids.iter().copied().map(ServerId::new))
     }
@@ -1033,14 +960,6 @@ mod tests {
             resolution,
             VirtualLibraryResolution::Empty(VirtualLibrary::Configured(_))
         ));
-    }
-
-    #[tokio::test]
-    async fn create_group_defaults_to_server_priority() {
-        let fixture = Fixture::new(&[]).await;
-        let group = fixture.service.create_group("Anime").await.unwrap();
-
-        assert_eq!(group.duplicate_policy, DuplicatePolicy::ServerPriority);
     }
 
     #[tokio::test]
@@ -1162,25 +1081,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn routing_target_prefers_configured_server() {
+    async fn configured_routing_target_uses_server_priority() {
         let fixture = Fixture::new(&[(1, 100), (2, 200)]).await;
-        let service = &fixture.service;
         let group = fixture
             .configured_group(&[(1, "library-a"), (2, "library-b")])
             .await;
-        service
-            .update_group_policy(
-                &group.virtual_id,
-                DuplicatePolicy::PreferServer,
-                Some(ServerId::new(1)),
-            )
-            .await
-            .unwrap();
         let scope = scope("user", &[1, 2]);
 
         let target = fixture.route(&group.virtual_id, &scope, None).await;
 
-        assert_eq!(target.server.id, ServerId::new(1));
+        assert_eq!(target.server.id, ServerId::new(2));
     }
 
     #[tokio::test]
@@ -1549,20 +1459,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn routing_target_skips_unauthorized_preferred_server() {
+    async fn routing_target_only_uses_authorized_servers() {
         let fixture = Fixture::new(&[(1, 100), (2, 200)]).await;
-        let service = &fixture.service;
         let group = fixture
             .configured_group(&[(1, "library-a"), (2, "library-b")])
             .await;
-        service
-            .update_group_policy(
-                &group.virtual_id,
-                DuplicatePolicy::PreferServer,
-                Some(ServerId::new(1)),
-            )
-            .await
-            .unwrap();
         let scope = scope("user", &[2]);
 
         let target = fixture.route(&group.virtual_id, &scope, None).await;

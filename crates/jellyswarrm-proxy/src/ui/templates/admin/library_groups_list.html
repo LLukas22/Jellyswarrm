@@ -25,28 +25,6 @@
             <i class="fas fa-trash" aria-hidden="true"></i>
         </button>
     </div>
-    <form class="library-group-policy-form" hx-post="/{{ ui_route }}/libraries/groups/{{ group.virtual_id }}/policy" hx-target="#library-groups-list" hx-swap="innerHTML">
-        <div class="library-group-policy-grid">
-            <label class="form-field">
-                <span class="field-label">Duplicate handling</span>
-                <select name="duplicate_policy" required>
-                    {% for policy in duplicate_policies %}
-                    <option value="{{ policy.value }}" {% if group.duplicate_policy == policy.value %}selected{% endif %}>{{ policy.label }}</option>
-                    {% endfor %}
-                </select>
-            </label>
-            <label class="form-field">
-                <span class="field-label">Preferred server</span>
-                <select name="preferred_server_id">
-                    <option value="">Auto / use server priority</option>
-                    {% for server in servers %}
-                    <option value="{{ server.id }}" {% match group.preferred_server_id %}{% when Some with (preferred) %}{% if *preferred == server.id %}selected{% endif %}{% when None %}{% endmatch %}>{{ server.name }}</option>
-                    {% endfor %}
-                </select>
-            </label>
-            <button type="submit" class="secondary">Save Policy</button>
-        </div>
-    </form>
     {% if group.members.is_empty() %}
     <p>No libraries assigned yet.</p>
     {% else %}
