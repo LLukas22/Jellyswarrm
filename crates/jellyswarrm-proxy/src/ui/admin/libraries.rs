@@ -10,7 +10,7 @@ use serde::Deserialize;
 use tracing::{error, info};
 
 use crate::{
-    config::CLIENT_INFO,
+    config::{save_config, CLIENT_INFO},
     duplicate_policy::DuplicatePolicy,
     encryption::{decrypt_password, HashedPassword},
     server_id::ServerId,
@@ -22,7 +22,18 @@ use crate::{
 #[template(path = "admin/libraries.html")]
 pub struct LibrariesPageTemplate {
     pub merge_libraries: bool,
+    pub has_merge_libraries_error: bool,
+    pub merge_libraries_error: String,
     pub ui_route: String,
+}
+
+#[derive(Template)]
+#[template(path = "admin/merge_libraries_control.html")]
+struct MergeLibrariesControlTemplate {
+    merge_libraries: bool,
+    has_merge_libraries_error: bool,
+    merge_libraries_error: String,
+    ui_route: String,
 }
 
 #[derive(Template)]
@@ -99,10 +110,18 @@ pub struct RenameGroupForm {
     pub name: String,
 }
 
+#[derive(Deserialize)]
+pub struct UpdateMergeLibrariesForm {
+    #[serde(default)]
+    pub merge_libraries: bool,
+}
+
 pub async fn libraries_page(State(state): State<AppState>) -> impl IntoResponse {
     let merge_libraries = state.merge_libraries_enabled().await;
     let template = LibrariesPageTemplate {
         merge_libraries,
+        has_merge_libraries_error: false,
+        merge_libraries_error: String::new(),
         ui_route: state.get_ui_route().await,
     };
     match template.render() {
@@ -110,6 +129,58 @@ pub async fn libraries_page(State(state): State<AppState>) -> impl IntoResponse 
         Err(e) => {
             error!("Failed to render libraries page: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, "Template error").into_response()
+        }
+    }
+}
+
+fn render_merge_libraries_control(
+    merge_libraries: bool,
+    ui_route: String,
+    error_message: Option<&str>,
+) -> Response {
+    let template = MergeLibrariesControlTemplate {
+        merge_libraries,
+        has_merge_libraries_error: error_message.is_some(),
+        merge_libraries_error: error_message.unwrap_or_default().to_string(),
+        ui_route,
+    };
+    match template.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(error) => {
+            error!("Failed to render automatic merge control: {error}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Template error").into_response()
+        }
+    }
+}
+
+pub async fn update_merge_libraries(
+    State(state): State<AppState>,
+    Form(form): Form<UpdateMergeLibrariesForm>,
+) -> Response {
+    let ui_route = state.get_ui_route().await;
+    let save_result = {
+        let mut config = state.config.write().await;
+        let mut updated = config.clone();
+        updated.merge_libraries = form.merge_libraries;
+        match save_config(&updated) {
+            Ok(()) => {
+                *config = updated;
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
+    };
+
+    match save_result {
+        Ok(()) => render_merge_libraries_control(form.merge_libraries, ui_route, None),
+        Err(error) => {
+            error!("Failed to save automatic library merging setting: {error}");
+            let current_value = state.merge_libraries_enabled().await;
+            render_merge_libraries_control(
+                current_value,
+                ui_route,
+                Some("Could not save this setting. The previous behavior is still active."),
+            )
         }
     }
 }
@@ -126,12 +197,6 @@ pub async fn library_groups_list(State(state): State<AppState>) -> impl IntoResp
 }
 
 async fn render_library_groups_list(state: &AppState) -> Result<String, String> {
-    if state.merge_libraries_enabled().await {
-        return Ok(
-            "<article><p>Disable <strong>Merge Libraries Across Servers</strong> in Settings to use custom library groups.</p></article>".to_string(),
-        );
-    }
-
     let groups = state
         .virtual_library_service
         .list_groups()
@@ -343,22 +408,10 @@ async fn discover_libraries(state: &AppState) -> Vec<DiscoveredLibrary> {
     discovered
 }
 
-fn library_groups_blocked_response() -> Response {
-    (
-        StatusCode::BAD_REQUEST,
-        Html("<div class=\"alert alert-error\">Disable <strong>Merge Libraries Across Servers</strong> in Settings to use custom library groups.</div>"),
-    )
-        .into_response()
-}
-
 pub async fn create_group(
     State(state): State<AppState>,
     Form(form): Form<CreateGroupForm>,
 ) -> Response {
-    if state.merge_libraries_enabled().await {
-        return library_groups_blocked_response();
-    }
-
     if form.name.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -399,10 +452,6 @@ pub async fn delete_group(
     State(state): State<AppState>,
     Path(virtual_id): Path<String>,
 ) -> Response {
-    if state.merge_libraries_enabled().await {
-        return library_groups_blocked_response();
-    }
-
     match state
         .virtual_library_service
         .delete_group(&virtual_id)
@@ -432,10 +481,6 @@ pub async fn assign_library(
     State(state): State<AppState>,
     Form(form): Form<AssignLibraryForm>,
 ) -> Response {
-    if state.merge_libraries_enabled().await {
-        return library_groups_blocked_response();
-    }
-
     let server_id = ServerId::new(form.server_id);
 
     match state
@@ -468,10 +513,6 @@ pub async fn update_group_policy(
     Path(virtual_id): Path<String>,
     Form(form): Form<UpdateGroupPolicyForm>,
 ) -> Response {
-    if state.merge_libraries_enabled().await {
-        return library_groups_blocked_response();
-    }
-
     let policy = match form.duplicate_policy.parse::<DuplicatePolicy>() {
         Ok(policy) => policy,
         Err(_) => {
@@ -519,10 +560,6 @@ pub async fn rename_group(
     Path(virtual_id): Path<String>,
     Form(form): Form<RenameGroupForm>,
 ) -> Response {
-    if state.merge_libraries_enabled().await {
-        return library_groups_blocked_response();
-    }
-
     if form.name.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -561,10 +598,6 @@ pub async fn remove_member(
     Path(group_virtual_id): Path<String>,
     Form(form): Form<RemoveMemberForm>,
 ) -> Response {
-    if state.merge_libraries_enabled().await {
-        return library_groups_blocked_response();
-    }
-
     let server_id = ServerId::new(form.server_id);
 
     match state
@@ -589,5 +622,53 @@ pub async fn remove_member(
             )
                 .into_response()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn render_control(enabled: bool) -> String {
+        MergeLibrariesControlTemplate {
+            merge_libraries: enabled,
+            has_merge_libraries_error: false,
+            merge_libraries_error: String::new(),
+            ui_route: "admin".to_string(),
+        }
+        .render()
+        .unwrap()
+    }
+
+    #[test]
+    fn automatic_merge_control_is_checked_when_enabled() {
+        let html = render_control(true);
+
+        assert!(html.contains("name=\"merge_libraries\""));
+        assert!(html.contains("checked"));
+        assert!(html.contains("hx-patch=\"/admin/libraries/merge-libraries\""));
+    }
+
+    #[test]
+    fn automatic_merge_control_is_unchecked_when_disabled() {
+        let html = render_control(false);
+
+        assert!(html.contains("name=\"merge_libraries\""));
+        assert!(!html.contains("checked"));
+        assert!(html.contains("Disabled"));
+    }
+
+    #[test]
+    fn libraries_page_contains_one_automatic_merge_control() {
+        let html = LibrariesPageTemplate {
+            merge_libraries: true,
+            has_merge_libraries_error: false,
+            merge_libraries_error: String::new(),
+            ui_route: "admin".to_string(),
+        }
+        .render()
+        .unwrap();
+
+        assert_eq!(html.matches("name=\"merge_libraries\"").count(), 1);
     }
 }

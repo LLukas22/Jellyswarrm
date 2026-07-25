@@ -1,6 +1,7 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use sqlx::SqlitePool;
+use tokio::sync::Mutex;
 use tracing::debug;
 use uuid::Uuid;
 
@@ -49,7 +50,7 @@ impl VirtualLibraryAccessScope {
     }
 
     fn key(&self) -> String {
-        format!("{}:{}", self.user_id, server_set_key(&self.server_ids))
+        self.user_id.clone()
     }
 
     pub(crate) fn allows(&self, server_id: ServerId) -> bool {
@@ -134,11 +135,18 @@ pub struct VirtualLibraryRoutingTarget {
     pub server: Server,
 }
 
+#[derive(Debug, Default)]
+struct AutomaticRefreshGeneration {
+    latest_started: u64,
+    latest_committed: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct VirtualLibraryService {
     pool: SqlitePool,
     server_storage: ServerStorageService,
     media_storage: MediaStorageService,
+    automatic_refresh_generations: Arc<Mutex<HashMap<String, AutomaticRefreshGeneration>>>,
 }
 
 impl VirtualLibraryService {
@@ -151,6 +159,7 @@ impl VirtualLibraryService {
             pool,
             server_storage,
             media_storage,
+            automatic_refresh_generations: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -250,21 +259,6 @@ impl VirtualLibraryService {
             .ok_or(sqlx::Error::RowNotFound)
     }
 
-    pub async fn has_automatic_library_snapshot(
-        &self,
-        automatic_virtual_id: &str,
-        access_scope: &VirtualLibraryAccessScope,
-    ) -> Result<bool, sqlx::Error> {
-        sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM automatic_library_snapshots \
-             WHERE automatic_virtual_id = ? AND access_scope_key = ?)",
-        )
-        .bind(normalize_library_id(automatic_virtual_id))
-        .bind(access_scope.key())
-        .fetch_one(&self.pool)
-        .await
-    }
-
     pub async fn clear_automatic_library_snapshot(
         &self,
         collection_type: &str,
@@ -346,6 +340,103 @@ impl VirtualLibraryService {
             .await
     }
 
+    pub async fn begin_automatic_library_refresh(
+        &self,
+        access_scope: &VirtualLibraryAccessScope,
+    ) -> u64 {
+        let mut generations = self.automatic_refresh_generations.lock().await;
+        let state = generations.entry(access_scope.key()).or_default();
+        state.latest_started = state.latest_started.saturating_add(1);
+        state.latest_started
+    }
+
+    pub async fn reconcile_automatic_library_members(
+        &self,
+        access_scope: &VirtualLibraryAccessScope,
+        refresh_generation: u64,
+        refreshed_server_ids: &[ServerId],
+        discovered_members: &[(String, ServerId, String)],
+    ) -> Result<bool, sqlx::Error> {
+        let access_scope_key = access_scope.key();
+        let mut generation_guard = self.automatic_refresh_generations.lock().await;
+        let generation_state = generation_guard
+            .entry(access_scope_key.clone())
+            .or_default();
+        if refresh_generation < generation_state.latest_committed {
+            debug!(
+                "Skipped superseded automatic library refresh {} for access scope {}",
+                refresh_generation, access_scope_key
+            );
+            return Ok(false);
+        }
+        let mut tx = self.pool.begin().await?;
+
+        for (automatic_virtual_id, _, _) in discovered_members {
+            sqlx::query(
+                "INSERT INTO automatic_library_snapshots \
+                 (automatic_virtual_id, access_scope_key, updated_at) \
+                 VALUES (?, ?, CURRENT_TIMESTAMP) \
+                 ON CONFLICT(automatic_virtual_id, access_scope_key) DO UPDATE SET \
+                     updated_at = CURRENT_TIMESTAMP",
+            )
+            .bind(normalize_library_id(automatic_virtual_id))
+            .bind(&access_scope_key)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        for server_id in refreshed_server_ids {
+            sqlx::query(
+                "DELETE FROM automatic_library_members \
+                 WHERE access_scope_key = ? AND server_id = ?",
+            )
+            .bind(&access_scope_key)
+            .bind(server_id.as_i64())
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        for (automatic_virtual_id, server_id, virtual_library_id) in discovered_members {
+            sqlx::query(
+                "INSERT INTO automatic_library_members \
+                 (automatic_virtual_id, access_scope_key, server_id, virtual_library_id) \
+                 VALUES (?, ?, ?, ?) \
+                 ON CONFLICT DO NOTHING",
+            )
+            .bind(normalize_library_id(automatic_virtual_id))
+            .bind(&access_scope_key)
+            .bind(server_id.as_i64())
+            .bind(virtual_library_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        sqlx::query(
+            "DELETE FROM automatic_library_members \
+             WHERE access_scope_key = ? \
+               AND EXISTS ( \
+                   SELECT 1 FROM media_mappings mapping \
+                   JOIN library_group_members configured \
+                     ON configured.server_id = automatic_library_members.server_id \
+                    AND configured.original_library_id = mapping.original_media_id \
+                   WHERE mapping.virtual_media_id = automatic_library_members.virtual_library_id \
+               )",
+        )
+        .bind(&access_scope_key)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        generation_state.latest_committed = refresh_generation;
+        drop(generation_guard);
+        debug!(
+            "Reconciled automatic library members from {} refreshed servers for access scope {}",
+            refreshed_server_ids.len(),
+            access_scope_key
+        );
+        Ok(true)
+    }
+
     async fn replace_automatic_snapshot(
         &self,
         automatic_virtual_id: &str,
@@ -412,6 +503,13 @@ impl VirtualLibraryService {
                ON m.automatic_virtual_id = snapshot.automatic_virtual_id \
               AND m.access_scope_key = snapshot.access_scope_key \
              WHERE snapshot.automatic_virtual_id = ? AND snapshot.access_scope_key = ? \
+               AND (m.virtual_library_id IS NULL OR NOT EXISTS ( \
+                   SELECT 1 FROM media_mappings mapping \
+                   JOIN library_group_members configured \
+                     ON configured.server_id = m.server_id \
+                    AND configured.original_library_id = mapping.original_media_id \
+                   WHERE mapping.virtual_media_id = m.virtual_library_id \
+               )) \
              ORDER BY m.server_id, m.virtual_library_id",
         )
         .bind(normalize_library_id(automatic_virtual_id))
@@ -718,15 +816,6 @@ fn resolution(
     } else {
         VirtualLibraryResolution::Resolved(ResolvedVirtualLibrary { library, members })
     }
-}
-
-fn server_set_key(server_ids: &[ServerId]) -> String {
-    server_ids
-        .iter()
-        .map(|server_id| server_id.as_i64())
-        .map(|id| id.to_string())
-        .collect::<Vec<_>>()
-        .join(",")
 }
 
 fn server_is_allowed(
@@ -1095,26 +1184,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn automatic_memberships_are_isolated_by_server_set() {
+    async fn automatic_memberships_follow_user_across_available_server_sets() {
         let fixture = Fixture::new(&[(1, 100), (2, 200), (3, 300)]).await;
         let library = fixture.automatic_library().await;
         let first_scope = scope("user", &[1, 2]);
         let second_scope = scope("user", &[2, 3]);
         let member_a = fixture.member(1, "member-a").await;
         let member_b = fixture.member(2, "member-b").await;
-        let member_c = fixture.member(3, "member-c").await;
         fixture
             .snapshot(
                 &library,
                 &first_scope,
                 &[member_a.clone(), member_b.clone()],
-            )
-            .await;
-        fixture
-            .snapshot(
-                &library,
-                &second_scope,
-                &[member_b.clone(), member_c.clone()],
             )
             .await;
 
@@ -1129,7 +1210,74 @@ mod tests {
             .unwrap();
 
         assert_resolved_members(first, &[&member_a.1, &member_b.1]);
-        assert_resolved_members(second, &[&member_b.1, &member_c.1]);
+        assert_resolved_members(second, &[&member_b.1]);
+    }
+
+    #[tokio::test]
+    async fn user_only_scope_migration_preserves_existing_automatic_members() {
+        let fixture = Fixture::new(&[(1, 100)]).await;
+        let library = fixture.automatic_library().await;
+        let member = fixture.member(1, "legacy-scoped-library").await;
+        sqlx::query(
+            "INSERT INTO automatic_library_snapshots \
+             (automatic_virtual_id, access_scope_key) VALUES (?, ?)",
+        )
+        .bind(&library.virtual_id)
+        .bind("user:1")
+        .execute(&fixture.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO automatic_library_members \
+             (automatic_virtual_id, access_scope_key, server_id, virtual_library_id) \
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(&library.virtual_id)
+        .bind("user:1")
+        .bind(member.0.as_i64())
+        .bind(&member.1)
+        .execute(&fixture.pool)
+        .await
+        .unwrap();
+
+        sqlx::raw_sql(include_str!(
+            "../migrations/20260724120000_user_only_automatic_library_scopes.up.sql"
+        ))
+        .execute(&fixture.pool)
+        .await
+        .unwrap();
+        let resolution = fixture
+            .service
+            .resolve(&library.virtual_id, Some(&scope("user", &[1])))
+            .await
+            .unwrap();
+
+        assert_resolved_members(resolution, &[&member.1]);
+    }
+
+    #[tokio::test]
+    async fn automatic_memberships_exclude_manually_assigned_libraries() {
+        let fixture = Fixture::new(&[(1, 100), (2, 200)]).await;
+        let library = fixture.automatic_library().await;
+        let scope = scope("user", &[1, 2]);
+        let assigned_member = fixture.member(1, "assigned-library").await;
+        let automatic_member = fixture.member(2, "automatic-library").await;
+        fixture
+            .snapshot(
+                &library,
+                &scope,
+                &[assigned_member, automatic_member.clone()],
+            )
+            .await;
+        fixture.configured_group(&[(1, "assigned-library")]).await;
+
+        let resolution = fixture
+            .service
+            .resolve(&library.virtual_id, Some(&scope))
+            .await
+            .unwrap();
+
+        assert_resolved_members(resolution, &[&automatic_member.1]);
     }
 
     #[tokio::test]
@@ -1254,6 +1402,150 @@ mod tests {
             .unwrap();
 
         assert_empty_automatic(resolution);
+    }
+
+    #[tokio::test]
+    async fn partial_reconciliation_replaces_only_refreshed_server_members() {
+        let fixture = Fixture::new(&[(1, 100), (2, 200)]).await;
+        let service = &fixture.service;
+        let library = fixture.automatic_library().await;
+        let scope = scope("user", &[1, 2]);
+        let stale_member = fixture.member(1, "stale-library").await;
+        let unavailable_member = fixture.member(2, "unavailable-library").await;
+        fixture
+            .snapshot(
+                &library,
+                &scope,
+                &[stale_member, unavailable_member.clone()],
+            )
+            .await;
+        let replacement = fixture.member(1, "replacement-library").await;
+        let refresh_generation = service.begin_automatic_library_refresh(&scope).await;
+
+        service
+            .reconcile_automatic_library_members(
+                &scope,
+                refresh_generation,
+                &[ServerId::new(1)],
+                &[(
+                    library.virtual_id.clone(),
+                    replacement.0,
+                    replacement.1.clone(),
+                )],
+            )
+            .await
+            .unwrap();
+        let resolution = service
+            .resolve(&library.virtual_id, Some(&scope))
+            .await
+            .unwrap();
+
+        assert_resolved_members(resolution, &[&replacement.1, &unavailable_member.1]);
+    }
+
+    #[tokio::test]
+    async fn partial_reconciliation_removes_missing_refreshed_server_members() {
+        let fixture = Fixture::new(&[(1, 100), (2, 200)]).await;
+        let service = &fixture.service;
+        let library = fixture.automatic_library().await;
+        let scope = scope("user", &[1, 2]);
+        let removed_member = fixture.member(1, "removed-library").await;
+        let unavailable_member = fixture.member(2, "unavailable-library").await;
+        fixture
+            .snapshot(
+                &library,
+                &scope,
+                &[removed_member, unavailable_member.clone()],
+            )
+            .await;
+        let refresh_generation = service.begin_automatic_library_refresh(&scope).await;
+
+        service
+            .reconcile_automatic_library_members(
+                &scope,
+                refresh_generation,
+                &[ServerId::new(1)],
+                &[],
+            )
+            .await
+            .unwrap();
+        let resolution = service
+            .resolve(&library.virtual_id, Some(&scope))
+            .await
+            .unwrap();
+
+        assert_resolved_members(resolution, &[&unavailable_member.1]);
+    }
+
+    #[tokio::test]
+    async fn superseded_refresh_cannot_overwrite_newer_members() {
+        let fixture = Fixture::new(&[(1, 100)]).await;
+        let service = &fixture.service;
+        let library = fixture.automatic_library().await;
+        let scope = scope("user", &[1]);
+        let stale_member = fixture.member(1, "stale-library").await;
+        let current_member = fixture.member(1, "current-library").await;
+        let stale_generation = service.begin_automatic_library_refresh(&scope).await;
+        let current_generation = service.begin_automatic_library_refresh(&scope).await;
+
+        let current_applied = service
+            .reconcile_automatic_library_members(
+                &scope,
+                current_generation,
+                &[ServerId::new(1)],
+                &[(
+                    library.virtual_id.clone(),
+                    current_member.0,
+                    current_member.1.clone(),
+                )],
+            )
+            .await
+            .unwrap();
+        let stale_applied = service
+            .reconcile_automatic_library_members(
+                &scope,
+                stale_generation,
+                &[ServerId::new(1)],
+                &[(library.virtual_id.clone(), stale_member.0, stale_member.1)],
+            )
+            .await
+            .unwrap();
+        let resolution = service
+            .resolve(&library.virtual_id, Some(&scope))
+            .await
+            .unwrap();
+
+        assert!(current_applied);
+        assert!(!stale_applied);
+        assert_resolved_members(resolution, &[&current_member.1]);
+    }
+
+    #[tokio::test]
+    async fn failed_newer_refresh_does_not_discard_older_success() {
+        let fixture = Fixture::new(&[(1, 100)]).await;
+        let service = &fixture.service;
+        let library = fixture.automatic_library().await;
+        let scope = scope("user", &[1]);
+        let member = fixture.member(1, "discovered-library").await;
+        let successful_generation = service.begin_automatic_library_refresh(&scope).await;
+        let _failed_generation = service.begin_automatic_library_refresh(&scope).await;
+
+        let applied = service
+            .reconcile_automatic_library_members(
+                &scope,
+                successful_generation,
+                &[ServerId::new(1)],
+                &[(library.virtual_id.clone(), member.0, member.1.clone())],
+            )
+            .await
+            .unwrap();
+        let resolution = service
+            .resolve(&library.virtual_id, Some(&scope))
+            .await
+            .unwrap();
+
+        assert!(applied);
+        assert_resolved_members(resolution, &[&member.1]);
     }
 
     #[tokio::test]

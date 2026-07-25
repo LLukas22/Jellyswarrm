@@ -101,6 +101,82 @@
   margin-bottom: 0.5rem;
 }
 
+.library-merge-mode {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(16rem, 0.8fr);
+  gap: clamp(1.25rem, 3vw, 3rem);
+  align-items: center;
+  border-color: color-mix(in srgb, var(--pico-primary-border) 42%, var(--pico-muted-border-color));
+}
+
+.library-merge-mode-copy > :last-child {
+  margin-bottom: 0;
+}
+
+.library-merge-mode-kicker {
+  margin-bottom: 0.35rem;
+  color: var(--pico-primary);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.library-merge-mode-title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  align-items: center;
+  margin-bottom: 0.65rem;
+}
+
+.library-merge-mode-title h2 {
+  margin: 0;
+}
+
+.library-merge-mode-status {
+  padding: 0.18rem 0.55rem;
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: 999px;
+  color: var(--pico-muted-color);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.library-merge-mode-status.is-enabled {
+  border-color: var(--pico-ins-color, #2e7d32);
+  color: var(--pico-ins-color, #2e7d32);
+}
+
+.library-merge-mode-form {
+  display: grid;
+  gap: 1rem;
+  margin: 0;
+}
+
+.library-merge-mode-switch {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: center;
+  margin: 0;
+  font-weight: 650;
+}
+
+.library-merge-mode-switch input {
+  margin: 0;
+}
+
+@media (max-width: 760px) {
+  .library-merge-mode {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .library-merge-mode-form .server-form-button {
+    width: 100%;
+  }
+}
+
 .library-group-card {
   margin-bottom: 1.25rem;
   padding-bottom: 1rem;

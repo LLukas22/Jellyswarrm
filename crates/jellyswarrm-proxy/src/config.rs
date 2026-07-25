@@ -3,6 +3,7 @@ use serde_default::DefaultFromSerde;
 use sqlx::migrate::Migrator;
 use std::fmt;
 use std::fs;
+use std::io::Write;
 use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::LazyLock;
@@ -398,8 +399,19 @@ pub fn load_config() -> AppConfig {
 /// Persist configuration to the first existing file or the primary default file.
 pub fn save_config(cfg: &AppConfig) -> std::io::Result<()> {
     let toml_str = toml::to_string_pretty(cfg).map_err(std::io::Error::other)?;
-    fs::write(config_path(), toml_str)?;
-    info!("Configuration saved to {:?}", config_path());
+    let path = config_path();
+    let temp_path = path.with_extension(format!("toml.tmp-{}", std::process::id()));
+    let write_result = (|| {
+        let mut file = fs::File::create(&temp_path)?;
+        file.write_all(toml_str.as_bytes())?;
+        file.sync_all()?;
+        fs::rename(&temp_path, &path)
+    })();
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(temp_path);
+        return Err(error);
+    }
+    info!("Configuration saved to {path:?}");
     Ok(())
 }
 

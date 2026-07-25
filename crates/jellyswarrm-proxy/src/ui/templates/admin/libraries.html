@@ -3,13 +3,7 @@
     <h3>Combine libraries from multiple servers into one folder in Jellyswarrm.</h3>
 </header>
 
-{% if merge_libraries %}
-<article>
-    <header><h4>Auto-merge is enabled</h4></header>
-    <p>Libraries with the same name and type are merged automatically via <strong>Merge Libraries Across Servers</strong> in Settings.</p>
-    <p>Disable that setting to configure custom library groups here instead.</p>
-</article>
-{% else %}
+{% include "admin/merge_libraries_control.html" %}
 
 <section aria-labelledby="create-group-heading">
     <h2 id="create-group-heading" class="section-heading-tight">Create Group</h2>
@@ -32,5 +26,3 @@
 <section id="library-groups-list" hx-get="/{{ ui_route }}/libraries/list" hx-trigger="load">
     <p>Loading library groups...</p>
 </section>
-
-{% endif %}
