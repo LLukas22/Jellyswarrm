@@ -378,12 +378,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if !loaded_config.preconfigured_servers.is_empty() {
         info!(
-            "Adding {} preconfigured servers from config",
+            "Configuring {} preconfigured servers from config",
             loaded_config.preconfigured_servers.len()
         );
         for server in &loaded_config.preconfigured_servers {
             match server_storage
-                .add_server(
+                .upsert_preconfigured_server(
                     &server.name,
                     &server.url,
                     server.priority,
@@ -393,13 +393,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             {
                 Ok(_) => {
                     info!(
-                        "  Added preconfigured server: {} ({}) with priority {}",
+                        "  Configured server: {} ({}) with priority {}",
                         server.name, server.url, server.priority
                     );
                 }
                 Err(e) => {
                     error!(
-                        "  Failed to add preconfigured server {} ({}): {}",
+                        "  Failed to configure server {} ({}): {}",
                         server.name, server.url, e
                     );
                 }
