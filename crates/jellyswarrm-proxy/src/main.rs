@@ -27,6 +27,8 @@ use axum_login::{
 };
 
 mod config;
+#[cfg(debug_assertions)]
+mod debug_initialization;
 mod duplicate_handling;
 mod encryption;
 mod extractors;
@@ -376,6 +378,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let virtual_library_service =
         VirtualLibraryService::new(pool.clone(), server_storage.clone(), media_storage.clone());
 
+    #[cfg(debug_assertions)]
+    let mut debug_server_ids = Vec::with_capacity(loaded_config.preconfigured_servers.len());
+
     if !loaded_config.preconfigured_servers.is_empty() {
         info!(
             "Configuring {} preconfigured servers from config",
@@ -391,11 +396,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .await
             {
-                Ok(_) => {
+                Ok(_server_id) => {
                     info!(
                         "  Configured server: {} ({}) with priority {}",
                         server.name, server.url, server.priority
                     );
+                    #[cfg(debug_assertions)]
+                    debug_server_ids.push(_server_id);
                 }
                 Err(e) => {
                     error!(
@@ -405,6 +412,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+    }
+
+    #[cfg(debug_assertions)]
+    if let Some(debug_user) = &loaded_config.debug_user {
+        let mapping_count = debug_initialization::initialize_debug_user(
+            debug_user,
+            &debug_server_ids,
+            &user_authorization,
+            &server_storage,
+        )
+        .await?;
+        info!(
+            "Configured debug user '{}' with {} server mappings",
+            debug_user.username, mapping_count
+        );
     }
 
     match server_storage.list_servers().await {

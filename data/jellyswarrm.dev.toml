@@ -1,3 +1,7 @@
+[debug_user]
+username = "test"
+password = "test"
+
 [[preconfigured_servers]]
 url = "http://localhost:8096"
 name = "Movies 1"

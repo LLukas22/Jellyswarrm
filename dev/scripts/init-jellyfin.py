@@ -12,7 +12,10 @@ import time
 import httpx
 from jellyfin_apiclient_python import JellyfinClient
 
-AUTHORIZATION_HEADER = 'MediaBrowser Client="Jellyfin Web", Device="Firefox", DeviceId="TW96aWxsYS81LjAgKFgxMTsgTGludXggeDg2XzY0OyBydjoxNDIuMCkgR2Vja28vMjAxMDAxMDEgRmlyZWZveC8xNDIuMHwxNzU4NDQ4NDAzOTk5", Version="10.10.7"'
+AUTHORIZATION_HEADER = (
+    'MediaBrowser Client="Jellyswarrm Dev Initializer", Device="Docker", '
+    'DeviceId="jellyswarrm-dev-init", Version="1.0.0"'
+)
 AUTHORIZATION = {"Authorization": AUTHORIZATION_HEADER}
 
 SERVER_URL = os.environ.get("URL", "http://localhost:8096")
@@ -20,8 +23,8 @@ SERVER_NAME = os.environ.get("SERVER_NAME", "Jellyfin Dev")
 ADMIN_PASSWORD = "password"
 ADMIN_USER = "admin"
 
-USERNAME = os.environ.get("USERNAME", "user")
-PASSWORD = os.environ.get("PASSWORD", "password")
+JELLYSWARRM_USERNAME = os.environ.get("JELLYSWARRM_USERNAME", "test")
+JELLYSWARRM_PASSWORD = os.environ.get("JELLYSWARRM_PASSWORD", "test")
 
 COLLECTION_NAME = os.environ.get("COLLECTION_NAME", "Movies")
 COLLECTION_PATH = os.environ.get("COLLECTION_PATH", "/media/movies")
@@ -87,17 +90,48 @@ def initialize_server():
         print("✅ Completed setup wizard")
 
 
-def create_users(client: JellyfinClient):
+def configure_jellyswarrm_user(client: JellyfinClient):
     try:
         users = client.jellyfin.get_users()
-        for user in users:
-            if user['Name'] == USERNAME:
-                print(f"User '{USERNAME}' already exists, skipping creation")
-                return
-        client.jellyfin.new_user(name=USERNAME, pw=PASSWORD)
-        print(f"✅ Created user '{USERNAME}' with password '{PASSWORD}'")
+        user = next(
+            (user for user in users if user["Name"] == JELLYSWARRM_USERNAME),
+            None,
+        )
+        if user is None:
+            client.jellyfin.new_user(
+                name=JELLYSWARRM_USERNAME,
+                pw=JELLYSWARRM_PASSWORD,
+            )
+            user = next(
+                user
+                for user in client.jellyfin.get_users()
+                if user["Name"] == JELLYSWARRM_USERNAME
+            )
+            print(f"✅ Created Jellyswarrm user '{JELLYSWARRM_USERNAME}'")
+
+        client.jellyfin._post(
+            "Users/Password",
+            params={"userId": user["Id"]},
+            json={"NewPw": JELLYSWARRM_PASSWORD, "ResetPassword": False},
+        )
+
+        policy = user["Policy"]
+        policy.update(
+            {
+                "IsDisabled": False,
+                "EnableRemoteAccess": True,
+                "EnableMediaPlayback": True,
+                "EnableAllFolders": True,
+                "EnabledFolders": [],
+            }
+        )
+        client.jellyfin._post(f"Users/{user['Id']}/Policy", json=policy)
+        print(
+            f"✅ Configured Jellyswarrm user '{JELLYSWARRM_USERNAME}' "
+            "with access to all libraries"
+        )
     except Exception as e:
-        print(f"Failed to create user '{USERNAME}': {e}")
+        print(f"Failed to configure user '{JELLYSWARRM_USERNAME}': {e}")
         raise
 
 
@@ -142,5 +176,5 @@ if __name__ == "__main__":
     user = client.auth.login(SERVER_URL, username=ADMIN_USER, password=ADMIN_PASSWORD)
     print(f"✅ Authenticated as '{user['User']['Name']}'")
     set_server_name(client)
-    create_users(client)
+    configure_jellyswarrm_user(client)
     create_library(client)

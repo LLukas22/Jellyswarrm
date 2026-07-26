@@ -19,7 +19,9 @@ ready. Media and server state are reused on later runs.
 
 Debug builds of `jellyswarrm-proxy` load `data/jellyswarrm.dev.toml` and
 automatically add or update these six servers in Jellyswarrm. Existing
-non-development servers are left untouched.
+non-development servers are left untouched. They also create the local
+Jellyswarrm user `test` / `test` and map all six upstream servers to that user
+with the same credentials.
 
 Requirements:
 
@@ -27,18 +29,23 @@ Requirements:
 - Git LFS
 - [just](https://just.systems/)
 
+The exact Jellyfin release is set once through `JELLYFIN_VERSION` in
+[`dev/.env`](.env). All six servers use that version; update the value and run
+`just pull && just up` to test another release.
+
 ## Servers
 
-| Server | Direct URL | Regular user | Password |
-| --- | --- | --- | --- |
-| Movies 1 | <http://localhost:8096> | `user` | `movies` |
-| Shows 1 | <http://localhost:8097> | `user` | `shows` |
-| Music 1 | <http://localhost:8098> | `user` | `music` |
-| Movies 2 | <http://localhost:8099> | `user` | `movies2` |
-| Shows 2 | <http://localhost:8100> | `user` | `shows2` |
-| Music 2 | <http://localhost:8101> | `user` | `music2` |
+| Server | Direct URL |
+| --- | --- |
+| Movies 1 | <http://localhost:8096> |
+| Shows 1 | <http://localhost:8097> |
+| Music 1 | <http://localhost:8098> |
+| Movies 2 | <http://localhost:8099> |
+| Shows 2 | <http://localhost:8100> |
+| Music 2 | <http://localhost:8101> |
 
-Every server also has the administrator account `admin` / `password`.
+Every server has the regular Jellyswarrm account `test` / `test`, with access
+to its complete library. The administrator account remains `admin` / `password`.
 
 Caddy is available at <http://localhost:8000> and exposes `/movies/`,
 `/shows/`, `/music/`, `/movies-2/`, `/shows-2/`, and `/music-2/`.

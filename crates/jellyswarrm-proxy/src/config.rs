@@ -245,6 +245,12 @@ pub struct PreconfiguredServer {
     pub media_streaming_mode: MediaStreamingMode,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DebugUser {
+    pub username: String,
+    pub password: Password,
+}
+
 #[derive(Clone, Deserialize, Serialize, DefaultFromSerde)]
 pub struct AppConfig {
     #[serde(default = "default_server_id")]
@@ -270,6 +276,9 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub preconfigured_servers: Vec<PreconfiguredServer>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub debug_user: Option<DebugUser>,
 
     #[serde(default = "default_session_key", with = "base64_serde")]
     pub session_key: Vec<u8>,
@@ -327,6 +336,7 @@ impl fmt::Debug for AppConfig {
             .field("username", &self.username)
             .field("password", &self.password)
             .field("preconfigured_servers", &self.preconfigured_servers)
+            .field("debug_user", &self.debug_user)
             .field("session_key", &session_key)
             .field("timeout", &self.timeout)
             .field("ui_route", &self.ui_route)

@@ -1,5 +1,5 @@
 x-jellyfin: &jellyfin
-  image: jellyfin/jellyfin:latest
+  image: jellyfin/jellyfin:${JELLYFIN_VERSION:?Set JELLYFIN_VERSION in dev/.env}
   environment: &jellyfin-environment
     PUID: 1000
     PGID: 1000
@@ -18,20 +18,24 @@ x-jellyfin-init: &jellyfin-init
   networks:
     - jellyfin-dev-net
 
+x-jellyswarrm-user: &jellyswarrm-user
+  JELLYSWARRM_USERNAME: test
+  JELLYSWARRM_PASSWORD: test
+
 x-movies-init-environment: &movies-init-environment
-  USERNAME: user
+  <<: *jellyswarrm-user
   COLLECTION_NAME: Movies
   COLLECTION_PATH: /media/movies
   COLLECTION_TYPE: movies
 
 x-shows-init-environment: &shows-init-environment
-  USERNAME: user
+  <<: *jellyswarrm-user
   COLLECTION_NAME: Shows
   COLLECTION_PATH: /media/tv-shows
   COLLECTION_TYPE: tvshows
 
 x-music-init-environment: &music-init-environment
-  USERNAME: user
+  <<: *jellyswarrm-user
   COLLECTION_NAME: Music
   COLLECTION_PATH: /media/music
   COLLECTION_TYPE: music
@@ -57,7 +61,6 @@ services:
       <<: *movies-init-environment
       URL: http://jellyfin-movies:8096
       SERVER_NAME: Movies 1
-      PASSWORD: movies
     depends_on:
       jellyfin-movies:
         condition: service_healthy
@@ -82,7 +85,6 @@ services:
       <<: *shows-init-environment
       URL: http://jellyfin-tvshows:8096
       SERVER_NAME: Shows 1
-      PASSWORD: shows
     depends_on:
       jellyfin-tvshows:
         condition: service_healthy
@@ -107,7 +109,6 @@ services:
       <<: *music-init-environment
       URL: http://jellyfin-music:8096
       SERVER_NAME: Music 1
-      PASSWORD: music
     depends_on:
       jellyfin-music:
         condition: service_healthy
@@ -132,7 +133,6 @@ services:
       <<: *movies-init-environment
       URL: http://jellyfin-movies-2:8096
       SERVER_NAME: Movies 2
-      PASSWORD: movies2
     depends_on:
       jellyfin-movies-2:
         condition: service_healthy
@@ -157,7 +157,6 @@ services:
       <<: *shows-init-environment
       URL: http://jellyfin-tvshows-2:8096
       SERVER_NAME: Shows 2
-      PASSWORD: shows2
     depends_on:
       jellyfin-tvshows-2:
         condition: service_healthy
@@ -182,7 +181,6 @@ services:
       <<: *music-init-environment
       URL: http://jellyfin-music-2:8096
       SERVER_NAME: Music 2
-      PASSWORD: music2
     depends_on:
       jellyfin-music-2:
         condition: service_healthy
