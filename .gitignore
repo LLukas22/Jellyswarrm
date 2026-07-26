@@ -1,4 +1,6 @@
-data/
+/data/*
+!/data/jellyswarrm.dev.toml
+/dev/data/
 .last_build_commit
 
 

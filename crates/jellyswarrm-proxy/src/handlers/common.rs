@@ -68,18 +68,19 @@ pub async fn execute_json_request<T>(
 where
     T: serde::de::DeserializeOwned,
 {
-    let response = client
-        .execute(request)
-        .await
-        .map_err(|e| {
-            error!("Failed to execute request: {}", e);
-            StatusCode::BAD_GATEWAY
-        })?
-        .error_for_status()
-        .map_err(|e| {
-            error!("Request failed with status: {}", e);
-            StatusCode::UNAUTHORIZED
-        })?;
+    let response = client.execute(request).await.map_err(|e| {
+        error!("Failed to execute request: {}", e);
+        StatusCode::BAD_GATEWAY
+    })?;
+    let status = response.status();
+    if !status.is_success() {
+        error!(
+            "Upstream request to {} failed with status {}",
+            response.url(),
+            status
+        );
+        return Err(status);
+    }
 
     let response_text = response.text().await.map_err(|e| {
         error!("Failed to get response text: {}", e);
@@ -428,6 +429,7 @@ mod tests {
 
     use serde_json::json;
     use sqlx::SqlitePool;
+    use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
 
     use super::*;
     use crate::{
@@ -504,6 +506,21 @@ mod tests {
             ),
             server,
         )
+    }
+
+    #[tokio::test]
+    async fn execute_json_request_preserves_upstream_not_found_status() {
+        let upstream = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&upstream)
+            .await;
+        let client = reqwest::Client::new();
+        let request = client.get(upstream.uri()).build().unwrap();
+
+        let result = execute_json_request::<serde_json::Value>(&client, request).await;
+
+        assert_eq!(result.unwrap_err(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

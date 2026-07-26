@@ -1,0 +1,26 @@
+<article id="merge-libraries-control" class="library-merge-mode">
+    <div class="library-merge-mode-copy">
+        <h2>Automatic grouping</h2>
+        <p>Merge unassigned libraries when their names and types match.</p>
+    </div>
+
+    <form class="library-merge-mode-form"
+          hx-patch="/{{ ui_route }}/libraries/merge-libraries"
+           hx-target="#merge-libraries-control"
+           hx-swap="outerHTML"
+           hx-disabled-elt="this">
+        <label class="library-merge-mode-switch">
+            <input type="checkbox"
+                   role="switch"
+                   name="merge_libraries"
+                   value="true"
+                   hx-on:change="this.form.requestSubmit()"
+                   {% if merge_libraries %}checked{% endif %}>
+            <span>{% if merge_libraries %}Enabled{% else %}Disabled{% endif %}</span>
+        </label>
+    </form>
+
+    {% if has_merge_libraries_error %}
+    <div class="alert alert-error" role="alert">{{ merge_libraries_error }}</div>
+    {% endif %}
+</article>

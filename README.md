@@ -115,6 +115,19 @@ docker compose up -d
 This will build and start the application with all necessary dependencies, perfect for both development and production deployments.
 </details>
 
+### Local Test Servers
+
+To test Jellyswarrm against six preconfigured Jellyfin instances (two each for
+Movies, TV Shows, and Music) with freely licensed media, run:
+
+```bash
+just setup
+```
+
+See the [development media-server guide](dev/README.md) for URLs, credentials,
+commands, and media licenses. Debug builds automatically register all six local
+servers from `data/jellyswarrm.dev.toml`.
+
 
 
 <details>

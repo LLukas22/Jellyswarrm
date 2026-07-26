@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::str::FromStr;
 
 use crate::{
-    duplicate_policy::{apply_duplicate_policy, DuplicatePolicyConfig, TaggedMediaItem},
+    duplicate_handling::{label_duplicates, TaggedMediaItem},
     models::{
         enums::{BaseItemKind, CollectionType, ItemSortBy, SortOrder},
         ItemsResponseVariants, ItemsResponseWithCount, MediaItem,
@@ -17,11 +17,15 @@ pub(super) struct Pagination {
 }
 
 impl Pagination {
-    pub(super) fn from_url(url: &url::Url) -> Self {
-        let mut pagination = Self {
+    pub(super) fn unbounded() -> Self {
+        Self {
             start_index: 0,
             limit: None,
-        };
+        }
+    }
+
+    pub(super) fn from_url(url: &url::Url) -> Self {
+        let mut pagination = Self::unbounded();
 
         for (key, value) in url.query_pairs() {
             if key.eq_ignore_ascii_case("StartIndex") {
@@ -89,11 +93,6 @@ impl ResponseShape {
     }
 }
 
-pub(super) enum MergeStrategy<'a> {
-    Interleave,
-    DuplicatePolicy(&'a DuplicatePolicyConfig),
-}
-
 pub(super) struct ServerItems {
     pub(super) response: ItemsResponseVariants,
     pub(super) server: Server,
@@ -117,30 +116,17 @@ impl FederatedItems {
         Self::new(interleave(responses))
     }
 
-    pub(super) fn from_tagged_items(
-        items: Vec<TaggedMediaItem>,
-        config: &DuplicatePolicyConfig,
-    ) -> Self {
-        Self::new(apply_duplicate_policy(items, config))
+    pub(super) fn from_tagged_items(items: Vec<TaggedMediaItem>) -> Self {
+        Self::new(label_duplicates(items))
     }
 
-    pub(super) fn merge_server_items(
-        mut self,
-        server_items: Vec<ServerItems>,
-        strategy: MergeStrategy<'_>,
-    ) -> Self {
-        let items = match strategy {
-            MergeStrategy::Interleave => interleave(
-                server_items
-                    .into_iter()
-                    .map(|items| items.response)
-                    .collect(),
-            ),
-            MergeStrategy::DuplicatePolicy(config) => {
-                apply_duplicate_policy(tag_server_items(server_items), config)
-            }
-        };
-        self.items.extend(items);
+    pub(super) fn merge_interleaved(mut self, server_items: Vec<ServerItems>) -> Self {
+        self.items.extend(interleave(
+            server_items
+                .into_iter()
+                .map(|items| items.response)
+                .collect(),
+        ));
         self
     }
 
@@ -156,9 +142,9 @@ impl FederatedItems {
     pub(super) fn into_response(
         mut self,
         url: &url::Url,
-        pagination: Pagination,
         shape: ResponseShape,
     ) -> ItemsResponseVariants {
+        let pagination = Pagination::from_url(url);
         sort_items(&mut self.items, url);
         let total_count = self.reported_total.unwrap_or(self.items.len());
         let items = pagination.apply(self.items);
@@ -258,22 +244,6 @@ fn interleave(responses: Vec<ItemsResponseVariants>) -> Vec<MediaItem> {
     items
 }
 
-fn tag_server_items(server_items: Vec<ServerItems>) -> Vec<TaggedMediaItem> {
-    server_items
-        .into_iter()
-        .flat_map(|server_items| {
-            server_items
-                .response
-                .into_items()
-                .into_iter()
-                .map(move |item| TaggedMediaItem {
-                    item,
-                    server: server_items.server.clone(),
-                })
-        })
-        .collect()
-}
-
 fn is_live_tv_user_view(item: &MediaItem) -> bool {
     item.collection_type == Some(CollectionType::LiveTv) && item.item_type == BaseItemKind::UserView
 }
@@ -285,10 +255,6 @@ fn to_i32(value: usize) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        config::MediaStreamingMode, duplicate_policy::DuplicatePolicy, server_id::ServerId,
-        server_url::ServerUrl,
-    };
     use serde_json::json;
 
     #[test]
@@ -339,14 +305,7 @@ mod tests {
             named_media_item("b", "Beta"),
         ];
 
-        let response = FederatedItems::new(items).into_response(
-            &url,
-            Pagination {
-                start_index: 0,
-                limit: None,
-            },
-            ResponseShape::Bare,
-        );
+        let response = FederatedItems::new(items).into_response(&url, ResponseShape::Bare);
 
         assert_eq!(item_ids(&response.into_items()), vec!["b", "a"]);
     }
@@ -359,14 +318,8 @@ mod tests {
         let mut newer = named_media_item("new", "Newer");
         newer.date_created = Some("2026-01-01T00:00:00Z".to_string());
 
-        let response = FederatedItems::new(vec![older, newer]).into_response(
-            &url,
-            Pagination {
-                start_index: 0,
-                limit: None,
-            },
-            ResponseShape::Bare,
-        );
+        let response =
+            FederatedItems::new(vec![older, newer]).into_response(&url, ResponseShape::Bare);
 
         assert_eq!(item_ids(&response.into_items()), vec!["new", "old"]);
     }
@@ -379,33 +332,20 @@ mod tests {
             named_media_item("a", "Alpha"),
         ];
 
-        let response = FederatedItems::new(items).into_response(
-            &url,
-            Pagination {
-                start_index: 0,
-                limit: None,
-            },
-            ResponseShape::Bare,
-        );
+        let response = FederatedItems::new(items).into_response(&url, ResponseShape::Bare);
 
         assert_eq!(item_ids(&response.into_items()), vec!["a", "b"]);
     }
 
     #[test]
     fn pagination_slices_after_interleave() {
-        let url = url::Url::parse("http://localhost/Items?SortBy=Random").unwrap();
+        let url =
+            url::Url::parse("http://localhost/Items?SortBy=Random&StartIndex=1&Limit=2").unwrap();
         let response = FederatedItems::interleaved(vec![
             ItemsResponseVariants::Bare(vec![media_item("a1", None), media_item("a2", None)]),
             ItemsResponseVariants::Bare(vec![media_item("b1", None), media_item("b2", None)]),
         ])
-        .into_response(
-            &url,
-            Pagination {
-                start_index: 1,
-                limit: Some(2),
-            },
-            ResponseShape::Bare,
-        );
+        .into_response(&url, ResponseShape::Bare);
 
         assert_eq!(item_ids(&response.into_items()), vec!["b1", "a2"]);
     }
@@ -534,21 +474,15 @@ mod tests {
 
     #[test]
     fn pipeline_sorts_then_paginates_with_reported_total() {
-        let url = url::Url::parse("http://localhost/Items?SortBy=SortName").unwrap();
+        let url =
+            url::Url::parse("http://localhost/Items?SortBy=SortName&StartIndex=1&Limit=1").unwrap();
         let response = FederatedItems::new(vec![
             named_media_item("c", "Charlie"),
             named_media_item("a", "Alpha"),
             named_media_item("b", "Beta"),
         ])
         .with_reported_total(12)
-        .into_response(
-            &url,
-            Pagination {
-                start_index: 1,
-                limit: Some(1),
-            },
-            ResponseShape::Counted,
-        );
+        .into_response(&url, ResponseShape::Counted);
 
         let ItemsResponseVariants::WithCount(response) = response else {
             panic!("expected counted response");
@@ -561,29 +495,6 @@ mod tests {
             ),
             (vec!["b"], 12, 1)
         );
-    }
-
-    #[test]
-    fn merge_server_items_applies_duplicate_policy() {
-        let policy = DuplicatePolicyConfig {
-            policy: DuplicatePolicy::ServerPriority,
-            preferred_server_id: None,
-        };
-        let items = FederatedItems::default().merge_server_items(
-            vec![
-                ServerItems {
-                    response: ItemsResponseVariants::Bare(vec![duplicate_media_item("low")]),
-                    server: server(1, 10),
-                },
-                ServerItems {
-                    response: ItemsResponseVariants::Bare(vec![duplicate_media_item("high")]),
-                    server: server(2, 20),
-                },
-            ],
-            MergeStrategy::DuplicatePolicy(&policy),
-        );
-
-        assert_eq!(item_ids(&items.items), vec!["high"]);
     }
 
     fn item_ids(items: &[MediaItem]) -> Vec<&str> {
@@ -604,16 +515,6 @@ mod tests {
         .unwrap()
     }
 
-    fn duplicate_media_item(id: &str) -> MediaItem {
-        serde_json::from_value(json!({
-            "Id": id,
-            "Name": "Movie",
-            "Type": "Movie",
-            "ProviderIds": { "Tmdb": "same" },
-        }))
-        .unwrap()
-    }
-
     fn typed_media_item(id: &str, item_type: &str, collection_type: Option<&str>) -> MediaItem {
         let mut item = json!({
             "Id": id,
@@ -623,18 +524,5 @@ mod tests {
             item["CollectionType"] = json!(collection_type);
         }
         serde_json::from_value(item).unwrap()
-    }
-
-    fn server(id: i64, priority: i32) -> Server {
-        let now = chrono::Utc::now();
-        Server {
-            id: ServerId::new(id),
-            name: format!("Server {id}"),
-            url: ServerUrl::parse("http://example:8096").unwrap(),
-            priority,
-            media_streaming_mode: MediaStreamingMode::Redirect,
-            created_at: now,
-            updated_at: now,
-        }
     }
 }

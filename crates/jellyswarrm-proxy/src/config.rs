@@ -3,6 +3,7 @@ use serde_default::DefaultFromSerde;
 use sqlx::migrate::Migrator;
 use std::fmt;
 use std::fs;
+use std::io::Write;
 use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::LazyLock;
@@ -244,6 +245,12 @@ pub struct PreconfiguredServer {
     pub media_streaming_mode: MediaStreamingMode,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DebugUser {
+    pub username: String,
+    pub password: Password,
+}
+
 #[derive(Clone, Deserialize, Serialize, DefaultFromSerde)]
 pub struct AppConfig {
     #[serde(default = "default_server_id")]
@@ -269,6 +276,9 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub preconfigured_servers: Vec<PreconfiguredServer>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub debug_user: Option<DebugUser>,
 
     #[serde(default = "default_session_key", with = "base64_serde")]
     pub session_key: Vec<u8>,
@@ -326,6 +336,7 @@ impl fmt::Debug for AppConfig {
             .field("username", &self.username)
             .field("password", &self.password)
             .field("preconfigured_servers", &self.preconfigured_servers)
+            .field("debug_user", &self.debug_user)
             .field("session_key", &session_key)
             .field("timeout", &self.timeout)
             .field("ui_route", &self.ui_route)
@@ -398,8 +409,19 @@ pub fn load_config() -> AppConfig {
 /// Persist configuration to the first existing file or the primary default file.
 pub fn save_config(cfg: &AppConfig) -> std::io::Result<()> {
     let toml_str = toml::to_string_pretty(cfg).map_err(std::io::Error::other)?;
-    fs::write(config_path(), toml_str)?;
-    info!("Configuration saved to {:?}", config_path());
+    let path = config_path();
+    let temp_path = path.with_extension(format!("toml.tmp-{}", std::process::id()));
+    let write_result = (|| {
+        let mut file = fs::File::create(&temp_path)?;
+        file.write_all(toml_str.as_bytes())?;
+        file.sync_all()?;
+        fs::rename(&temp_path, &path)
+    })();
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(temp_path);
+        return Err(error);
+    }
+    info!("Configuration saved to {path:?}");
     Ok(())
 }
 

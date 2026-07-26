@@ -1,65 +1,110 @@
 # Jellyfin Development Environment
 
-A complete Docker Compose setup for testing Jellyswarrm with three preconfigured Jellyfin servers (Movies, TV Shows, Music) and legally downloadable content.
+A Docker Compose environment for testing Jellyswarrm against two independent
+Jellyfin servers for each library type: Movies, TV Shows, and Music. All six
+servers use read-only trees of compact, freely licensed test media while keeping
+their configuration, users, item databases, and caches isolated.
 
-## 🚀 Quick Start
+## Quick start
+
+From the repository root:
 
 ```bash
-cd dev
-docker-compose up -d
+just setup
 ```
 
-What happens:
-- Downloads legal sample content automatically
-- Starts three Jellyfin servers (movies, tv, music)
-- Initializes each server (skips wizard, creates library, ready to browse)
+This command verifies Docker, fetches the Git LFS media, starts all six servers,
+initializes their users and libraries, and waits for the complete stack to be
+ready. Media and server state are reused on later runs.
 
-Then access:
-- Movies: http://localhost:8096
-- TV Shows: http://localhost:8097
-- Music: http://localhost:8098
+Debug builds of `jellyswarrm-proxy` load `data/jellyswarrm.dev.toml` and
+automatically add or update these six servers in Jellyswarrm. Existing
+non-development servers are left untouched. They also create the local
+Jellyswarrm user `test` / `test` and map all six upstream servers to that user
+with the same credentials.
 
-## 👥 Users and libraries
+Requirements:
 
-- Each server creates an admin user automatically:
-   - Admin: `admin` / `password`
-   - User: `user` / `[shows|movies|music]` (depending on server)
-- Libraries are created via API and point to:
-   - Movies → `/media/movies`
-   - TV Shows → `/media/tv-shows`
-   - Music → `/media/music`
+- Docker with the Compose v2 plugin
+- Git LFS
+- [just](https://just.systems/)
 
+The exact Jellyfin release is set once through `JELLYFIN_VERSION` in
+[`dev/.env`](.env). All six servers use that version; update the value and run
+`just pull && just up` to test another release.
 
+## Servers
 
-## 📁 Downloaded content
+| Server | Direct URL |
+| --- | --- |
+| Movies 1 | <http://localhost:8096> |
+| Shows 1 | <http://localhost:8097> |
+| Music 1 | <http://localhost:8098> |
+| Movies 2 | <http://localhost:8099> |
+| Shows 2 | <http://localhost:8100> |
+| Music 2 | <http://localhost:8101> |
 
-All content is legally downloadable. Current script includes:
+Every server has the regular Jellyswarrm account `test` / `test`, with access
+to its complete library. The administrator account remains `admin` / `password`.
 
-- Movies
-   - Night of the Living Dead (1968) — Internet Archive (Public Domain)
-   - Plan 9 from Outer Space (1959) — Internet Archive (Public Domain)
-   - Big Buck Bunny (2008) — Blender Foundation (CC)
+Caddy is available at <http://localhost:8000> and exposes `/movies/`,
+`/shows/`, `/music/`, `/movies-2/`, `/shows-2/`, and `/music-2/`.
 
-- TV Shows
-   - The Cisco Kid (1950) — S01E01, S01E03 — Internet Archive (Public Domain)
+## Commands
 
-- Music
-   - Kimiko Ishizaka — The Open Goldberg Variations (2012) — OGG — Internet Archive (CC0/PD)
+Run `just` to list all commands. Common workflows are:
 
-Content is placed under `./data/media/` on the host:
-
+```bash
+just up       # Start and wait for the complete stack
+just down     # Remove containers but preserve media and server state
+just status   # Show all containers, including one-shot initializers
+just logs     # Follow logs from the complete stack
+just media    # Fetch media fixtures from Git LFS
+just check    # Validate Compose and the initializer
+just reset    # Recreate all server state but preserve tracked media
 ```
-data/media/
-├── movies/
-├── tv-shows/
-└── music/
+
+Use `just log jellyfin-movies-2` to follow one service.
+
+## Media layout
+
+Fixtures are stored under `dev/media/` through Git LFS:
+
+```text
+dev/media/
+|-- movies/
+|   |-- server-1/
+|   `-- server-2/
+|-- tv-shows/
+|   |-- server-1/
+|   `-- server-2/
+`-- music/
+    |-- server-1/
+    `-- server-2/
 ```
 
-## 📜 Licenses and attribution
+Each directory is mounted only into its matching Jellyfin server:
 
-- Public domain items can be used freely.
-- CC-BY items (e.g., Kevin MacLeod) require attribution if used or redistributed publicly. Keep attribution in your app/docs if you publish content beyond local testing.
+| Server | Fixtures |
+| --- | --- |
+| Movies 1 | Night of the Living Dead (exclusive), Big Buck Bunny (shared) |
+| Movies 2 | Plan 9 from Outer Space and Sintel (exclusive), Big Buck Bunny (shared) |
+| Shows 1 | The Cisco Kid (exclusive); One Step Beyond S01E02 (shared) and S02E21 (exclusive) |
+| Shows 2 | One Step Beyond S01E02 (shared) and S03E34 (exclusive) |
+| Music 1 | The Open Goldberg Variations |
+| Music 2 | Ghost Solos |
 
-Sources:
-- Internet Archive — https://archive.org/
-- Blender Foundation — https://www.blender.org/about/projects/
+The One Step Beyond layout provides one season and episode shared by both
+Shows servers, plus a different server-specific season on each. Shared files
+have identical LFS object IDs, so GitHub stores each shared binary once. This
+gives merged-library tests both overlapping and exclusive upstream items.
+
+Videos are two-minute excerpts of the real public-domain and Creative Commons
+works, compacted to a maximum width of 640px. The freely licensed music tracks
+remain complete. The whole fixture set is approximately 52 MiB. See
+[`MEDIA-LICENSES.md`](MEDIA-LICENSES.md) for exact sources, licenses, and
+required attribution.
+
+Jellyfin state is stored in `dev/data/jellyfin-*`. `just down` preserves it;
+`just reset` removes only this state and runs initialization again. Tracked
+media is preserved by both commands.

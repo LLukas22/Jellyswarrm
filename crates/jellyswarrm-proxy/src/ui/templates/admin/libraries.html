@@ -1,36 +1,197 @@
-<header>
-    <h1>Library Groups</h1>
-    <h3>Combine libraries from multiple servers into one folder in Jellyswarrm.</h3>
+<header class="library-page-header">
+    <h1>Libraries</h1>
+    <p>Group real Jellyfin libraries into the folders shown to users.</p>
 </header>
 
-{% if merge_libraries %}
-<article>
-    <header><h4>Auto-merge is enabled</h4></header>
-    <p>Libraries with the same name and type are merged automatically via <strong>Merge Libraries Across Servers</strong> in Settings.</p>
-    <p>Disable that setting to configure custom library groups here instead.</p>
-</article>
-{% else %}
+{% include "admin/merge_libraries_control.html" %}
 
-<section aria-labelledby="create-group-heading">
-    <h2 id="create-group-heading" class="section-heading-tight">Create Group</h2>
+<section class="library-group-create" aria-labelledby="create-group-heading">
+    <div>
+        <h2 id="create-group-heading">New virtual library</h2>
+    </div>
     <form hx-post="/{{ ui_route }}/libraries/groups" hx-target="#library-groups-list" hx-swap="innerHTML" hx-disabled-elt="this" hx-on::after-request="if(event.detail.successful) this.reset()">
-        <div class="server-form-grid">
-            <label class="form-field">
-                <span class="field-label">Group Name</span>
-                <input type="text" name="name" placeholder="e.g. Anime" autocomplete="off" required>
-            </label>
-            <div class="server-form-submit">
-                <span class="field-label field-label-placeholder" aria-hidden="true">Create</span>
-                <button type="submit" class="server-form-button">Create Group</button>
-            </div>
-        </div>
+        <label class="sr-only" for="new-library-group-name">Group name</label>
+        <input id="new-library-group-name" type="text" name="name" placeholder="Library name" autocomplete="off" required>
+        <button type="submit">
+            <i class="fas fa-plus" aria-hidden="true"></i>
+            Create
+        </button>
     </form>
 </section>
 
-<hr />
-
 <section id="library-groups-list" hx-get="/{{ ui_route }}/libraries/list" hx-trigger="load">
-    <p>Loading library groups...</p>
+    <div class="library-board-loading" aria-live="polite">
+        <i class="fas fa-circle-notch fa-spin" aria-hidden="true"></i>
+        <span>Loading library workspace...</span>
+    </div>
 </section>
 
-{% endif %}
+<script>
+    (() => {
+        if (window.libraryBoardController) {
+            window.libraryBoardController.abort();
+        }
+
+        const controller = new AbortController();
+        const options = { signal: controller.signal };
+        window.libraryBoardController = controller;
+        let draggedLibrary = null;
+        let blockedLibraryDrag = null;
+
+        const popovers = () => document.querySelectorAll('[data-library-popover][open]');
+
+        const closePopover = (popover, restoreFocus = false) => {
+            popover.removeAttribute('open');
+            if (restoreFocus) {
+                popover.querySelector(':scope > summary')?.focus();
+            }
+        };
+
+        const clearDropTargets = () => {
+            document.querySelectorAll('[data-library-dropzone]').forEach((element) => {
+                element.classList.remove('is-drag-over', 'is-incompatible');
+                element.removeAttribute('aria-disabled');
+            });
+        };
+
+        const acceptsDraggedLibrary = (dropzone) => {
+            const groupType = dropzone.dataset.collectionType;
+            return !groupType || groupType === draggedLibrary?.dataset.collectionType;
+        };
+
+        const setLibraryCardDraggable = (card, enabled) => {
+            if (card) card.draggable = enabled && card.dataset.canDrag === 'true';
+        };
+
+        document.body.addEventListener('pointerover', (event) => {
+            const card = event.target.closest('[data-library-card]');
+            const isInteractive = event.target.closest('a, button, input, select, textarea, summary, form, [data-library-popover]');
+            setLibraryCardDraggable(card, !isInteractive);
+        }, options);
+
+        document.body.addEventListener('pointerdown', (event) => {
+            const card = event.target.closest('[data-library-card]');
+            const isInteractive = event.target.closest('a, button, input, select, textarea, summary, form, [data-library-popover]');
+            blockedLibraryDrag = isInteractive ? card : null;
+            setLibraryCardDraggable(card, !isInteractive);
+        }, options);
+
+        document.body.addEventListener('pointerup', () => {
+            blockedLibraryDrag = null;
+        }, options);
+
+        document.body.addEventListener('pointercancel', () => {
+            blockedLibraryDrag = null;
+        }, options);
+
+        document.body.addEventListener('dragstart', (event) => {
+            const card = event.target.closest('[data-library-card]');
+            if (!card || card.dataset.canDrag !== 'true' || blockedLibraryDrag === card) {
+                event.preventDefault();
+                return;
+            }
+
+            draggedLibrary = card;
+            blockedLibraryDrag = null;
+            card.classList.add('is-dragging');
+            card.setAttribute('aria-grabbed', 'true');
+            event.dataTransfer.effectAllowed = 'move';
+            event.dataTransfer.setData('text/plain', card.dataset.libraryKey);
+            document.querySelectorAll('[data-library-dropzone]').forEach((dropzone) => {
+                if (!acceptsDraggedLibrary(dropzone)) {
+                    dropzone.classList.add('is-incompatible');
+                    dropzone.setAttribute('aria-disabled', 'true');
+                }
+            });
+        }, options);
+
+        document.body.addEventListener('dragend', () => {
+            if (draggedLibrary) {
+                draggedLibrary.classList.remove('is-dragging');
+                draggedLibrary.setAttribute('aria-grabbed', 'false');
+                setLibraryCardDraggable(draggedLibrary, true);
+            }
+            draggedLibrary = null;
+            clearDropTargets();
+        }, options);
+
+        document.body.addEventListener('dragover', (event) => {
+            const dropzone = event.target.closest('[data-library-dropzone]');
+            if (!dropzone || !draggedLibrary || !acceptsDraggedLibrary(dropzone)) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = 'move';
+            document.querySelectorAll('[data-library-dropzone].is-drag-over').forEach((element) => {
+                element.classList.remove('is-drag-over');
+            });
+            dropzone.classList.add('is-drag-over');
+        }, options);
+
+        document.body.addEventListener('drop', (event) => {
+            const dropzone = event.target.closest('[data-library-dropzone]');
+            if (!dropzone || !draggedLibrary || !acceptsDraggedLibrary(dropzone)) return;
+            event.preventDefault();
+
+            const form = draggedLibrary.querySelector('.library-assignment-form');
+            const groupSelect = form?.elements.namedItem('group_virtual_id');
+            if (!form || !groupSelect) return;
+
+            groupSelect.value = dropzone.dataset.groupId;
+            dropzone.classList.remove('is-drag-over');
+            dropzone.classList.add('is-assigning');
+
+            const status = document.querySelector('[data-library-board-status]');
+            if (status) {
+                status.textContent = `Moving ${draggedLibrary.dataset.libraryName} to ${dropzone.dataset.groupName}...`;
+            }
+            htmx.trigger(form, 'submit');
+        }, options);
+
+        document.body.addEventListener('pointerdown', (event) => {
+            popovers().forEach((popover) => {
+                const summary = popover.querySelector(':scope > summary');
+                const panel = popover.querySelector(':scope > form');
+                if (!summary?.contains(event.target) && !panel?.contains(event.target)) {
+                    closePopover(popover);
+                }
+            });
+        }, options);
+
+        document.body.addEventListener('keydown', (event) => {
+            if (event.key !== 'Escape') return;
+            const openPopover = event.target.closest('[data-library-popover][open]')
+                || document.querySelector('[data-library-popover][open]');
+            if (!openPopover) return;
+            event.preventDefault();
+            closePopover(openPopover, true);
+        }, options);
+
+        document.body.addEventListener('click', (event) => {
+            const summary = event.target.closest('[data-library-popover] > summary');
+            if (!summary) return;
+
+            event.preventDefault();
+            const popover = summary.parentElement;
+            if (popover.open) {
+                closePopover(popover);
+                return;
+            }
+
+            popovers().forEach((other) => closePopover(other));
+            popover.setAttribute('open', '');
+            requestAnimationFrame(() => {
+                popover.querySelector(':scope > form select, :scope > form input:not([type="hidden"])')?.focus();
+            });
+        }, options);
+
+        document.body.addEventListener('htmx:afterRequest', (event) => {
+            if (!event.target.matches('.library-assignment-form')) return;
+            const status = document.querySelector('[data-library-board-status]');
+            if (status) {
+                status.textContent = event.detail.successful
+                    ? 'Library assignment updated.'
+                    : 'Could not update the library assignment.';
+            }
+            clearDropTargets();
+        }, options);
+    })();
+</script>
