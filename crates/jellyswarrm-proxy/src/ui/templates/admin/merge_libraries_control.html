@@ -1,31 +1,23 @@
 <article id="merge-libraries-control" class="library-merge-mode">
     <div class="library-merge-mode-copy">
-        <p class="library-merge-mode-kicker">Library behavior</p>
-        <div class="library-merge-mode-title">
-            <h2>Automatic fallback</h2>
-            <span class="library-merge-mode-status{% if merge_libraries %} is-enabled{% endif %}">
-                {% if merge_libraries %}Enabled{% else %}Disabled{% endif %}
-            </span>
-        </div>
-        <p>
-            Custom assignments always win. When enabled, remaining libraries with the same name and type are merged automatically; unmatched libraries stay separate.
-        </p>
+        <h2>Automatic grouping</h2>
+        <p>Merge unassigned libraries when their names and types match.</p>
     </div>
 
     <form class="library-merge-mode-form"
           hx-patch="/{{ ui_route }}/libraries/merge-libraries"
-          hx-target="#merge-libraries-control"
-          hx-swap="outerHTML"
-          hx-disabled-elt="this">
+           hx-target="#merge-libraries-control"
+           hx-swap="outerHTML"
+           hx-disabled-elt="this">
         <label class="library-merge-mode-switch">
             <input type="checkbox"
                    role="switch"
                    name="merge_libraries"
                    value="true"
+                   hx-on:change="this.form.requestSubmit()"
                    {% if merge_libraries %}checked{% endif %}>
-            <span>Auto-merge unassigned libraries</span>
+            <span>{% if merge_libraries %}Enabled{% else %}Disabled{% endif %}</span>
         </label>
-        <button type="submit" class="server-form-button">Save behavior</button>
     </form>
 
     {% if has_merge_libraries_error %}

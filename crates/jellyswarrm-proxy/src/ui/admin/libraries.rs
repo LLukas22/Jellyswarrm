@@ -16,7 +16,8 @@ use crate::{
     encryption::{decrypt_password, HashedPassword},
     server_id::ServerId,
     virtual_library_service::{
-        normalize_library_id, DiscoveredLibrary as StoredLibrary, LibraryGroupMemberRecord,
+        normalize_library_id, AssignLibraryError, DiscoveredLibrary as StoredLibrary,
+        LibraryGroupMemberRecord,
     },
     AppState,
 };
@@ -50,7 +51,13 @@ pub struct LibraryGroupsListTemplate {
 pub struct LibraryGroupView {
     pub virtual_id: String,
     pub name: String,
+    pub collection_type: Option<String>,
     pub members: Vec<LibraryGroupMemberView>,
+}
+
+pub struct LibraryGroupOptionView {
+    pub virtual_id: String,
+    pub name: String,
 }
 
 pub struct LibraryGroupMemberView {
@@ -67,6 +74,7 @@ pub struct DiscoveredLibraryView {
     pub library_name: String,
     pub collection_type: String,
     pub assigned_group: Option<String>,
+    pub assignable_groups: Vec<LibraryGroupOptionView>,
 }
 
 #[derive(Deserialize)]
@@ -79,7 +87,6 @@ pub struct AssignLibraryForm {
     pub group_virtual_id: String,
     pub server_id: i64,
     pub library_id: String,
-    pub library_name: String,
 }
 
 #[derive(Deserialize)]
@@ -207,6 +214,7 @@ async fn render_library_groups_list(state: &AppState) -> Result<String, String> 
         group_views.push(LibraryGroupView {
             virtual_id: group.virtual_id,
             name: group.name,
+            collection_type: group.collection_type,
             members: member_views,
         });
     }
@@ -233,17 +241,29 @@ async fn render_library_groups_list(state: &AppState) -> Result<String, String> 
     let discovered_views = discovered
         .into_iter()
         .map(|library| {
+            let collection_type = library.collection_type.trim().to_ascii_lowercase();
             let assigned_group = assignments
                 .get(&(library.server_id, normalize_library_id(&library.library_id)))
                 .map(|assignment| assignment.group_name.clone());
+            let assignable_groups = group_views
+                .iter()
+                .filter(|group| {
+                    accepts_collection_type(group.collection_type.as_deref(), &collection_type)
+                })
+                .map(|group| LibraryGroupOptionView {
+                    virtual_id: group.virtual_id.clone(),
+                    name: group.name.clone(),
+                })
+                .collect();
 
             DiscoveredLibraryView {
                 server_id: library.server_id.as_i64(),
                 server_name: library.server_name,
                 library_id: library.library_id,
                 library_name: library.library_name,
-                collection_type: library.collection_type,
+                collection_type,
                 assigned_group,
+                assignable_groups,
             }
         })
         .collect();
@@ -257,6 +277,11 @@ async fn render_library_groups_list(state: &AppState) -> Result<String, String> 
     template
         .render()
         .map_err(|e| format!("Template error: {e}"))
+}
+
+fn accepts_collection_type(group_type: Option<&str>, library_type: &str) -> bool {
+    !library_type.trim().is_empty()
+        && group_type.is_none_or(|group_type| group_type.eq_ignore_ascii_case(library_type))
 }
 
 struct AvailableLibrary {
@@ -485,6 +510,28 @@ pub async fn assign_library(
     Form(form): Form<AssignLibraryForm>,
 ) -> Response {
     let server_id = ServerId::new(form.server_id);
+    let library = match state
+        .virtual_library_service
+        .get_discovered_library(server_id, &form.library_id)
+        .await
+    {
+        Ok(Some(library)) => library,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Html("<div class=\"alert alert-error\">Real library not found.</div>"),
+            )
+                .into_response();
+        }
+        Err(error) => {
+            error!("Failed to load library before assignment: {error}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("<div class=\"alert alert-error\">Failed to assign library.</div>"),
+            )
+                .into_response();
+        }
+    };
 
     match state
         .virtual_library_service
@@ -492,7 +539,8 @@ pub async fn assign_library(
             &form.group_virtual_id,
             server_id,
             &form.library_id,
-            &form.library_name,
+            &library.name,
+            &library.collection_type,
         )
         .await
     {
@@ -500,11 +548,31 @@ pub async fn assign_library(
             Ok(html) => Html(html).into_response(),
             Err(message) => (StatusCode::INTERNAL_SERVER_ERROR, message).into_response(),
         },
-        Err(e) => {
-            error!("Failed to assign library to group: {}", e);
+        Err(AssignLibraryError::CollectionTypeMismatch {
+            group_type,
+            library_type,
+        }) => (
+            StatusCode::CONFLICT,
+            Html(format!(
+                "<div class=\"alert alert-error\">This virtual library contains {group_type} libraries, not {library_type} libraries.</div>"
+            )),
+        )
+            .into_response(),
+        Err(AssignLibraryError::MissingCollectionType) => (
+            StatusCode::BAD_REQUEST,
+            Html("<div class=\"alert alert-error\">The library type is required.</div>".to_string()),
+        )
+            .into_response(),
+        Err(AssignLibraryError::GroupNotFound) => (
+            StatusCode::NOT_FOUND,
+            Html("<div class=\"alert alert-error\">Virtual library not found.</div>".to_string()),
+        )
+            .into_response(),
+        Err(AssignLibraryError::Database(error)) => {
+            error!("Failed to assign library to group: {error}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Html("<div class=\"alert alert-error\">Failed to assign library</div>"),
+                Html("<div class=\"alert alert-error\">Failed to assign library.</div>".to_string()),
             )
                 .into_response()
         }
@@ -601,6 +669,7 @@ mod tests {
             groups: vec![LibraryGroupView {
                 virtual_id: "group-id".to_string(),
                 name: "Movies".to_string(),
+                collection_type: Some("movies".to_string()),
                 members: vec![LibraryGroupMemberView {
                     server_id: 1,
                     server_name: "Primary".to_string(),
@@ -615,6 +684,10 @@ mod tests {
                 library_name: "Movies".to_string(),
                 collection_type: "movies".to_string(),
                 assigned_group: Some("Movies".to_string()),
+                assignable_groups: vec![LibraryGroupOptionView {
+                    virtual_id: "group-id".to_string(),
+                    name: "Movies".to_string(),
+                }],
             }],
             ui_route: "admin".to_string(),
         }
@@ -660,6 +733,7 @@ mod tests {
             groups: vec![LibraryGroupView {
                 virtual_id: "group-id".to_string(),
                 name: "Movies".to_string(),
+                collection_type: None,
                 members: Vec::new(),
             }],
             discovered_libraries: Vec::new(),
@@ -677,6 +751,8 @@ mod tests {
         let html = render_library_board();
 
         assert!(html.contains("data-library-card"));
+        assert!(html.contains("data-library-drag-handle"));
+        assert!(html.contains("data-can-drag=\"true\""));
         assert!(html.contains("draggable=\"true\""));
         assert!(html.contains("data-library-dropzone"));
         assert!(html.contains("data-group-id=\"group-id\""));
@@ -688,6 +764,24 @@ mod tests {
 
         assert!(html.contains("class=\"library-assignment-form\""));
         assert!(html.contains("name=\"group_virtual_id\""));
+        assert!(html.contains("data-collection-type=\"movies\""));
         assert!(html.contains("hx-post=\"/admin/libraries/assign\""));
+        assert!(html.contains("data-library-popover"));
+        assert!(html.contains("aria-haspopup=\"true\""));
+    }
+
+    #[test]
+    fn untyped_virtual_library_accepts_any_collection_type() {
+        assert!(accepts_collection_type(None, "movies"));
+    }
+
+    #[test]
+    fn typed_virtual_library_rejects_different_collection_type() {
+        assert!(!accepts_collection_type(Some("movies"), "tvshows"));
+    }
+
+    #[test]
+    fn virtual_library_rejects_library_without_collection_type() {
+        assert!(!accepts_collection_type(None, ""));
     }
 }

@@ -22,8 +22,8 @@ use crate::{
     server_storage::Server,
     user_authorization_service::AuthorizationSession,
     virtual_library_service::{
-        normalize_library_id, DiscoveredLibrary, VirtualLibraryAccessScope,
-        VirtualLibraryResolution,
+        compare_virtual_library_routes, normalize_library_id, DiscoveredLibrary,
+        VirtualLibraryAccessScope, VirtualLibraryResolution,
     },
     AppState,
 };
@@ -470,21 +470,39 @@ async fn partition_library_root_inventory(
         let mut non_library_items = Vec::new();
 
         for item in response.into_items() {
-            if presentable_library_collection_type(&item).is_some() {
+            if let Some(collection_type) = presentable_library_collection_type(&item) {
                 let original_library_id = normalize_library_id(&item.id);
                 if let Some(assignment) = assignments.get(&(server.id, original_library_id)) {
-                    configured_groups
-                        .entry(assignment.group_virtual_id.clone())
-                        .or_insert_with(|| NamedMediaItemGroup {
-                            name: assignment.group_name.clone(),
-                            sort_order: assignment.group_sort_order,
-                            items: Vec::new(),
+                    if assignment
+                        .collection_type
+                        .as_deref()
+                        .is_some_and(|group_type| {
+                            group_type.eq_ignore_ascii_case(collection_type.as_str())
                         })
-                        .items
-                        .push(ServerMediaItem {
+                    {
+                        configured_groups
+                            .entry(assignment.group_virtual_id.clone())
+                            .or_insert_with(|| NamedMediaItemGroup {
+                                name: assignment.group_name.clone(),
+                                sort_order: assignment.group_sort_order,
+                                items: Vec::new(),
+                            })
+                            .items
+                            .push(ServerMediaItem {
+                                item,
+                                server: server.clone(),
+                            });
+                    } else {
+                        warn!(
+                            "Ignoring type-incompatible library assignment for '{}' on server {}",
+                            item.name.as_deref().unwrap_or(&item.id),
+                            server.id
+                        );
+                        unassigned_libraries.push(ServerMediaItem {
                             item,
                             server: server.clone(),
                         });
+                    }
                 } else {
                     unassigned_libraries.push(ServerMediaItem {
                         item,
@@ -1170,15 +1188,19 @@ async fn build_virtual_library_item(
     let mut template = None;
     let mut total_child_count = 0;
 
-    let primary_tag = group
-        .first()
-        .and_then(|source| source.item.image_tags.as_ref()?.get("Primary").cloned());
+    let image_source_index =
+        preferred_library_source_index(&group).ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let primary_tag = group[image_source_index]
+        .item
+        .image_tags
+        .as_ref()
+        .and_then(|tags| tags.get("Primary").cloned());
 
-    for ServerMediaItem { item, server } in group {
+    for (index, ServerMediaItem { item, server }) in group.into_iter().enumerate() {
         total_child_count += item.child_count.unwrap_or(0);
         let processed = process_media_item_for_server(item, state, &server, false).await?;
         members.push((server.id, processed.id.clone()));
-        if template.is_none() {
+        if index == image_source_index {
             template = Some(processed);
         }
     }
@@ -1192,6 +1214,21 @@ async fn build_virtual_library_item(
     item.child_count = Some(total_child_count);
     attach_library_folder_image_source(&mut item, &image_source_id, primary_tag.as_deref());
     Ok(BuiltVirtualLibrary { item, members })
+}
+
+fn preferred_library_source_index(group: &[ServerMediaItem]) -> Option<usize> {
+    group
+        .iter()
+        .enumerate()
+        .max_by(|(_, left), (_, right)| {
+            compare_virtual_library_routes(
+                &left.server,
+                &left.item.id,
+                &right.server,
+                &right.item.id,
+            )
+        })
+        .map(|(index, _)| index)
 }
 
 async fn process_library_folder(
@@ -1335,6 +1372,7 @@ fn presentable_library_collection_type(item: &MediaItem) -> Option<&CollectionTy
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{config::MediaStreamingMode, server_url::ServerUrl};
     use serde_json::json;
 
     #[test]
@@ -1579,5 +1617,45 @@ mod tests {
             Some(&json!("source-library-id"))
         );
         assert_eq!(item.extra.get("PrimaryImageTag"), Some(&json!("tag-123")));
+    }
+
+    #[test]
+    fn merged_library_image_uses_same_server_priority_as_request_routing() {
+        let source = |id: &str, image_tag: &str, server_id: i64, priority: i32| {
+            let mut item = typed_media_item(id, "CollectionFolder", Some("movies"));
+            item.image_tags = Some(HashMap::from([(
+                "Primary".to_string(),
+                image_tag.to_string(),
+            )]));
+            ServerMediaItem {
+                item,
+                server: Server {
+                    id: ServerId::new(server_id),
+                    name: format!("Server {server_id}"),
+                    url: ServerUrl::parse(&format!("http://server-{server_id}.example")).unwrap(),
+                    priority,
+                    media_streaming_mode: MediaStreamingMode::Redirect,
+                    created_at: chrono::Utc::now(),
+                    updated_at: chrono::Utc::now(),
+                },
+            }
+        };
+        let group = vec![
+            source("fast-response", "wrong-tag", 1, 100),
+            source("preferred", "routable-tag", 2, 200),
+        ];
+
+        let selected = preferred_library_source_index(&group).unwrap();
+
+        assert_eq!(group[selected].item.id, "preferred");
+        assert_eq!(
+            group[selected]
+                .item
+                .image_tags
+                .as_ref()
+                .and_then(|tags| tags.get("Primary"))
+                .map(String::as_str),
+            Some("routable-tag")
+        );
     }
 }

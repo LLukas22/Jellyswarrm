@@ -2,6 +2,7 @@ CREATE TABLE library_groups (
     virtual_id TEXT PRIMARY KEY NOT NULL,
     name TEXT NOT NULL UNIQUE,
     sort_order INTEGER NOT NULL DEFAULT 0,
+    collection_type TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

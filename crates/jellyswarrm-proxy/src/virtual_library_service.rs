@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{cmp::Ordering, collections::HashMap, sync::Arc};
 
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use tokio::sync::Mutex;
@@ -16,6 +16,20 @@ pub fn normalize_library_id(id: &str) -> String {
         Ok(uuid) => uuid.simple().to_string(),
         Err(_) => id.to_string(),
     }
+}
+
+pub(crate) fn compare_virtual_library_routes(
+    left_server: &Server,
+    left_original_id: &str,
+    right_server: &Server,
+    right_original_id: &str,
+) -> Ordering {
+    left_server
+        .priority
+        .cmp(&right_server.priority)
+        .then_with(|| right_server.name.cmp(&left_server.name))
+        .then_with(|| right_server.id.as_i64().cmp(&left_server.id.as_i64()))
+        .then_with(|| left_original_id.cmp(right_original_id))
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -62,6 +76,7 @@ pub struct LibraryGroup {
     pub virtual_id: String,
     pub name: String,
     pub sort_order: i32,
+    pub collection_type: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +92,22 @@ pub struct LibraryAssignment {
     pub group_virtual_id: String,
     pub group_name: String,
     pub group_sort_order: i32,
+    pub collection_type: Option<String>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum AssignLibraryError {
+    #[error(transparent)]
+    Database(#[from] sqlx::Error),
+    #[error("virtual library not found")]
+    GroupNotFound,
+    #[error("library collection type is required")]
+    MissingCollectionType,
+    #[error("virtual library accepts {group_type}, not {library_type}")]
+    CollectionTypeMismatch {
+        group_type: String,
+        library_type: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,11 +216,12 @@ impl VirtualLibraryService {
             .into_iter()
             .filter(|member| server_is_allowed(member.server.id, access_scope, required_server_id))
             .max_by(|left, right| {
-                left.server
-                    .priority
-                    .cmp(&right.server.priority)
-                    .then_with(|| right.server.name.cmp(&left.server.name))
-                    .then_with(|| right.server.id.as_i64().cmp(&left.server.id.as_i64()))
+                compare_virtual_library_routes(
+                    &left.server,
+                    &left.mapping.original_media_id,
+                    &right.server,
+                    &right.mapping.original_media_id,
+                )
             }))
     }
 
@@ -450,20 +482,49 @@ impl VirtualLibraryService {
             .collect())
     }
 
+    pub async fn get_discovered_library(
+        &self,
+        server_id: ServerId,
+        original_library_id: &str,
+    ) -> Result<Option<DiscoveredLibrary>, sqlx::Error> {
+        let row: Option<(String, String, String)> = sqlx::query_as(
+            "SELECT original_library_id, name, collection_type \
+             FROM discovered_libraries \
+             WHERE server_id = ? AND original_library_id = ?",
+        )
+        .bind(server_id.as_i64())
+        .bind(normalize_library_id(original_library_id))
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(
+            |(original_library_id, name, collection_type)| DiscoveredLibrary {
+                server_id,
+                original_library_id,
+                name,
+                collection_type,
+            },
+        ))
+    }
+
     pub async fn list_groups(&self) -> Result<Vec<LibraryGroup>, sqlx::Error> {
-        let rows: Vec<(String, String, i32)> = sqlx::query_as(
-            "SELECT virtual_id, name, sort_order FROM library_groups ORDER BY sort_order, name",
+        let rows: Vec<(String, String, i32, Option<String>)> = sqlx::query_as(
+            "SELECT virtual_id, name, sort_order, collection_type \
+             FROM library_groups ORDER BY sort_order, name",
         )
         .fetch_all(&self.pool)
         .await?;
 
         Ok(rows
             .into_iter()
-            .map(|(virtual_id, name, sort_order)| LibraryGroup {
-                virtual_id,
-                name,
-                sort_order,
-            })
+            .map(
+                |(virtual_id, name, sort_order, collection_type)| LibraryGroup {
+                    virtual_id,
+                    name,
+                    sort_order,
+                    collection_type,
+                },
+            )
             .collect())
     }
 
@@ -508,9 +569,51 @@ impl VirtualLibraryService {
         server_id: ServerId,
         original_library_id: &str,
         library_name: &str,
-    ) -> Result<(), sqlx::Error> {
+        collection_type: &str,
+    ) -> Result<(), AssignLibraryError> {
         let group_virtual_id = normalize_library_id(group_virtual_id);
         let original_library_id = normalize_library_id(original_library_id);
+        let collection_type = collection_type.trim().to_ascii_lowercase();
+        if collection_type.is_empty() {
+            return Err(AssignLibraryError::MissingCollectionType);
+        }
+        let mut tx = self.pool.begin().await?;
+
+        let previous_group: Option<(String,)> = sqlx::query_as(
+            "SELECT group_virtual_id FROM library_group_members \
+             WHERE server_id = ? AND original_library_id = ?",
+        )
+        .bind(server_id.as_i64())
+        .bind(&original_library_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let type_update = sqlx::query(
+            "UPDATE library_groups SET collection_type = COALESCE(collection_type, ?) \
+             WHERE virtual_id = ? \
+               AND (collection_type IS NULL OR LOWER(collection_type) = ?)",
+        )
+        .bind(&collection_type)
+        .bind(&group_virtual_id)
+        .bind(&collection_type)
+        .execute(&mut *tx)
+        .await?;
+
+        if type_update.rows_affected() == 0 {
+            let existing: Option<(Option<String>,)> =
+                sqlx::query_as("SELECT collection_type FROM library_groups WHERE virtual_id = ?")
+                    .bind(&group_virtual_id)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+            return match existing {
+                Some((Some(group_type),)) => Err(AssignLibraryError::CollectionTypeMismatch {
+                    group_type,
+                    library_type: collection_type,
+                }),
+                Some((None,)) => Err(AssignLibraryError::Database(sqlx::Error::RowNotFound)),
+                None => Err(AssignLibraryError::GroupNotFound),
+            };
+        }
 
         sqlx::query(
             "INSERT INTO library_group_members \
@@ -524,8 +627,16 @@ impl VirtualLibraryService {
         .bind(server_id.as_i64())
         .bind(&original_library_id)
         .bind(library_name.trim())
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+
+        if let Some((previous_group,)) = previous_group {
+            if previous_group != group_virtual_id {
+                reset_empty_group_type(&mut tx, &previous_group).await?;
+            }
+        }
+
+        tx.commit().await?;
 
         debug!(
             "Assigned library {} on server {} to group {}",
@@ -542,15 +653,20 @@ impl VirtualLibraryService {
     ) -> Result<bool, sqlx::Error> {
         let group_virtual_id = normalize_library_id(group_virtual_id);
         let original_library_id = normalize_library_id(original_library_id);
+        let mut tx = self.pool.begin().await?;
         let result = sqlx::query(
             "DELETE FROM library_group_members \
              WHERE group_virtual_id = ? AND server_id = ? AND original_library_id = ?",
         )
-        .bind(group_virtual_id)
+        .bind(&group_virtual_id)
         .bind(server_id.as_i64())
         .bind(&original_library_id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        if result.rows_affected() > 0 {
+            reset_empty_group_type(&mut tx, &group_virtual_id).await?;
+        }
+        tx.commit().await?;
         Ok(result.rows_affected() > 0)
     }
 
@@ -586,8 +702,9 @@ impl VirtualLibraryService {
     pub async fn get_assignments(
         &self,
     ) -> Result<HashMap<(ServerId, String), LibraryAssignment>, sqlx::Error> {
-        let rows: Vec<(i64, String, String, String, i32)> = sqlx::query_as(
-            "SELECT m.server_id, m.original_library_id, g.virtual_id, g.name, g.sort_order \
+        let rows: Vec<(i64, String, String, String, i32, Option<String>)> = sqlx::query_as(
+            "SELECT m.server_id, m.original_library_id, g.virtual_id, g.name, g.sort_order, \
+                    g.collection_type \
              FROM library_group_members m \
              JOIN library_groups g ON g.virtual_id = m.group_virtual_id",
         )
@@ -603,6 +720,7 @@ impl VirtualLibraryService {
                     group_virtual_id,
                     group_name,
                     group_sort_order,
+                    collection_type,
                 )| {
                     (
                         (ServerId::new(server_id), original_library_id),
@@ -610,6 +728,7 @@ impl VirtualLibraryService {
                             group_virtual_id,
                             group_name,
                             group_sort_order,
+                            collection_type,
                         },
                     )
                 },
@@ -657,19 +776,41 @@ impl VirtualLibraryService {
 
     pub async fn get_group(&self, virtual_id: &str) -> Result<Option<LibraryGroup>, sqlx::Error> {
         let virtual_id = normalize_library_id(virtual_id);
-        let row: Option<(String, String, i32)> = sqlx::query_as(
-            "SELECT virtual_id, name, sort_order FROM library_groups WHERE virtual_id = ?",
+        let row: Option<(String, String, i32, Option<String>)> = sqlx::query_as(
+            "SELECT virtual_id, name, sort_order, collection_type \
+             FROM library_groups WHERE virtual_id = ?",
         )
         .bind(&virtual_id)
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(|(virtual_id, name, sort_order)| LibraryGroup {
-            virtual_id,
-            name,
-            sort_order,
-        }))
+        Ok(row.map(
+            |(virtual_id, name, sort_order, collection_type)| LibraryGroup {
+                virtual_id,
+                name,
+                sort_order,
+                collection_type,
+            },
+        ))
     }
+}
+
+async fn reset_empty_group_type(
+    tx: &mut Transaction<'_, Sqlite>,
+    group_virtual_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE library_groups SET collection_type = NULL \
+         WHERE virtual_id = ? \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM library_group_members WHERE group_virtual_id = ? \
+           )",
+    )
+    .bind(group_virtual_id)
+    .bind(group_virtual_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 async fn upsert_discovered_libraries(
@@ -783,6 +924,7 @@ mod tests {
                         ServerId::new(server_id),
                         original_id,
                         "Anime",
+                        "movies",
                     )
                     .await
                     .unwrap();
@@ -923,6 +1065,7 @@ mod tests {
                 ServerId::new(1),
                 "abc-def-1234-5678-901234567890",
                 "Anime",
+                "movies",
             )
             .await
             .unwrap();
@@ -936,6 +1079,157 @@ mod tests {
                 .next()
                 .map(|assignment| assignment.group_name.as_str()),
             Some("Anime")
+        );
+    }
+
+    #[tokio::test]
+    async fn first_member_sets_virtual_library_collection_type() {
+        let fixture = Fixture::new(&[(1, 100)]).await;
+        let group = fixture.service.create_group("Movies").await.unwrap();
+
+        fixture
+            .service
+            .add_member(
+                &group.virtual_id,
+                ServerId::new(1),
+                "library",
+                "Movies",
+                "movies",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fixture
+                .service
+                .get_group(&group.virtual_id)
+                .await
+                .unwrap()
+                .and_then(|group| group.collection_type),
+            Some("movies".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn incompatible_member_is_rejected_without_moving_existing_assignment() {
+        let fixture = Fixture::new(&[(1, 100)]).await;
+        let movies = fixture.service.create_group("Movies").await.unwrap();
+        let shows = fixture.service.create_group("Shows").await.unwrap();
+        fixture
+            .service
+            .add_member(
+                &movies.virtual_id,
+                ServerId::new(1),
+                "movie-library",
+                "Movies",
+                "movies",
+            )
+            .await
+            .unwrap();
+        fixture
+            .service
+            .add_member(
+                &shows.virtual_id,
+                ServerId::new(1),
+                "show-library",
+                "Shows",
+                "tvshows",
+            )
+            .await
+            .unwrap();
+
+        let error = fixture
+            .service
+            .add_member(
+                &shows.virtual_id,
+                ServerId::new(1),
+                "movie-library",
+                "Movies",
+                "movies",
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            AssignLibraryError::CollectionTypeMismatch { .. }
+        ));
+        assert_eq!(
+            fixture.assigned_group_id(1, "movie-library").await,
+            movies.virtual_id
+        );
+    }
+
+    #[tokio::test]
+    async fn moving_last_member_clears_previous_group_collection_type() {
+        let fixture = Fixture::new(&[(1, 100)]).await;
+        let first = fixture.service.create_group("First").await.unwrap();
+        let second = fixture.service.create_group("Second").await.unwrap();
+        fixture
+            .service
+            .add_member(
+                &first.virtual_id,
+                ServerId::new(1),
+                "library",
+                "Movies",
+                "movies",
+            )
+            .await
+            .unwrap();
+
+        fixture
+            .service
+            .add_member(
+                &second.virtual_id,
+                ServerId::new(1),
+                "library",
+                "Movies",
+                "movies",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fixture
+                .service
+                .get_group(&first.virtual_id)
+                .await
+                .unwrap()
+                .and_then(|group| group.collection_type),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn removing_last_member_clears_group_collection_type() {
+        let fixture = Fixture::new(&[(1, 100)]).await;
+        let group = fixture.service.create_group("Movies").await.unwrap();
+        fixture
+            .service
+            .add_member(
+                &group.virtual_id,
+                ServerId::new(1),
+                "library",
+                "Movies",
+                "movies",
+            )
+            .await
+            .unwrap();
+
+        fixture
+            .service
+            .remove_member(&group.virtual_id, ServerId::new(1), "library")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fixture
+                .service
+                .get_group(&group.virtual_id)
+                .await
+                .unwrap()
+                .and_then(|group| group.collection_type),
+            None
         );
     }
 
@@ -990,12 +1284,24 @@ mod tests {
         let first = service.create_group("Anime").await.unwrap();
         let second = service.create_group("Movies").await.unwrap();
         service
-            .add_member(&first.virtual_id, ServerId::new(1), "library", "Anime")
+            .add_member(
+                &first.virtual_id,
+                ServerId::new(1),
+                "library",
+                "Anime",
+                "movies",
+            )
             .await
             .unwrap();
 
         service
-            .add_member(&second.virtual_id, ServerId::new(1), "library", "Movies")
+            .add_member(
+                &second.virtual_id,
+                ServerId::new(1),
+                "library",
+                "Movies",
+                "movies",
+            )
             .await
             .unwrap();
 
@@ -1011,12 +1317,24 @@ mod tests {
         let service = &fixture.service;
         let group = service.create_group("Anime").await.unwrap();
         service
-            .add_member(&group.virtual_id, ServerId::new(1), "library", "Anime")
+            .add_member(
+                &group.virtual_id,
+                ServerId::new(1),
+                "library",
+                "Anime",
+                "movies",
+            )
             .await
             .unwrap();
 
         let result = service
-            .add_member("missing-group", ServerId::new(1), "library", "Anime")
+            .add_member(
+                "missing-group",
+                ServerId::new(1),
+                "library",
+                "Anime",
+                "movies",
+            )
             .await;
 
         assert!(result.is_err());
