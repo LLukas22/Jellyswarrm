@@ -64,7 +64,7 @@ check: doctor
 
 # Run the Docker-backed server integration test in an isolated Compose project.
 integration-test: doctor media
-    JELLYSWARRM_SKIP_UI=1 cargo test --package jellyswarrm-proxy --test server_integration -- --ignored --nocapture --test-threads=1
+    cargo test --package jellyswarrm-proxy --test server_integration -- --ignored --nocapture --test-threads=1
 
 # Remove only Jellyfin configuration/cache, then recreate the stack.
 reset:
