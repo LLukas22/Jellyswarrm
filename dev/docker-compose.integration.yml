@@ -1,0 +1,91 @@
+services:
+  jellyfin-movies:
+    container_name: !reset null
+    ports: !override
+      - "8096"
+    volumes: !override
+      - jellyfin-movies-config:/config
+      - jellyfin-movies-cache:/cache
+      - ./media/movies/server-1:/media/movies:ro
+
+  jellyfin-movies-init:
+    container_name: !reset null
+
+  jellyfin-tvshows:
+    container_name: !reset null
+    ports: !override
+      - "8096"
+    volumes: !override
+      - jellyfin-tvshows-config:/config
+      - jellyfin-tvshows-cache:/cache
+      - ./media/tv-shows/server-1:/media/tv-shows:ro
+
+  jellyfin-tvshows-init:
+    container_name: !reset null
+
+  jellyfin-music:
+    container_name: !reset null
+    ports: !override
+      - "8096"
+    volumes: !override
+      - jellyfin-music-config:/config
+      - jellyfin-music-cache:/cache
+      - ./media/music/server-1:/media/music:ro
+
+  jellyfin-music-init:
+    container_name: !reset null
+
+  jellyfin-movies-2:
+    container_name: !reset null
+    ports: !override
+      - "8096"
+    volumes: !override
+      - jellyfin-movies-2-config:/config
+      - jellyfin-movies-2-cache:/cache
+      - ./media/movies/server-2:/media/movies:ro
+
+  jellyfin-movies-2-init:
+    container_name: !reset null
+
+  jellyfin-tvshows-2:
+    container_name: !reset null
+    ports: !override
+      - "8096"
+    volumes: !override
+      - jellyfin-tvshows-2-config:/config
+      - jellyfin-tvshows-2-cache:/cache
+      - ./media/tv-shows/server-2:/media/tv-shows:ro
+
+  jellyfin-tvshows-2-init:
+    container_name: !reset null
+
+  jellyfin-music-2:
+    container_name: !reset null
+    ports: !override
+      - "8096"
+    volumes: !override
+      - jellyfin-music-2-config:/config
+      - jellyfin-music-2-cache:/cache
+      - ./media/music/server-2:/media/music:ro
+
+  jellyfin-music-2-init:
+    container_name: !reset null
+
+  caddy:
+    container_name: !reset null
+    ports: !override
+      - "80"
+
+volumes:
+  jellyfin-movies-config:
+  jellyfin-movies-cache:
+  jellyfin-tvshows-config:
+  jellyfin-tvshows-cache:
+  jellyfin-music-config:
+  jellyfin-music-cache:
+  jellyfin-movies-2-config:
+  jellyfin-movies-2-cache:
+  jellyfin-tvshows-2-config:
+  jellyfin-tvshows-2-cache:
+  jellyfin-music-2-config:
+  jellyfin-music-2-cache:

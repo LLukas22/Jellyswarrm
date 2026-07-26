@@ -105,3 +105,44 @@ jobs:
 
     - name: Format check
       run: cargo fmt -- --check
+
+  integration:
+    name: Docker integration test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    steps:
+    - name: Checkout media fixtures
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+        lfs: true
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: 1.92.0
+
+    - name: Install just
+      uses: extractions/setup-just@v2
+
+    - name: Cache cargo registry and build artifacts
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+          target
+        key: ${{ runner.os }}-integration-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('**/*.rs') }}
+        restore-keys: |
+          ${{ runner.os }}-integration-${{ hashFiles('Cargo.lock') }}-
+          ${{ runner.os }}-integration-
+
+    - name: Verify Docker Compose
+      run: docker compose version
+
+    - name: Run integration test
+      run: just integration-test

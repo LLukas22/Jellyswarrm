@@ -66,6 +66,24 @@ just reset    # Recreate all server state but preserve tracked media
 
 Use `just log jellyfin-movies-2` to follow one service.
 
+## Integration tests
+
+Run the Docker-backed end-to-end test with:
+
+```bash
+just integration-test
+```
+
+The Rust test uses Testcontainers' Docker Compose support with
+`docker-compose.yml` and `docker-compose.integration.yml`. It creates a unique
+Compose project with fresh Jellyfin configuration volumes and random host
+ports, so it can run while the regular development stack is active. The test
+starts the compiled Jellyswarrm server against those six instances and checks
+failed and successful login, automatic user mappings, merged virtual
+libraries, duplicate source labeling, playback info, and ranged media streaming
+from both movie servers. The test is ignored by normal `cargo test` runs
+because initializing all six media servers is intentionally heavyweight.
+
 ## Media layout
 
 Fixtures are stored under `dev/media/` through Git LFS:
