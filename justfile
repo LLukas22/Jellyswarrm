@@ -58,8 +58,13 @@ log service:
 # Validate the Compose file and Python initializer.
 check: doctor
     {{compose}} config --quiet
+    docker compose --file dev/docker-compose.yml --file dev/docker-compose.integration.yml config --quiet
     @docker run --rm --volume "$PWD/dev/scripts:/scripts:ro" ghcr.io/astral-sh/uv:python3.12-alpine python -c 'from pathlib import Path; [compile(path.read_text(), str(path), "exec") for path in Path("/scripts").glob("*.py")]'
     @printf 'Development configuration is valid.\n'
+
+# Run the Docker-backed server integration test in an isolated Compose project.
+integration-test: doctor media
+    cargo test --package jellyswarrm-proxy --test server_integration -- --ignored --nocapture --test-threads=1
 
 # Remove only Jellyfin configuration/cache, then recreate the stack.
 reset:

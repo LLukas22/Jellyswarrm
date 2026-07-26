@@ -105,3 +105,63 @@ jobs:
 
     - name: Format check
       run: cargo fmt -- --check
+
+  integration:
+    name: Docker integration test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    steps:
+    - name: Checkout media fixtures
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        lfs: true
+        submodules: recursive
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: 1.92.0
+
+    - name: Install just
+      uses: extractions/setup-just@v2
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+        key: ${{ runner.os }}-integration-cargo-${{ hashFiles('Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-integration-cargo-
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: npm
+        cache-dependency-path: ui/package-lock.json
+
+    - name: Build embedded UI
+      working-directory: ui
+      run: |
+        npm ci
+        npm run build:production
+
+    - name: Copy embedded UI
+      run: |
+        mkdir --parents crates/jellyswarrm-proxy/static
+        cp --recursive ui/dist/. crates/jellyswarrm-proxy/static/
+
+    - name: Verify Docker Compose
+      run: docker compose version
+
+    - name: Run integration test
+      env:
+        JELLYSWARRM_SKIP_UI: "1"
+      run: just integration-test

@@ -88,4 +88,5 @@ url = { version = "2.5.7", features = ["serde"] }
 uuid = { version = "1.19.0", features = ["v4", "serde"] }
 
 # Dev Dependencies
+testcontainers = { version = "0.27.3", features = ["docker-compose"] }
 wiremock = "0.6.5"
