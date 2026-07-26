@@ -7,13 +7,13 @@ resolver = "2"
 authors = ["lukaskreussel@gmail.com"]
 edition = "2021"
 repository = "https://github.com/LLukas22/Jellyswarrm"
-version = "0.2.1"
+version = "0.3.0"
 
 [workspace.dependencies]
 aes-gcm = "0.10.3"
 anyhow = "1.0.100"
 
-# UI 
+# UI
 askama = { version = "0.14.0" }
 async-recursion = "1.1.1"
 async-trait = "0.1.89"
