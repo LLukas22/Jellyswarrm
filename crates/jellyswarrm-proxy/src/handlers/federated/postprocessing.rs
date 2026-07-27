@@ -179,8 +179,12 @@ fn sort_criteria(url: &url::Url) -> Vec<SortCriterion> {
     let mut orders = query_list::<SortOrder>(url, "SortOrder");
 
     if fields.is_empty() {
-        if url.path().to_ascii_lowercase().ends_with("/latest") {
+        let path = url.path().to_ascii_lowercase();
+        if path.ends_with("/latest") {
             fields.push(ItemSortBy::DateCreated);
+            orders = vec![SortOrder::Descending];
+        } else if path.ends_with("/resume") {
+            fields.push(ItemSortBy::DatePlayed);
             orders = vec![SortOrder::Descending];
         } else {
             fields.push(ItemSortBy::SortName);
@@ -322,6 +326,16 @@ mod tests {
             FederatedItems::new(vec![older, newer]).into_response(&url, ResponseShape::Bare);
 
         assert_eq!(item_ids(&response.into_items()), vec!["new", "old"]);
+    }
+
+    #[test]
+    fn sorting_orders_legacy_resume_by_last_played_date() {
+        assert_resume_items_are_sorted_by_last_played_date("http://localhost/Users/u/Items/Resume");
+    }
+
+    #[test]
+    fn sorting_orders_modern_resume_by_last_played_date() {
+        assert_resume_items_are_sorted_by_last_played_date("http://localhost/UserItems/Resume");
     }
 
     #[test]
@@ -511,6 +525,44 @@ mod tests {
             "Name": name,
             "SortName": name,
             "Type": "Movie",
+        }))
+        .unwrap()
+    }
+
+    fn assert_resume_items_are_sorted_by_last_played_date(url: &str) {
+        let url = url::Url::parse(url).unwrap();
+        let response = FederatedItems::interleaved(vec![
+            ItemsResponseVariants::Bare(vec![last_played_media_item(
+                "older",
+                "Alpha",
+                "2025-01-01T00:00:00Z",
+            )]),
+            ItemsResponseVariants::Bare(vec![last_played_media_item(
+                "newer",
+                "Zulu",
+                "2026-01-01T00:00:00Z",
+            )]),
+        ])
+        .into_response(&url, ResponseShape::Counted);
+
+        assert_eq!(item_ids(&response.into_items()), vec!["newer", "older"]);
+    }
+
+    fn last_played_media_item(id: &str, name: &str, last_played_date: &str) -> MediaItem {
+        serde_json::from_value(json!({
+            "Id": id,
+            "Name": name,
+            "SortName": name,
+            "Type": "Movie",
+            "UserData": {
+                "PlaybackPositionTicks": 1,
+                "PlayCount": 0,
+                "IsFavorite": false,
+                "Played": false,
+                "Key": id,
+                "ItemId": id,
+                "LastPlayedDate": last_played_date
+            }
         }))
         .unwrap()
     }
