@@ -30,12 +30,12 @@ pub static MEDIA_ID_PATH_TAGS: &[&str] = &[
     "UserPlayedItems",
 ];
 
+// Image `Tag` query values are opaque cache tokens and must not be remapped.
 pub static MEDIA_ID_QUERY_TAGS: &[&str] = &[
     "ParentId",
     "ItemId",
     "SeriesId",
     "MediaSourceId",
-    "Tag",
     "SeasonId",
     "startItemId",
     "IDs",
@@ -514,7 +514,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        config::{AppConfig, MIGRATOR},
+        config::{AppConfig, MediaStreamingMode, MIGRATOR},
         media_storage_service::MediaStorageService,
         server_storage::ServerStorageService,
         session_storage::SessionStorage,
@@ -555,5 +555,58 @@ mod tests {
             .unwrap();
 
         assert!(server.is_none());
+    }
+
+    #[tokio::test]
+    async fn image_tag_remains_opaque_while_item_id_is_remapped() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let server_storage = ServerStorageService::new(pool.clone());
+        let server_id = server_storage
+            .add_server(
+                "Server",
+                "http://server.example",
+                100,
+                MediaStreamingMode::Redirect,
+            )
+            .await
+            .unwrap();
+        let server = server_storage
+            .get_server_by_id(server_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let media_storage = MediaStorageService::new(pool.clone());
+        let mapping = media_storage
+            .get_or_create_media_mapping("upstream-id", &server)
+            .await
+            .unwrap();
+        let virtual_libraries =
+            VirtualLibraryService::new(pool.clone(), server_storage.clone(), media_storage.clone());
+        let processor = UrlProcessor::new(DataContext {
+            user_authorization: Arc::new(UserAuthorizationService::new(pool)),
+            server_storage: Arc::new(server_storage),
+            media_storage: Arc::new(media_storage),
+            virtual_library_service: Arc::new(virtual_libraries),
+            play_sessions: Arc::new(SessionStorage::new()),
+            config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
+        });
+        let mut url = url::Url::parse(&format!(
+            "http://localhost/Items/{}/Images/Primary?tag={}",
+            mapping.virtual_media_id, mapping.virtual_media_id
+        ))
+        .unwrap();
+
+        processor
+            .client_to_server_url(&mut url, &None, None, Some(server_id))
+            .await;
+
+        assert_eq!(url.path(), "/Items/upstream-id/Images/Primary");
+        assert_eq!(
+            url.query_pairs()
+                .find(|(key, _)| key.eq_ignore_ascii_case("tag"))
+                .map(|(_, value)| value.into_owned()),
+            Some(mapping.virtual_media_id)
+        );
     }
 }
