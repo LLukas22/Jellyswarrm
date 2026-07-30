@@ -212,7 +212,10 @@ async fn forward_resource_by_media_mapping(
         .await
         .is_healthy()
     {
-        error!("Server {} for media resource {} is not healthy", server.name, id);
+        error!(
+            "Server {} for media resource {} is not healthy",
+            server.name, id
+        );
         return Err(StatusCode::NOT_FOUND);
     }
 
@@ -222,7 +225,10 @@ async fn forward_resource_by_media_mapping(
         .get_media_mapping_with_server(id)
         .await
         .map_err(|e| {
-            error!("Failed to resolve media mapping for media resource {}: {}", id, e);
+            error!(
+                "Failed to resolve media mapping for media resource {}: {}",
+                id, e
+            );
             StatusCode::INTERNAL_SERVER_ERROR
         })?
         .is_none()
