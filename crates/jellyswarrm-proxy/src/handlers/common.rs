@@ -714,6 +714,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn response_processor_removes_upstream_key_when_proxy_key_is_unavailable() {
+        let (state, server) = create_test_state().await;
+        let mut payload = json!({
+            "DeliveryUrl": "/Videos/item/stream?api_key=upstream-token&Static=true"
+        });
+
+        state
+            .process_response_json(
+                &mut payload,
+                &server,
+                ResponseProcessingProfile::Media,
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(payload["DeliveryUrl"], "/Videos/item/stream?Static=true");
+    }
+
+    #[tokio::test]
     async fn response_processor_preserves_non_media_delivery_url_query_params() {
         let (state, server) = create_test_state().await;
         let original_item_id = "71717171717171717171717171717171";
