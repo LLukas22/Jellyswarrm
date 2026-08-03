@@ -99,14 +99,18 @@ impl fmt::Debug for JellyfinAuthorization {
 }
 
 impl JellyfinAuthorization {
-    pub fn token(&self) -> Option<String> {
+    pub fn token_ref(&self) -> Option<&str> {
         match self {
-            JellyfinAuthorization::Authorization(auth) => auth.token.clone(),
-            JellyfinAuthorization::XMediaBrowser(token) => Some(token.clone()),
-            JellyfinAuthorization::ApiKey(token) => Some(token.clone()),
-            JellyfinAuthorization::XEmbyToken(token) => Some(token.clone()),
-            JellyfinAuthorization::XEmbyAuthorization(auth) => auth.token.clone(),
+            JellyfinAuthorization::Authorization(auth) => auth.token.as_deref(),
+            JellyfinAuthorization::XMediaBrowser(token)
+            | JellyfinAuthorization::ApiKey(token)
+            | JellyfinAuthorization::XEmbyToken(token) => Some(token),
+            JellyfinAuthorization::XEmbyAuthorization(auth) => auth.token.as_deref(),
         }
+    }
+
+    pub fn token(&self) -> Option<String> {
+        self.token_ref().map(str::to_string)
     }
 
     pub fn get_device(&self, headers: &http::HeaderMap) -> Option<Device> {
@@ -574,10 +578,7 @@ pub async fn get_user_from_request(
         return Ok(None);
     };
 
-    let user = state
-        .user_authorization
-        .get_user_by_virtual_key(&token)
-        .await?;
+    let user = state.user_authorization.get_user_by_token(&token).await?;
 
     Ok(user)
 }

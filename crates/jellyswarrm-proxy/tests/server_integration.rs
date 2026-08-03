@@ -16,6 +16,8 @@ use tokio::process::{Child, Command};
 const USERNAME: &str = "test";
 const PASSWORD: &str = "test";
 const AUTHORIZATION: &str = "MediaBrowser Client=\"Jellyswarrm Integration Tests\", Device=\"Test Runner\", DeviceId=\"jellyswarrm-integration-tests\", Version=\"1.0.0\"";
+const SEERR_AUTHORIZATION: &str =
+    "MediaBrowser Client=\"Seerr\", Device=\"Seerr\", DeviceId=\"BOT_seerr\", Version=\"3.4.0\"";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const CATALOG_TIMEOUT: Duration = Duration::from_secs(3 * 60);
 
@@ -86,6 +88,8 @@ async fn user_can_login_browse_merged_libraries_and_stream_mapped_media() -> Res
             .await
             .with_context(|| format!("failed playback check for {movie_name}"))?;
     }
+
+    verify_seerr_integration(&client, &proxy_url).await?;
 
     Ok(())
 }
@@ -201,13 +205,154 @@ async fn wait_for_proxy(client: &Client, base_url: &str, child: &mut Child) -> R
 }
 
 async fn login(client: &Client, base_url: &str, password: &str) -> Result<Response> {
+    login_as(client, base_url, USERNAME, password, AUTHORIZATION).await
+}
+
+async fn login_as(
+    client: &Client,
+    base_url: &str,
+    username: &str,
+    password: &str,
+    authorization: &str,
+) -> Result<Response> {
     client
         .post(format!("{base_url}/Users/AuthenticateByName"))
-        .header("Authorization", AUTHORIZATION)
-        .json(&json!({"Username": USERNAME, "Pw": password}))
+        .header("Authorization", authorization)
+        .json(&json!({"Username": username, "Pw": password}))
         .send()
         .await
         .context("login request failed")
+}
+
+async fn verify_seerr_integration(client: &Client, base_url: &str) -> Result<()> {
+    let login =
+        success_json(login_as(client, base_url, USERNAME, PASSWORD, SEERR_AUTHORIZATION).await?)
+            .await?;
+    assert_eq!(login["User"]["Policy"]["IsAdministrator"], true);
+    let primary_token = required_string(&login, "/AccessToken")?;
+
+    let created = seerr_authenticated(
+        client
+            .post(format!("{base_url}/Auth/Keys"))
+            .query(&[("App", "Seerr")]),
+        primary_token,
+    )
+    .send()
+    .await?;
+    assert_eq!(created.status(), StatusCode::NO_CONTENT);
+
+    let keys = success_json(
+        seerr_authenticated(client.get(format!("{base_url}/Auth/Keys")), primary_token)
+            .send()
+            .await?,
+    )
+    .await?;
+    let scanner_token = items(&keys)?
+        .iter()
+        .rev()
+        .find(|key| key["AppName"] == "Seerr")
+        .and_then(|key| key["AccessToken"].as_str())
+        .context("Seerr API key was not returned")?;
+    assert_ne!(scanner_token, primary_token);
+
+    let system_info = success_json(
+        seerr_authenticated(client.get(format!("{base_url}/System/Info")), scanner_token)
+            .send()
+            .await?,
+    )
+    .await?;
+    assert_eq!(system_info["ServerName"], "Jellyswarrm Proxy");
+
+    let (libraries, movies) = wait_for_seerr_catalog(client, base_url, scanner_token).await?;
+    let library_names = item_names(&libraries)?;
+    assert!(library_names.contains("Movies"));
+    assert!(library_names.contains("Shows"));
+    let movie_names = item_names(&movies)?;
+    assert!(
+        expected_movie_names()
+            .iter()
+            .all(|name| movie_names.contains(name)),
+        "Seerr movie catalog: {movie_names:?}"
+    );
+
+    let named_key_management =
+        seerr_authenticated(client.get(format!("{base_url}/Auth/Keys")), scanner_token)
+            .send()
+            .await?;
+    assert_eq!(named_key_management.status(), StatusCode::FORBIDDEN);
+
+    let named_key_write = seerr_authenticated(
+        client
+            .delete(format!("{base_url}/Devices"))
+            .query(&[("Id", "seerr-device")]),
+        scanner_token,
+    )
+    .send()
+    .await?;
+    assert_eq!(named_key_write.status(), StatusCode::FORBIDDEN);
+
+    let ordinary_login =
+        success_json(login_as(client, base_url, USERNAME, PASSWORD, AUTHORIZATION).await?).await?;
+    assert_eq!(ordinary_login["User"]["Policy"]["IsAdministrator"], false);
+
+    Ok(())
+}
+
+async fn wait_for_seerr_catalog(
+    client: &Client,
+    base_url: &str,
+    token: &str,
+) -> Result<(Value, Value)> {
+    let deadline = Instant::now() + CATALOG_TIMEOUT;
+    loop {
+        let response = seerr_authenticated(
+            client.get(format!("{base_url}/Library/MediaFolders")),
+            token,
+        )
+        .send()
+        .await?;
+        let last_observation = if response.status().is_success() {
+            let libraries: Value = response.json().await?;
+            let names = item_names(&libraries)?;
+            let mut observation = format!("libraries: {names:?}");
+            for movies_id in item_ids_named(&libraries, "Movies")? {
+                let response = seerr_authenticated(
+                    client.get(format!("{base_url}/Items")).query(&[
+                        ("ParentId", movies_id),
+                        ("Recursive", "true"),
+                        ("IncludeItemTypes", "Series,Movie,Others"),
+                        ("Fields", "ProviderIds,MediaSources,DateCreated"),
+                    ]),
+                    token,
+                )
+                .send()
+                .await?;
+                if response.status().is_success() {
+                    let movies: Value = response.json().await?;
+                    let movie_names = item_names(&movies)?;
+                    observation = format!("libraries: {names:?}; movies: {movie_names:?}");
+                    if expected_movie_names()
+                        .iter()
+                        .all(|name| movie_names.contains(name))
+                    {
+                        return Ok((libraries, movies));
+                    }
+                }
+            }
+            observation
+        } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            format!("MediaFolders returned {status}: {body}")
+        };
+
+        if Instant::now() >= deadline {
+            bail!(
+                "Seerr catalog was not ready within {CATALOG_TIMEOUT:?}; last observation: {last_observation}"
+            );
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
 }
 
 async fn wait_for_catalog(
@@ -354,6 +499,13 @@ async fn verify_playback(
 
 fn authenticated(builder: reqwest::RequestBuilder, token: &str) -> reqwest::RequestBuilder {
     builder.header("X-Emby-Token", token)
+}
+
+fn seerr_authenticated(builder: reqwest::RequestBuilder, token: &str) -> reqwest::RequestBuilder {
+    builder.header(
+        "Authorization",
+        format!("{SEERR_AUTHORIZATION}, Token=\"{token}\""),
+    )
 }
 
 async fn success_json(response: Response) -> Result<Value> {

@@ -118,15 +118,15 @@ This will build and start the application with all necessary dependencies, perfe
 ### Local Test Servers
 
 To test Jellyswarrm against six preconfigured Jellyfin instances (two each for
-Movies, TV Shows, and Music) with freely licensed media, run:
+Movies, TV Shows, and Music) and Seerr, run:
 
 ```bash
 just setup
 ```
 
-See the [development media-server guide](dev/README.md) for URLs, credentials,
-commands, and media licenses. Debug builds automatically register all six local
-servers from `data/jellyswarrm.dev.toml`.
+See the [development environment guide](dev/README.md) for URLs, credentials,
+commands, Seerr compatibility status, and media licenses. Debug builds
+automatically register all six local servers from `data/jellyswarrm.dev.toml`.
 
 
 

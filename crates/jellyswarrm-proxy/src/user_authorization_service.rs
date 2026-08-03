@@ -21,6 +21,15 @@ pub struct User {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
+#[derive(Clone, FromRow)]
+pub struct VirtualUserApiKey {
+    pub id: i64,
+    pub user_id: String,
+    pub app_name: String,
+    pub access_token: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ServerMapping {
     pub id: i64,
@@ -506,6 +515,73 @@ impl UserAuthorizationService {
         Ok(user)
     }
 
+    /// Resolve either a login token or an application API key to its virtual user.
+    pub async fn get_user_by_token(&self, token: &str) -> Result<Option<User>, sqlx::Error> {
+        if let Some(user) = self.get_user_by_virtual_key(token).await? {
+            return Ok(Some(user));
+        }
+
+        sqlx::query_as::<_, User>(
+            r#"
+            SELECT u.id, u.virtual_key, u.original_username, u.original_password_hash,
+                   u.created_at, u.updated_at
+            FROM users u
+            JOIN virtual_user_api_keys key ON key.user_id = u.id
+            WHERE key.access_token = ?
+            "#,
+        )
+        .bind(token)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    pub async fn create_api_key(
+        &self,
+        user_id: &str,
+        app_name: &str,
+    ) -> Result<VirtualUserApiKey, sqlx::Error> {
+        let access_token = generate_token();
+        sqlx::query_as::<_, VirtualUserApiKey>(
+            r#"
+            INSERT INTO virtual_user_api_keys (user_id, app_name, access_token)
+            VALUES (?, ?, ?)
+            RETURNING id, user_id, app_name, access_token, created_at
+            "#,
+        )
+        .bind(user_id)
+        .bind(app_name.trim())
+        .bind(access_token)
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    pub async fn list_api_keys(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<VirtualUserApiKey>, sqlx::Error> {
+        sqlx::query_as::<_, VirtualUserApiKey>(
+            r#"
+            SELECT id, user_id, app_name, access_token, created_at
+            FROM virtual_user_api_keys
+            WHERE user_id = ?
+            ORDER BY id ASC
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    pub async fn is_read_only_api_key(&self, token: &str) -> Result<bool, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM virtual_user_api_keys \
+             WHERE access_token = ?)",
+        )
+        .bind(token)
+        .fetch_one(&self.pool)
+        .await
+    }
+
     /// Get user by virtual id
     pub async fn get_user_by_id(&self, id: &str) -> Result<Option<User>, sqlx::Error> {
         let user = sqlx::query_as::<_, User>(
@@ -903,13 +979,12 @@ impl UserAuthorizationService {
         Ok(Some((user, sessions)))
     }
 
-    /// Get authorization sessions and servers for a user by virtual token
+    /// Get authorization sessions and servers for a user by proxy token.
     pub async fn get_user_sessions_by_virtual_token(
         &self,
         virtual_token: &str,
     ) -> Result<Option<(User, Vec<(AuthorizationSession, Server)>)>, sqlx::Error> {
-        // First, find the user by their virtual key
-        let user = match self.get_user_by_virtual_key(virtual_token).await? {
+        let user = match self.get_user_by_token(virtual_token).await? {
             Some(user) => user,
             None => return Ok(None),
         };
@@ -1376,6 +1451,65 @@ mod tests {
         MIGRATOR.run(&pool).await.unwrap();
         let service = UserAuthorizationService::new(pool.clone());
         (pool, service)
+    }
+
+    #[tokio::test]
+    async fn named_api_key_resolves_its_owner() {
+        let (_, service) = setup_service().await;
+        let user = service
+            .create_user("seerr-owner", &Password::from("password"))
+            .await
+            .unwrap();
+        let key = service.create_api_key(&user.id, "Seerr").await.unwrap();
+
+        let resolved = service
+            .get_user_by_token(&key.access_token)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(resolved.id, user.id);
+    }
+
+    #[tokio::test]
+    async fn api_key_listing_is_scoped_and_creation_ordered() {
+        let (_, service) = setup_service().await;
+        let owner = service
+            .create_user("owner", &Password::from("password"))
+            .await
+            .unwrap();
+        let other = service
+            .create_user("other", &Password::from("password"))
+            .await
+            .unwrap();
+        let first = service.create_api_key(&owner.id, "Seerr").await.unwrap();
+        let second = service.create_api_key(&owner.id, "Seerr").await.unwrap();
+        service.create_api_key(&other.id, "Other").await.unwrap();
+
+        let listed = service.list_api_keys(&owner.id).await.unwrap();
+
+        assert_eq!(
+            listed
+                .iter()
+                .map(|key| key.access_token.as_str())
+                .collect::<Vec<_>>(),
+            vec![first.access_token, second.access_token]
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_user_revokes_named_api_keys() {
+        let (_, service) = setup_service().await;
+        let user = service
+            .create_user("owner", &Password::from("password"))
+            .await
+            .unwrap();
+        let key = service.create_api_key(&user.id, "Seerr").await.unwrap();
+        service.delete_user(&user.id).await.unwrap();
+
+        let resolved = service.get_user_by_token(&key.access_token).await.unwrap();
+
+        assert!(resolved.is_none());
     }
 
     async fn insert_test_server(pool: &SqlitePool, name: &str, url: &str) -> ServerId {
