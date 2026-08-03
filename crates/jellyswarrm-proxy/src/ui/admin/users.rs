@@ -242,10 +242,10 @@ pub async fn get_user_list(State(state): State<AppState>) -> impl IntoResponse {
 
 /// Add user
 pub async fn add_user(State(state): State<AppState>, Form(form): Form<AddUserForm>) -> Response {
-    if form.username.trim().is_empty() || form.password.as_str().is_empty() {
+    if form.username.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Html("<div class=\"alert alert-error\">Username and password required</div>"),
+            Html("<div class=\"alert alert-error\">Username required</div>"),
         )
             .into_response();
     }
@@ -355,11 +355,11 @@ pub async fn add_mapping(
     State(state): State<AppState>,
     Form(form): Form<AddMappingForm>,
 ) -> Response {
-    if form.mapped_username.trim().is_empty() || form.mapped_password.as_str().is_empty() {
+    if form.mapped_username.trim().is_empty() {
         return user_item_with_popup(
             &state,
             &form.user_id,
-            "Mapping username and password are required.".to_string(),
+            "Mapping username is required.".to_string(),
         )
         .await;
     }
