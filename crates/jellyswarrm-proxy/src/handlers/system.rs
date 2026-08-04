@@ -1,6 +1,11 @@
-use crate::{extractors::RequireUser, ui::JELLYFIN_UI_VERSION, AppState};
 use axum::{extract::State, Json};
 use hyper::StatusCode;
+use tracing::error;
+
+use crate::{
+    extractors::RequireUser, handlers::common::execute_json_request,
+    request_preprocessing::JellyfinAuthorization, ui::JELLYFIN_UI_VERSION, AppState,
+};
 
 fn reported_server_version() -> String {
     // Jellyfin Web refuses to load when Version is empty/unknown ("Update Required").
@@ -37,8 +42,31 @@ pub async fn info_public(
 
 pub async fn info(
     State(state): State<AppState>,
-    RequireUser { .. }: RequireUser,
+    RequireUser { preprocessed, .. }: RequireUser,
 ) -> Result<Json<crate::models::ServerInfo>, StatusCode> {
+    let is_seerr = matches!(
+        preprocessed.auth.as_ref(),
+        Some(JellyfinAuthorization::Authorization(authorization))
+            if authorization.client.eq_ignore_ascii_case("Seerr")
+                && authorization.device.eq_ignore_ascii_case("Seerr")
+    );
+    if !is_seerr {
+        let mut server_info = execute_json_request::<crate::models::ServerInfo>(
+            &state.reqwest_client,
+            preprocessed.request,
+        )
+        .await
+        .inspect_err(|status| {
+            error!("Failed to get upstream server info: {status}");
+        })?;
+        let cfg = state.config.read().await;
+        server_info.id = cfg.server_id.clone();
+        server_info.server_name = cfg.server_name.clone();
+        server_info.local_address = cfg.public_address.clone();
+        server_info.version = Some(reported_server_version());
+        return Ok(Json(server_info));
+    }
+
     let cfg = state.config.read().await;
     Ok(Json(crate::models::ServerInfo {
         operating_system_display_name: Some(std::env::consts::OS.to_string()),

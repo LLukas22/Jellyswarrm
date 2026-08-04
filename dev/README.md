@@ -65,19 +65,20 @@ Jellyfin in the setup wizard. Use these media-server settings:
 | Port | `3000` |
 | Use SSL | Disabled |
 | URL base | Empty |
-| Username | `admin` |
-| Password | `password` |
+| Username | `test` |
+| Password | `test` |
 
 `host.docker.internal` is mapped to Docker's host gateway by Compose. The proxy
 already listens on `0.0.0.0:3000` by default, so no host networking is needed.
 Seerr configuration and its SQLite database persist in the `seerr-config` named
 volume.
 
-Jellyswarrm grants Seerr's setup request the required administrator capability
-when the supplied account is an administrator on an upstream server. Other
-clients continue to see the virtual account as non-administrative. Seerr stores
-a dedicated Jellyswarrm API key and discovers the merged Movies and Shows
-libraries through their virtual IDs. See
+Jellyswarrm reports the setup-only administrator capability that Seerr requires,
+but continues to enforce the virtual user's normal upstream permissions. No
+backend administrator account is needed, and other clients continue to see the
+virtual account as non-administrative. Seerr stores a dedicated read-only
+Jellyswarrm API key and discovers the merged Movies and Shows libraries through
+their virtual IDs. See
 [`SEERR-COMPATIBILITY.md`](SEERR-COMPATIBILITY.md) for the supported API surface.
 
 ## Commands
