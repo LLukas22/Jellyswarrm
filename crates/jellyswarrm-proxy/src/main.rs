@@ -710,13 +710,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         get(handlers::videos::get_video_resource),
                     ),
             )
-            // Audio streaming routes
+            // Audio streaming routes — mirror Videos so progressive + HLS
+            // (master.m3u8 / main.m3u8 / hls1 segments) use the streaming client
+            // and play-session / media-mapping routing instead of the generic API proxy.
             .nest(
                 "/Audio",
                 Router::new()
                     .route("/{item_id}/universal", get(handlers::videos::get_stream))
                     .route("/{item_id}/stream", get(handlers::videos::get_stream))
-                    .route("/{item_id}/stream.{container}", get(handlers::videos::get_stream)),
+                    .route(
+                        "/{item_id}/stream.{container}",
+                        get(handlers::videos::get_stream),
+                    )
+                    .route(
+                        "/{stream_id}/{*path}",
+                        get(handlers::videos::get_video_resource),
+                    ),
             )
             // Persons
             .nest(
