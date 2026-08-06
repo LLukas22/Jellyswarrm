@@ -213,7 +213,8 @@ async fn get_virtual_library_items(
         })
         .collect();
 
-    let items = FederatedItems::from_tagged_items(tagged_items);
+    let deduplicate = state.deduplicate_merged_content_enabled().await;
+    let items = FederatedItems::from_tagged_items(tagged_items, deduplicate);
     let total_count =
         estimate_merged_library_total(items.len(), upstream_total_sum, all_fully_fetched);
 
