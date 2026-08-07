@@ -141,6 +141,10 @@ pub fn ui_routes() -> axum::Router<AppState> {
             "/libraries/merge-libraries",
             axum::routing::patch(admin::libraries::update_merge_libraries),
         )
+        .route(
+            "/libraries/deduplicate-content",
+            axum::routing::patch(admin::libraries::update_deduplicate_content),
+        )
         .route("/libraries/groups", post(admin::libraries::create_group))
         .route(
             "/libraries/groups/{virtual_id}",

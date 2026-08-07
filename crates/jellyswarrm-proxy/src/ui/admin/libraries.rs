@@ -28,6 +28,9 @@ pub struct LibrariesPageTemplate {
     pub merge_libraries: bool,
     pub has_merge_libraries_error: bool,
     pub merge_libraries_error: String,
+    pub deduplicate_merged_content: bool,
+    pub has_deduplicate_error: bool,
+    pub deduplicate_error: String,
     pub ui_route: String,
 }
 
@@ -37,6 +40,9 @@ struct MergeLibrariesControlTemplate {
     merge_libraries: bool,
     has_merge_libraries_error: bool,
     merge_libraries_error: String,
+    deduplicate_merged_content: bool,
+    has_deduplicate_error: bool,
+    deduplicate_error: String,
     ui_route: String,
 }
 
@@ -106,12 +112,22 @@ pub struct UpdateMergeLibrariesForm {
     pub merge_libraries: bool,
 }
 
+#[derive(Deserialize)]
+pub struct UpdateDeduplicateForm {
+    #[serde(default)]
+    pub deduplicate_merged_content: bool,
+}
+
 pub async fn libraries_page(State(state): State<AppState>) -> impl IntoResponse {
     let merge_libraries = state.merge_libraries_enabled().await;
+    let deduplicate_merged_content = state.deduplicate_merged_content_enabled().await;
     let template = LibrariesPageTemplate {
         merge_libraries,
         has_merge_libraries_error: false,
         merge_libraries_error: String::new(),
+        deduplicate_merged_content,
+        has_deduplicate_error: false,
+        deduplicate_error: String::new(),
         ui_route: state.get_ui_route().await,
     };
     match template.render() {
@@ -123,16 +139,19 @@ pub async fn libraries_page(State(state): State<AppState>) -> impl IntoResponse 
     }
 }
 
-fn render_merge_libraries_control(
-    merge_libraries: bool,
-    ui_route: String,
-    error_message: Option<&str>,
+async fn render_merge_libraries_control(
+    state: &AppState,
+    merge_error: Option<&str>,
+    deduplicate_error: Option<&str>,
 ) -> Response {
     let template = MergeLibrariesControlTemplate {
-        merge_libraries,
-        has_merge_libraries_error: error_message.is_some(),
-        merge_libraries_error: error_message.unwrap_or_default().to_string(),
-        ui_route,
+        merge_libraries: state.merge_libraries_enabled().await,
+        has_merge_libraries_error: merge_error.is_some(),
+        merge_libraries_error: merge_error.unwrap_or_default().to_string(),
+        deduplicate_merged_content: state.deduplicate_merged_content_enabled().await,
+        has_deduplicate_error: deduplicate_error.is_some(),
+        deduplicate_error: deduplicate_error.unwrap_or_default().to_string(),
+        ui_route: state.get_ui_route().await,
     };
     match template.render() {
         Ok(html) => Html(html).into_response(),
@@ -147,7 +166,6 @@ pub async fn update_merge_libraries(
     State(state): State<AppState>,
     Form(form): Form<UpdateMergeLibrariesForm>,
 ) -> Response {
-    let ui_route = state.get_ui_route().await;
     let save_result = {
         let mut config = state.config.write().await;
         let mut updated = config.clone();
@@ -162,15 +180,46 @@ pub async fn update_merge_libraries(
     };
 
     match save_result {
-        Ok(()) => render_merge_libraries_control(form.merge_libraries, ui_route, None),
+        Ok(()) => render_merge_libraries_control(&state, None, None).await,
         Err(error) => {
             error!("Failed to save automatic library merging setting: {error}");
-            let current_value = state.merge_libraries_enabled().await;
             render_merge_libraries_control(
-                current_value,
-                ui_route,
+                &state,
+                Some("Could not save this setting. The previous behavior is still active."),
+                None,
+            )
+            .await
+        }
+    }
+}
+
+pub async fn update_deduplicate_content(
+    State(state): State<AppState>,
+    Form(form): Form<UpdateDeduplicateForm>,
+) -> Response {
+    let save_result = {
+        let mut config = state.config.write().await;
+        let mut updated = config.clone();
+        updated.deduplicate_merged_content = form.deduplicate_merged_content;
+        match save_config(&updated) {
+            Ok(()) => {
+                *config = updated;
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
+    };
+
+    match save_result {
+        Ok(()) => render_merge_libraries_control(&state, None, None).await,
+        Err(error) => {
+            error!("Failed to save merged-content deduplication setting: {error}");
+            render_merge_libraries_control(
+                &state,
+                None,
                 Some("Could not save this setting. The previous behavior is still active."),
             )
+            .await
         }
     }
 }
@@ -658,6 +707,9 @@ mod tests {
             merge_libraries: enabled,
             has_merge_libraries_error: false,
             merge_libraries_error: String::new(),
+            deduplicate_merged_content: enabled,
+            has_deduplicate_error: false,
+            deduplicate_error: String::new(),
             ui_route: "admin".to_string(),
         }
         .render()
@@ -719,12 +771,38 @@ mod tests {
             merge_libraries: true,
             has_merge_libraries_error: false,
             merge_libraries_error: String::new(),
+            deduplicate_merged_content: true,
+            has_deduplicate_error: false,
+            deduplicate_error: String::new(),
             ui_route: "admin".to_string(),
         }
         .render()
         .unwrap();
 
         assert_eq!(html.matches("name=\"merge_libraries\"").count(), 1);
+    }
+
+    #[test]
+    fn merge_control_renders_deduplicate_toggle() {
+        let enabled = render_control(true);
+        assert!(enabled.contains("name=\"deduplicate_merged_content\""));
+        assert!(enabled.contains("hx-patch=\"/admin/libraries/deduplicate-content\""));
+        // Enabled state renders the checkbox as checked.
+        assert!(enabled.matches("checked").count() >= 1);
+
+        let disabled = MergeLibrariesControlTemplate {
+            merge_libraries: true,
+            has_merge_libraries_error: false,
+            merge_libraries_error: String::new(),
+            deduplicate_merged_content: false,
+            has_deduplicate_error: false,
+            deduplicate_error: String::new(),
+            ui_route: "admin".to_string(),
+        }
+        .render()
+        .unwrap();
+        // With dedup off and merge on, only the merge switch is checked.
+        assert_eq!(disabled.matches("checked").count(), 1);
     }
 
     #[test]
