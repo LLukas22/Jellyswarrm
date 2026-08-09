@@ -5,7 +5,7 @@ use tracing::{error, info, warn};
 use crate::{
     encryption::{decrypt_password, HashedPassword, Password},
     server_storage::ServerStorageService,
-    user_authorization_service::UserAuthorizationService,
+    user_authorization_service::{LocalCredential, UserAuthorizationService},
     AppState,
 };
 use jellyfin_api::JellyfinClient;
@@ -76,6 +76,7 @@ impl FederatedUserService {
 
         let config = self.config.read().await;
         let admin_password: HashedPassword = config.password.clone().into();
+        let mapping_key = LocalCredential::from_password(password).mapping_key();
 
         drop(config);
 
@@ -191,7 +192,7 @@ impl FederatedUserService {
                                 &server,
                                 username,
                                 password,
-                                Some(&password.into()), // Encrypt with their own password so they can use it
+                                Some(&mapping_key),
                             )
                             .await
                         {
@@ -220,7 +221,13 @@ impl FederatedUserService {
                     }
                 } else {
                     // Create user
-                    match client.create_user(username, Some(password.as_str())).await {
+                    let remote_password = if password.as_str().is_empty() {
+                        None
+                    } else {
+                        Some(password.as_str())
+                    };
+
+                    match client.create_user(username, remote_password).await {
                         Ok(new_user) => {
                             info!(
                                 "Synced user {} to server {} (Remote ID: {}, Status: Created)",
@@ -234,7 +241,7 @@ impl FederatedUserService {
                                     &server,
                                     username,
                                     password,
-                                    Some(&password.into()), // Encrypt with their own password so they can use it
+                                    Some(&mapping_key),
                                 )
                                 .await
                             {

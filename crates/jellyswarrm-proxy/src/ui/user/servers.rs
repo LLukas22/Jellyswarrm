@@ -127,6 +127,7 @@ pub async fn connect_server(
     match client.authenticate_by_name(&form.username, form.password.as_str()).await {
         Ok(_) => {
             // Credentials valid, create mapping
+            let mapping_key = user.local_credential.mapping_key();
             match state
                 .user_authorization
                 .add_server_mapping(
@@ -134,7 +135,7 @@ pub async fn connect_server(
                     &server,
                     &form.username,
                     &form.password,
-                    Some(&user.password_hash),
+                    Some(&mapping_key),
                 )
                 .await
             {

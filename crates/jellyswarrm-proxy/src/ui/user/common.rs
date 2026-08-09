@@ -50,9 +50,10 @@ pub async fn authenticate_user_on_server(
     let admin_password = state.get_admin_password().await;
     let admin_password_hash: HashedPassword = (&admin_password).into();
 
+    let mapping_key = user.local_credential.mapping_key();
     let password = state.user_authorization.decrypt_server_mapping_password(
         &mapping,
-        &user.password_hash,
+        &mapping_key,
         &admin_password_hash,
         None,
         Some(&admin_password),

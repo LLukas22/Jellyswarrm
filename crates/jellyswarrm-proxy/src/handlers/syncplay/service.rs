@@ -612,7 +612,7 @@ impl SyncPlayService {
 mod tests {
     use super::super::models::SyncPlayQueueItem;
     use super::*;
-    use crate::encryption::HashedPassword;
+    use crate::{encryption::HashedPassword, user_authorization_service::LocalCredential};
     use chrono::DateTime;
     use tokio::time::{timeout, Duration};
 
@@ -621,7 +621,9 @@ mod tests {
             id: id.to_string(),
             virtual_key: format!("vk-{id}"),
             original_username: name.to_string(),
-            original_password_hash: HashedPassword::from_hashed("0".repeat(64)),
+            local_credential: LocalCredential::Password(HashedPassword::from_hashed(
+                "0".repeat(64),
+            )),
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

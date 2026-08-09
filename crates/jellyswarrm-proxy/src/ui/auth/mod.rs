@@ -10,8 +10,8 @@ use tokio::{sync::RwLock, task};
 use tracing::info;
 
 use crate::{
-    config::AppConfig, encryption::HashedPassword,
-    user_authorization_service::UserAuthorizationService,
+    config::AppConfig,
+    user_authorization_service::{LocalCredential, UserAuthorizationService},
 };
 
 mod routes;
@@ -28,7 +28,7 @@ pub enum UserRole {
 pub struct User {
     pub id: String,
     pub username: String,
-    pub password_hash: HashedPassword,
+    pub local_credential: LocalCredential,
     pub role: UserRole,
 }
 
@@ -73,10 +73,7 @@ impl AuthUser for User {
     }
 
     fn session_auth_hash(&self) -> &[u8] {
-        self.password_hash.as_str().as_bytes() // We use the password hash as the auth
-                                               // hash--what this means
-                                               // is when the user changes their password the
-                                               // auth session becomes invalid.
+        self.local_credential.session_auth_hash()
     }
 }
 
@@ -127,7 +124,7 @@ impl AuthnBackend for Backend {
             let user = User {
                 id: "admin".to_string(),
                 username: creds.username,
-                password_hash: config.password.clone().into(),
+                local_credential: LocalCredential::Password(config.password.clone().into()),
                 role: UserRole::Admin,
             };
             return Ok(Some(user));
@@ -142,7 +139,7 @@ impl AuthnBackend for Backend {
             let user = User {
                 id: user.id,
                 username: user.original_username,
-                password_hash: user.original_password_hash,
+                local_credential: user.local_credential,
                 role: UserRole::User,
             };
             return Ok(Some(user));
@@ -158,7 +155,7 @@ impl AuthnBackend for Backend {
             return Ok(Some(User {
                 id: "admin".to_string(),
                 username: config.username.clone(),
-                password_hash: config.password.clone().into(),
+                local_credential: LocalCredential::Password(config.password.clone().into()),
                 role: UserRole::Admin,
             }));
         }
@@ -167,7 +164,7 @@ impl AuthnBackend for Backend {
             let user = User {
                 id: user.id,
                 username: user.original_username,
-                password_hash: user.original_password_hash,
+                local_credential: user.local_credential,
                 role: UserRole::User,
             };
             return Ok(Some(user));
