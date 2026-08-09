@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
-use reqwest::{Client, Response, StatusCode};
+use reqwest::{Client, Response, StatusCode, Url};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use testcontainers::compose::DockerCompose;
@@ -62,7 +62,16 @@ async fn user_can_login_browse_merged_libraries_and_stream_mapped_media() -> Res
     let user_id = required_string(&login, "/User/Id")?;
     assert_eq!(required_string(&login, "/User/Name")?, USERNAME);
 
-    let (views, movies) = wait_for_catalog(&client, &proxy_url, user_id, token).await?;
+    let views = wait_for_views(&client, &proxy_url, user_id, token).await?;
+    let movies = wait_for_library_items(
+        &client,
+        &proxy_url,
+        user_id,
+        token,
+        &views,
+        ("Movies", "Movie", &expected_movie_names()),
+    )
+    .await?;
     let view_names = item_names(&views)?;
     assert!(view_names.contains("Movies"));
     assert!(view_names.contains("Shows"));
@@ -87,6 +96,25 @@ async fn user_can_login_browse_merged_libraries_and_stream_mapped_media() -> Res
             .with_context(|| format!("failed playback check for {movie_name}"))?;
     }
 
+    let music = wait_for_library_items(
+        &client,
+        &proxy_url,
+        user_id,
+        token,
+        &views,
+        ("Music", "Audio", &["01 - Aria", "01 - Death Valley Waltz"]),
+    )
+    .await?;
+    verify_hls_audio(
+        &client,
+        &proxy_url,
+        user_id,
+        token,
+        item_id_named(&music, "01 - Death Valley Waltz")?,
+    )
+    .await
+    .context("failed HLS playback check for Death Valley Waltz")?;
+
     Ok(())
 }
 
@@ -99,22 +127,26 @@ fn workspace_root() -> PathBuf {
 }
 
 fn ensure_media_fixture_is_present(workspace: &Path) -> Result<()> {
-    let fixture =
-        workspace.join("dev/media/movies/server-1/Big Buck Bunny (2008)/Big Buck Bunny (2008).mp4");
-    let size = fixture
-        .metadata()
-        .with_context(|| {
-            format!(
-                "missing media fixture {}; run `just media`",
+    for path in [
+        "dev/media/movies/server-1/Big Buck Bunny (2008)/Big Buck Bunny (2008).mp4",
+        "dev/media/music/server-2/Lucas Gonze/Ghost Solos (2010)/01 - Death Valley Waltz.ogg",
+    ] {
+        let fixture = workspace.join(path);
+        let size = fixture
+            .metadata()
+            .with_context(|| {
+                format!(
+                    "missing media fixture {}; run `just media`",
+                    fixture.display()
+                )
+            })?
+            .len();
+        if size < 1024 {
+            bail!(
+                "media fixture {} is an LFS pointer; run `just media`",
                 fixture.display()
-            )
-        })?
-        .len();
-    if size < 1024 {
-        bail!(
-            "media fixture {} is an LFS pointer; run `just media`",
-            fixture.display()
-        );
+            );
+        }
     }
     Ok(())
 }
@@ -210,12 +242,12 @@ async fn login(client: &Client, base_url: &str, password: &str) -> Result<Respon
         .context("login request failed")
 }
 
-async fn wait_for_catalog(
+async fn wait_for_views(
     client: &Client,
     base_url: &str,
     user_id: &str,
     token: &str,
-) -> Result<(Value, Value)> {
+) -> Result<Value> {
     let deadline = Instant::now() + CATALOG_TIMEOUT;
     loop {
         let response = authenticated(
@@ -227,33 +259,13 @@ async fn wait_for_catalog(
         let last_observation = if response.status().is_success() {
             let views: Value = response.json().await?;
             let names = item_names(&views)?;
-            let mut observation = format!("views: {names:?}");
             if ["Movies", "Shows", "Music"]
                 .iter()
                 .all(|name| names.contains(name))
             {
-                for movies_id in item_ids_named(&views, "Movies")? {
-                    let response =
-                        fetch_movies(client, base_url, user_id, token, movies_id).await?;
-                    if response.status().is_success() {
-                        let movies: Value = response.json().await?;
-                        let movie_names = item_names(&movies)?;
-                        observation =
-                            format!("views: {names:?}; Movies {movies_id}: {movie_names:?}");
-                        if expected_movie_names()
-                            .iter()
-                            .all(|name| movie_names.contains(name))
-                        {
-                            return Ok((views, movies));
-                        }
-                    } else {
-                        let status = response.status();
-                        let body = response.text().await.unwrap_or_default();
-                        observation = format!("Movies {movies_id} returned {status}: {body}");
-                    }
-                }
+                return Ok(views);
             }
-            observation
+            format!("views: {names:?}")
         } else {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
@@ -261,34 +273,59 @@ async fn wait_for_catalog(
         };
         if Instant::now() >= deadline {
             bail!(
-                "merged catalog was not ready within {CATALOG_TIMEOUT:?}; last observation: {last_observation}"
+                "merged views were not ready within {CATALOG_TIMEOUT:?}; last observation: {last_observation}"
             );
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
 
-async fn fetch_movies(
+async fn wait_for_library_items(
     client: &Client,
     base_url: &str,
     user_id: &str,
     token: &str,
-    movies_id: &str,
-) -> Result<Response> {
-    authenticated(
-        client
-            .get(format!("{base_url}/Users/{user_id}/Items"))
-            .query(&[
-                ("ParentId", movies_id),
-                ("Recursive", "true"),
-                ("IncludeItemTypes", "Movie"),
-                ("Fields", "ProviderIds,MediaSources"),
-            ]),
-        token,
-    )
-    .send()
-    .await
-    .context("movie catalog request failed")
+    views: &Value,
+    catalog: (&str, &str, &[&str]),
+) -> Result<Value> {
+    let (view_name, item_type, expected_names) = catalog;
+    let deadline = Instant::now() + CATALOG_TIMEOUT;
+    loop {
+        let mut last_observation = format!("{view_name} view was not found");
+        for view_id in item_ids_named(views, view_name)? {
+            let response = authenticated(
+                client
+                    .get(format!("{base_url}/Users/{user_id}/Items"))
+                    .query(&[
+                        ("ParentId", view_id),
+                        ("Recursive", "true"),
+                        ("IncludeItemTypes", item_type),
+                        ("Fields", "ProviderIds,MediaSources"),
+                    ]),
+                token,
+            )
+            .send()
+            .await?;
+            if response.status().is_success() {
+                let items: Value = response.json().await?;
+                let names = item_names(&items)?;
+                last_observation = format!("{view_name} {view_id}: {names:?}");
+                if expected_names.iter().all(|name| names.contains(name)) {
+                    return Ok(items);
+                }
+            } else {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                last_observation = format!("{view_name} {view_id} returned {status}: {body}");
+            }
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "merged {view_name} catalog was not ready within {CATALOG_TIMEOUT:?}; last observation: {last_observation}"
+            );
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
 }
 
 fn expected_movie_names() -> [&'static str; 5] {
@@ -352,17 +389,89 @@ async fn verify_playback(
     Ok(())
 }
 
+async fn verify_hls_audio(
+    client: &Client,
+    base_url: &str,
+    user_id: &str,
+    token: &str,
+    item_id: &str,
+) -> Result<()> {
+    let master = authenticated(
+        client
+            .get(format!("{base_url}/Audio/{item_id}/universal"))
+            .query(&[
+                ("UserId", user_id),
+                ("DeviceId", "jellyswarrm-integration-tests"),
+                ("MaxStreamingBitrate", "128000"),
+                ("Container", "mp3"),
+                ("TranscodingContainer", "ts"),
+                ("TranscodingProtocol", "hls"),
+                ("AudioCodec", "aac"),
+                ("PlaySessionId", "client-generated-audio-session"),
+                ("StartTimeTicks", "0"),
+                ("EnableRedirection", "true"),
+                ("EnableRemoteMedia", "false"),
+            ]),
+        token,
+    )
+    .send()
+    .await?;
+    let master_url = master.url().clone();
+    let master = success_text(master).await?;
+    assert!(master.starts_with("#EXTM3U"), "invalid HLS master playlist");
+
+    let media_url = playlist_entry(&master_url, &master)?;
+    let media = authenticated(client.get(media_url.clone()), token)
+        .send()
+        .await?;
+    let media = success_text(media).await?;
+    assert!(media.starts_with("#EXTM3U"), "invalid HLS media playlist");
+
+    let segment_url = playlist_entry(&media_url, &media)?;
+    assert!(
+        segment_url.path().contains("/hls1/"),
+        "unexpected HLS segment URL: {segment_url}"
+    );
+    let segment = authenticated(client.get(segment_url), token).send().await?;
+    let status = segment.status();
+    let bytes = segment.bytes().await?;
+    assert!(status.is_success(), "HLS segment returned {status}");
+    assert!(
+        bytes.len() >= 1024,
+        "HLS segment returned {} bytes",
+        bytes.len()
+    );
+    assert_eq!(bytes.first(), Some(&0x47), "HLS segment is not MPEG-TS");
+    Ok(())
+}
+
+fn playlist_entry(base_url: &Url, playlist: &str) -> Result<Url> {
+    let entry = playlist
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('#'))
+        .context("playlist did not contain a media URI")?;
+    base_url
+        .join(entry)
+        .with_context(|| format!("invalid playlist URI {entry}"))
+}
+
 fn authenticated(builder: reqwest::RequestBuilder, token: &str) -> reqwest::RequestBuilder {
     builder.header("X-Emby-Token", token)
 }
 
 async fn success_json(response: Response) -> Result<Value> {
+    let body = success_text(response).await?;
+    serde_json::from_str(&body).with_context(|| format!("invalid JSON response: {body}"))
+}
+
+async fn success_text(response: Response) -> Result<String> {
     let status = response.status();
     let body = response.text().await?;
     if !status.is_success() {
         bail!("request failed with {status}: {body}");
     }
-    serde_json::from_str(&body).with_context(|| format!("invalid JSON response: {body}"))
+    Ok(body)
 }
 
 fn items(payload: &Value) -> Result<&[Value]> {
