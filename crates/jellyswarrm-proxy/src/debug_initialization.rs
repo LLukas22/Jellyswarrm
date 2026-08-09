@@ -1,6 +1,6 @@
 use crate::{
-    config::DebugUser, encryption::HashedPassword, server_id::ServerId,
-    server_storage::ServerStorageService, user_authorization_service::UserAuthorizationService,
+    config::DebugUser, server_id::ServerId, server_storage::ServerStorageService,
+    user_authorization_service::UserAuthorizationService,
 };
 
 pub async fn initialize_debug_user(
@@ -12,7 +12,7 @@ pub async fn initialize_debug_user(
     let user = user_authorization
         .get_or_create_user(&config.username, &config.password)
         .await?;
-    let encryption_key = HashedPassword::from(&config.password);
+    let encryption_key = user.local_credential.mapping_key();
 
     for server_id in server_ids {
         let server = server_storage
@@ -99,9 +99,12 @@ mod tests {
         let mapped_passwords = mappings
             .iter()
             .map(|mapping| {
-                decrypt_password(&mapping.mapped_password, &user.original_password_hash)
-                    .unwrap()
-                    .into_inner()
+                decrypt_password(
+                    &mapping.mapped_password,
+                    &user.local_credential.mapping_key(),
+                )
+                .unwrap()
+                .into_inner()
             })
             .collect::<Vec<_>>();
 

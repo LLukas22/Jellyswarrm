@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqliteRow, FromRow, Row, SqlitePool};
 use tracing::{debug, error, info, warn};
 
@@ -11,14 +12,93 @@ use crate::server_storage::Server;
 #[cfg(test)]
 use crate::server_url::ServerUrl;
 
-#[derive(Debug, Clone, FromRow, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
+pub enum LocalCredential {
+    Passwordless,
+    Password(HashedPassword),
+}
+
+impl LocalCredential {
+    const PASSWORD_KIND: &'static str = "password";
+    const PASSWORDLESS_KIND: &'static str = "passwordless";
+    const EMPTY_PASSWORD_HASH: &'static str =
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+    pub fn from_password(password: &Password) -> Self {
+        if password.as_str().is_empty() {
+            Self::Passwordless
+        } else {
+            Self::Password(password.into())
+        }
+    }
+
+    pub fn verify(&self, password: &Password) -> bool {
+        match self {
+            Self::Passwordless => password.as_str().is_empty(),
+            Self::Password(password_hash) => password_hash.verify(password.as_str()),
+        }
+    }
+
+    pub fn mapping_key(&self) -> HashedPassword {
+        match self {
+            Self::Passwordless => HashedPassword::from_password(""),
+            Self::Password(password_hash) => password_hash.clone(),
+        }
+    }
+
+    pub fn session_auth_hash(&self) -> &[u8] {
+        match self {
+            Self::Passwordless => Self::EMPTY_PASSWORD_HASH.as_bytes(),
+            Self::Password(password_hash) => password_hash.as_str().as_bytes(),
+        }
+    }
+
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Passwordless => Self::PASSWORDLESS_KIND,
+            Self::Password(_) => Self::PASSWORD_KIND,
+        }
+    }
+
+    fn stored_hash(&self) -> HashedPassword {
+        self.mapping_key()
+    }
+
+    fn from_storage(kind: &str, password_hash: HashedPassword) -> Result<Self, sqlx::Error> {
+        match kind {
+            Self::PASSWORD_KIND => Ok(Self::Password(password_hash)),
+            Self::PASSWORDLESS_KIND => Ok(Self::Passwordless),
+            _ => Err(sqlx::Error::Decode(
+                format!("invalid local credential kind: {kind}").into(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct User {
     pub id: String,
     pub virtual_key: String,
     pub original_username: String,
-    pub original_password_hash: HashedPassword,
+    pub local_credential: LocalCredential,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl<'r> FromRow<'r, SqliteRow> for User {
+    fn from_row(row: &SqliteRow) -> Result<Self, sqlx::Error> {
+        let password_hash = row.try_get("original_password_hash")?;
+        let credential_kind: String = row.try_get("local_credential_kind")?;
+
+        Ok(Self {
+            id: row.try_get("id")?,
+            virtual_key: row.try_get("virtual_key")?,
+            original_username: row.try_get("original_username")?,
+            local_credential: LocalCredential::from_storage(&credential_kind, password_hash)?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+        })
+    }
 }
 
 #[derive(Clone, FromRow)]
@@ -374,40 +454,16 @@ impl UserAuthorizationService {
         }
     }
 
-    /// Create or get a user by username.
-    ///
-    /// If the user already exists and the password changed, the stored password hash is updated.
+    /// Create or get a user by username without changing an existing credential.
     pub async fn get_or_create_user(
         &self,
         username: &str,
         password: &Password,
     ) -> Result<User, sqlx::Error> {
-        let password_hash: HashedPassword = password.into();
+        let local_credential = LocalCredential::from_password(password);
         let username_key = Self::normalized_username_key(username);
 
-        if let Some(mut user) = self.get_user_by_username(username).await? {
-            if user.original_password_hash != password_hash {
-                let now = chrono::Utc::now();
-                sqlx::query(
-                    r#"
-                    UPDATE users
-                    SET original_password_hash = ?, updated_at = ?
-                    WHERE id = ?
-                    "#,
-                )
-                .bind(&password_hash)
-                .bind(now)
-                .bind(&user.id)
-                .execute(&self.pool)
-                .await?;
-
-                user.original_password_hash = password_hash;
-                user.updated_at = now;
-                info!(
-                    "Updated password hash for existing user: {}",
-                    user.original_username
-                );
-            }
+        if let Some(user) = self.get_user_by_username(username).await? {
             return Ok(user);
         }
 
@@ -418,14 +474,16 @@ impl UserAuthorizationService {
 
         sqlx::query(
             r#"
-            INSERT INTO users (id, virtual_key, original_username, original_password_hash, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO users
+                (id, virtual_key, original_username, original_password_hash, local_credential_kind, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&user_id)
         .bind(&virtual_key)
         .bind(&username_key)
-        .bind(&password_hash)
+        .bind(local_credential.stored_hash())
+        .bind(local_credential.kind())
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -437,10 +495,31 @@ impl UserAuthorizationService {
             id: user_id,
             virtual_key,
             original_username: username_key,
-            original_password_hash: password_hash,
+            local_credential,
             created_at: now,
             updated_at: now,
         })
+    }
+
+    /// Resolve an existing login identity or create it after upstream authentication.
+    /// A concurrent creator is accepted only when it used the same local credential.
+    pub async fn resolve_or_create_login_user(
+        &self,
+        username: &str,
+        password: &Password,
+    ) -> Result<Option<User>, sqlx::Error> {
+        if let Some(user) = self.get_user_by_username(username).await? {
+            return Ok(user.local_credential.verify(password).then_some(user));
+        }
+
+        match self.create_user(username, password).await {
+            Ok(user) => Ok(Some(user)),
+            Err(sqlx::Error::Database(error)) if error.is_unique_violation() => {
+                let user = self.get_user_by_username(username).await?;
+                Ok(user.filter(|user| user.local_credential.verify(password)))
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Create a new user. Fails if a user with the same normalized username already exists.
@@ -449,7 +528,7 @@ impl UserAuthorizationService {
         username: &str,
         password: &Password,
     ) -> Result<User, sqlx::Error> {
-        let password_hash: HashedPassword = password.into();
+        let local_credential = LocalCredential::from_password(password);
         let username_key = Self::normalized_username_key(username);
         let virtual_key = generate_token();
         let user_id = generate_token();
@@ -457,14 +536,16 @@ impl UserAuthorizationService {
 
         sqlx::query(
             r#"
-            INSERT INTO users (id, virtual_key, original_username, original_password_hash, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO users
+                (id, virtual_key, original_username, original_password_hash, local_credential_kind, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&user_id)
         .bind(&virtual_key)
         .bind(&username_key)
-        .bind(&password_hash)
+        .bind(local_credential.stored_hash())
+        .bind(local_credential.kind())
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -474,7 +555,7 @@ impl UserAuthorizationService {
             id: user_id,
             virtual_key,
             original_username: username_key,
-            original_password_hash: password_hash,
+            local_credential,
             created_at: now,
             updated_at: now,
         })
@@ -484,7 +565,8 @@ impl UserAuthorizationService {
     pub async fn get_user_by_username(&self, username: &str) -> Result<Option<User>, sqlx::Error> {
         let user = sqlx::query_as::<_, User>(
             r#"
-            SELECT id, virtual_key, original_username, original_password_hash, created_at, updated_at
+            SELECT id, virtual_key, original_username, original_password_hash,
+                   local_credential_kind, created_at, updated_at
             FROM users
             WHERE lower(trim(original_username)) = lower(trim(?))
             "#,
@@ -503,7 +585,8 @@ impl UserAuthorizationService {
     ) -> Result<Option<User>, sqlx::Error> {
         let user = sqlx::query_as::<_, User>(
             r#"
-            SELECT id, virtual_key, original_username, original_password_hash, created_at, updated_at
+            SELECT id, virtual_key, original_username, original_password_hash,
+                   local_credential_kind, created_at, updated_at
             FROM users
             WHERE virtual_key = ?
             "#,
@@ -524,7 +607,7 @@ impl UserAuthorizationService {
         sqlx::query_as::<_, User>(
             r#"
             SELECT u.id, u.virtual_key, u.original_username, u.original_password_hash,
-                   u.created_at, u.updated_at
+                   u.local_credential_kind, u.created_at, u.updated_at
             FROM users u
             JOIN virtual_user_api_keys key ON key.user_id = u.id
             WHERE key.access_token = ?
@@ -586,7 +669,8 @@ impl UserAuthorizationService {
     pub async fn get_user_by_id(&self, id: &str) -> Result<Option<User>, sqlx::Error> {
         let user = sqlx::query_as::<_, User>(
             r#"
-            SELECT id, virtual_key, original_username, original_password_hash, created_at, updated_at
+            SELECT id, virtual_key, original_username, original_password_hash,
+                   local_credential_kind, created_at, updated_at
             FROM users
             WHERE id = ?
             "#,
@@ -604,21 +688,8 @@ impl UserAuthorizationService {
         username: &str,
         password: &Password,
     ) -> Result<Option<User>, sqlx::Error> {
-        let password_hash: HashedPassword = password.into();
-
-        let user = sqlx::query_as::<_, User>(
-            r#"
-            SELECT id, virtual_key, original_username, original_password_hash, created_at, updated_at
-            FROM users
-            WHERE lower(trim(original_username)) = lower(trim(?)) AND original_password_hash = ?
-            "#,
-        )
-        .bind(username)
-        .bind(&password_hash)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        Ok(user)
+        let user = self.get_user_by_username(username).await?;
+        Ok(user.filter(|user| user.local_credential.verify(password)))
     }
 
     /// Add or update server mapping for a user
@@ -961,7 +1032,8 @@ impl UserAuthorizationService {
         // First, find the user by their ID
         let user = sqlx::query_as::<_, User>(
             r#"
-            SELECT id, virtual_key, original_username, original_password_hash, created_at, updated_at
+            SELECT id, virtual_key, original_username, original_password_hash,
+                   local_credential_kind, created_at, updated_at
             FROM users
             WHERE id = ?
             "#,
@@ -1220,7 +1292,8 @@ impl UserAuthorizationService {
     pub async fn list_users(&self) -> Result<Vec<User>, sqlx::Error> {
         let users = sqlx::query_as::<_, User>(
             r#"
-            SELECT id, virtual_key, original_username, original_password_hash, created_at, updated_at
+            SELECT id, virtual_key, original_username, original_password_hash,
+                   local_credential_kind, created_at, updated_at
             FROM users
             ORDER BY original_username COLLATE NOCASE
             "#,
@@ -1269,17 +1342,18 @@ impl UserAuthorizationService {
         let mut transaction = self.pool.begin().await?;
 
         // 1. Update user password hash
-        let password_hash: HashedPassword = new_password.into();
+        let local_credential = LocalCredential::from_password(new_password);
         let now = chrono::Utc::now();
 
         let res = sqlx::query(
             r#"
             UPDATE users
-            SET original_password_hash = ?, updated_at = ?
+            SET original_password_hash = ?, local_credential_kind = ?, updated_at = ?
             WHERE id = ?
             "#,
         )
-        .bind(password_hash)
+        .bind(local_credential.stored_hash())
+        .bind(local_credential.kind())
         .bind(now)
         .bind(user_id)
         .execute(&mut *transaction)
@@ -1353,7 +1427,7 @@ impl UserAuthorizationService {
         let user = self.get_user_by_id(user_id).await?;
 
         if let Some(user) = user {
-            Ok(user.original_password_hash.verify(password.as_str()))
+            Ok(user.local_credential.verify(password))
         } else {
             Ok(false)
         }
@@ -1602,9 +1676,10 @@ mod tests {
             first.id, second.id,
             "user identity should be username-based"
         );
+        assert!(second.local_credential.verify(&"password-1".into()));
         assert!(
-            second.original_password_hash.verify("password-2"),
-            "stored password hash should be updated to the latest successful login password"
+            !second.local_credential.verify(&"password-2".into()),
+            "resolving an existing user must not mutate its local credential"
         );
 
         let all_users = service.list_users().await.unwrap();
@@ -1616,6 +1691,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_login_resolution_never_adopts_a_different_existing_credential() {
+        let (_pool, service) = setup_service().await;
+        let existing = service
+            .create_user("existing", &"correct".into())
+            .await
+            .unwrap();
+
+        assert!(service
+            .resolve_or_create_login_user("existing", &"wrong".into())
+            .await
+            .unwrap()
+            .is_none());
+
+        let resolved = service
+            .resolve_or_create_login_user("existing", &"correct".into())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.id, existing.id);
+        assert!(resolved.local_credential.verify(&"correct".into()));
+    }
+
+    #[tokio::test]
     async fn test_create_user_allows_empty_password() {
         let (_pool, service) = setup_service().await;
 
@@ -1624,6 +1722,7 @@ mod tests {
             .await
             .unwrap();
 
+        assert_eq!(user.local_credential, LocalCredential::Passwordless);
         assert!(service
             .verify_user_password(&user.id, &"".into())
             .await
@@ -1642,7 +1741,7 @@ mod tests {
             .create_user("passwordless", &"".into())
             .await
             .unwrap();
-        let master_password = HashedPassword::from_password("");
+        let master_password = user.local_credential.mapping_key();
 
         service
             .add_server_mapping(
@@ -1669,6 +1768,83 @@ mod tests {
         );
 
         assert_eq!(mapped_password.as_str(), "");
+    }
+
+    #[tokio::test]
+    async fn test_password_updates_change_credential_mode_and_reencrypt_mappings() {
+        let (pool, service) = setup_service().await;
+        let server_id = insert_test_server(&pool, "Test Server", "http://localhost:8096").await;
+        let user = service
+            .create_user("transitioning", &"protected".into())
+            .await
+            .unwrap();
+        let initial_key = user.local_credential.mapping_key();
+
+        service
+            .add_server_mapping(
+                &user.id,
+                "http://localhost:8096",
+                "mappeduser",
+                &"mapped-secret".into(),
+                Some(&initial_key),
+            )
+            .await
+            .unwrap();
+
+        service
+            .update_user_password(&user.id, &"protected".into(), &"".into(), &"admin".into())
+            .await
+            .unwrap();
+
+        let passwordless = service.get_user_by_id(&user.id).await.unwrap().unwrap();
+        assert_eq!(passwordless.local_credential, LocalCredential::Passwordless);
+        assert!(passwordless.local_credential.verify(&"".into()));
+        assert!(!passwordless.local_credential.verify(&"protected".into()));
+
+        let mapping = service
+            .get_server_mapping_by_server_id(&user.id, server_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let passwordless_key = passwordless.local_credential.mapping_key();
+        assert_eq!(
+            decrypt_password(&mapping.mapped_password, &passwordless_key)
+                .unwrap()
+                .as_str(),
+            "mapped-secret"
+        );
+
+        service
+            .update_user_password(
+                &user.id,
+                &"".into(),
+                &"protected-again".into(),
+                &"admin".into(),
+            )
+            .await
+            .unwrap();
+
+        let protected = service.get_user_by_id(&user.id).await.unwrap().unwrap();
+        assert!(matches!(
+            protected.local_credential,
+            LocalCredential::Password(_)
+        ));
+        assert!(protected.local_credential.verify(&"protected-again".into()));
+
+        let mapping = service
+            .get_server_mapping_by_server_id(&user.id, server_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            decrypt_password(
+                &mapping.mapped_password,
+                &protected.local_credential.mapping_key(),
+            )
+            .unwrap()
+            .as_str(),
+            "mapped-secret"
+        );
     }
 
     #[tokio::test]

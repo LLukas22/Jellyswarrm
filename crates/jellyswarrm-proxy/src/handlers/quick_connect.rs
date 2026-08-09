@@ -578,10 +578,11 @@ async fn authenticate_with_mapping_on_server(
 ) -> Result<AuthenticateResponse, QuickConnectAuthError> {
     let admin_password = state.get_admin_password().await;
     let admin_password_hash: HashedPassword = (&admin_password).into();
+    let user_mapping_key = user.local_credential.mapping_key();
 
     let mapped_password = state.user_authorization.decrypt_server_mapping_password(
         &server_mapping,
-        &user.original_password_hash,
+        &user_mapping_key,
         &admin_password_hash,
         None,
         Some(&admin_password),
@@ -616,7 +617,7 @@ async fn authenticate_with_mapping_on_server(
             &server,
             &server_mapping.mapped_username,
             &mapped_password,
-            Some(&user.original_password_hash),
+            Some(&user_mapping_key),
         )
         .await
         .map_err(|e| QuickConnectAuthError::Internal(e.to_string()))?;

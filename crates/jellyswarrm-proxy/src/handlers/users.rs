@@ -11,6 +11,7 @@ use crate::{
     handlers::common::execute_json_request,
     models::{AuthenticateRequest, AuthenticateResponse, Authorization, SyncPlayUserAccessType},
     url_helper::join_server_url,
+    user_authorization_service::LocalCredential,
     AppState,
 };
 
@@ -137,6 +138,17 @@ pub async fn handle_authenticate_by_name(
         return Err(StatusCode::UNAUTHORIZED);
     }
 
+    if !local_credential_allows_login(
+        existing_user.as_ref().map(|user| &user.local_credential),
+        &payload.password,
+    ) {
+        warn!(
+            "Rejecting login for existing local user '{}' with invalid credentials",
+            payload.username
+        );
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
     let is_existing_user = existing_user.is_some();
 
     if let Some(user) = existing_user {
@@ -236,14 +248,7 @@ pub async fn handle_authenticate_by_name(
         let user =
             resolve_or_create_login_user(&state, &payload.username, &payload.password).await?;
 
-        persist_successful_auths(
-            &state,
-            &user,
-            &payload.password,
-            &authentication,
-            &successful_auths,
-        )
-        .await?;
+        persist_successful_auths(&state, &user, &authentication, &successful_auths).await?;
 
         let auth_response = decorate_auth_response(
             &state,
@@ -264,6 +269,13 @@ pub async fn handle_authenticate_by_name(
     }
 }
 
+fn local_credential_allows_login(
+    local_credential: Option<&LocalCredential>,
+    password: &Password,
+) -> bool {
+    local_credential.is_none_or(|credential| credential.verify(password))
+}
+
 async fn resolve_or_create_login_user(
     state: &AppState,
     username: &str,
@@ -271,21 +283,23 @@ async fn resolve_or_create_login_user(
 ) -> Result<crate::user_authorization_service::User, StatusCode> {
     state
         .user_authorization
-        .get_or_create_user(username, password)
+        .resolve_or_create_login_user(username, password)
         .await
         .map_err(|e| {
             tracing::error!("Error resolving local user for login: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR
-        })
+        })?
+        .ok_or(StatusCode::UNAUTHORIZED)
 }
 
 async fn persist_successful_auths(
     state: &AppState,
     user: &crate::user_authorization_service::User,
-    login_password: &Password,
     login_authorization: &Authorization,
     successful_auths: &[SuccessfulServerAuth],
 ) -> Result<(), StatusCode> {
+    let mapping_key = user.local_credential.mapping_key();
+
     for successful in successful_auths {
         state
             .user_authorization
@@ -294,7 +308,7 @@ async fn persist_successful_auths(
                 &successful.server,
                 &successful.final_username,
                 &successful.final_password,
-                Some(&login_password.clone().into()),
+                Some(&mapping_key),
             )
             .await
             .map_err(|e| {
@@ -356,8 +370,12 @@ fn is_seerr_client(authorization: &Authorization) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_seerr_client;
-    use crate::models::Authorization;
+    use super::{is_seerr_client, local_credential_allows_login};
+    use crate::{
+        encryption::{HashedPassword, Password},
+        models::Authorization,
+        user_authorization_service::LocalCredential,
+    };
 
     fn authorization(client: &str, device: &str) -> Authorization {
         Authorization {
@@ -377,6 +395,33 @@ mod tests {
     #[test]
     fn seerr_client_rejects_spoofed_device_from_other_client() {
         assert!(!is_seerr_client(&authorization("Jellyfin Web", "Seerr")));
+    }
+
+    #[test]
+    fn existing_local_credential_must_match_before_upstream_login() {
+        let passwordless = LocalCredential::Passwordless;
+        assert!(local_credential_allows_login(
+            Some(&passwordless),
+            &Password::from("")
+        ));
+        assert!(!local_credential_allows_login(
+            Some(&passwordless),
+            &Password::from("anything")
+        ));
+
+        let protected = LocalCredential::Password(HashedPassword::from_password("correct"));
+        assert!(local_credential_allows_login(
+            Some(&protected),
+            &Password::from("correct")
+        ));
+        assert!(!local_credential_allows_login(
+            Some(&protected),
+            &Password::from("wrong")
+        ));
+        assert!(local_credential_allows_login(
+            None,
+            &Password::from("upstream-password")
+        ));
     }
 }
 
@@ -400,13 +445,14 @@ async fn authenticate_on_server(
     let admin_password = &config.password;
 
     let given_password = payload.password.clone();
+    let user_mapping_key = LocalCredential::from_password(&given_password).mapping_key();
 
     let (final_username, final_password) = if let Some(mapping) = &server_mapping {
         (
             mapping.mapped_username.clone(),
             state.user_authorization.decrypt_server_mapping_password(
                 mapping,
-                &given_password.clone().into(),
+                &user_mapping_key,
                 &admin_password.into(),
                 Some(&given_password),
                 Some(admin_password),
