@@ -716,7 +716,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Router::new()
                     .route("/{item_id}/universal", get(handlers::videos::get_stream))
                     .route("/{item_id}/stream", get(handlers::videos::get_stream))
-                    .route("/{item_id}/stream.{container}", get(handlers::videos::get_stream)),
+                    .route(
+                        "/{item_id}/stream.{container}",
+                        get(handlers::videos::get_stream),
+                    )
+                    .route(
+                        "/{item_id}/master.m3u8",
+                        get(handlers::videos::get_video_resource),
+                    )
+                    .route(
+                        "/{item_id}/main.m3u8",
+                        get(handlers::videos::get_video_resource),
+                    )
+                    .route(
+                        "/{item_id}/live.m3u8",
+                        get(handlers::videos::get_video_resource),
+                    )
+                    .route(
+                        "/{item_id}/hls1/{*path}",
+                        get(handlers::videos::get_video_resource),
+                    ),
             )
             // Persons
             .nest(

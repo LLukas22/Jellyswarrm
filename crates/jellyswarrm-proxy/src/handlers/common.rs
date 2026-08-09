@@ -513,10 +513,12 @@ mod tests {
         let (state, server) = create_test_state().await;
         let original_item_id = "11111111111111111111111111111111";
         let original_source_id = "22222222222222222222222222222222";
+        let original_album_id = "23232323232323232323232323232323";
         let original_person_id = "18181818181818181818181818181818";
         let mut media_item = json!({
             "Id": original_item_id,
-            "Type": "Movie",
+            "AlbumId": original_album_id,
+            "Type": "Audio",
             "Name": "Parity Movie",
             "SeriesName": "Parity Series",
             "ServerId": "upstream-server",
@@ -619,6 +621,16 @@ mod tests {
 
         assert!(was_modified);
         assert_ne!(media_item["Id"].as_str(), Some(original_item_id));
+        let virtual_album_id = media_item["AlbumId"].as_str().unwrap();
+        assert_ne!(virtual_album_id, original_album_id);
+        let album_mapping = state
+            .media_storage
+            .get_media_mapping_by_virtual(virtual_album_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(album_mapping.original_media_id, original_album_id);
+        assert_eq!(album_mapping.server_id, server.id);
         assert_ne!(
             media_item["People"][0]["Id"].as_str(),
             Some(original_person_id)

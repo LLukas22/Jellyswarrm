@@ -204,6 +204,7 @@ pub struct PreprocessedRequest {
     pub session: Option<AuthorizationSession>,
     pub new_auth: Option<JellyfinAuthorization>,
     pub access_scope: Option<VirtualLibraryAccessScope>,
+    pub server_matched_request: bool,
 }
 
 pub async fn extract_request_infos(
@@ -340,7 +341,7 @@ pub async fn preprocess_request(req: Request, state: &AppState) -> Result<Prepro
         )
     });
 
-    let (server, session) = resolve_server(
+    let (server, session, server_matched_request) = resolve_server(
         &sessions,
         &request_body_result,
         state,
@@ -371,6 +372,7 @@ pub async fn preprocess_request(req: Request, state: &AppState) -> Result<Prepro
         session,
         new_auth,
         access_scope,
+        server_matched_request,
     })
 }
 
@@ -505,7 +507,7 @@ pub async fn resolve_server(
     state: &AppState,
     request: &reqwest::Request,
     access_scope: Option<&VirtualLibraryAccessScope>,
-) -> Result<(Server, Option<AuthorizationSession>)> {
+) -> Result<(Server, Option<AuthorizationSession>, bool)> {
     let mut request_server = server_from_request_media_ids(state, request, access_scope).await?;
 
     if request_server.is_none() {
@@ -529,14 +531,14 @@ pub async fn resolve_server(
                 .find(|(_, server)| request_server.id == server.id)
             {
                 debug!("Found server in request: {}", server.url);
-                return Ok((server.clone(), Some(session.clone())));
+                return Ok((server.clone(), Some(session.clone()), true));
             }
         }
 
         let Some((session, server)) = sessions.first() else {
             return Err(anyhow!("no authorization sessions available"));
         };
-        return Ok((server.clone(), Some(session.clone())));
+        return Ok((server.clone(), Some(session.clone()), false));
     }
 
     if access_scope.is_some() {
@@ -545,12 +547,12 @@ pub async fn resolve_server(
 
     if let Some(request_server) = request_server {
         debug!("Using request server: {}", request_server.url);
-        return Ok((request_server, None));
+        return Ok((request_server, None, true));
     }
 
     let server = state.server_storage.get_best_server().await?;
     let server = server.ok_or_else(|| anyhow!("No server available"))?;
-    Ok((server, None))
+    Ok((server, None, false))
 }
 
 async fn server_from_request_media_ids(
@@ -665,6 +667,8 @@ mod tests {
 
         assert_eq!(matched_path_id.as_deref(), Some(audio_id));
         assert!(matches_case_insensitive("ItemId", MEDIA_ID_QUERY_TAGS));
+        assert!(matches_case_insensitive("AlbumId", MEDIA_ID_QUERY_TAGS));
+        assert!(matches_case_insensitive("AlbumIds", MEDIA_ID_QUERY_TAGS));
     }
 
     use crate::config::{AppConfig, MIGRATOR};
