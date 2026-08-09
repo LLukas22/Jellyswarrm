@@ -9,18 +9,18 @@ use crate::{
     config::MediaStreamingMode,
     extractors::Preprocessed,
     proxy_headers::remove_hop_by_hop_headers,
-    request_preprocessing::{apply_to_request, remap_authorization},
+    request_preprocessing::{apply_to_request, remap_authorization, PreprocessedRequest},
     server_storage::Server,
     session_storage::PlaybackSession,
     user_authorization_service::AuthorizationSession,
     AppState,
 };
 
-fn extract_video_id(path: &str) -> Option<&str> {
+fn extract_stream_item_id(path: &str) -> Option<&str> {
     let mut segments = path.trim_matches('/').split('/');
 
     while let Some(segment) = segments.next() {
-        if segment.eq_ignore_ascii_case("Videos") {
+        if segment.eq_ignore_ascii_case("Videos") || segment.eq_ignore_ascii_case("Audio") {
             return segments.next().filter(|segment| !segment.is_empty());
         }
     }
@@ -36,10 +36,14 @@ fn extract_play_session_id(url: &url::Url) -> Option<String> {
     })
 }
 
-fn single_matching_play_session(
+fn matching_play_session(
     mut candidates: Vec<PlaybackSession>,
+    session_id: Option<&str>,
     user_id: Option<&str>,
 ) -> Result<PlaybackSession, usize> {
+    if let Some(session_id) = session_id {
+        candidates.retain(|session| session.session_id == session_id);
+    }
     if let Some(user_id) = user_id {
         candidates.retain(|session| session.user_id == user_id);
     }
@@ -82,7 +86,7 @@ async fn proxy_request(
     Ok(response)
 }
 
-async fn forward_video_request(
+async fn forward_media_request(
     state: &AppState,
     server: &Server,
     request: reqwest::Request,
@@ -114,110 +118,23 @@ fn session_for_server(
     })
 }
 
-//http://localhost:3000/Videos/82fe5aab-29ff-9630-05c2-da1a5a640428/82fe5aab29ff963005c2da1a5a640428/Attachments/5
-//http://localhost:3000/Videos/71bda5a4-267a-1a6c-49ce-8536d36628d8/71bda5a4267a1a6c49ce8536d36628d8/Subtitles/3/0/Stream.js?api_key=4543ddacf7544d258444677c680d81a5
-pub async fn get_video_resource(
-    State(state): State<AppState>,
-    Preprocessed(preprocessed): Preprocessed,
-) -> Result<Response, StatusCode> {
-    let original_request = &preprocessed.original_request;
+fn request_user_id(preprocessed: &PreprocessedRequest) -> Option<&str> {
+    preprocessed
+        .user
+        .as_ref()
+        .map(|user| user.id.as_str())
+        .or_else(|| {
+            preprocessed
+                .session
+                .as_ref()
+                .map(|session| session.user_id.as_str())
+        })
+}
 
-    let id = extract_video_id(original_request.url().path())
-        .ok_or(StatusCode::NOT_FOUND)?
-        .to_string();
-    let play_session_id = extract_play_session_id(original_request.url());
-    let play_session = if let Some(play_session_id) = play_session_id.as_deref() {
-        state
-            .play_sessions
-            .get_session_by_session_and_item_id(play_session_id, &id)
-            .await
-            .ok_or_else(|| {
-                error!(
-                    "No play session found for resource: {} and session: {}",
-                    id, play_session_id
-                );
-                StatusCode::NOT_FOUND
-            })?
-    } else {
-        let candidates = state.play_sessions.get_sessions_by_item_id(&id).await;
-        let user_id = preprocessed
-            .user
-            .as_ref()
-            .map(|user| user.id.as_str())
-            .or_else(|| {
-                preprocessed
-                    .session
-                    .as_ref()
-                    .map(|session| session.user_id.as_str())
-            });
-
-        match single_matching_play_session(candidates, user_id) {
-            Ok(play_session) => {
-                warn!(
-                    "Video resource {} arrived without play session id; using only matching active session {}",
-                    id, play_session.session_id
-                );
-                play_session
-            }
-            Err(count) => {
-                if state
-                    .media_storage
-                    .get_media_mapping_with_server(&id)
-                    .await
-                    .map_err(|e| {
-                        error!(
-                            "Failed to resolve media mapping for video resource {}: {}",
-                            id, e
-                        );
-                        StatusCode::INTERNAL_SERVER_ERROR
-                    })?
-                    .is_some()
-                {
-                    let server = preprocessed.server;
-                    if !state
-                        .server_storage
-                        .server_status(server.id)
-                        .await
-                        .is_healthy()
-                    {
-                        error!(
-                            "Server {} for video resource {} is not healthy",
-                            server.name, id
-                        );
-                        return Err(StatusCode::NOT_FOUND);
-                    }
-
-                    warn!(
-                        "Video resource {} arrived without play session id; routing by virtual media mapping",
-                        id
-                    );
-                    return forward_video_request(
-                        &state,
-                        &server,
-                        preprocessed.request,
-                        "video resource",
-                    )
-                    .await;
-                }
-
-                if count == 0 {
-                    error!(
-                        "No play session found for video resource without session id: {}",
-                        id
-                    );
-                } else {
-                    error!(
-                        "Ambiguous video resource {} without play session id matched {} active sessions",
-                        id, count
-                    );
-                }
-                return Err(StatusCode::NOT_FOUND);
-            }
-        }
-    };
-
-    let original_request = preprocessed.original_request;
-
+async fn resolve_play_session_server(
+    state: &AppState,
+    play_session: &PlaybackSession,
+) -> Result<Server, StatusCode> {
     let server = match state
         .server_storage
         .get_server_by_id(play_session.server_id)
@@ -256,36 +173,129 @@ pub async fn get_video_resource(
         return Err(StatusCode::NOT_FOUND);
     }
 
+    Ok(server)
+}
+
+async fn request_for_server(
+    state: &AppState,
+    preprocessed: PreprocessedRequest,
+    server: &Server,
+) -> Result<reqwest::Request, StatusCode> {
+    if server.id == preprocessed.server.id {
+        return Ok(preprocessed.request);
+    }
+
+    let session = session_for_server(&preprocessed.sessions, server);
+    let auth = remap_authorization(&preprocessed.auth, &session)
+        .await
+        .map_err(|e| {
+            error!("Failed to remap authorization for media stream: {}", e);
+            StatusCode::BAD_REQUEST
+        })?;
+    let mut request = preprocessed.original_request;
+
+    apply_to_request(
+        &mut request,
+        server,
+        &session,
+        &auth,
+        state,
+        preprocessed.access_scope.as_ref(),
+    )
+    .await;
+
+    Ok(request)
+}
+
+async fn forward_preprocessed_resource(
+    state: &AppState,
+    preprocessed: PreprocessedRequest,
+    id: &str,
+) -> Result<Response, StatusCode> {
+    if !preprocessed.server_matched_request {
+        error!("No play session or media mapping for resource {}", id);
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let server = preprocessed.server;
+    if !state
+        .server_storage
+        .server_status(server.id)
+        .await
+        .is_healthy()
+    {
+        error!(
+            "Server {} for media resource {} is not healthy",
+            server.name, id
+        );
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    warn!(
+        "No matching play session for resource {}; using media mapping via {}",
+        id, server.name
+    );
+    forward_media_request(state, &server, preprocessed.request, "media resource").await
+}
+
+pub async fn get_video_resource(
+    State(state): State<AppState>,
+    Preprocessed(preprocessed): Preprocessed,
+) -> Result<Response, StatusCode> {
+    let id = extract_stream_item_id(preprocessed.original_request.url().path())
+        .ok_or(StatusCode::NOT_FOUND)?
+        .to_string();
+    let session_id = extract_play_session_id(preprocessed.original_request.url());
+    let candidates = state.play_sessions.get_sessions_by_item_id(&id).await;
+    let play_session = match matching_play_session(
+        candidates,
+        session_id.as_deref(),
+        request_user_id(&preprocessed),
+    ) {
+        Ok(play_session) => play_session,
+        Err(_) => return forward_preprocessed_resource(&state, preprocessed, &id).await,
+    };
+
+    let server = resolve_play_session_server(&state, &play_session).await?;
     info!(
         "Found play session for resource: {}, session: {}, server: {}",
         id, play_session.session_id, server.name
     );
 
-    let mut upstream_request = original_request;
-    let session = session_for_server(&preprocessed.sessions, &server).or_else(|| {
-        (preprocessed.server.id == server.id)
-            .then(|| preprocessed.session.clone())
-            .flatten()
-    });
-    let new_auth = remap_authorization(&preprocessed.auth, &session)
-        .await
-        .map_err(|e| {
-            error!("Failed to remap authorization for resource request: {}", e);
-            StatusCode::BAD_REQUEST
-        })?;
-
-    apply_to_request(&mut upstream_request, &server, &session, &new_auth, &state).await;
-
-    forward_video_request(&state, &server, upstream_request, "HLS stream").await
+    let request = request_for_server(&state, preprocessed, &server).await?;
+    forward_media_request(&state, &server, request, "media resource").await
 }
 
 pub async fn get_stream(
     State(state): State<AppState>,
     Preprocessed(preprocessed): Preprocessed,
 ) -> Result<Response, StatusCode> {
-    let server = preprocessed.server;
-    let request = preprocessed.request;
-    forward_video_request(&state, &server, request, "media stream").await
+    let item_id = extract_stream_item_id(preprocessed.original_request.url().path());
+    let session_id = extract_play_session_id(preprocessed.original_request.url());
+    let play_session = if let Some(item_id) = item_id {
+        let candidates = state.play_sessions.get_sessions_by_item_id(item_id).await;
+        matching_play_session(
+            candidates,
+            session_id.as_deref(),
+            request_user_id(&preprocessed),
+        )
+        .ok()
+    } else {
+        None
+    };
+
+    let Some(play_session) = play_session else {
+        let server = preprocessed.server;
+        return forward_media_request(&state, &server, preprocessed.request, "media stream").await;
+    };
+    if play_session.server_id == preprocessed.server.id {
+        let server = preprocessed.server;
+        return forward_media_request(&state, &server, preprocessed.request, "media stream").await;
+    }
+
+    let server = resolve_play_session_server(&state, &play_session).await?;
+    let request = request_for_server(&state, preprocessed, &server).await?;
+    forward_media_request(&state, &server, request, "media stream").await
 }
 
 #[cfg(test)]
@@ -303,9 +313,27 @@ mod tests {
     }
 
     #[test]
-    fn single_matching_play_session_accepts_one_candidate() {
-        let session = single_matching_play_session(
+    fn extract_stream_item_id_from_videos_and_audio() {
+        assert_eq!(
+            extract_stream_item_id("/Videos/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/master.m3u8"),
+            Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        );
+        assert_eq!(
+            extract_stream_item_id("/Audio/11111111111111111111111111111111/universal"),
+            Some("11111111111111111111111111111111")
+        );
+        assert_eq!(
+            extract_stream_item_id("/Audio/11111111111111111111111111111111/hls1/main/0.ts"),
+            Some("11111111111111111111111111111111")
+        );
+        assert_eq!(extract_stream_item_id("/Items/abc/PlaybackInfo"), None);
+    }
+
+    #[test]
+    fn matching_play_session_accepts_one_candidate() {
+        let session = matching_play_session(
             vec![playback_session("session-1", "user-1", 1)],
+            None,
             Some("user-1"),
         )
         .unwrap();
@@ -315,12 +343,13 @@ mod tests {
     }
 
     #[test]
-    fn single_matching_play_session_filters_by_user() {
-        let session = single_matching_play_session(
+    fn matching_play_session_filters_by_user() {
+        let session = matching_play_session(
             vec![
                 playback_session("session-1", "user-1", 1),
                 playback_session("session-2", "user-2", 2),
             ],
+            None,
             Some("user-2"),
         )
         .unwrap();
@@ -330,12 +359,13 @@ mod tests {
     }
 
     #[test]
-    fn single_matching_play_session_rejects_ambiguous_matches() {
-        let result = single_matching_play_session(
+    fn matching_play_session_rejects_ambiguous_matches() {
+        let result = matching_play_session(
             vec![
                 playback_session("session-1", "user-1", 1),
                 playback_session("session-2", "user-1", 2),
             ],
+            None,
             Some("user-1"),
         );
 
@@ -343,10 +373,22 @@ mod tests {
     }
 
     #[test]
-    fn single_matching_play_session_rejects_missing_user_match() {
-        let result = single_matching_play_session(
+    fn matching_play_session_rejects_missing_user_match() {
+        let result = matching_play_session(
             vec![playback_session("session-1", "user-1", 1)],
+            None,
             Some("user-2"),
+        );
+
+        assert!(matches!(result, Err(0)));
+    }
+
+    #[test]
+    fn matching_play_session_does_not_replace_unknown_session() {
+        let result = matching_play_session(
+            vec![playback_session("session-1", "user-1", 1)],
+            Some("unknown"),
+            Some("user-1"),
         );
 
         assert!(matches!(result, Err(0)));

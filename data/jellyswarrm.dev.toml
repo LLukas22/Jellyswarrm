@@ -1,0 +1,41 @@
+auto_create_users_on_login = true
+
+[debug_user]
+username = "test"
+password = "test"
+
+[[preconfigured_servers]]
+url = "http://localhost:8096"
+name = "Movies 1"
+priority = 101
+media_streaming_mode = "Proxy"
+
+[[preconfigured_servers]]
+url = "http://localhost:8097"
+name = "Shows 1"
+priority = 101
+media_streaming_mode = "Proxy"
+
+[[preconfigured_servers]]
+url = "http://localhost:8098"
+name = "Music 1"
+priority = 101
+media_streaming_mode = "Proxy"
+
+[[preconfigured_servers]]
+url = "http://localhost:8099"
+name = "Movies 2"
+priority = 100
+media_streaming_mode = "Proxy"
+
+[[preconfigured_servers]]
+url = "http://localhost:8100"
+name = "Shows 2"
+priority = 100
+media_streaming_mode = "Proxy"
+
+[[preconfigured_servers]]
+url = "http://localhost:8101"
+name = "Music 2"
+priority = 100
+media_streaming_mode = "Proxy"

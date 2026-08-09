@@ -1,7 +1,8 @@
 use axum::{
     body::Body,
     extract::{Request, State},
-    http::{header, HeaderValue, StatusCode},
+    http::{header, HeaderValue, Method, StatusCode},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{any, get, post},
     Router,
@@ -27,13 +28,15 @@ use axum_login::{
 };
 
 mod config;
+#[cfg(debug_assertions)]
+mod debug_initialization;
+mod duplicate_handling;
 mod encryption;
 mod extractors;
 mod federated_users;
 mod handlers;
 mod legacy_server_identity;
 mod media_storage_service;
-mod merged_library_service;
 mod models;
 mod processors;
 mod proxy_headers;
@@ -45,14 +48,15 @@ mod session_storage;
 mod ui;
 mod url_helper;
 mod user_authorization_service;
+mod virtual_library_service;
 
 use federated_users::FederatedUserService;
 use handlers::syncplay::SyncPlayService;
 use legacy_server_identity::canonicalize_legacy_server_identity;
 use media_storage_service::MediaStorageService;
-use merged_library_service::MergedLibraryService;
 use server_storage::{Server, ServerStorageService};
 use user_authorization_service::UserAuthorizationService;
+use virtual_library_service::VirtualLibraryService;
 
 use crate::{
     config::{AppConfig, MIGRATOR},
@@ -86,7 +90,7 @@ pub struct AppState {
     pub user_authorization: Arc<UserAuthorizationService>,
     pub server_storage: Arc<ServerStorageService>,
     pub media_storage: Arc<MediaStorageService>,
-    pub merged_library_service: Arc<MergedLibraryService>,
+    pub virtual_library_service: Arc<VirtualLibraryService>,
     pub play_sessions: Arc<SessionStorage>,
     pub config: Arc<tokio::sync::RwLock<AppConfig>>,
     pub processors: Arc<ProxyProcessors>,
@@ -118,7 +122,7 @@ impl AppState {
             user_authorization: data_context.user_authorization,
             server_storage: data_context.server_storage,
             media_storage: data_context.media_storage,
-            merged_library_service: data_context.merged_library_service,
+            virtual_library_service: data_context.virtual_library_service,
             play_sessions: data_context.play_sessions,
             config: data_context.config,
             processors: Arc::new(proxy_processors),
@@ -204,7 +208,7 @@ pub struct DataContext {
     pub user_authorization: Arc<UserAuthorizationService>,
     pub server_storage: Arc<ServerStorageService>,
     pub media_storage: Arc<MediaStorageService>,
-    pub merged_library_service: Arc<MergedLibraryService>,
+    pub virtual_library_service: Arc<VirtualLibraryService>,
     pub play_sessions: Arc<SessionStorage>,
     pub config: Arc<tokio::sync::RwLock<AppConfig>>,
 }
@@ -372,16 +376,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize media storage service
     let media_storage = MediaStorageService::new(pool.clone());
 
-    let merged_library_service = MergedLibraryService::new(pool.clone());
+    let virtual_library_service =
+        VirtualLibraryService::new(pool.clone(), server_storage.clone(), media_storage.clone());
+
+    #[cfg(debug_assertions)]
+    let mut debug_server_ids = Vec::with_capacity(loaded_config.preconfigured_servers.len());
 
     if !loaded_config.preconfigured_servers.is_empty() {
         info!(
-            "Adding {} preconfigured servers from config",
+            "Configuring {} preconfigured servers from config",
             loaded_config.preconfigured_servers.len()
         );
         for server in &loaded_config.preconfigured_servers {
             match server_storage
-                .add_server(
+                .upsert_preconfigured_server(
                     &server.name,
                     &server.url,
                     server.priority,
@@ -389,20 +397,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .await
             {
-                Ok(_) => {
+                Ok(_server_id) => {
                     info!(
-                        "  Added preconfigured server: {} ({}) with priority {}",
+                        "  Configured server: {} ({}) with priority {}",
                         server.name, server.url, server.priority
                     );
+                    #[cfg(debug_assertions)]
+                    debug_server_ids.push(_server_id);
                 }
                 Err(e) => {
                     error!(
-                        "  Failed to add preconfigured server {} ({}): {}",
+                        "  Failed to configure server {} ({}): {}",
                         server.name, server.url, e
                     );
                 }
             }
         }
+    }
+
+    #[cfg(debug_assertions)]
+    if let Some(debug_user) = &loaded_config.debug_user {
+        let mapping_count = debug_initialization::initialize_debug_user(
+            debug_user,
+            &debug_server_ids,
+            &user_authorization,
+            &server_storage,
+        )
+        .await?;
+        info!(
+            "Configured debug user '{}' with {} server mappings",
+            debug_user.username, mapping_count
+        );
     }
 
     match server_storage.list_servers().await {
@@ -428,7 +453,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         user_authorization: Arc::new(user_authorization.clone()),
         server_storage: Arc::new(server_storage.clone()),
         media_storage: Arc::new(media_storage.clone()),
-        merged_library_service: Arc::new(merged_library_service),
+        virtual_library_service: Arc::new(virtual_library_service),
         play_sessions: Arc::new(SessionStorage::new()),
         config: Arc::new(tokio::sync::RwLock::new(loaded_config.clone())),
     };
@@ -498,6 +523,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .route("/websocket", get(handlers::syncplay::websocket))
             .route("/socket", get(handlers::syncplay::websocket))
             .route("/GetUtcTime", get(handlers::syncplay::get_utc_time))
+            .route(
+                "/Auth/Keys",
+                get(handlers::auth_keys::list_api_keys)
+                    .post(handlers::auth_keys::create_api_key),
+            )
             .nest(
                 "/SyncPlay",
                 Router::new()
@@ -569,6 +599,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .route(
                 "/UserViews",
+                get(handlers::federated::get_items_from_all_servers),
+            )
+            .route(
+                "/Library/MediaFolders",
+                get(handlers::federated::get_media_folders),
+            )
+            // Newer Jellyfin SDKs (e.g. jellyfin-sdk-kotlin, used by the Android TV
+            // client) request Continue Watching from /UserItems/Resume instead of the
+            // legacy /Users/{userId}/Items/Resume. Federate it the same way so resume
+            // items merge across all servers; otherwise it falls through to the
+            // single-server proxy fallback and only one backend's items appear.
+            .route(
+                "/UserItems/Resume",
                 get(handlers::federated::get_items_from_all_servers),
             )
             // System info routes
@@ -673,7 +716,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Router::new()
                     .route("/{item_id}/universal", get(handlers::videos::get_stream))
                     .route("/{item_id}/stream", get(handlers::videos::get_stream))
-                    .route("/{item_id}/stream.{container}", get(handlers::videos::get_stream)),
+                    .route(
+                        "/{item_id}/stream.{container}",
+                        get(handlers::videos::get_stream),
+                    )
+                    .route(
+                        "/{item_id}/master.m3u8",
+                        get(handlers::videos::get_video_resource),
+                    )
+                    .route(
+                        "/{item_id}/main.m3u8",
+                        get(handlers::videos::get_video_resource),
+                    )
+                    .route(
+                        "/{item_id}/live.m3u8",
+                        get(handlers::videos::get_video_resource),
+                    )
+                    .route(
+                        "/{item_id}/hls1/{*path}",
+                        get(handlers::videos::get_video_resource),
+                    ),
             )
             // Persons
             .nest(
@@ -693,6 +755,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .layer(CorsLayer::permissive()),
             )
             .layer(MessagesManagerLayer)
+            .layer(middleware::from_fn_with_state(
+                app_state.clone(),
+                enforce_read_only_api_keys,
+            ))
             .layer(auth_layer)
             .with_state(app_state)
     }
@@ -774,6 +840,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+async fn enforce_read_only_api_keys(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if matches!(*request.method(), Method::GET | Method::HEAD) {
+        return next.run(request).await;
+    }
+
+    let identity = match request_preprocessing::resolve_request_identity_from_headers_uri(
+        request.headers(),
+        request.uri(),
+        &state,
+    )
+    .await
+    {
+        Ok(identity) => identity,
+        Err(error) => {
+            error!("Failed to enforce API key access: {error}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    let Some(token) = identity.auth.as_ref().and_then(|auth| auth.token_ref()) else {
+        return next.run(request).await;
+    };
+
+    match state.user_authorization.is_read_only_api_key(token).await {
+        Ok(true) => StatusCode::FORBIDDEN.into_response(),
+        Ok(false) => next.run(request).await,
+        Err(error) => {
+            error!("Failed to check API key access: {error}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
 async fn index_handler(
     State(state): State<AppState>,
     _req: Request,
@@ -845,9 +947,10 @@ async fn proxy_handler(
     let request_url = preprocessed.request.url().clone();
     let response_server = preprocessed.server.clone();
     let response_proxy_api_key = preprocessed
-        .user
+        .auth
         .as_ref()
-        .map(|user| user.virtual_key.clone());
+        .and_then(|auth| auth.token_ref())
+        .map(str::to_string);
     trace!(
         "Proxy request details:\n  Original: {:?}\n  Target URL: {}\n  Transformed: {:?}",
         preprocessed.original_request,

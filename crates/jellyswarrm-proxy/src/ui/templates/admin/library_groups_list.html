@@ -1,0 +1,175 @@
+<div class="library-board" data-library-board>
+    <p class="sr-only" aria-live="polite" data-library-board-status></p>
+
+    <section class="library-source-panel" aria-labelledby="available-libraries-heading">
+        <header class="library-panel-heading">
+            <h2 id="available-libraries-heading">Real libraries</h2>
+            <span class="library-count">{{ discovered_libraries.len() }}</span>
+        </header>
+
+        {% if discovered_libraries.is_empty() %}
+        <div class="library-empty-state">
+            <i class="fas fa-satellite-dish" aria-hidden="true"></i>
+            <h3>No libraries found</h3>
+            <p>Connect a user or configure server admin access.</p>
+        </div>
+        {% else %}
+        <div class="library-source-list">
+            {% for library in discovered_libraries %}
+            <article class="library-source-card"
+                     data-library-card
+                     data-library-key="{{ library.server_id }}:{{ library.library_id }}"
+                     data-library-name="{{ library.library_name }}"
+                     data-collection-type="{{ library.collection_type }}"
+                     data-can-drag="{% if library.assignable_groups.is_empty() %}false{% else %}true{% endif %}"
+                     draggable="{% if library.assignable_groups.is_empty() %}false{% else %}true{% endif %}"
+                     aria-grabbed="false">
+                <div class="library-drag-handle"
+                     data-library-drag-handle
+                     title="{% if library.assignable_groups.is_empty() %}No compatible virtual library{% else %}Drag {{ library.library_name }}{% endif %}"
+                     aria-hidden="true">
+                    {% if library.assignable_groups.is_empty() %}<i class="fas fa-lock"></i>{% else %}<i class="fas fa-grip-vertical"></i>{% endif %}
+                </div>
+                <div class="library-source-copy">
+                    <span class="library-server-name">{{ library.server_name }}</span>
+                    <h3>{{ library.library_name }}</h3>
+                    <div class="library-source-meta">
+                        <span>{{ library.collection_type }}</span>
+                        {% if let Some(group_name) = library.assigned_group %}
+                        <span class="library-assignment-state is-assigned">
+                            <i class="fas fa-arrow-right" aria-hidden="true"></i>
+                            {{ group_name }}
+                        </span>
+                        {% else %}
+                        <span class="library-assignment-state">Unassigned</span>
+                        {% endif %}
+                    </div>
+                </div>
+
+                {% if !library.assignable_groups.is_empty() %}
+                <details class="library-assignment-fallback" data-library-popover>
+                    <summary class="icon-btn" role="button" aria-haspopup="true" title="Move to virtual library" aria-label="Move {{ library.library_name }} to a virtual library">
+                        <i class="fas fa-ellipsis" aria-hidden="true"></i>
+                        <span class="sr-only">Move {{ library.library_name }}</span>
+                    </summary>
+                    <form class="library-assignment-form"
+                          hx-post="/{{ ui_route }}/libraries/assign"
+                          hx-target="#library-groups-list"
+                          hx-swap="innerHTML">
+                        <input type="hidden" name="server_id" value="{{ library.server_id }}">
+                        <input type="hidden" name="library_id" value="{{ library.library_id }}">
+                        <label>
+                            Virtual library
+                            <select name="group_virtual_id" required>
+                                {% for group in library.assignable_groups %}
+                                <option value="{{ group.virtual_id }}">{{ group.name }}</option>
+                                {% endfor %}
+                            </select>
+                        </label>
+                        <button type="submit" class="secondary">Move</button>
+                    </form>
+                </details>
+                {% endif %}
+            </article>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </section>
+
+    <section class="library-groups-panel" aria-labelledby="library-groups-heading">
+        <header class="library-panel-heading">
+            <h2 id="library-groups-heading">Virtual libraries</h2>
+            <span class="library-count">{{ groups.len() }}</span>
+        </header>
+
+        {% if groups.is_empty() %}
+        <div class="library-empty-state is-groups-empty">
+            <i class="fas fa-layer-group" aria-hidden="true"></i>
+            <h3>No virtual libraries</h3>
+            <p>Create one above to start grouping.</p>
+        </div>
+        {% else %}
+        <div class="library-group-grid">
+            {% for group in groups %}
+            <article class="library-group-card"
+                     data-library-dropzone
+                     data-group-id="{{ group.virtual_id }}"
+                     data-group-name="{{ group.name }}"
+                     {% if let Some(collection_type) = group.collection_type %}data-collection-type="{{ collection_type }}"{% endif %}>
+                <header class="library-group-header">
+                    <div class="library-group-title">
+                        <span class="library-group-folder" aria-hidden="true"><i class="fas fa-folder-tree"></i></span>
+                        <div>
+                            <span>
+                                {{ group.members.len() }} {% if group.members.len() == 1 %}library{% else %}libraries{% endif %}
+                                {% if let Some(collection_type) = group.collection_type %} · {{ collection_type }}{% endif %}
+                            </span>
+                            <h3>{{ group.name }}</h3>
+                        </div>
+                    </div>
+                    <div class="library-group-actions">
+                        <details data-library-popover>
+                            <summary class="icon-btn" role="button" aria-haspopup="true" title="Rename group" aria-label="Rename {{ group.name }}">
+                                <i class="fas fa-pen" aria-hidden="true"></i>
+                                <span class="sr-only">Rename {{ group.name }}</span>
+                            </summary>
+                            <form class="library-group-name-form"
+                                  hx-post="/{{ ui_route }}/libraries/groups/{{ group.virtual_id }}/rename"
+                                  hx-target="#library-groups-list"
+                                  hx-swap="innerHTML">
+                                <label>
+                                    Name
+                                    <input type="text" name="name" value="{{ group.name }}" autocomplete="off" required>
+                                </label>
+                                <button type="submit" class="secondary">Rename</button>
+                            </form>
+                        </details>
+                        <button type="button" class="icon-btn danger"
+                                hx-delete="/{{ ui_route }}/libraries/groups/{{ group.virtual_id }}"
+                                hx-target="#library-groups-list"
+                                hx-swap="innerHTML"
+                                hx-confirm="Delete group '{{ group.name }}'?"
+                                title="Delete group"
+                                aria-label="Delete {{ group.name }}">
+                            <i class="fas fa-trash" aria-hidden="true"></i>
+                        </button>
+                    </div>
+                </header>
+
+                <div class="library-drop-prompt">
+                    <i class="fas fa-arrow-down" aria-hidden="true"></i>
+                    <span>Drop library here</span>
+                </div>
+
+                {% if group.members.is_empty() %}
+                <div class="library-group-empty">
+                    <span>Drop a real library here</span>
+                    <small>The first library sets the type.</small>
+                </div>
+                {% else %}
+                <ul class="library-group-members" aria-label="Libraries in {{ group.name }}">
+                    {% for member in group.members %}
+                    <li>
+                        <div>
+                            <span>{{ member.server_name }}</span>
+                            <strong>{{ member.library_name }}</strong>
+                        </div>
+                        <button type="button" class="icon-btn danger"
+                                hx-post="/{{ ui_route }}/libraries/groups/{{ group.virtual_id }}/remove"
+                                hx-target="#library-groups-list"
+                                hx-swap="innerHTML"
+                                hx-vals='{"server_id":"{{ member.server_id }}","library_id":"{{ member.original_library_id }}"}'
+                                title="Remove {{ member.library_name }} from group"
+                                aria-label="Remove {{ member.library_name }} from {{ group.name }}">
+                            <i class="fas fa-xmark" aria-hidden="true"></i>
+                        </button>
+                    </li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
+            </article>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </section>
+</div>

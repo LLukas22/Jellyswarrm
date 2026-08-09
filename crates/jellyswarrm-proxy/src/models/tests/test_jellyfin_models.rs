@@ -1,9 +1,53 @@
 #[cfg(test)]
 mod tests {
+    use crate::encryption::Password;
     use crate::models::jellyfin::enums::BaseItemKind;
-    use crate::models::jellyfin::MediaItem;
+    use crate::models::jellyfin::{AuthenticateRequest, MediaItem};
     use crate::models::{ItemsResponseWithCount, PlaybackRequest, PlaybackResponse};
     use std::fs;
+
+    /// Regression test: canonical Jellyfin casing ("Pw") must deserialize correctly.
+    #[test]
+    fn test_authenticate_request_canonical_pw() {
+        let json = r#"{"Username":"alice","Pw":"s3cr3t"}"#;
+        let req: AuthenticateRequest =
+            serde_json::from_str(json).expect("Failed to deserialize with uppercase 'Pw'");
+        assert_eq!(req.username, "alice");
+        assert_eq!(req.password.as_str(), "s3cr3t");
+    }
+
+    /// Regression test: Kodi / JellyCon casing ("pw") must also deserialize correctly.
+    /// Before the `alias = "pw"` was added this would panic/fail.
+    #[test]
+    fn test_authenticate_request_lowercase_pw() {
+        let json = r#"{"Username":"bob","pw":"hunter2"}"#;
+        let req: AuthenticateRequest = serde_json::from_str(json)
+            .expect("Failed to deserialize with lowercase 'pw' (Kodi/JellyCon)");
+        assert_eq!(req.username, "bob");
+        assert_eq!(req.password.as_str(), "hunter2");
+    }
+
+    /// Serialization should always use the canonical "Pw" key regardless of how
+    /// the struct was constructed.
+    #[test]
+    fn test_authenticate_request_serializes_canonical_pw() {
+        let req = AuthenticateRequest {
+            username: "carol".to_string(),
+            password: Password::from("pass123"),
+        };
+        let value = serde_json::to_value(&req).expect("Failed to serialize AuthenticateRequest");
+        let obj = value
+            .as_object()
+            .expect("AuthenticateRequest should serialize to a JSON object");
+        assert!(
+            obj.contains_key("Pw"),
+            "Serialized JSON should use canonical 'Pw' key, got: {value}"
+        );
+        assert!(
+            !obj.contains_key("pw"),
+            "Serialized JSON must not use lowercase 'pw' key, got: {value}"
+        );
+    }
 
     #[test]
     fn test_deserialize_item_from_json() {

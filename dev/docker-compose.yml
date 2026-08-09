@@ -1,135 +1,218 @@
+x-jellyfin: &jellyfin
+  image: jellyfin/jellyfin:${JELLYFIN_VERSION:?Set JELLYFIN_VERSION in dev/.env}
+  environment: &jellyfin-environment
+    PUID: 1000
+    PGID: 1000
+    TZ: UTC
+  restart: unless-stopped
+  networks:
+    - jellyfin-dev-net
+
+x-jellyfin-init: &jellyfin-init
+  image: ghcr.io/astral-sh/uv:python3.12-alpine
+  volumes:
+    - ./scripts/init-jellyfin.py:/scripts/init-jellyfin.py:ro
+  working_dir: /scripts
+  command: ["uv", "run", "/scripts/init-jellyfin.py"]
+  restart: "no"
+  networks:
+    - jellyfin-dev-net
+
+x-jellyswarrm-user: &jellyswarrm-user
+  JELLYSWARRM_USERNAME: test
+  JELLYSWARRM_PASSWORD: test
+
+x-movies-init-environment: &movies-init-environment
+  <<: *jellyswarrm-user
+  COLLECTION_NAME: Movies
+  COLLECTION_PATH: /media/movies
+  COLLECTION_TYPE: movies
+
+x-shows-init-environment: &shows-init-environment
+  <<: *jellyswarrm-user
+  COLLECTION_NAME: Shows
+  COLLECTION_PATH: /media/tv-shows
+  COLLECTION_TYPE: tvshows
+
+x-music-init-environment: &music-init-environment
+  <<: *jellyswarrm-user
+  COLLECTION_NAME: Music
+  COLLECTION_PATH: /media/music
+  COLLECTION_TYPE: music
+
 services:
-  content-downloader:
-    image: ghcr.io/astral-sh/uv:python3.11-alpine
+  seerr:
+    image: ghcr.io/seerr-team/seerr:${SEERR_VERSION:?Set SEERR_VERSION in dev/.env}
+    profiles:
+      - seerr
+    container_name: jellyswarrm-seerr
+    init: true
+    environment:
+      TZ: UTC
+      LOG_LEVEL: debug
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
-      - ./data/media:/downloads
-      - ./scripts/download-content.py:/scripts/download-content.py:ro
-    command: ["uv", "run", "/scripts/download-content.py"]
-    tty: true
+      - seerr-config:/app/config
+    ports:
+      - "127.0.0.1:5055:5055"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget --no-verbose --tries=1 --spider http://localhost:5055/api/v1/settings/public || exit 1",
+        ]
+      start_period: 20s
+      interval: 15s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - jellyfin-dev-net
 
   jellyfin-movies:
-    image: jellyfin/jellyfin:latest
+    <<: *jellyfin
     container_name: jellyfin-movies
     environment:
-      - PUID=1000
-      - PGID=1000
-      - TZ=UTC
-      - JELLYFIN_PublishedServerUrl=http://localhost:8096
+      <<: *jellyfin-environment
+      JELLYFIN_PublishedServerUrl: http://localhost:8096
     volumes:
       - ./data/jellyfin-movies/config:/config
       - ./data/jellyfin-movies/cache:/cache
-      - ./data/media:/media:ro
+      - ./media/movies/server-1:/media/movies:ro
     ports:
       - "8096:8096"
-    restart: unless-stopped
-    networks:
-      - jellyfin-dev-net
-    depends_on:
-      content-downloader:
-        condition: service_completed_successfully
 
   jellyfin-movies-init:
-    image: ghcr.io/astral-sh/uv:python3.11-alpine
+    <<: *jellyfin-init
     container_name: jellyfin-movies-init
-    volumes:
-      - ./scripts/init-jellyfin.py:/scripts/init-jellyfin.py:ro
-    working_dir: /scripts
-    command: ["uv", "run", "/scripts/init-jellyfin.py"]
     environment:
-      - URL=http://jellyfin-movies:8096
-      - USERNAME=user
-      - PASSWORD=movies
-      - COLLECTION_NAME=Movies
-      - COLLECTION_PATH=/media/movies
-      - COLLECTION_TYPE=movies
-
-    networks:
-      - jellyfin-dev-net
+      <<: *movies-init-environment
+      URL: http://jellyfin-movies:8096
+      SERVER_NAME: Movies 1
     depends_on:
       jellyfin-movies:
-        condition: service_started
+        condition: service_healthy
 
   jellyfin-tvshows:
-    image: jellyfin/jellyfin:latest
+    <<: *jellyfin
     container_name: jellyfin-tvshows
     environment:
-      - PUID=1000
-      - PGID=1000
-      - TZ=UTC
-      - JELLYFIN_PublishedServerUrl=http://localhost:8097
+      <<: *jellyfin-environment
+      JELLYFIN_PublishedServerUrl: http://localhost:8097
     volumes:
       - ./data/jellyfin-tvshows/config:/config
       - ./data/jellyfin-tvshows/cache:/cache
-      - ./data/media:/media:ro
+      - ./media/tv-shows/server-1:/media/tv-shows:ro
     ports:
       - "8097:8096"
-    restart: unless-stopped
-    networks:
-      - jellyfin-dev-net
-    depends_on:
-      content-downloader:
-        condition: service_completed_successfully
 
   jellyfin-tvshows-init:
-    image: ghcr.io/astral-sh/uv:python3.11-alpine
+    <<: *jellyfin-init
     container_name: jellyfin-tvshows-init
-    volumes:
-      - ./scripts/init-jellyfin.py:/scripts/init-jellyfin.py:ro
-    working_dir: /scripts
-    command: ["uv", "run", "/scripts/init-jellyfin.py"]
     environment:
-      - URL=http://jellyfin-tvshows:8096
-      - USERNAME=user
-      - PASSWORD=shows
-      - COLLECTION_NAME=Shows
-      - COLLECTION_PATH=/media/tv-shows
-      - COLLECTION_TYPE=tvshows
-    networks:
-      - jellyfin-dev-net
+      <<: *shows-init-environment
+      URL: http://jellyfin-tvshows:8096
+      SERVER_NAME: Shows 1
     depends_on:
       jellyfin-tvshows:
-        condition: service_started
+        condition: service_healthy
 
   jellyfin-music:
-    image: jellyfin/jellyfin:latest
+    <<: *jellyfin
     container_name: jellyfin-music
     environment:
-      - PUID=1000
-      - PGID=1000
-      - TZ=UTC
-      - JELLYFIN_PublishedServerUrl=http://localhost:8098
+      <<: *jellyfin-environment
+      JELLYFIN_PublishedServerUrl: http://localhost:8098
     volumes:
       - ./data/jellyfin-music/config:/config
       - ./data/jellyfin-music/cache:/cache
-      - ./data/media:/media:ro
+      - ./media/music/server-1:/media/music:ro
     ports:
       - "8098:8096"
-    restart: unless-stopped
-    networks:
-      - jellyfin-dev-net
-    depends_on:
-      content-downloader:
-        condition: service_completed_successfully
 
   jellyfin-music-init:
-    image: ghcr.io/astral-sh/uv:python3.11-alpine
+    <<: *jellyfin-init
     container_name: jellyfin-music-init
-    volumes:
-      - ./scripts/init-jellyfin.py:/scripts/init-jellyfin.py:ro
-    working_dir: /scripts
-    command: ["uv", "run", "/scripts/init-jellyfin.py"]
     environment:
-      - URL=http://jellyfin-music:8096
-      - USERNAME=user
-      - PASSWORD=music
-      - COLLECTION_NAME=Music
-      - COLLECTION_PATH=/media/music
-      - COLLECTION_TYPE=music
-    networks:
-      - jellyfin-dev-net
+      <<: *music-init-environment
+      URL: http://jellyfin-music:8096
+      SERVER_NAME: Music 1
     depends_on:
       jellyfin-music:
-        condition: service_started
+        condition: service_healthy
+
+  jellyfin-movies-2:
+    <<: *jellyfin
+    container_name: jellyfin-movies-2
+    environment:
+      <<: *jellyfin-environment
+      JELLYFIN_PublishedServerUrl: http://localhost:8099
+    volumes:
+      - ./data/jellyfin-movies-2/config:/config
+      - ./data/jellyfin-movies-2/cache:/cache
+      - ./media/movies/server-2:/media/movies:ro
+    ports:
+      - "8099:8096"
+
+  jellyfin-movies-2-init:
+    <<: *jellyfin-init
+    container_name: jellyfin-movies-2-init
+    environment:
+      <<: *movies-init-environment
+      URL: http://jellyfin-movies-2:8096
+      SERVER_NAME: Movies 2
+    depends_on:
+      jellyfin-movies-2:
+        condition: service_healthy
+
+  jellyfin-tvshows-2:
+    <<: *jellyfin
+    container_name: jellyfin-tvshows-2
+    environment:
+      <<: *jellyfin-environment
+      JELLYFIN_PublishedServerUrl: http://localhost:8100
+    volumes:
+      - ./data/jellyfin-tvshows-2/config:/config
+      - ./data/jellyfin-tvshows-2/cache:/cache
+      - ./media/tv-shows/server-2:/media/tv-shows:ro
+    ports:
+      - "8100:8096"
+
+  jellyfin-tvshows-2-init:
+    <<: *jellyfin-init
+    container_name: jellyfin-tvshows-2-init
+    environment:
+      <<: *shows-init-environment
+      URL: http://jellyfin-tvshows-2:8096
+      SERVER_NAME: Shows 2
+    depends_on:
+      jellyfin-tvshows-2:
+        condition: service_healthy
+
+  jellyfin-music-2:
+    <<: *jellyfin
+    container_name: jellyfin-music-2
+    environment:
+      <<: *jellyfin-environment
+      JELLYFIN_PublishedServerUrl: http://localhost:8101
+    volumes:
+      - ./data/jellyfin-music-2/config:/config
+      - ./data/jellyfin-music-2/cache:/cache
+      - ./media/music/server-2:/media/music:ro
+    ports:
+      - "8101:8096"
+
+  jellyfin-music-2-init:
+    <<: *jellyfin-init
+    container_name: jellyfin-music-2-init
+    environment:
+      <<: *music-init-environment
+      URL: http://jellyfin-music-2:8096
+      SERVER_NAME: Music 2
+    depends_on:
+      jellyfin-music-2:
+        condition: service_healthy
 
   caddy:
     image: caddy:latest
@@ -137,14 +220,26 @@ services:
     ports:
       - "8000:80"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
     networks:
       - jellyfin-dev-net
     depends_on:
-      - jellyfin-movies
-      - jellyfin-tvshows
-      - jellyfin-music
+      jellyfin-movies-init:
+        condition: service_completed_successfully
+      jellyfin-tvshows-init:
+        condition: service_completed_successfully
+      jellyfin-music-init:
+        condition: service_completed_successfully
+      jellyfin-movies-2-init:
+        condition: service_completed_successfully
+      jellyfin-tvshows-2-init:
+        condition: service_completed_successfully
+      jellyfin-music-2-init:
+        condition: service_completed_successfully
 
 networks:
   jellyfin-dev-net:
     driver: bridge
+
+volumes:
+  seerr-config:

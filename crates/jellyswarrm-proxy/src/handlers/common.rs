@@ -68,18 +68,19 @@ pub async fn execute_json_request<T>(
 where
     T: serde::de::DeserializeOwned,
 {
-    let response = client
-        .execute(request)
-        .await
-        .map_err(|e| {
-            error!("Failed to execute request: {}", e);
-            StatusCode::BAD_GATEWAY
-        })?
-        .error_for_status()
-        .map_err(|e| {
-            error!("Request failed with status: {}", e);
-            StatusCode::UNAUTHORIZED
-        })?;
+    let response = client.execute(request).await.map_err(|e| {
+        error!("Failed to execute request: {}", e);
+        StatusCode::BAD_GATEWAY
+    })?;
+    let status = response.status();
+    if !status.is_success() {
+        error!(
+            "Upstream request to {} failed with status {}",
+            response.url(),
+            status
+        );
+        return Err(status);
+    }
 
     let response_text = response.text().await.map_err(|e| {
         error!("Failed to get response text: {}", e);
@@ -251,23 +252,8 @@ pub async fn process_playback_response(
     state: &AppState,
     server: &Server,
     session: &AuthorizationSession,
+    proxy_api_key: Option<&str>,
 ) -> Result<(), StatusCode> {
-    let proxy_user = state
-        .user_authorization
-        .get_user_by_id(&session.user_id)
-        .await
-        .map_err(|e| {
-            error!("Failed to resolve proxy user for playback response: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?
-        .ok_or_else(|| {
-            error!(
-                "Failed to resolve proxy user {} for playback response",
-                session.user_id
-            );
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
     let mut response_json = serde_json::to_value(&*response).map_err(|e| {
         error!("Failed to serialize playback response JSON: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
@@ -279,7 +265,7 @@ pub async fn process_playback_response(
             server,
             ResponseProcessingProfile::Media,
             false,
-            Some(proxy_user.virtual_key.as_str()),
+            proxy_api_key,
         )
         .await?;
 
@@ -428,17 +414,18 @@ mod tests {
 
     use serde_json::json;
     use sqlx::SqlitePool;
+    use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
 
     use super::*;
     use crate::{
         config::{AppConfig, MediaStreamingMode, MIGRATOR},
         media_storage_service::MediaStorageService,
-        merged_library_service::MergedLibraryService,
         server_id::ServerId,
         server_storage::ServerStorageService,
         server_url::ServerUrl,
         session_storage::SessionStorage,
         user_authorization_service::UserAuthorizationService,
+        virtual_library_service::VirtualLibraryService,
         DataContext, ProxyProcessors,
     };
 
@@ -476,12 +463,18 @@ mod tests {
             server_id: "proxy-server".to_string(),
             ..AppConfig::default()
         };
+        let server_storage = ServerStorageService::new(pool.clone());
+        let media_storage = MediaStorageService::new(pool.clone());
 
         let data_context = DataContext {
             user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
-            server_storage: Arc::new(ServerStorageService::new(pool.clone())),
-            media_storage: Arc::new(MediaStorageService::new(pool.clone())),
-            merged_library_service: Arc::new(MergedLibraryService::new(pool)),
+            server_storage: Arc::new(server_storage.clone()),
+            media_storage: Arc::new(media_storage.clone()),
+            virtual_library_service: Arc::new(VirtualLibraryService::new(
+                pool,
+                server_storage,
+                media_storage,
+            )),
             play_sessions: Arc::new(SessionStorage::new()),
             config: Arc::new(tokio::sync::RwLock::new(config)),
         };
@@ -501,14 +494,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_json_request_preserves_upstream_not_found_status() {
+        let upstream = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&upstream)
+            .await;
+        let client = reqwest::Client::new();
+        let request = client.get(upstream.uri()).build().unwrap();
+
+        let result = execute_json_request::<serde_json::Value>(&client, request).await;
+
+        assert_eq!(result.unwrap_err(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
     async fn response_processor_remaps_media_item_fields() {
         let (state, server) = create_test_state().await;
         let original_item_id = "11111111111111111111111111111111";
         let original_source_id = "22222222222222222222222222222222";
+        let original_album_id = "23232323232323232323232323232323";
         let original_person_id = "18181818181818181818181818181818";
         let mut media_item = json!({
             "Id": original_item_id,
-            "Type": "Movie",
+            "AlbumId": original_album_id,
+            "Type": "Audio",
             "Name": "Parity Movie",
             "SeriesName": "Parity Series",
             "ServerId": "upstream-server",
@@ -611,6 +621,16 @@ mod tests {
 
         assert!(was_modified);
         assert_ne!(media_item["Id"].as_str(), Some(original_item_id));
+        let virtual_album_id = media_item["AlbumId"].as_str().unwrap();
+        assert_ne!(virtual_album_id, original_album_id);
+        let album_mapping = state
+            .media_storage
+            .get_media_mapping_by_virtual(virtual_album_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(album_mapping.original_media_id, original_album_id);
+        assert_eq!(album_mapping.server_id, server.id);
         assert_ne!(
             media_item["People"][0]["Id"].as_str(),
             Some(original_person_id)
@@ -703,6 +723,27 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("api_key=proxy-token"));
+    }
+
+    #[tokio::test]
+    async fn response_processor_removes_upstream_key_when_proxy_key_is_unavailable() {
+        let (state, server) = create_test_state().await;
+        let mut payload = json!({
+            "DeliveryUrl": "/Videos/item/stream?api_key=upstream-token&Static=true"
+        });
+
+        state
+            .process_response_json(
+                &mut payload,
+                &server,
+                ResponseProcessingProfile::Media,
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(payload["DeliveryUrl"], "/Videos/item/stream?Static=true");
     }
 
     #[tokio::test]

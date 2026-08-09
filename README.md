@@ -48,7 +48,7 @@ Jellyswarrm is a reverse proxy that lets you combine multiple Jellyfin servers i
 
 * **QuickConnect** – Sign in on one device by approving the code from another authenticated device.
 * **Websocket Support** – Needed for real-time features like SyncPlay (not fully reliable yet).
-* **Audio Streaming** – May not function correctly (still untested in many cases).
+* **Audio Streaming** – Progressive and HLS audio use the video streaming path.
 * **Automatic Bitrate Adjustment** – Stream quality based on network conditions isn’t supported yet.
 * **Media Management** – Features like adding or deleting media libraries through Jellyswarrm are not implemented yet.
 
@@ -114,6 +114,19 @@ docker compose up -d
 
 This will build and start the application with all necessary dependencies, perfect for both development and production deployments.
 </details>
+
+### Local Test Servers
+
+To test Jellyswarrm against six preconfigured Jellyfin instances (two each for
+Movies, TV Shows, and Music) and Seerr, run:
+
+```bash
+just setup
+```
+
+See the [development environment guide](dev/README.md) for URLs, credentials,
+commands, Seerr compatibility status, and media licenses. Debug builds
+automatically register all six local servers from `data/jellyswarrm.dev.toml`.
 
 
 

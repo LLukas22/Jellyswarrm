@@ -180,6 +180,52 @@ impl ServerStorageService {
         Ok(server_id)
     }
 
+    pub async fn upsert_preconfigured_server(
+        &self,
+        name: &str,
+        url: &str,
+        priority: i32,
+        media_streaming_mode: MediaStreamingMode,
+    ) -> Result<ServerId, sqlx::Error> {
+        let url = ServerUrl::parse(url).map_err(|_| {
+            sqlx::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Invalid URL format",
+            ))
+        })?;
+
+        let existing_id =
+            sqlx::query_scalar::<_, i64>("SELECT id FROM servers WHERE RTRIM(TRIM(url), '/') = ?")
+                .bind(url.as_str())
+                .fetch_optional(&self.pool)
+                .await?;
+
+        let Some(existing_id) = existing_id else {
+            return self
+                .add_server(name, url.as_str(), priority, media_streaming_mode)
+                .await;
+        };
+
+        sqlx::query(
+            r#"
+            UPDATE servers
+            SET name = ?, url = ?, priority = ?, media_streaming_mode = ?, updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(name)
+        .bind(url.as_str())
+        .bind(priority)
+        .bind(media_streaming_mode.to_string())
+        .bind(chrono::Utc::now())
+        .bind(existing_id)
+        .execute(&self.pool)
+        .await?;
+
+        info!("Updated preconfigured server: {} ({})", name, url);
+        Ok(ServerId::new(existing_id))
+    }
+
     pub async fn get_server_by_name(&self, name: &str) -> Result<Option<Server>, sqlx::Error> {
         let row = sqlx::query(
             r#"
@@ -523,5 +569,47 @@ mod tests {
 
         let server = service.get_server_by_id(server_id).await.unwrap().unwrap();
         assert_eq!(server.media_streaming_mode, MediaStreamingMode::Proxy);
+    }
+
+    #[tokio::test]
+    async fn upsert_preconfigured_server_should_update_existing_server_by_url() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = ServerStorageService::new(pool);
+        let original_id = service
+            .add_server(
+                "Movies",
+                "http://localhost:8096",
+                100,
+                MediaStreamingMode::Redirect,
+            )
+            .await
+            .unwrap();
+
+        let updated_id = service
+            .upsert_preconfigured_server(
+                "Movies 1",
+                "http://localhost:8096/",
+                101,
+                MediaStreamingMode::Proxy,
+            )
+            .await
+            .unwrap();
+
+        let updated = service.get_server_by_id(updated_id).await.unwrap().unwrap();
+        assert_eq!(
+            (
+                updated_id,
+                updated.name,
+                updated.priority,
+                updated.media_streaming_mode
+            ),
+            (
+                original_id,
+                "Movies 1".to_string(),
+                101,
+                MediaStreamingMode::Proxy
+            )
+        );
     }
 }

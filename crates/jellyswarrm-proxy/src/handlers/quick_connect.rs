@@ -702,13 +702,19 @@ mod tests {
     async fn create_test_app_state() -> AppState {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         MIGRATOR.run(&pool).await.unwrap();
+        let server_storage = ServerStorageService::new(pool.clone());
+        let media_storage = MediaStorageService::new(pool.clone());
 
         let data_context = DataContext {
             user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
-            server_storage: Arc::new(ServerStorageService::new(pool.clone())),
-            media_storage: Arc::new(MediaStorageService::new(pool.clone())),
-            merged_library_service: Arc::new(
-                crate::merged_library_service::MergedLibraryService::new(pool),
+            server_storage: Arc::new(server_storage.clone()),
+            media_storage: Arc::new(media_storage.clone()),
+            virtual_library_service: Arc::new(
+                crate::virtual_library_service::VirtualLibraryService::new(
+                    pool,
+                    server_storage,
+                    media_storage,
+                ),
             ),
             play_sessions: Arc::new(SessionStorage::new()),
             config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),

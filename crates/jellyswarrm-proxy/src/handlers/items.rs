@@ -11,6 +11,7 @@ use crate::{
     models::{PlaybackRequest, PlaybackResponse},
     processors::response_processor::ResponseProcessingProfile,
     request_preprocessing::PreprocessedRequest,
+    virtual_library_service::VirtualLibraryResolution,
     AppState,
 };
 
@@ -18,13 +19,20 @@ async fn get_processed_item_json(
     state: &AppState,
     preprocessed: PreprocessedRequest,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    let virtual_library = preprocessed
+        .original_request
+        .url()
+        .path_segments()
+        .and_then(Iterator::last)
+        .map(str::to_string);
     let server = preprocessed.server;
     let proxy_api_key = preprocessed
-        .user
+        .auth
         .as_ref()
-        .map(|user| user.virtual_key.clone());
+        .and_then(|auth| auth.token_ref())
+        .map(str::to_string);
 
-    let response = execute_processed_json_request(
+    let mut response = execute_processed_json_request(
         state,
         preprocessed.request,
         &server,
@@ -33,6 +41,24 @@ async fn get_processed_item_json(
         proxy_api_key.as_deref(),
     )
     .await?;
+
+    if let Some(virtual_id) = virtual_library {
+        let resolution = state
+            .virtual_library_service
+            .resolve(&virtual_id, preprocessed.access_scope.as_ref())
+            .await
+            .map_err(|error| {
+                error!("Failed to resolve virtual library item: {error}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        if let VirtualLibraryResolution::Resolved(resolved) = resolution {
+            let name = resolved.name;
+            response["Id"] = serde_json::Value::String(virtual_id.clone());
+            response["DisplayPreferencesId"] = serde_json::Value::String(virtual_id);
+            response["Name"] = serde_json::Value::String(name.clone());
+            response["SortName"] = serde_json::Value::String(name.to_lowercase());
+        }
+    }
 
     Ok(Json(response))
 }
@@ -72,6 +98,11 @@ pub async fn post_playback_info(
         session,
     }: RequireSession,
 ) -> Result<Json<PlaybackResponse>, StatusCode> {
+    let proxy_api_key = preprocessed
+        .auth
+        .as_ref()
+        .and_then(|auth| auth.token_ref())
+        .map(str::to_string);
     let original_request = preprocessed.original_request;
     let payload: PlaybackRequest = payload_from_request(&original_request)?;
 
@@ -91,7 +122,14 @@ pub async fn post_playback_info(
 
     match execute_json_request::<PlaybackResponse>(&state.reqwest_client, request).await {
         Ok(mut response) => {
-            process_playback_response(&mut response, &state, &server, &session).await?;
+            process_playback_response(
+                &mut response,
+                &state,
+                &server,
+                &session,
+                proxy_api_key.as_deref(),
+            )
+            .await?;
 
             debug!("Requested Playback: {:?}", response);
 

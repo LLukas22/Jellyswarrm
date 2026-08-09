@@ -245,8 +245,14 @@ pub async fn handle_authenticate_by_name(
         )
         .await?;
 
-        let auth_response =
-            decorate_auth_response(&state, &user, &payload.username, &successful_auths[0]).await;
+        let auth_response = decorate_auth_response(
+            &state,
+            &user,
+            &payload.username,
+            &authentication,
+            &successful_auths[0],
+        )
+        .await;
 
         info!(
             "User '{}' successfully authenticated on {} out of {} servers and stored in authorization storage",
@@ -323,6 +329,7 @@ async fn decorate_auth_response(
     state: &AppState,
     user: &crate::user_authorization_service::User,
     login_username: &str,
+    login_authorization: &Authorization,
     successful_auth: &SuccessfulServerAuth,
 ) -> AuthenticateResponse {
     let mut auth_response = successful_auth.auth_response.clone();
@@ -333,11 +340,44 @@ async fn decorate_auth_response(
     auth_response.session_info.user_id = user.id.clone();
     auth_response.user.name = login_username.to_string();
     auth_response.session_info.user_name = login_username.to_string();
-    auth_response.user.policy.is_administrator = false;
+    // Seerr requires this flag to finish setup. Authorization remains enforced by
+    // Jellyswarrm and the user's real upstream sessions.
+    auth_response.user.policy.is_administrator = is_seerr_client(login_authorization);
     auth_response.user.policy.sync_play_access = SyncPlayUserAccessType::CreateAndJoinGroups;
     auth_response.access_token = user.virtual_key.clone();
     auth_response.user.id = user.id.clone();
     auth_response
+}
+
+fn is_seerr_client(authorization: &Authorization) -> bool {
+    authorization.client.eq_ignore_ascii_case("Seerr")
+        && authorization.device.eq_ignore_ascii_case("Seerr")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_seerr_client;
+    use crate::models::Authorization;
+
+    fn authorization(client: &str, device: &str) -> Authorization {
+        Authorization {
+            client: client.to_string(),
+            device: device.to_string(),
+            device_id: "device-id".to_string(),
+            version: "1.0.0".to_string(),
+            token: None,
+        }
+    }
+
+    #[test]
+    fn seerr_client_requires_matching_client_and_device() {
+        assert!(is_seerr_client(&authorization("Seerr", "Seerr")));
+    }
+
+    #[test]
+    fn seerr_client_rejects_spoofed_device_from_other_client() {
+        assert!(!is_seerr_client(&authorization("Jellyfin Web", "Seerr")));
+    }
 }
 
 /// Authenticates a user on a specific server

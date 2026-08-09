@@ -4,28 +4,28 @@
 
 {% block body %}
     <!-- Navigation -->
-    <header class="container">
-        <nav>
-            <ul>
+    <header class="container dashboard-header">
+        <nav class="dashboard-nav">
+            <ul class="dashboard-brand-list">
                 <li>
-                    <a href="/{{ ui_route }}" style="display: flex; align-items: center; text-decoration: none;">
-                        <img src="/{{ ui_route }}/resources/icon.svg" alt="Jellyswarrm Logo" style="width: 48px; height: 48px; margin-right: 0.5rem;">
+                    <a href="/{{ ui_route }}" class="dashboard-brand">
+                        <img src="/{{ ui_route }}/resources/icon.svg" alt="Jellyswarrm Logo">
                         <strong>Jellyswarrm</strong>
                     </a>
                 </li>
             </ul>
-            <ul>
+            <ul class="dashboard-nav-links">
 
                 {% block tabs %}{% endblock %}
                 <li>
-                    {% match root %}{% when Some with (r) %}<a href="/{{ r }}" target="_blank">{% when None %}<a href="/" target="_blank">{% endmatch %}
+                    {% match root %}{% when Some with (r) %}<a href="/{{ r }}" target="_blank" class="dashboard-web-link">{% when None %}<a href="/" target="_blank" class="dashboard-web-link">{% endmatch %}
                         <i class="fas fa-film" style="margin-right: 0.25rem;"></i>
                         Web UI
                     </a>
                 </li>
                 <li>
-                    <button onclick="location.href='/{{ ui_route }}/logout';" class="outline" style="background-color: var(--pico-del-color); color: white; border: 1px solid var(--pico-del-color); outline-color: var(--pico-del-color); outline-style: solid; outline-width: 2px; padding: 0.25rem;">
-                        <i class="fas fa-sign-out-alt"></i>
+                    <button onclick="location.href='/{{ ui_route }}/logout';" class="outline dashboard-logout" title="Sign out" aria-label="Sign out">
+                        <i class="fas fa-sign-out-alt" aria-hidden="true"></i>
                     </button>
                 </li>
             </ul>
