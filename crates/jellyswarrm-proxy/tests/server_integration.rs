@@ -107,15 +107,15 @@ async fn user_can_login_browse_merged_libraries_and_stream_mapped_media() -> Res
         ("Music", "Audio", &["01 - Aria", "01 - Death Valley Waltz"]),
     )
     .await?;
-    verify_hls_audio(
+    verify_audio_playback(
         &client,
         &proxy_url,
         user_id,
         token,
-        item_id_named(&music, "01 - Death Valley Waltz")?,
+        item_named(&music, "01 - Death Valley Waltz")?,
     )
     .await
-    .context("failed HLS playback check for Death Valley Waltz")?;
+    .context("failed playback check for Death Valley Waltz")?;
     verify_seerr_integration(&client, &proxy_url).await?;
 
     Ok(())
@@ -533,13 +533,24 @@ async fn verify_playback(
     Ok(())
 }
 
-async fn verify_hls_audio(
+async fn verify_audio_playback(
     client: &Client,
     base_url: &str,
     user_id: &str,
     token: &str,
-    item_id: &str,
+    track: &Value,
 ) -> Result<()> {
+    let item_id = required_string(track, "/Id")?;
+    let album_id = required_string(track, "/AlbumId")?;
+    let track = fetch_user_item(client, base_url, user_id, token, item_id).await?;
+    assert_eq!(required_string(&track, "/Id")?, item_id);
+    assert_eq!(required_string(&track, "/AlbumId")?, album_id);
+
+    let album = fetch_user_item(client, base_url, user_id, token, album_id).await?;
+    assert_eq!(required_string(&album, "/Id")?, album_id);
+    assert_eq!(required_string(&album, "/Type")?, "MusicAlbum");
+    assert!(required_string(&album, "/Name")?.contains("Ghost Solos"));
+
     let master = authenticated(
         client
             .get(format!("{base_url}/Audio/{item_id}/universal"))
@@ -587,6 +598,24 @@ async fn verify_hls_audio(
     );
     assert_eq!(bytes.first(), Some(&0x47), "HLS segment is not MPEG-TS");
     Ok(())
+}
+
+async fn fetch_user_item(
+    client: &Client,
+    base_url: &str,
+    user_id: &str,
+    token: &str,
+    item_id: &str,
+) -> Result<Value> {
+    success_json(
+        authenticated(
+            client.get(format!("{base_url}/Users/{user_id}/Items/{item_id}")),
+            token,
+        )
+        .send()
+        .await?,
+    )
+    .await
 }
 
 fn playlist_entry(base_url: &Url, playlist: &str) -> Result<Url> {
@@ -640,10 +669,16 @@ fn item_names(payload: &Value) -> Result<HashSet<&str>> {
 }
 
 fn item_id_named<'a>(payload: &'a Value, name: &str) -> Result<&'a str> {
+    item_named(payload, name)?
+        .get("Id")
+        .and_then(Value::as_str)
+        .with_context(|| format!("response did not contain an item named {name}"))
+}
+
+fn item_named<'a>(payload: &'a Value, name: &str) -> Result<&'a Value> {
     items(payload)?
         .iter()
         .find(|item| item["Name"] == name)
-        .and_then(|item| item["Id"].as_str())
         .with_context(|| format!("response did not contain an item named {name}"))
 }
 

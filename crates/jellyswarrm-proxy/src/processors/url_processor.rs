@@ -32,6 +32,8 @@ pub static MEDIA_ID_PATH_TAGS: &[&str] = &[
 
 // Image `Tag` query values are opaque cache tokens and must not be remapped.
 pub static MEDIA_ID_QUERY_TAGS: &[&str] = &[
+    "AlbumId",
+    "AlbumIds",
     "ParentId",
     "ItemId",
     "SeriesId",

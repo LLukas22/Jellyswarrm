@@ -667,6 +667,8 @@ mod tests {
 
         assert_eq!(matched_path_id.as_deref(), Some(audio_id));
         assert!(matches_case_insensitive("ItemId", MEDIA_ID_QUERY_TAGS));
+        assert!(matches_case_insensitive("AlbumId", MEDIA_ID_QUERY_TAGS));
+        assert!(matches_case_insensitive("AlbumIds", MEDIA_ID_QUERY_TAGS));
     }
 
     use crate::config::{AppConfig, MIGRATOR};

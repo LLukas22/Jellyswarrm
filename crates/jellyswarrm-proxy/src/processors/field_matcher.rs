@@ -25,6 +25,7 @@ impl FieldMatcher {
 pub static ID_FIELDS: LazyLock<FieldMatcher> = LazyLock::new(|| {
     FieldMatcher::new(&[
         "Id",
+        "AlbumId",
         "ItemId",
         "ParentId",
         "SeriesId",
@@ -42,6 +43,7 @@ pub static USER_FIELDS: LazyLock<FieldMatcher> = LazyLock::new(|| FieldMatcher::
 pub static RESPONSE_MEDIA_ID_FIELDS: LazyLock<FieldMatcher> = LazyLock::new(|| {
     FieldMatcher::new(&[
         "Id",
+        "AlbumId",
         "ItemId",
         "ParentId",
         "SeriesId",
