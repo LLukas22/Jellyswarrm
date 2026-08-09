@@ -254,14 +254,15 @@ impl UrlProcessor {
         let mut pairs = Vec::new();
 
         for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
-            let value = if matches_case_insensitive(&key, API_KEY_QUERY_TAGS) {
+            if matches_case_insensitive(&key, API_KEY_QUERY_TAGS) {
+                changed = true;
                 if let Some(proxy_api_key) = proxy_api_key {
-                    changed = true;
-                    proxy_api_key.to_string()
-                } else {
-                    value.into_owned()
+                    pairs.push((key.into_owned(), proxy_api_key.to_string()));
                 }
-            } else if matches_case_insensitive(&key, MEDIA_ID_QUERY_TAGS) {
+                continue;
+            }
+
+            let value = if matches_case_insensitive(&key, MEDIA_ID_QUERY_TAGS) {
                 let remapped = self.remap_delivery_url_query_value(&value, server).await?;
                 if remapped != value {
                     changed = true;

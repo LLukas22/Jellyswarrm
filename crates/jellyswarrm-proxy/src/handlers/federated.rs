@@ -105,6 +105,28 @@ pub async fn get_items_from_all_servers(
     get_items_from_all_servers_preprocessed(&state, preprocessed).await
 }
 
+pub async fn get_media_folders(
+    State(state): State<AppState>,
+    Preprocessed(mut preprocessed): Preprocessed,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let user_id = preprocessed
+        .user
+        .as_ref()
+        .map(|user| user.id.clone())
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let path = preprocessed.original_request.url().path().to_string();
+    let path = path
+        .strip_suffix("/Library/MediaFolders")
+        .or_else(|| path.strip_suffix("/library/mediafolders"))
+        .unwrap_or_default();
+    preprocessed
+        .original_request
+        .url_mut()
+        .set_path(&format!("{path}/Users/{user_id}/Views"));
+
+    get_items_from_all_servers_preprocessed(&state, preprocessed).await
+}
+
 async fn get_items_from_all_servers_preprocessed(
     state: &AppState,
     preprocessed: PreprocessedRequest,
@@ -726,13 +748,22 @@ async fn fetch_items_from_server(
     pagination: Pagination,
     should_change_name: bool,
 ) -> Result<ServerItems, StatusCode> {
+    let proxy_api_key = JellyfinAuthorization::from_request(&request)
+        .and_then(|auth| auth.token_ref().map(str::to_string));
     let ServerItems {
         mut response,
         server,
     } = fetch_raw_items_from_server(index, state.clone(), request, session, server, pagination)
         .await?;
 
-    process_items_response_json(&mut response, &state, &server, should_change_name).await?;
+    process_items_response_json(
+        &mut response,
+        &state,
+        &server,
+        should_change_name,
+        proxy_api_key.as_deref(),
+    )
+    .await?;
 
     debug!(
         "Successfully retrieved {} items from server: {}",
@@ -815,6 +846,8 @@ async fn fetch_windowed_items_from_server(
     max_pages: Option<usize>,
     should_change_name: bool,
 ) -> Result<FetchedServerItems, StatusCode> {
+    let proxy_api_key = JellyfinAuthorization::from_request(&request)
+        .and_then(|auth| auth.token_ref().map(str::to_string));
     let WindowedItems {
         mut response,
         upstream_total,
@@ -828,7 +861,14 @@ async fn fetch_windowed_items_from_server(
         max_pages,
     )
     .await?;
-    process_items_response_json(&mut response, &state, &server, should_change_name).await?;
+    process_items_response_json(
+        &mut response,
+        &state,
+        &server,
+        should_change_name,
+        proxy_api_key.as_deref(),
+    )
+    .await?;
     Ok(FetchedServerItems {
         server_items: ServerItems { response, server },
         upstream_total,
@@ -1157,6 +1197,7 @@ async fn process_items_response_json(
     state: &AppState,
     server: &Server,
     should_change_name: bool,
+    proxy_api_key: Option<&str>,
 ) -> Result<(), StatusCode> {
     let mut response_json = serde_json::to_value(&*response).map_err(|e| {
         error!("Failed to serialize items response JSON: {}", e);
@@ -1169,7 +1210,7 @@ async fn process_items_response_json(
             server,
             ResponseProcessingProfile::Media,
             should_change_name,
-            None,
+            proxy_api_key,
         )
         .await
         .inspect_err(|e| {

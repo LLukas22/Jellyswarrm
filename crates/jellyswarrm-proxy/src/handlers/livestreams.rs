@@ -22,6 +22,11 @@ pub async fn post_livestream_open(
         session,
     }: RequireSession,
 ) -> Result<Json<PlaybackResponse>, StatusCode> {
+    let proxy_api_key = preprocessed
+        .auth
+        .as_ref()
+        .and_then(|auth| auth.token_ref())
+        .map(str::to_string);
     let original_request = preprocessed.original_request;
     let payload: PlaybackRequest = payload_from_request(&original_request)?;
 
@@ -35,7 +40,14 @@ pub async fn post_livestream_open(
 
     match execute_json_request::<PlaybackResponse>(&state.reqwest_client, request).await {
         Ok(mut response) => {
-            process_playback_response(&mut response, &state, &server, &session).await?;
+            process_playback_response(
+                &mut response,
+                &state,
+                &server,
+                &session,
+                proxy_api_key.as_deref(),
+            )
+            .await?;
 
             debug!("Requested Playback: {:?}", response);
 

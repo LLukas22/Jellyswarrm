@@ -41,6 +41,35 @@ x-music-init-environment: &music-init-environment
   COLLECTION_TYPE: music
 
 services:
+  seerr:
+    image: ghcr.io/seerr-team/seerr:${SEERR_VERSION:?Set SEERR_VERSION in dev/.env}
+    profiles:
+      - seerr
+    container_name: jellyswarrm-seerr
+    init: true
+    environment:
+      TZ: UTC
+      LOG_LEVEL: debug
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - seerr-config:/app/config
+    ports:
+      - "127.0.0.1:5055:5055"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget --no-verbose --tries=1 --spider http://localhost:5055/api/v1/settings/public || exit 1",
+        ]
+      start_period: 20s
+      interval: 15s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - jellyfin-dev-net
+
   jellyfin-movies:
     <<: *jellyfin
     container_name: jellyfin-movies
@@ -211,3 +240,6 @@ services:
 networks:
   jellyfin-dev-net:
     driver: bridge
+
+volumes:
+  seerr-config:

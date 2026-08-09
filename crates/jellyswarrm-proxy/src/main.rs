@@ -1,7 +1,8 @@
 use axum::{
     body::Body,
     extract::{Request, State},
-    http::{header, HeaderValue, StatusCode},
+    http::{header, HeaderValue, Method, StatusCode},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{any, get, post},
     Router,
@@ -522,6 +523,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .route("/websocket", get(handlers::syncplay::websocket))
             .route("/socket", get(handlers::syncplay::websocket))
             .route("/GetUtcTime", get(handlers::syncplay::get_utc_time))
+            .route(
+                "/Auth/Keys",
+                get(handlers::auth_keys::list_api_keys)
+                    .post(handlers::auth_keys::create_api_key),
+            )
             .nest(
                 "/SyncPlay",
                 Router::new()
@@ -594,6 +600,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .route(
                 "/UserViews",
                 get(handlers::federated::get_items_from_all_servers),
+            )
+            .route(
+                "/Library/MediaFolders",
+                get(handlers::federated::get_media_folders),
             )
             // Newer Jellyfin SDKs (e.g. jellyfin-sdk-kotlin, used by the Android TV
             // client) request Continue Watching from /UserItems/Resume instead of the
@@ -745,6 +755,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .layer(CorsLayer::permissive()),
             )
             .layer(MessagesManagerLayer)
+            .layer(middleware::from_fn_with_state(
+                app_state.clone(),
+                enforce_read_only_api_keys,
+            ))
             .layer(auth_layer)
             .with_state(app_state)
     }
@@ -826,6 +840,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+async fn enforce_read_only_api_keys(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if matches!(*request.method(), Method::GET | Method::HEAD) {
+        return next.run(request).await;
+    }
+
+    let identity = match request_preprocessing::resolve_request_identity_from_headers_uri(
+        request.headers(),
+        request.uri(),
+        &state,
+    )
+    .await
+    {
+        Ok(identity) => identity,
+        Err(error) => {
+            error!("Failed to enforce API key access: {error}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    let Some(token) = identity.auth.as_ref().and_then(|auth| auth.token_ref()) else {
+        return next.run(request).await;
+    };
+
+    match state.user_authorization.is_read_only_api_key(token).await {
+        Ok(true) => StatusCode::FORBIDDEN.into_response(),
+        Ok(false) => next.run(request).await,
+        Err(error) => {
+            error!("Failed to check API key access: {error}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
 async fn index_handler(
     State(state): State<AppState>,
     _req: Request,
@@ -897,9 +947,10 @@ async fn proxy_handler(
     let request_url = preprocessed.request.url().clone();
     let response_server = preprocessed.server.clone();
     let response_proxy_api_key = preprocessed
-        .user
+        .auth
         .as_ref()
-        .map(|user| user.virtual_key.clone());
+        .and_then(|auth| auth.token_ref())
+        .map(str::to_string);
     trace!(
         "Proxy request details:\n  Original: {:?}\n  Target URL: {}\n  Transformed: {:?}",
         preprocessed.original_request,

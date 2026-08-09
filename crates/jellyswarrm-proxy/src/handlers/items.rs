@@ -27,9 +27,10 @@ async fn get_processed_item_json(
         .map(str::to_string);
     let server = preprocessed.server;
     let proxy_api_key = preprocessed
-        .user
+        .auth
         .as_ref()
-        .map(|user| user.virtual_key.clone());
+        .and_then(|auth| auth.token_ref())
+        .map(str::to_string);
 
     let mut response = execute_processed_json_request(
         state,
@@ -97,6 +98,11 @@ pub async fn post_playback_info(
         session,
     }: RequireSession,
 ) -> Result<Json<PlaybackResponse>, StatusCode> {
+    let proxy_api_key = preprocessed
+        .auth
+        .as_ref()
+        .and_then(|auth| auth.token_ref())
+        .map(str::to_string);
     let original_request = preprocessed.original_request;
     let payload: PlaybackRequest = payload_from_request(&original_request)?;
 
@@ -116,7 +122,14 @@ pub async fn post_playback_info(
 
     match execute_json_request::<PlaybackResponse>(&state.reqwest_client, request).await {
         Ok(mut response) => {
-            process_playback_response(&mut response, &state, &server, &session).await?;
+            process_playback_response(
+                &mut response,
+                &state,
+                &server,
+                &session,
+                proxy_api_key.as_deref(),
+            )
+            .await?;
 
             debug!("Requested Playback: {:?}", response);
 

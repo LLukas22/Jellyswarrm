@@ -181,6 +181,10 @@ fn is_library_root_request(url: &url::Url, url_prefix: Option<&str>) -> bool {
 
     match segments.as_slice() {
         [user_views] => user_views.eq_ignore_ascii_case("UserViews"),
+        [library, media_folders] => {
+            library.eq_ignore_ascii_case("Library")
+                && media_folders.eq_ignore_ascii_case("MediaFolders")
+        }
         [users, _, views] => {
             users.eq_ignore_ascii_case("Users") && views.eq_ignore_ascii_case("Views")
         }
@@ -212,10 +216,12 @@ mod tests {
         let user_views = url::Url::parse("http://localhost/UserViews?userId=user").unwrap();
         let resume = url::Url::parse("http://localhost/Users/user/Items/Resume").unwrap();
         let suggestions = url::Url::parse("http://localhost/Items/Suggestions").unwrap();
+        let media_folders = url::Url::parse("http://localhost/Library/MediaFolders").unwrap();
         let prefixed_views = url::Url::parse("http://localhost/jellyfin/Users/user/Views").unwrap();
 
         assert!(is_library_root_request(&views, None));
         assert!(is_library_root_request(&user_views, None));
+        assert!(is_library_root_request(&media_folders, None));
         assert!(is_library_root_request(&prefixed_views, Some("jellyfin")));
         assert!(!is_library_root_request(&resume, None));
         assert!(!is_library_root_request(&suggestions, None));

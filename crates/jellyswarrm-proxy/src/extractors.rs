@@ -3,10 +3,39 @@ use hyper::StatusCode;
 use tracing::error;
 
 use crate::{
-    request_preprocessing::{preprocess_request, PreprocessedRequest},
+    request_preprocessing::{
+        preprocess_request, resolve_request_identity_from_headers_uri, PreprocessedRequest,
+    },
     user_authorization_service::{AuthorizationSession, User},
     AppState,
 };
+
+pub struct RequirePrimaryUser(pub User);
+
+impl FromRequest<AppState> for RequirePrimaryUser {
+    type Rejection = StatusCode;
+
+    async fn from_request(req: Request, state: &AppState) -> Result<Self, Self::Rejection> {
+        let identity = resolve_request_identity_from_headers_uri(req.headers(), req.uri(), state)
+            .await
+            .map_err(|error| {
+                error!("Failed to resolve API key caller: {error}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        let user = identity.user.ok_or(StatusCode::UNAUTHORIZED)?;
+        let token = identity
+            .auth
+            .as_ref()
+            .and_then(|auth| auth.token_ref())
+            .ok_or(StatusCode::UNAUTHORIZED)?;
+
+        if token != user.virtual_key {
+            return Err(StatusCode::FORBIDDEN);
+        }
+
+        Ok(Self(user))
+    }
+}
 
 pub struct Preprocessed(pub PreprocessedRequest);
 

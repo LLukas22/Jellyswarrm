@@ -1,3 +1,5 @@
+auto_create_users_on_login = true
+
 [debug_user]
 username = "test"
 password = "test"

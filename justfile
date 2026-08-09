@@ -1,6 +1,6 @@
 set shell := ["bash", "-uc"]
 
-compose := "docker compose --file dev/docker-compose.yml"
+compose := "docker compose --file dev/docker-compose.yml --profile seerr"
 
 # List the available local development commands.
 default:
@@ -13,12 +13,12 @@ doctor:
     @docker info >/dev/null || { printf 'The Docker daemon is not available.\n' >&2; exit 1; }
     @printf 'Docker is ready.\n'
 
-# Fetch LFS media, start six Jellyfin servers, initialize them, and start Caddy.
+# Fetch LFS media and start the Jellyfin, Caddy, and Seerr development services.
 setup: media up
 
-# Start the complete development media-server stack and wait until it is ready.
+# Start the complete development stack and wait until it is ready.
 up: doctor
-    {{compose}} up --detach --remove-orphans --wait --wait-timeout 1800 caddy
+    {{compose}} up --detach --remove-orphans --wait --wait-timeout 1800 caddy seerr
     @just urls
 
 # Stop and remove the development containers while preserving all data.
@@ -29,7 +29,7 @@ down:
 stop:
     {{compose}} stop
 
-# Restart the complete development media-server stack.
+# Restart the complete development stack.
 restart:
     just down
     just up
@@ -72,6 +72,6 @@ reset:
     rm --recursive --force "dev/data/jellyfin-movies" "dev/data/jellyfin-tvshows" "dev/data/jellyfin-music" "dev/data/jellyfin-movies-2" "dev/data/jellyfin-tvshows-2" "dev/data/jellyfin-music-2"
     just up
 
-# Print direct server URLs and the Caddy entry point.
+# Print direct server URLs and development entry points.
 urls:
-    @printf '%-10s %s\n' 'Movies 1' 'http://localhost:8096' 'Shows 1' 'http://localhost:8097' 'Music 1' 'http://localhost:8098' 'Movies 2' 'http://localhost:8099' 'Shows 2' 'http://localhost:8100' 'Music 2' 'http://localhost:8101' 'Caddy' 'http://localhost:8000'
+    @printf '%-12s %s\n' 'Movies 1' 'http://localhost:8096' 'Shows 1' 'http://localhost:8097' 'Music 1' 'http://localhost:8098' 'Movies 2' 'http://localhost:8099' 'Shows 2' 'http://localhost:8100' 'Music 2' 'http://localhost:8101' 'Caddy' 'http://localhost:8000' 'Seerr' 'http://localhost:5055' 'Proxy target' 'http://host.docker.internal:3000'

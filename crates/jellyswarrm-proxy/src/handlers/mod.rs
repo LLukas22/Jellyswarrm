@@ -1,3 +1,4 @@
+pub(crate) mod auth_keys;
 pub(crate) mod branding;
 pub(crate) mod common;
 pub(crate) mod federated;

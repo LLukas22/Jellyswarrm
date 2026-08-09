@@ -252,23 +252,8 @@ pub async fn process_playback_response(
     state: &AppState,
     server: &Server,
     session: &AuthorizationSession,
+    proxy_api_key: Option<&str>,
 ) -> Result<(), StatusCode> {
-    let proxy_user = state
-        .user_authorization
-        .get_user_by_id(&session.user_id)
-        .await
-        .map_err(|e| {
-            error!("Failed to resolve proxy user for playback response: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?
-        .ok_or_else(|| {
-            error!(
-                "Failed to resolve proxy user {} for playback response",
-                session.user_id
-            );
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
     let mut response_json = serde_json::to_value(&*response).map_err(|e| {
         error!("Failed to serialize playback response JSON: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
@@ -280,7 +265,7 @@ pub async fn process_playback_response(
             server,
             ResponseProcessingProfile::Media,
             false,
-            Some(proxy_user.virtual_key.as_str()),
+            proxy_api_key,
         )
         .await?;
 
@@ -726,6 +711,27 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("api_key=proxy-token"));
+    }
+
+    #[tokio::test]
+    async fn response_processor_removes_upstream_key_when_proxy_key_is_unavailable() {
+        let (state, server) = create_test_state().await;
+        let mut payload = json!({
+            "DeliveryUrl": "/Videos/item/stream?api_key=upstream-token&Static=true"
+        });
+
+        state
+            .process_response_json(
+                &mut payload,
+                &server,
+                ResponseProcessingProfile::Media,
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(payload["DeliveryUrl"], "/Videos/item/stream?Static=true");
     }
 
     #[tokio::test]

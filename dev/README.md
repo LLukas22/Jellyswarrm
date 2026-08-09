@@ -1,9 +1,11 @@
-# Jellyfin Development Environment
+# Development Environment
 
 A Docker Compose environment for testing Jellyswarrm against two independent
 Jellyfin servers for each library type: Movies, TV Shows, and Music. All six
 servers use read-only trees of compact, freely licensed test media while keeping
-their configuration, users, item databases, and caches isolated.
+their configuration, users, item databases, and caches isolated. A Seerr instance
+is included for developing the Jellyfin API compatibility needed by
+[issue #95](https://github.com/LLukas22/Jellyswarrm/issues/95).
 
 ## Quick start
 
@@ -13,9 +15,10 @@ From the repository root:
 just setup
 ```
 
-This command verifies Docker, fetches the Git LFS media, starts all six servers,
-initializes their users and libraries, and waits for the complete stack to be
-ready. Media and server state are reused on later runs.
+This command verifies Docker, fetches the Git LFS media, starts all six servers
+and Seerr, initializes the Jellyfin users and libraries, and waits for the
+complete stack to be ready. Media and application state are reused on later
+runs.
 
 Debug builds of `jellyswarrm-proxy` load `data/jellyswarrm.dev.toml` and
 automatically add or update these six servers in Jellyswarrm. Existing
@@ -29,8 +32,8 @@ Requirements:
 - Git LFS
 - [just](https://just.systems/)
 
-The exact Jellyfin release is set once through `JELLYFIN_VERSION` in
-[`dev/.env`](.env). All six servers use that version; update the value and run
+The exact Jellyfin and Seerr releases are set through `JELLYFIN_VERSION` and
+`SEERR_VERSION` in [`dev/.env`](.env). Update either value and run
 `just pull && just up` to test another release.
 
 ## Servers
@@ -43,12 +46,40 @@ The exact Jellyfin release is set once through `JELLYFIN_VERSION` in
 | Movies 2 | <http://localhost:8099> |
 | Shows 2 | <http://localhost:8100> |
 | Music 2 | <http://localhost:8101> |
+| Seerr | <http://localhost:5055> |
 
 Every server has the regular Jellyswarrm account `test` / `test`, with access
 to its complete library. The administrator account remains `admin` / `password`.
 
 Caddy is available at <http://localhost:8000> and exposes `/movies/`,
 `/shows/`, `/music/`, `/movies-2/`, `/shows-2/`, and `/music-2/`.
+
+## Seerr
+
+Run `jellyswarrm-proxy` on the host, then open <http://localhost:5055> and select
+Jellyfin in the setup wizard. Use these media-server settings:
+
+| Setting | Value |
+| --- | --- |
+| Hostname or IP | `host.docker.internal` |
+| Port | `3000` |
+| Use SSL | Disabled |
+| URL base | Empty |
+| Username | `test` |
+| Password | `test` |
+
+`host.docker.internal` is mapped to Docker's host gateway by Compose. The proxy
+already listens on `0.0.0.0:3000` by default, so no host networking is needed.
+Seerr configuration and its SQLite database persist in the `seerr-config` named
+volume.
+
+Jellyswarrm reports the setup-only administrator capability that Seerr requires,
+but continues to enforce the virtual user's normal upstream permissions. No
+backend administrator account is needed, and other clients continue to see the
+virtual account as non-administrative. Seerr stores a dedicated read-only
+Jellyswarrm API key and discovers the merged Movies and Shows libraries through
+their virtual IDs. See
+[`SEERR-COMPATIBILITY.md`](SEERR-COMPATIBILITY.md) for the supported API surface.
 
 ## Commands
 
@@ -61,7 +92,7 @@ just status   # Show all containers, including one-shot initializers
 just logs     # Follow logs from the complete stack
 just media    # Fetch media fixtures from Git LFS
 just check    # Validate Compose and the initializer
-just reset    # Recreate all server state but preserve tracked media
+just reset    # Recreate Jellyfin state; preserve media and Seerr state
 ```
 
 Use `just log jellyfin-movies-2` to follow one service.
@@ -123,6 +154,7 @@ remain complete. The whole fixture set is approximately 52 MiB. See
 [`MEDIA-LICENSES.md`](MEDIA-LICENSES.md) for exact sources, licenses, and
 required attribution.
 
-Jellyfin state is stored in `dev/data/jellyfin-*`. `just down` preserves it;
-`just reset` removes only this state and runs initialization again. Tracked
-media is preserved by both commands.
+Jellyfin state is stored in `dev/data/jellyfin-*`. Seerr state is stored in the
+Compose-managed `seerr-config` volume. `just down` preserves both; `just reset`
+removes only the Jellyfin state and runs initialization again. Tracked media and
+Seerr state are preserved by both commands.
