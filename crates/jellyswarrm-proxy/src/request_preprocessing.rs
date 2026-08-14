@@ -669,6 +669,19 @@ mod tests {
         assert!(matches_case_insensitive("ItemId", MEDIA_ID_QUERY_TAGS));
         assert!(matches_case_insensitive("AlbumId", MEDIA_ID_QUERY_TAGS));
         assert!(matches_case_insensitive("AlbumIds", MEDIA_ID_QUERY_TAGS));
+        assert!(matches_case_insensitive("ArtistIds", MEDIA_ID_QUERY_TAGS));
+        assert!(matches_case_insensitive(
+            "ContributingArtistIds",
+            MEDIA_ID_QUERY_TAGS
+        ));
+        assert!(matches_case_insensitive(
+            "AlbumArtistIds",
+            MEDIA_ID_QUERY_TAGS
+        ));
+        assert!(matches_case_insensitive(
+            "ExcludeArtistIds",
+            MEDIA_ID_QUERY_TAGS
+        ));
     }
 
     use crate::config::{AppConfig, MIGRATOR};
