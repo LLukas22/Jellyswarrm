@@ -1250,44 +1250,31 @@ async fn build_virtual_library_item(
 
     let preferred_source_index =
         preferred_library_source_index(&group).ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-    let image_source_index = preferred_library_image_source_index(&group);
-    let primary_tag = image_source_index.and_then(|index| {
-        group[index]
-            .item
-            .image_tags
-            .as_ref()?
-            .get("Primary")
-            .cloned()
-    });
-    let mut image_source_id = None;
+    let primary_tag = group[preferred_source_index]
+        .item
+        .image_tags
+        .as_ref()
+        .and_then(|tags| tags.get("Primary").cloned());
 
     for (index, ServerMediaItem { item, server }) in group.into_iter().enumerate() {
         total_child_count += item.child_count.unwrap_or(0);
         let processed = process_media_item_for_server(item, state, &server, false).await?;
         members.push((server.id, processed.id.clone()));
-        if Some(index) == image_source_index {
-            image_source_id = Some(processed.id.clone());
-        }
         if index == preferred_source_index {
             template = Some(processed);
         }
     }
 
     let mut item = template.ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let image_source_id = item.id.clone();
     item.id = virtual_id.clone();
     item.display_preferences_id = Some(virtual_id);
     item.name = Some(display_name.clone());
     item.sort_name = Some(display_name.to_lowercase());
     item.child_count = Some(total_child_count);
-    if let Some(image_source_id) = image_source_id {
-        // Image requests must use the concrete mapped member, not snapshot-based merged routing.
-        attach_library_folder_image_source(
-            &mut item,
-            &image_source_id,
-            primary_tag.as_deref(),
-            false,
-        );
-    }
+    // Keep metadata and artwork on one deterministic source. The concrete member ID also
+    // prevents image requests from being re-routed through the merged library snapshot.
+    attach_library_folder_image_source(&mut item, &image_source_id, primary_tag.as_deref(), false);
     Ok(BuiltVirtualLibrary { item, members })
 }
 
@@ -1295,28 +1282,6 @@ fn preferred_library_source_index(group: &[ServerMediaItem]) -> Option<usize> {
     group
         .iter()
         .enumerate()
-        .max_by(|(_, left), (_, right)| {
-            compare_virtual_library_routes(
-                &left.server,
-                &left.item.id,
-                &right.server,
-                &right.item.id,
-            )
-        })
-        .map(|(index, _)| index)
-}
-
-fn preferred_library_image_source_index(group: &[ServerMediaItem]) -> Option<usize> {
-    group
-        .iter()
-        .enumerate()
-        .filter(|(_, source)| {
-            source
-                .item
-                .image_tags
-                .as_ref()
-                .is_some_and(|tags| tags.contains_key("Primary"))
-        })
         .max_by(|(_, left), (_, right)| {
             compare_virtual_library_routes(
                 &left.server,
@@ -1801,15 +1766,34 @@ mod tests {
     }
 
     #[test]
-    fn merged_library_image_falls_back_when_preferred_source_has_no_image() {
+    fn merged_library_source_is_stable_when_response_order_changes() {
+        let group = vec![
+            library_source("lower-priority", Some("wrong-tag"), 1, 100),
+            library_source("preferred", Some("preferred-tag"), 2, 200),
+        ];
+        let reversed = vec![
+            library_source("preferred", Some("preferred-tag"), 2, 200),
+            library_source("lower-priority", Some("wrong-tag"), 1, 100),
+        ];
+
+        let selected = preferred_library_source_index(&group).unwrap();
+        let reversed_selected = preferred_library_source_index(&reversed).unwrap();
+
+        assert_eq!(group[selected].item.id, "preferred");
+        assert_eq!(reversed[reversed_selected].item.id, "preferred");
+    }
+
+    #[test]
+    fn merged_library_does_not_fall_back_to_lower_priority_artwork() {
         let group = vec![
             library_source("with-image", Some("fallback-tag"), 1, 100),
             library_source("preferred-without-image", None, 2, 200),
         ];
 
-        let selected = preferred_library_image_source_index(&group).unwrap();
+        let selected = preferred_library_source_index(&group).unwrap();
 
-        assert_eq!(group[selected].item.id, "with-image");
+        assert_eq!(group[selected].item.id, "preferred-without-image");
+        assert!(group[selected].item.image_tags.is_none());
     }
 
     #[test]
