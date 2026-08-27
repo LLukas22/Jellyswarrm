@@ -121,6 +121,76 @@ async fn user_can_login_browse_merged_libraries_and_stream_mapped_media() -> Res
     Ok(())
 }
 
+// Regression test for the WebOS client (#173): the official webOS app loads the UI
+// from `<server>/web/index.html` (see jellyfin-webos `frontend/js/index.js`) and
+// fetches every asset relative to that page. All `/web/*` requests must be served
+// from the embedded dist, not forwarded to an upstream server.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker and the Git LFS media fixtures"]
+async fn web_ui_is_served_under_web_prefix_for_webos_clients() -> Result<()> {
+    let workspace = workspace_root();
+    ensure_media_fixture_is_present(&workspace)?;
+
+    let compose_files = vec![
+        workspace.join("dev/docker-compose.yml"),
+        workspace.join("dev/docker-compose.integration.yml"),
+    ];
+    let mut compose = DockerCompose::with_local_client(compose_files).with_wait(false);
+    tokio::time::timeout(STARTUP_TIMEOUT, compose.up())
+        .await
+        .context("timed out starting the Jellyfin development stack")??;
+
+    let upstreams = upstream_urls(&compose).await?;
+    let data_dir = tempfile::tempdir().context("failed to create Jellyswarrm test data dir")?;
+    let proxy_port = available_port()?;
+    write_proxy_config(data_dir.path(), proxy_port, &upstreams)?;
+    let mut proxy = start_proxy(data_dir, proxy_port)?;
+    let proxy_url = format!("http://127.0.0.1:{proxy_port}");
+    let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
+    wait_for_proxy(&client, &proxy_url, &mut proxy.child).await?;
+
+    let index = client
+        .get(format!("{proxy_url}/web/index.html"))
+        .send()
+        .await?
+        .error_for_status()
+        .context("/web/index.html should be served from the embedded dist")?;
+    let index_body = index.text().await?;
+    assert!(
+        index_body.contains("main.jellyfin.bundle.js"),
+        "/web/index.html should return the embedded jellyfin-web entry point"
+    );
+
+    let manifest = client
+        .get(format!("{proxy_url}/web/manifest.json"))
+        .send()
+        .await?
+        .error_for_status()
+        .context("/web/manifest.json should be served from the embedded dist")?;
+    let manifest_body: Value = manifest.json().await?;
+    assert_eq!(manifest_body["name"], json!("Jellyfin"));
+
+    let bundle = client
+        .get(format!("{proxy_url}/web/main.jellyfin.bundle.js"))
+        .send()
+        .await?
+        .error_for_status()
+        .context("/web/main.jellyfin.bundle.js should be served from the embedded dist")?;
+    let content_type = bundle
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        content_type.starts_with("text/javascript")
+            || content_type.starts_with("application/javascript"),
+        "JS bundle must have a JavaScript MIME type, got: {content_type}"
+    );
+
+    Ok(())
+}
+
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
