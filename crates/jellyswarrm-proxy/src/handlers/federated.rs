@@ -62,6 +62,7 @@ struct LibraryRootInventory {
     non_library_per_server: Vec<ServerItems>,
 }
 
+#[derive(Clone)]
 struct ServerMediaItem {
     item: MediaItem,
     server: Server,
@@ -1250,31 +1251,44 @@ async fn build_virtual_library_item(
 
     let preferred_source_index =
         preferred_library_source_index(&group).ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-    let primary_tag = group[preferred_source_index]
+    let image_source_index =
+        preferred_library_image_source_index(&group).unwrap_or(preferred_source_index);
+    let primary_tag = group[image_source_index]
         .item
         .image_tags
         .as_ref()
         .and_then(|tags| tags.get("Primary").cloned());
+    let mut image_source_id = None;
 
     for (index, ServerMediaItem { item, server }) in group.into_iter().enumerate() {
         total_child_count += item.child_count.unwrap_or(0);
         let processed = process_media_item_for_server(item, state, &server, false).await?;
         members.push((server.id, processed.id.clone()));
+        if index == image_source_index {
+            image_source_id = Some(processed.id.clone());
+        }
         if index == preferred_source_index {
             template = Some(processed);
         }
     }
 
     let mut item = template.ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-    let image_source_id = item.id.clone();
     item.id = virtual_id.clone();
     item.display_preferences_id = Some(virtual_id);
     item.name = Some(display_name.clone());
     item.sort_name = Some(display_name.to_lowercase());
     item.child_count = Some(total_child_count);
-    // Keep metadata and artwork on one deterministic source. The concrete member ID also
-    // prevents image requests from being re-routed through the merged library snapshot.
-    attach_library_folder_image_source(&mut item, &image_source_id, primary_tag.as_deref(), false);
+    // Metadata stays on the preferred source. Artwork falls back to the next-best
+    // server that actually has a Primary image; the concrete member ID also
+    // prevents image requests from being re-routed through the merged snapshot.
+    if let Some(image_source_id) = image_source_id {
+        attach_library_folder_image_source(
+            &mut item,
+            &image_source_id,
+            primary_tag.as_deref(),
+            false,
+        );
+    }
     Ok(BuiltVirtualLibrary { item, members })
 }
 
@@ -1282,6 +1296,30 @@ fn preferred_library_source_index(group: &[ServerMediaItem]) -> Option<usize> {
     group
         .iter()
         .enumerate()
+        .max_by(|(_, left), (_, right)| {
+            compare_virtual_library_routes(
+                &left.server,
+                &left.item.id,
+                &right.server,
+                &right.item.id,
+            )
+        })
+        .map(|(index, _)| index)
+}
+
+/// Picks the highest-ranked server that actually has a Primary image, walking down
+/// the same deterministic order used for request routing.
+fn preferred_library_image_source_index(group: &[ServerMediaItem]) -> Option<usize> {
+    group
+        .iter()
+        .enumerate()
+        .filter(|(_, source)| {
+            source
+                .item
+                .image_tags
+                .as_ref()
+                .is_some_and(|tags| tags.contains_key("Primary"))
+        })
         .max_by(|(_, left), (_, right)| {
             compare_virtual_library_routes(
                 &left.server,
@@ -1784,16 +1822,33 @@ mod tests {
     }
 
     #[test]
-    fn merged_library_does_not_fall_back_to_lower_priority_artwork() {
+    fn merged_library_artwork_falls_back_to_next_ranked_source_with_image() {
         let group = vec![
             library_source("with-image", Some("fallback-tag"), 1, 100),
             library_source("preferred-without-image", None, 2, 200),
         ];
 
-        let selected = preferred_library_source_index(&group).unwrap();
+        let metadata = preferred_library_source_index(&group).unwrap();
+        let artwork = preferred_library_image_source_index(&group).unwrap();
 
-        assert_eq!(group[selected].item.id, "preferred-without-image");
-        assert!(group[selected].item.image_tags.is_none());
+        assert_eq!(group[metadata].item.id, "preferred-without-image");
+        assert_eq!(group[artwork].item.id, "with-image");
+    }
+
+    #[test]
+    fn merged_library_artwork_selection_is_stable_when_response_order_changes() {
+        let group = vec![
+            library_source("lowest", Some("lowest-tag"), 1, 100),
+            library_source("middle", Some("middle-tag"), 2, 200),
+            library_source("preferred-no-image", None, 3, 300),
+        ];
+        let reversed: Vec<_> = group.clone().into_iter().rev().collect();
+
+        let selected = preferred_library_image_source_index(&group).unwrap();
+        let reversed_selected = preferred_library_image_source_index(&reversed).unwrap();
+
+        assert_eq!(group[selected].item.id, "middle");
+        assert_eq!(reversed[reversed_selected].item.id, "middle");
     }
 
     #[test]
