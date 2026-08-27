@@ -250,6 +250,69 @@ impl MediaStorageService {
         }
     }
 
+    /// Returns the persisted duplicate-identity key of a virtual media item.
+    pub async fn get_provider_key(
+        &self,
+        virtual_media_id: &str,
+    ) -> Result<Option<String>, sqlx::Error> {
+        let row: Option<(Option<String>,)> = sqlx::query_as(
+            r#"
+            SELECT provider_key
+            FROM media_mappings
+            WHERE virtual_media_id = ?
+            "#,
+        )
+        .bind(Self::normalize_uuid(virtual_media_id))
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.and_then(|(key,)| key).filter(|key| !key.is_empty()))
+    }
+
+    /// Persists duplicate-identity keys for the given
+    /// `(virtual_media_id, provider_key)` pairs.
+    pub async fn set_provider_keys(&self, entries: &[(String, String)]) -> Result<(), sqlx::Error> {
+        let mut transaction = self.pool.begin().await?;
+        for (virtual_media_id, provider_key) in entries {
+            sqlx::query(
+                r#"
+                UPDATE media_mappings
+                SET provider_key = ?
+                WHERE virtual_media_id = ?
+                  AND (provider_key IS NULL OR provider_key <> ?)
+                "#,
+            )
+            .bind(provider_key)
+            .bind(virtual_media_id)
+            .bind(provider_key)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    /// Returns all mappings that share a duplicate-identity key but live on a
+    /// different server than `exclude_server_id`.
+    pub async fn find_duplicate_group_members(
+        &self,
+        provider_key: &str,
+        exclude_server_id: ServerId,
+    ) -> Result<Vec<MediaMapping>, sqlx::Error> {
+        sqlx::query_as::<_, MediaMapping>(
+            r#"
+            SELECT id, virtual_media_id, original_media_id, server_id, server_url, created_at
+            FROM media_mappings
+            WHERE provider_key = ? AND server_id <> ?
+            ORDER BY server_id ASC
+            "#,
+        )
+        .bind(provider_key)
+        .bind(exclude_server_id.as_i64())
+        .fetch_all(&self.pool)
+        .await
+    }
+
     /// Delete a media mapping
     pub async fn delete_media_mapping(&self, virtual_media_id: &str) -> Result<bool, sqlx::Error> {
         let result = sqlx::query(
@@ -320,6 +383,10 @@ mod tests {
     use super::*;
 
     async fn create_test_server(pool: &SqlitePool) -> Server {
+        create_test_server_with_url(pool, "http://localhost:8096").await
+    }
+
+    async fn create_test_server_with_url(pool: &SqlitePool, url: &str) -> Server {
         let now = chrono::Utc::now();
         let result = sqlx::query(
             r#"
@@ -327,8 +394,8 @@ mod tests {
             VALUES (?, ?, ?, ?, ?)
             "#,
         )
-        .bind("Test Server")
-        .bind("http://localhost:8096")
+        .bind(url)
+        .bind(url)
         .bind(100)
         .bind(now)
         .bind(now)
@@ -339,7 +406,7 @@ mod tests {
         Server {
             id: ServerId::new(result.last_insert_rowid()),
             name: "Test Server".to_string(),
-            url: ServerUrl::parse("http://localhost:8096").unwrap(),
+            url: ServerUrl::parse(url).unwrap(),
             priority: 100,
             media_streaming_mode: MediaStreamingMode::Redirect,
             created_at: now,
@@ -396,7 +463,7 @@ mod tests {
 
         assert_eq!(retrieved_mapping.virtual_media_id, mapping.virtual_media_id);
         assert_eq!(retrieved_mapping.original_media_id, "original-movie-123");
-        assert_eq!(server.name, "Test Server");
+        assert_eq!(server.name, "http://localhost:8096");
         assert_eq!(server.url.as_str(), "http://localhost:8096");
     }
 
@@ -434,5 +501,63 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn test_duplicate_identity_persistence_and_sibling_lookup() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = MediaStorageService::new(pool.clone());
+        let primary = create_test_server_with_url(&pool, "http://primary.example:8096").await;
+        let sibling = create_test_server_with_url(&pool, "http://sibling.example:8096").await;
+
+        let primary_mapping = service
+            .get_or_create_media_mapping("movie-1", &primary)
+            .await
+            .unwrap();
+        let sibling_mapping = service
+            .get_or_create_media_mapping("movie-1", &sibling)
+            .await
+            .unwrap();
+
+        assert!(service
+            .get_provider_key(&primary_mapping.virtual_media_id)
+            .await
+            .unwrap()
+            .is_none());
+
+        service
+            .set_provider_keys(&[
+                (
+                    primary_mapping.virtual_media_id.clone(),
+                    "movie:provider:tmdb:42".to_string(),
+                ),
+                (
+                    sibling_mapping.virtual_media_id.clone(),
+                    "movie:provider:tmdb:42".to_string(),
+                ),
+            ])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            service
+                .get_provider_key(&primary_mapping.virtual_media_id)
+                .await
+                .unwrap(),
+            Some("movie:provider:tmdb:42".to_string())
+        );
+
+        let siblings_of_primary = service
+            .find_duplicate_group_members("movie:provider:tmdb:42", primary.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            siblings_of_primary
+                .iter()
+                .map(|mapping| mapping.virtual_media_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![sibling_mapping.virtual_media_id.as_str()]
+        );
     }
 }

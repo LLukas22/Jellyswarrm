@@ -179,6 +179,10 @@ impl AppState {
         self.config.read().await.merge_libraries
     }
 
+    pub async fn deduplicate_movies_enabled(&self) -> bool {
+        self.config.read().await.deduplicate_movies
+    }
+
     pub async fn process_response_json(
         &self,
         payload: &mut serde_json::Value,

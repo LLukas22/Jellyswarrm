@@ -8,6 +8,9 @@ use crate::{
         execute_json_request, execute_processed_json_request, payload_from_request,
         process_playback_response, remap_playback_request, set_json_body,
     },
+    handlers::media_dedup::{
+        attach_alternate_versions, resolve_rerouted_playback, DetailMergeContext,
+    },
     models::{PlaybackRequest, PlaybackResponse},
     processors::response_processor::ResponseProcessingProfile,
     request_preprocessing::PreprocessedRequest,
@@ -32,6 +35,13 @@ async fn get_processed_item_json(
         .and_then(|auth| auth.token_ref())
         .map(str::to_string);
 
+    let detail_context = DetailMergeContext {
+        auth: &preprocessed.auth,
+        access_scope: preprocessed.access_scope.as_ref(),
+        sessions: preprocessed.sessions.as_deref(),
+        original_request: &preprocessed.original_request,
+    };
+
     let mut response = execute_processed_json_request(
         state,
         preprocessed.request,
@@ -39,6 +49,14 @@ async fn get_processed_item_json(
         ResponseProcessingProfile::Media,
         false,
         proxy_api_key.as_deref(),
+    )
+    .await?;
+
+    attach_alternate_versions(
+        state,
+        detail_context,
+        proxy_api_key.as_deref(),
+        &mut response,
     )
     .await?;
 
@@ -103,21 +121,35 @@ pub async fn post_playback_info(
         .as_ref()
         .and_then(|auth| auth.token_ref())
         .map(str::to_string);
-    let original_request = preprocessed.original_request;
-    let payload: PlaybackRequest = payload_from_request(&original_request)?;
+    let payload: PlaybackRequest = payload_from_request(&preprocessed.original_request)?;
 
     if payload.device_profile.is_none() {
         warn!("Got playback request from client without device profile. Transcoding will be enforced!")
     }
 
-    let server = preprocessed.server;
-
     let mut payload = payload;
+
+    let route =
+        resolve_rerouted_playback(&state, &preprocessed, payload.media_source_id.as_deref())
+            .await?;
+    let (server, session, mut request) = match route {
+        Some(rerouted) => {
+            if rerouted.drop_media_source {
+                debug!(
+                    "Dropping unavailable media source; server {} serves its default version",
+                    rerouted.server.name
+                );
+                payload.media_source_id = None;
+            }
+            (rerouted.server, rerouted.session, rerouted.request)
+        }
+        None => (preprocessed.server, session, preprocessed.request),
+    };
+
     remap_playback_request(&mut payload, &state, &session).await?;
 
     debug!("Forwarding PlaybackRequest JSON: {:?}", &payload);
 
-    let mut request = preprocessed.request;
     set_json_body(&mut request, &payload)?;
 
     match execute_json_request::<PlaybackResponse>(&state.reqwest_client, request).await {

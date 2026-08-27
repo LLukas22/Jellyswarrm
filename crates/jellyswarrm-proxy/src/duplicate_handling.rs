@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use crate::{
@@ -9,6 +10,133 @@ use crate::{
 pub struct TaggedMediaItem {
     pub item: MediaItem,
     pub server: Server,
+}
+
+/// Stable identity of a movie across backend servers. Two movies with the
+/// same key on different servers are the same content and can be merged into
+/// a single visible item.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DuplicateGroupKey(String);
+
+impl DuplicateGroupKey {
+    fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Result of merging duplicate movies across servers.
+#[derive(Debug, Clone)]
+pub struct MergedDuplicates {
+    /// The items to return to the client: one representative per duplicate
+    /// group, everything else unchanged.
+    pub items: Vec<MediaItem>,
+    /// Virtual media id to group key assignments for every movie in the input,
+    /// used to persist cross-server identity for later detail lookups.
+    pub provider_keys: Vec<(String, DuplicateGroupKey)>,
+}
+
+/// Computes the stable grouping key for a movie, if it has one.
+///
+/// Only `Movie` items are considered right now; episodes and series keep the
+/// legacy duplicate handling behavior.
+pub fn movie_group_key(item: &MediaItem) -> Option<DuplicateGroupKey> {
+    if item.item_type != BaseItemKind::Movie {
+        return None;
+    }
+
+    if let Some(provider) = provider_identity(item) {
+        return Some(DuplicateGroupKey::new(format!("movie:provider:{provider}")));
+    }
+
+    let title = normalized_name(item);
+    if title.is_empty() || item.production_year.is_none() {
+        // Without providers or a usable name+year there is no reliable
+        // cross-server identity.
+        return None;
+    }
+    Some(DuplicateGroupKey::new(format!(
+        "movie:title:{title}:{}",
+        item.production_year.unwrap()
+    )))
+}
+
+fn representative_is_better(candidate: &TaggedMediaItem, incumbent: &TaggedMediaItem) -> Ordering {
+    // Higher server priority wins; ties are broken deterministically by
+    // descending server name/id so every response collapses identically.
+    candidate
+        .server
+        .priority
+        .cmp(&incumbent.server.priority)
+        .then_with(|| candidate.server.name.cmp(&incumbent.server.name))
+        .then_with(|| {
+            candidate
+                .server
+                .id
+                .as_i64()
+                .cmp(&incumbent.server.id.as_i64())
+        })
+        .then_with(|| candidate.item.id.cmp(&incumbent.item.id))
+}
+
+/// Collapses duplicate movies into single representative items and keeps the
+/// existing suffix-labeling behavior for any other duplicates (episodes).
+pub fn deduplicate_movies(items: Vec<TaggedMediaItem>) -> MergedDuplicates {
+    let mut key_positions: HashMap<String, usize> = HashMap::new();
+    let mut groups: Vec<(Option<DuplicateGroupKey>, Vec<TaggedMediaItem>)> = Vec::new();
+
+    for tagged in items {
+        match movie_group_key(&tagged.item) {
+            Some(key) => {
+                match key_positions.get(key.as_str()) {
+                    Some(&position) => groups[position].1.push(tagged),
+                    None => {
+                        key_positions.insert(key.as_str().to_owned(), groups.len());
+                        groups.push((Some(key), vec![tagged]));
+                    }
+                };
+            }
+            None => groups.push((None, vec![tagged])),
+        }
+    }
+
+    let mut provider_keys = Vec::new();
+    let mut items = Vec::new();
+    for (key, members) in groups {
+        match key {
+            Some(key) => {
+                for member in &members {
+                    provider_keys.push((member.item.id.clone(), key.clone()));
+                }
+                items.push(merge_movie_group(members));
+            }
+            None => items.extend(members.into_iter().map(item_with_server_suffix)),
+        }
+    }
+
+    MergedDuplicates {
+        items,
+        provider_keys,
+    }
+}
+
+/// Picks the best representative of a duplicate movie group and exposes the
+/// number of available versions to the client.
+fn merge_movie_group(members: Vec<TaggedMediaItem>) -> MediaItem {
+    let version_count = members.len().try_into().unwrap_or(i32::MAX);
+
+    let mut best = members
+        .into_iter()
+        .max_by(representative_is_better)
+        .expect("duplicate group is never empty");
+
+    if version_count > 1 {
+        best.item.media_source_count = Some(version_count);
+    }
+    best.item
 }
 
 pub fn label_duplicates(items: Vec<TaggedMediaItem>) -> Vec<MediaItem> {
@@ -173,15 +301,19 @@ mod tests {
 
         TaggedMediaItem {
             item,
-            server: Server {
-                id: ServerId::new(server_id),
-                name: format!("Server {server_id}"),
-                url: ServerUrl::parse("http://example:8096").unwrap(),
-                priority,
-                media_streaming_mode: MediaStreamingMode::Redirect,
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
-            },
+            server: server_fixture(server_id, priority),
+        }
+    }
+
+    fn server_fixture(server_id: i64, priority: i32) -> Server {
+        Server {
+            id: ServerId::new(server_id),
+            name: format!("Server {server_id}"),
+            url: ServerUrl::parse("http://example:8096").unwrap(),
+            priority,
+            media_streaming_mode: MediaStreamingMode::Redirect,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
         }
     }
 
@@ -273,6 +405,86 @@ mod tests {
                 .filter_map(|item| item.name.as_deref())
                 .collect::<Vec<_>>(),
             vec!["Pilot [Server 1]", "Pilot [Server 2]"]
+        );
+    }
+
+    #[test]
+    fn dedup_collapse_keeps_highest_priority_representative_and_advertises_versions() {
+        let merged = deduplicate_movies(vec![
+            tagged(1, 50, "The Thing", "same"),
+            tagged(2, 100, "The Thing", "same"),
+        ]);
+
+        assert_eq!(merged.items.len(), 1);
+        assert_eq!(
+            merged.items[0].media_source_count,
+            Some(2),
+            "collapsed group must advertise its version count"
+        );
+        assert_eq!(merged.items[0].id, "2-The Thing");
+        assert_eq!(merged.items[0].name.as_deref(), Some("The Thing"));
+    }
+
+    #[test]
+    fn dedup_is_deterministic_for_equal_priority_servers() {
+        let merged = deduplicate_movies(vec![
+            tagged(3, 100, "Same Movie", "same"),
+            tagged(1, 100, "Same Movie", "same"),
+        ]);
+
+        // Higher server id wins the deterministic tie break.
+        assert_eq!(merged.items[0].id, "3-Same Movie");
+
+        let merged_again = deduplicate_movies(vec![
+            tagged(1, 100, "Same Movie", "same"),
+            tagged(3, 100, "Same Movie", "same"),
+        ]);
+
+        assert_eq!(merged_again.items[0].id, merged.items[0].id);
+    }
+
+    #[test]
+    fn dedup_records_provider_keys_for_every_movie_and_collapses_only_duplicates() {
+        let mut single = tagged(1, 10, "Solo", "solo-provider");
+        single.item.id = "solo".to_string();
+
+        let merged = deduplicate_movies(vec![
+            single,
+            tagged(1, 100, "Duplicated", "dup"),
+            tagged(2, 100, "Duplicated", "dup"),
+        ]);
+
+        assert_eq!(merged.items.len(), 2);
+        let keys_by_id = merged
+            .provider_keys
+            .iter()
+            .map(|(virtual_media_id, _key)| virtual_media_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(keys_by_id.len(), 3);
+        assert_eq!(
+            keys_by_id.iter().filter(|id| **id == "solo").count(),
+            1,
+            "singleton movies keep their identity key"
+        );
+
+        let duplicated_keys: Vec<&str> = merged
+            .provider_keys
+            .iter()
+            .filter(|(id, _)| id != "solo")
+            .map(|(_id, key)| key.as_str())
+            .collect();
+        assert_eq!(duplicated_keys.len(), 2);
+        assert_eq!(duplicated_keys[0], duplicated_keys[1]);
+    }
+
+    #[test]
+    fn movie_group_key_matches_across_title_variations_of_one_movie() {
+        let left: MediaItem =
+            serde_json::from_value(serde_json::json!({"Id": "a", "Type": "Movie"})).unwrap();
+        assert_eq!(
+            movie_group_key(&left),
+            None,
+            "items without title or providers stay ungrouped"
         );
     }
 }

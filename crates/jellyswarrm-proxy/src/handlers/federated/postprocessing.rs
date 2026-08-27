@@ -120,6 +120,10 @@ impl FederatedItems {
         Self::new(label_duplicates(items))
     }
 
+    pub(super) fn from_merged_items(items: Vec<MediaItem>) -> Self {
+        Self::new(items)
+    }
+
     pub(super) fn merge_interleaved(mut self, server_items: Vec<ServerItems>) -> Self {
         self.items.extend(interleave(
             server_items
