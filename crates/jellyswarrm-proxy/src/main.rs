@@ -63,7 +63,7 @@ use crate::{
     handlers::common::set_json_body,
     handlers::quick_connect::{self, QuickConnectStorage},
     processors::{
-        request_analyzer::RequestAnalyzer,
+        request_analyzer::{PlaybackSessionAction, RequestAnalyzer},
         request_processor::{RequestProcessingContext, RequestProcessor},
         response_processor::{
             ResponseProcessingContext, ResponseProcessingProfile, ResponseProcessor,
@@ -949,6 +949,7 @@ async fn proxy_handler(
     })?;
 
     let request_url = preprocessed.request.url().clone();
+    let pending_playback_session_update = preprocessed.pending_playback_session_update.clone();
     let response_server = preprocessed.server.clone();
     let response_proxy_api_key = preprocessed
         .auth
@@ -1040,6 +1041,34 @@ async fn proxy_handler(
         error!("Failed to build response: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
+
+    if status.is_success() {
+        if let Some(update) = pending_playback_session_update {
+            match update.action {
+                PlaybackSessionAction::Start => {
+                    state.play_sessions.add_session(update.session).await;
+                }
+                PlaybackSessionAction::Refresh => {
+                    state
+                        .play_sessions
+                        .refresh_session_for_user(
+                            &update.session.session_id,
+                            &update.session.user_id,
+                        )
+                        .await;
+                }
+                PlaybackSessionAction::Remove => {
+                    state
+                        .play_sessions
+                        .remove_session_for_user(
+                            &update.session.session_id,
+                            &update.session.user_id,
+                        )
+                        .await;
+                }
+            }
+        }
+    }
 
     Ok(response)
 }

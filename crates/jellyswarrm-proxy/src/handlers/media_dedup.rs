@@ -30,6 +30,7 @@ pub(super) struct DetailMergeContext<'a> {
     pub access_scope: Option<&'a VirtualLibraryAccessScope>,
     pub sessions: Option<&'a [(AuthorizationSession, Server)]>,
     pub original_request: &'a reqwest::Request,
+    pub source_generation: i64,
 }
 
 #[derive(Debug)]
@@ -55,10 +56,6 @@ pub(super) async fn merge_movie_detail(
     proxy_api_key: Option<&str>,
     payload: &mut Value,
 ) -> Result<(), StatusCode> {
-    if !state.deduplicate_movies_enabled().await {
-        return Ok(());
-    }
-
     let Some(group) = state
         .media_storage
         .get_movie_version_group(context.requested_item_id)
@@ -114,11 +111,29 @@ pub(super) async fn merge_movie_detail(
 
     let sources_replaced = state
         .media_storage
-        .replace_movie_version_sources(group.id, &refreshed_member_mapping_ids, &observations)
+        .replace_movie_version_sources(
+            group.id,
+            context.source_generation,
+            &refreshed_member_mapping_ids,
+            &observations,
+        )
         .await
         .map_err(storage_error)?;
     if !sources_replaced {
-        return Err(StatusCode::CONFLICT);
+        let mut routable_sources = Vec::new();
+        for source in item.media_sources.take().unwrap_or_default() {
+            if state
+                .media_storage
+                .get_movie_version_source_route(group.id, &source.id)
+                .await
+                .map_err(storage_error)?
+                .is_some()
+            {
+                routable_sources.push(source);
+            }
+        }
+        item.media_source_count = Some(routable_sources.len().min(i32::MAX as usize) as i32);
+        item.media_sources = Some(routable_sources);
     }
     *payload = serde_json::to_value(item).map_err(|conversion_error| {
         error!("Failed to serialize merged movie detail: {conversion_error}");
@@ -340,11 +355,9 @@ pub(super) async fn record_playback_sources(
     state: &AppState,
     aggregate_id: &str,
     server: &Server,
-    sources: &[MediaSource],
+    source_generation: i64,
+    sources: &mut Vec<MediaSource>,
 ) -> Result<(), StatusCode> {
-    if !state.deduplicate_movies_enabled().await {
-        return Ok(());
-    }
     let Some(group) = state
         .media_storage
         .get_movie_version_group(aggregate_id)
@@ -372,10 +385,30 @@ pub(super) async fn record_playback_sources(
         .collect::<Vec<_>>();
     let sources_replaced = state
         .media_storage
-        .replace_movie_version_sources(group.id, &[member.mapping.id], &observations)
+        .replace_movie_version_sources(
+            group.id,
+            source_generation,
+            &[member.mapping.id],
+            &observations,
+        )
         .await
         .map_err(storage_error)?;
-    sources_replaced.then_some(()).ok_or(StatusCode::CONFLICT)
+    if !sources_replaced {
+        let mut routable_sources = Vec::new();
+        for source in sources.drain(..) {
+            if state
+                .media_storage
+                .get_movie_version_source_route(group.id, &source.id)
+                .await
+                .map_err(storage_error)?
+                .is_some()
+            {
+                routable_sources.push(source);
+            }
+        }
+        *sources = routable_sources;
+    }
+    Ok(())
 }
 
 /// Resolves an explicit source selection through the source routes recorded by
@@ -388,10 +421,6 @@ pub(super) async fn resolve_playback_route(
     requested_item_id: &str,
     selected_source_id: Option<&str>,
 ) -> Result<PlaybackRouteDecision, StatusCode> {
-    if !state.deduplicate_movies_enabled().await {
-        return Ok(PlaybackRouteDecision::Original);
-    }
-
     let Some(group) = state
         .media_storage
         .get_movie_version_group(requested_item_id)

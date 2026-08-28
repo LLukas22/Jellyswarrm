@@ -24,6 +24,7 @@ pub struct SettingsFormTemplate {
     pub server_name: String,
     pub include_server_name_in_media: bool,
     pub auto_create_users_on_login: bool,
+    pub deduplicate_movies: bool,
     pub ui_route: String,
 }
 
@@ -48,6 +49,7 @@ pub async fn settings_form(State(state): State<AppState>) -> impl IntoResponse {
         server_name: cfg.server_name,
         include_server_name_in_media: cfg.include_server_name_in_media,
         auto_create_users_on_login: cfg.auto_create_users_on_login,
+        deduplicate_movies: cfg.deduplicate_movies,
         ui_route: state.get_ui_route().await,
     };
     match form.render() {
@@ -68,6 +70,8 @@ pub struct SaveForm {
     pub include_server_name_in_media: bool,
     #[serde(default)]
     pub auto_create_users_on_login: bool,
+    #[serde(default)]
+    pub deduplicate_movies: bool,
 }
 
 pub async fn save_settings(State(state): State<AppState>, Form(form): Form<SaveForm>) -> Response {
@@ -85,6 +89,7 @@ pub async fn save_settings(State(state): State<AppState>, Form(form): Form<SaveF
         updated.server_name = form.server_name.trim().to_string();
         updated.include_server_name_in_media = form.include_server_name_in_media;
         updated.auto_create_users_on_login = form.auto_create_users_on_login;
+        updated.deduplicate_movies = form.deduplicate_movies;
         match save_config(&updated) {
             Ok(()) => {
                 *cfg = updated;
@@ -126,11 +131,30 @@ mod tests {
             server_name: "Jellyswarrm".to_string(),
             include_server_name_in_media: false,
             auto_create_users_on_login: true,
+            deduplicate_movies: true,
             ui_route: "admin".to_string(),
         }
         .render()
         .unwrap();
 
         assert!(!html.contains("name=\"merge_libraries\""));
+    }
+
+    #[test]
+    fn settings_form_renders_movie_deduplication_control() {
+        let html = SettingsFormTemplate {
+            server_id: "server".to_string(),
+            public_address: "http://localhost:8096".to_string(),
+            server_name: "Jellyswarrm".to_string(),
+            include_server_name_in_media: false,
+            auto_create_users_on_login: true,
+            deduplicate_movies: true,
+            ui_route: "admin".to_string(),
+        }
+        .render()
+        .unwrap();
+
+        assert!(html.contains("name=\"deduplicate_movies\""));
+        assert!(html.contains("name=\"deduplicate_movies\" value=\"true\" checked"));
     }
 }

@@ -33,6 +33,20 @@ async fn get_processed_item_json(
         .map(str::to_string);
     let requested_item_id = contains_id(preprocessed.original_request.url(), "Items");
     let server = preprocessed.server.clone();
+    let source_generation = if merge_movie_versions {
+        Some(
+            state
+                .media_storage
+                .begin_movie_reconciliation()
+                .await
+                .map_err(|error| {
+                    error!("Failed to begin detail source reconciliation: {error}");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?,
+        )
+    } else {
+        None
+    };
     let proxy_api_key = preprocessed
         .auth
         .as_ref()
@@ -63,6 +77,8 @@ async fn get_processed_item_json(
                 access_scope: preprocessed.access_scope.as_ref(),
                 sessions: preprocessed.sessions.as_deref(),
                 original_request: &preprocessed.original_request,
+                source_generation: source_generation
+                    .expect("merged detail has a source generation"),
             },
             proxy_api_key.as_deref(),
             &mut response,
@@ -134,6 +150,14 @@ pub async fn post_playback_info(
     let payload: PlaybackRequest = payload_from_request(&preprocessed.original_request)?;
     let requested_item_id =
         contains_id(preprocessed.original_request.url(), "Items").ok_or(StatusCode::BAD_REQUEST)?;
+    let source_generation = state
+        .media_storage
+        .begin_movie_reconciliation()
+        .await
+        .map_err(|error| {
+            error!("Failed to begin playback source reconciliation: {error}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     if payload.device_profile.is_none() {
         warn!("Got playback request from client without device profile. Transcoding will be enforced!")
@@ -173,8 +197,14 @@ pub async fn post_playback_info(
                 proxy_api_key.as_deref(),
             )
             .await?;
-            record_playback_sources(&state, &requested_item_id, &server, &response.media_sources)
-                .await?;
+            record_playback_sources(
+                &state,
+                &requested_item_id,
+                &server,
+                source_generation,
+                &mut response.media_sources,
+            )
+            .await?;
             track_playback_alias(
                 &requested_item_id,
                 &response.play_session_id,

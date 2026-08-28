@@ -8,6 +8,7 @@ use crate::{
         json_processor::{JsonAnalyzer, JsonProcessingContext},
     },
     server_storage::Server,
+    session_storage::PlaybackSession,
     user_authorization_service::User,
     virtual_library_service::compare_virtual_library_routes,
     DataContext,
@@ -23,9 +24,6 @@ impl RequestAnalyzer {
     }
 
     async fn movie_version_server(&self, aggregate_id: &str) -> Result<Option<Server>> {
-        if !self.data_context.config.read().await.deduplicate_movies {
-            return Ok(None);
-        }
         let members = self
             .data_context
             .media_storage
@@ -64,6 +62,9 @@ pub struct RequestBodyAnalysisResult {
     pub found_user_ids: Vec<String>,
     pub servers: Vec<Server>,
     pub users: Vec<User>,
+    pub authoritative_play_session: Option<PlaybackSession>,
+    pub requested_play_session_id: Option<String>,
+    pub requested_play_item_id: Option<String>,
 }
 
 impl RequestBodyAnalysisResult {
@@ -94,7 +95,17 @@ impl RequestBodyAnalysisResult {
     }
 }
 
-pub struct RequestAnalysisContext;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaybackSessionAction {
+    Start,
+    Refresh,
+    Remove,
+}
+
+pub struct RequestAnalysisContext {
+    pub authenticated_user_id: Option<String>,
+    pub playback_session_action: Option<PlaybackSessionAction>,
+}
 
 #[async_trait]
 impl JsonAnalyzer<RequestAnalysisContext, RequestBodyAnalysisResult> for RequestAnalyzer {
@@ -102,7 +113,7 @@ impl JsonAnalyzer<RequestAnalysisContext, RequestBodyAnalysisResult> for Request
         &self,
         json_context: &JsonProcessingContext,
         value: &Value,
-        _context: &RequestAnalysisContext,
+        context: &RequestAnalysisContext,
         accumulator: &mut RequestBodyAnalysisResult,
     ) -> Result<Option<Vec<String>>> {
         // Check if this is an ID field (case-insensitive)
@@ -121,30 +132,53 @@ impl JsonAnalyzer<RequestAnalysisContext, RequestBodyAnalysisResult> for Request
                     accumulator.servers.push(server);
                 }
                 accumulator.found_ids.push(virtual_id.clone());
+                if context.playback_session_action.is_some()
+                    && json_context.depth == 0
+                    && json_context.key.eq_ignore_ascii_case("ItemId")
+                {
+                    accumulator.requested_play_item_id = Some(virtual_id.clone());
+                }
             }
         }
 
         // Check if this is a SessionId field (case-insensitive)
         if SESSION_FIELDS.contains(&json_context.key) {
             if let serde_json::Value::String(ref session_id) = value {
-                if let Some(play_session) = self
-                    .data_context
-                    .play_sessions
-                    .get_session(session_id)
-                    .await
-                {
-                    if let Some(server) = self
-                        .data_context
-                        .server_storage
-                        .get_server_by_id(play_session.server_id)
-                        .await?
-                    {
-                        accumulator.servers.push(server);
-                    } else {
-                        self.data_context
+                let is_authoritative_field = context.playback_session_action.is_some()
+                    && json_context.depth == 0
+                    && json_context.key.eq_ignore_ascii_case("PlaySessionId");
+                if is_authoritative_field {
+                    accumulator.requested_play_session_id = Some(session_id.clone());
+                    if let Some(user_id) = context.authenticated_user_id.as_deref() {
+                        accumulator.authoritative_play_session = self
+                            .data_context
                             .play_sessions
-                            .remove_sessions_for_server(play_session.server_id)
+                            .get_session_for_user(session_id, user_id)
                             .await;
+                    }
+                } else if context.playback_session_action.is_none() {
+                    if let Some(play_session) = match context.authenticated_user_id.as_deref() {
+                        Some(user_id) => {
+                            self.data_context
+                                .play_sessions
+                                .get_session_for_user(session_id, user_id)
+                                .await
+                        }
+                        None => None,
+                    } {
+                        if let Some(server) = self
+                            .data_context
+                            .server_storage
+                            .get_server_by_id(play_session.server_id)
+                            .await?
+                        {
+                            accumulator.servers.push(server);
+                        } else {
+                            self.data_context
+                                .play_sessions
+                                .remove_sessions_for_server(play_session.server_id)
+                                .await;
+                        }
                     }
                 }
                 accumulator.found_session_ids.push(session_id.clone());

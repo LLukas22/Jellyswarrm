@@ -119,7 +119,7 @@ impl JsonProcessor<RequestProcessingContext> for RequestProcessor {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{collections::BTreeSet, sync::Arc};
 
     use serde_json::json;
     use sqlx::SqlitePool;
@@ -127,8 +127,8 @@ mod tests {
     use super::*;
     use crate::{
         config::{AppConfig, MediaStreamingMode, MIGRATOR},
-        duplicate_handling::{MovieIdentity, MovieObservation, MovieProvider},
-        media_storage_service::MediaStorageService,
+        duplicate_handling::{MovieAlias, MovieObservation, MovieProvider},
+        media_storage_service::{MediaStorageService, MovieCatalogSnapshot},
         processors::process_json,
         server_id::ServerId,
         server_storage::ServerStorageService,
@@ -237,20 +237,29 @@ mod tests {
             .get_or_create_media_mapping("upstream-item", &server)
             .await
             .unwrap();
-        let identity = MovieIdentity {
+        let alias = MovieAlias {
             provider: MovieProvider::Tmdb,
             provider_id: "42".to_string(),
         };
+        let generation = media_storage.begin_movie_reconciliation().await.unwrap();
         let aggregate_id = media_storage
-            .observe_movie_versions(&[MovieObservation {
-                virtual_media_id: mapping.virtual_media_id,
-                identity: Some(identity.clone()),
-                ambiguous: false,
-                source_virtual_ids: Vec::new(),
-            }])
+            .reconcile_movie_catalog(
+                "configured:library:user",
+                generation,
+                &[MovieCatalogSnapshot {
+                    source_key: "server:library".to_string(),
+                    server_id: server.id,
+                    complete: true,
+                    observations: vec![MovieObservation {
+                        virtual_media_id: mapping.virtual_media_id.clone(),
+                        aliases: BTreeSet::from([alias]),
+                    }],
+                }],
+                true,
+            )
             .await
             .unwrap()
-            .remove(&identity)
+            .remove(&mapping.virtual_media_id)
             .unwrap()
             .virtual_media_id;
         let virtual_libraries =

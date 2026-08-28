@@ -6,12 +6,13 @@ use tokio::task::JoinSet;
 use tracing::{debug, error, trace, warn};
 
 use crate::{
-    duplicate_handling::{MovieDedupPlan, TaggedMediaItem},
+    duplicate_handling::{MovieAlias, MovieDedupPlan, MovieObservation, TaggedMediaItem},
     extractors::Preprocessed,
     handlers::{
         common::{execute_json_request, response_json_to_payload},
         items::get_items,
     },
+    media_storage_service::MovieCatalogSnapshot,
     models::{
         enums::{BaseItemKind, CollectionType},
         ItemsResponseVariants, ItemsResponseWithCount, MediaItem,
@@ -156,9 +157,19 @@ async fn get_items_from_all_servers_preprocessed(
             get_items(State(state.clone()), Preprocessed(preprocessed)).await
         }
         CatalogPlan::Virtual {
+            catalog_scope_key,
             targets,
             skipped_targets,
-        } => get_virtual_library_items(state, preprocessed, targets, skipped_targets).await,
+        } => {
+            get_virtual_library_items(
+                state,
+                preprocessed,
+                catalog_scope_key,
+                targets,
+                skipped_targets,
+            )
+            .await
+        }
         CatalogPlan::Interleaved(targets) => {
             get_interleaved_root(state, preprocessed, targets).await
         }
@@ -174,15 +185,31 @@ async fn get_items_from_all_servers_preprocessed(
 async fn get_virtual_library_items(
     state: &AppState,
     preprocessed: PreprocessedRequest,
+    catalog_scope_key: String,
     targets: Vec<CatalogFetchTarget>,
     skipped_targets: usize,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    let deduplicate_movies = state.deduplicate_movies_enabled().await;
+    let reconciliation_generation = if deduplicate_movies {
+        Some(
+            state
+                .media_storage
+                .begin_movie_reconciliation()
+                .await
+                .map_err(|error| {
+                    error!("Failed to begin movie reconciliation: {error}");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?,
+        )
+    } else {
+        None
+    };
     let original_request = preprocessed.original_request;
     let pagination = Pagination::from_url(original_request.url());
     let FetchedCatalog {
         server_items,
+        failures,
         response_shape,
-        ..
     } = fetch_catalog(
         state,
         &original_request,
@@ -194,32 +221,51 @@ async fn get_virtual_library_items(
 
     let mut upstream_total_sum = 0i32;
     let mut all_fully_fetched = true;
-    let tagged_items: Vec<TaggedMediaItem> = server_items
-        .into_iter()
-        .flat_map(|fetch| {
-            if let Some(total) = fetch.upstream_total {
-                upstream_total_sum += total.max(0);
-            }
-            all_fully_fetched &= fetch.fully_fetched;
+    let authoritative_inventory = is_authoritative_movie_inventory_request(original_request.url());
+    let mut snapshots = Vec::new();
+    let mut tagged_items = Vec::new();
+    for fetch in server_items {
+        if let Some(total) = fetch.upstream_total {
+            upstream_total_sum += total.max(0);
+        }
+        all_fully_fetched &= fetch.fully_fetched;
+        let ServerItems { response, server } = fetch.server_items;
+        let items = response.into_items();
+        if deduplicate_movies {
+            snapshots.push(MovieCatalogSnapshot {
+                source_key: format!(
+                    "{}:{}",
+                    server.id,
+                    fetch.source_parent_id.as_deref().unwrap_or_default()
+                ),
+                server_id: server.id,
+                complete: fetch.fully_fetched && authoritative_inventory,
+                observations: items
+                    .iter()
+                    .filter(|item| item.item_type == BaseItemKind::Movie)
+                    .map(|item| MovieObservation {
+                        virtual_media_id: item.id.clone(),
+                        aliases: MovieAlias::from_item(item),
+                    })
+                    .collect(),
+            });
+        }
+        tagged_items.extend(items.into_iter().map(|item| TaggedMediaItem {
+            item,
+            server: server.clone(),
+        }));
+    }
 
-            let ServerItems { response, server } = fetch.server_items;
-            response
-                .into_items()
-                .into_iter()
-                .map(move |item| TaggedMediaItem {
-                    item,
-                    server: server.clone(),
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect();
-
-    let deduplicate_movies = state.deduplicate_movies_enabled().await;
     let items = if deduplicate_movies {
         let plan = MovieDedupPlan::new(tagged_items);
         let stable_group_ids = state
             .media_storage
-            .observe_movie_versions(plan.observations())
+            .reconcile_movie_catalog(
+                &catalog_scope_key,
+                reconciliation_generation.expect("enabled reconciliation has a generation"),
+                &snapshots,
+                skipped_targets == 0 && failures == 0,
+            )
             .await
             .map_err(|error| {
                 error!("Failed to reconcile movie version groups: {error}");
@@ -237,6 +283,46 @@ async fn get_virtual_library_items(
         original_request.url(),
         response_shape,
     )
+}
+
+fn is_authoritative_movie_inventory_request(url: &url::Url) -> bool {
+    if is_upstream_limited_catalog_request(url)
+        || !url
+            .path()
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .is_some_and(|segment| segment.eq_ignore_ascii_case("Items"))
+    {
+        return false;
+    }
+    const SAFE_KEYS: &[&str] = &[
+        "parentid",
+        "userid",
+        "startindex",
+        "limit",
+        "recursive",
+        "fields",
+        "sortby",
+        "sortorder",
+        "includeitemtypes",
+        "imagetypeLimit",
+        "enableimagetypes",
+        "enabletotalrecordcount",
+    ];
+    let mut recursive = false;
+    let mut includes_movies = true;
+    let safe = url.query_pairs().all(|(key, value)| {
+        if key.eq_ignore_ascii_case("recursive") {
+            recursive = value.eq_ignore_ascii_case("true");
+        } else if key.eq_ignore_ascii_case("includeitemtypes") {
+            includes_movies = value
+                .split(',')
+                .any(|item_type| item_type.trim().eq_ignore_ascii_case("movie"));
+        }
+        SAFE_KEYS.iter().any(|safe| key.eq_ignore_ascii_case(safe))
+    });
+    safe && recursive && includes_movies
 }
 
 async fn get_interleaved_root(
@@ -293,8 +379,9 @@ async fn fetch_catalog(
             continue;
         };
         ensure_global_sort_fields(request.url_mut());
-        if let Some(parent_id) = target.parent_id {
-            *request.url_mut() = replace_parent_id(request.url(), &parent_id);
+        let source_parent_id = target.parent_id.clone();
+        if let Some(parent_id) = target.parent_id.as_deref() {
+            *request.url_mut() = replace_parent_id(request.url(), parent_id);
             ensure_duplicate_identity_field(request.url_mut());
         }
 
@@ -349,7 +436,13 @@ async fn fetch_catalog(
                 .await
                 .map(FetchedServerItems::complete),
             };
-            (index, result)
+            (
+                index,
+                result.map(|mut fetched| {
+                    fetched.source_parent_id = source_parent_id;
+                    fetched
+                }),
+            )
         });
     }
 
@@ -802,6 +895,7 @@ struct FetchedServerItems {
     server_items: ServerItems,
     upstream_total: Option<i32>,
     fully_fetched: bool,
+    source_parent_id: Option<String>,
 }
 
 impl FetchedServerItems {
@@ -814,6 +908,7 @@ impl FetchedServerItems {
             server_items,
             upstream_total,
             fully_fetched: true,
+            source_parent_id: None,
         }
     }
 }
@@ -888,6 +983,7 @@ async fn fetch_windowed_items_from_server(
         server_items: ServerItems { response, server },
         upstream_total,
         fully_fetched,
+        source_parent_id: None,
     })
 }
 
@@ -917,11 +1013,12 @@ async fn fetch_windowed_raw_items_from_server(
         ItemsResponseVariants::Bare(_) => None,
     };
     let first_page_len = first_page.len();
-    let mut all_items = first_page.into_items();
-    let mut seen_item_ids = all_items
-        .iter()
-        .map(|item| item.id.clone())
-        .collect::<HashSet<_>>();
+    let mut seen_item_ids = HashSet::new();
+    let mut all_items = first_page
+        .into_items()
+        .into_iter()
+        .filter(|item| seen_item_ids.insert(item.id.clone()))
+        .collect::<Vec<_>>();
 
     let mut fully_fetched = first_page_len < UPSTREAM_PAGE_SIZE;
     let max_pages = max_pages.or_else(|| {
@@ -951,14 +1048,15 @@ async fn fetch_windowed_raw_items_from_server(
         }
         let mut found_new_item = false;
         for (_, page) in extra_pages {
-            let page_items = page.into_items();
-            for item in &page_items {
-                found_new_item |= seen_item_ids.insert(item.id.clone());
+            for item in page.into_items() {
+                if seen_item_ids.insert(item.id.clone()) {
+                    found_new_item = true;
+                    all_items.push(item);
+                }
             }
-            all_items.extend(page_items);
         }
         if !found_new_item {
-            fully_fetched = true;
+            break;
         }
     }
 
@@ -1698,6 +1796,30 @@ mod tests {
             query_pairs(&url),
             vec![("Fields".to_string(), "Genres,ProviderIds".to_string())]
         );
+    }
+
+    #[test]
+    fn only_recursive_movie_catalogs_are_authoritative_inventories() {
+        let inventory = url::Url::parse(
+            "http://localhost/Items?ParentId=library&Recursive=true&IncludeItemTypes=Movie&Limit=100",
+        )
+        .unwrap();
+        assert!(is_authoritative_movie_inventory_request(&inventory));
+
+        for query in [
+            "ParentId=library&Recursive=false&IncludeItemTypes=Movie",
+            "ParentId=library&Recursive=true&IncludeItemTypes=Series",
+            "ParentId=library&Recursive=true&IncludeItemTypes=Movie&SearchTerm=Alien",
+        ] {
+            let url = url::Url::parse(&format!("http://localhost/Items?{query}")).unwrap();
+            assert!(!is_authoritative_movie_inventory_request(&url), "{query}");
+        }
+
+        let resume = url::Url::parse(
+            "http://localhost/Users/user/Items/Resume?Recursive=true&IncludeItemTypes=Movie",
+        )
+        .unwrap();
+        assert!(!is_authoritative_movie_inventory_request(&resume));
     }
 
     #[test]

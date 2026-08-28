@@ -6,7 +6,7 @@ use crate::server_id::ServerId;
 
 const PLAYBACK_SESSION_TTL: Duration = Duration::from_secs(12 * 60 * 60);
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PlaybackSession {
     pub session_id: String, // Unique identifier for the session
     pub item_id: String,    // ID of the media item being played
@@ -45,12 +45,13 @@ impl SessionStorage {
     pub async fn add_session(&self, session: PlaybackSession) {
         let mut sessions = self.live_sessions().await;
 
-        if let Some(index) = sessions.iter().position(|tracked| {
-            tracked.session.session_id == session.session_id
-                && tracked.session.item_id == session.item_id
-        }) {
-            sessions.remove(index);
-        }
+        sessions.retain(|tracked| {
+            let same_authority = tracked.session.session_id == session.session_id
+                && tracked.session.user_id == session.user_id;
+            !same_authority
+                || (tracked.session.server_id == session.server_id
+                    && tracked.session.item_id != session.item_id)
+        });
 
         sessions.push(TrackedPlaybackSession {
             session,
@@ -66,6 +67,35 @@ impl SessionStorage {
             .rev()
             .find(|tracked| tracked.session.session_id == session_id)
             .map(|tracked| tracked.session.clone())
+    }
+
+    pub async fn get_session_for_user(
+        &self,
+        session_id: &str,
+        user_id: &str,
+    ) -> Option<PlaybackSession> {
+        let sessions = self.live_sessions().await;
+
+        sessions
+            .iter()
+            .rev()
+            .find(|tracked| {
+                tracked.session.session_id == session_id && tracked.session.user_id == user_id
+            })
+            .map(|tracked| tracked.session.clone())
+    }
+
+    pub async fn refresh_session_for_user(&self, session_id: &str, user_id: &str) -> bool {
+        let mut sessions = self.live_sessions().await;
+        let now = Instant::now();
+        let mut refreshed = false;
+        for tracked in sessions.iter_mut().filter(|tracked| {
+            tracked.session.session_id == session_id && tracked.session.user_id == user_id
+        }) {
+            tracked.updated_at = now;
+            refreshed = true;
+        }
+        refreshed
     }
 
     pub async fn get_session_by_session_and_item_id(
@@ -98,6 +128,13 @@ impl SessionStorage {
     pub async fn remove_session(&self, session_id: &str) {
         let mut sessions = self.sessions.write().await;
         sessions.retain(|tracked| tracked.session.session_id != session_id);
+    }
+
+    pub async fn remove_session_for_user(&self, session_id: &str, user_id: &str) {
+        let mut sessions = self.sessions.write().await;
+        sessions.retain(|tracked| {
+            tracked.session.session_id != session_id || tracked.session.user_id != user_id
+        });
     }
 
     pub async fn remove_sessions_for_server(&self, server_id: ServerId) {
@@ -151,6 +188,40 @@ mod tests {
         assert_eq!(
             storage
                 .get_session_by_session_and_item_id("session-1", "item-1")
+                .await
+                .unwrap()
+                .server_id,
+            ServerId::new(2)
+        );
+    }
+
+    #[tokio::test]
+    async fn reused_user_session_id_has_one_server_authority() {
+        let storage = SessionStorage::new();
+        storage
+            .add_session(PlaybackSession {
+                session_id: "session-1".to_string(),
+                item_id: "item-1".to_string(),
+                user_id: "user-1".to_string(),
+                server_id: ServerId::new(1),
+            })
+            .await;
+        storage
+            .add_session(PlaybackSession {
+                session_id: "session-1".to_string(),
+                item_id: "item-2".to_string(),
+                user_id: "user-1".to_string(),
+                server_id: ServerId::new(2),
+            })
+            .await;
+
+        assert!(storage
+            .get_session_by_session_and_item_id("session-1", "item-1")
+            .await
+            .is_none());
+        assert_eq!(
+            storage
+                .get_session_for_user("session-1", "user-1")
                 .await
                 .unwrap()
                 .server_id,

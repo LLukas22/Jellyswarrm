@@ -1,6 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
-    io,
+    collections::{BTreeSet, HashMap, HashSet},
     sync::Arc,
     time::Duration,
 };
@@ -16,7 +15,7 @@ use crate::server_storage::Server;
 #[cfg(test)]
 use crate::server_url::ServerUrl;
 use crate::{
-    duplicate_handling::{MovieIdentity, MovieObservation, MovieProvider, StableMovieGroup},
+    duplicate_handling::{MovieAlias, MovieObservation, MovieProvider, StableMovieGroup},
     models::generate_token,
 };
 use moka::future::Cache;
@@ -35,8 +34,9 @@ pub struct MediaMapping {
 pub struct MovieVersionGroup {
     pub id: i64,
     pub virtual_media_id: String,
-    pub identity: MovieIdentity,
-    ambiguous: bool,
+    pub scope_id: i64,
+    pub published: bool,
+    pub ambiguous: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -55,6 +55,23 @@ pub struct MovieVersionSourceObservation {
 pub struct MovieVersionSourceRoute {
     pub source_mapping: MediaMapping,
     pub member_mapping: MediaMapping,
+}
+
+#[derive(Debug, Clone)]
+pub struct MovieCatalogSnapshot {
+    pub source_key: String,
+    pub server_id: ServerId,
+    pub complete: bool,
+    pub observations: Vec<MovieObservation>,
+}
+
+#[derive(Debug)]
+struct ActiveMovieMember {
+    mapping_id: i64,
+    virtual_media_id: String,
+    server_id: ServerId,
+    group_id: Option<i64>,
+    aliases: BTreeSet<MovieAlias>,
 }
 
 impl<'r> sqlx::FromRow<'r, SqliteRow> for MediaMapping {
@@ -286,198 +303,583 @@ impl MediaStorageService {
         }
     }
 
-    /// Reconciles identities for every observed movie and returns the stable
-    /// aggregate ID assigned to each identity. Observing a movie without a
-    /// reliable provider identity clears any stale group membership.
-    pub async fn observe_movie_versions(
+    pub async fn begin_movie_reconciliation(&self) -> Result<i64, sqlx::Error> {
+        let (generation,): (i64,) = sqlx::query_as(
+            "UPDATE movie_version_clock SET generation = generation + 1 WHERE singleton = 1 RETURNING generation",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(generation)
+    }
+
+    pub async fn reconcile_movie_catalog(
         &self,
-        observations: &[MovieObservation],
-    ) -> Result<HashMap<MovieIdentity, StableMovieGroup>, sqlx::Error> {
-        let _reconciliation_guard = self.movie_version_reconciliation.lock().await;
+        scope_key: &str,
+        generation: i64,
+        snapshots: &[MovieCatalogSnapshot],
+        prune_missing_sources: bool,
+    ) -> Result<HashMap<String, StableMovieGroup>, sqlx::Error> {
+        let _guard = self.movie_version_reconciliation.lock().await;
         let mut transaction = self.pool.begin().await?;
-        let mut observed_identities = HashSet::new();
+        let scope_id = Self::movie_scope_id(&mut transaction, scope_key).await?;
+        let (committed_generation,): (i64,) =
+            sqlx::query_as("SELECT committed_generation FROM movie_catalog_scopes WHERE id = ?")
+                .bind(scope_id)
+                .fetch_one(&mut *transaction)
+                .await?;
+        if generation <= committed_generation {
+            let stable_groups = Self::rebuild_movie_groups(&mut transaction, scope_id).await?;
+            transaction.commit().await?;
+            return Ok(stable_groups);
+        }
 
-        for observation in observations {
-            let mapping: Option<(i64, i64)> = sqlx::query_as(
-                "SELECT id, server_id FROM media_mappings WHERE virtual_media_id = ?",
+        let mut resolved_snapshots = Vec::with_capacity(snapshots.len());
+        let mut aliases_by_mapping = HashMap::<i64, BTreeSet<MovieAlias>>::new();
+        for snapshot in snapshots {
+            let source_id = Self::movie_source_id(
+                &mut transaction,
+                scope_id,
+                &snapshot.source_key,
+                snapshot.server_id,
             )
-            .bind(Self::normalize_uuid(&observation.virtual_media_id))
-            .fetch_optional(&mut *transaction)
             .await?;
-            let Some((mapping_id, server_id)) = mapping else {
-                continue;
-            };
+            let mut observed_mapping_ids = HashSet::new();
+            for observation in &snapshot.observations {
+                let mapping: Option<(i64,)> = sqlx::query_as(
+                    "SELECT id FROM media_mappings WHERE virtual_media_id = ? AND server_id = ?",
+                )
+                .bind(Self::normalize_uuid(&observation.virtual_media_id))
+                .bind(snapshot.server_id.as_i64())
+                .fetch_optional(&mut *transaction)
+                .await?;
+                let Some((mapping_id,)) = mapping else {
+                    continue;
+                };
+                observed_mapping_ids.insert(mapping_id);
+                aliases_by_mapping
+                    .entry(mapping_id)
+                    .or_default()
+                    .extend(observation.aliases.iter().cloned());
+            }
+            resolved_snapshots.push((source_id, snapshot, observed_mapping_ids));
+        }
 
-            let Some(identity) = observation.identity.as_ref() else {
-                sqlx::query("DELETE FROM movie_version_sources WHERE member_mapping_id = ?")
-                    .bind(mapping_id)
-                    .execute(&mut *transaction)
-                    .await?;
-                sqlx::query("DELETE FROM movie_version_members WHERE media_mapping_id = ?")
-                    .bind(mapping_id)
-                    .execute(&mut *transaction)
-                    .await?;
-                continue;
-            };
-            let group = Self::get_or_create_movie_version_group(&mut transaction, identity).await?;
-            if observation.ambiguous {
-                Self::mark_movie_version_group_ambiguous(&mut transaction, group.id).await?;
-                observed_identities.remove(identity);
-                continue;
-            }
-            if group.ambiguous {
-                observed_identities.remove(identity);
-                continue;
-            }
-            let conflicting_member: Option<(i64,)> = sqlx::query_as(
-                r#"
-                SELECT media_mapping_id
-                FROM movie_version_members
-                WHERE group_id = ? AND server_id = ? AND media_mapping_id != ?
-                "#,
-            )
-            .bind(group.id)
-            .bind(server_id)
-            .bind(mapping_id)
-            .fetch_optional(&mut *transaction)
-            .await?;
-            if conflicting_member.is_some() {
-                Self::mark_movie_version_group_ambiguous(&mut transaction, group.id).await?;
-                observed_identities.remove(identity);
-                continue;
-            }
-            let previous_group_id: Option<(i64,)> = sqlx::query_as(
-                "SELECT group_id FROM movie_version_members WHERE media_mapping_id = ?",
-            )
-            .bind(mapping_id)
-            .fetch_optional(&mut *transaction)
-            .await?;
-            if previous_group_id.is_some_and(|(group_id,)| group_id != group.id) {
-                sqlx::query("DELETE FROM movie_version_sources WHERE member_mapping_id = ?")
-                    .bind(mapping_id)
-                    .execute(&mut *transaction)
-                    .await?;
-            }
+        for (mapping_id, aliases) in aliases_by_mapping {
             sqlx::query(
                 r#"
                 INSERT INTO movie_version_members (
-                    group_id, media_mapping_id, server_id, observed_at
-                )
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT (media_mapping_id) DO UPDATE SET
-                    group_id = excluded.group_id,
-                    server_id = excluded.server_id,
+                    scope_id, media_mapping_id, aliases_generation, observed_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT (scope_id, media_mapping_id) DO UPDATE SET
+                    aliases_generation = excluded.aliases_generation,
                     observed_at = excluded.observed_at
                 "#,
             )
-            .bind(group.id)
+            .bind(scope_id)
             .bind(mapping_id)
-            .bind(server_id)
+            .bind(generation)
             .bind(chrono::Utc::now())
             .execute(&mut *transaction)
             .await?;
-            for source_virtual_id in &observation.source_virtual_ids {
-                Self::upsert_movie_version_source_route(
-                    &mut transaction,
-                    group.id,
-                    mapping_id,
-                    source_virtual_id,
+            sqlx::query(
+                "DELETE FROM movie_version_aliases WHERE scope_id = ? AND media_mapping_id = ?",
+            )
+            .bind(scope_id)
+            .bind(mapping_id)
+            .execute(&mut *transaction)
+            .await?;
+            for alias in aliases {
+                sqlx::query(
+                    "INSERT INTO movie_version_aliases (scope_id, media_mapping_id, provider, provider_id) VALUES (?, ?, ?, ?)",
                 )
+                .bind(scope_id)
+                .bind(mapping_id)
+                .bind(alias.provider.as_str())
+                .bind(alias.provider_id)
+                .execute(&mut *transaction)
                 .await?;
             }
-            observed_identities.insert(identity.clone());
         }
 
-        sqlx::query(
-            r#"
-            DELETE FROM movie_version_groups
-            WHERE ambiguous = 0 AND NOT EXISTS (
-                SELECT 1
-                FROM movie_version_members
-                WHERE movie_version_members.group_id = movie_version_groups.id
-            )
-            "#,
-        )
-        .execute(&mut *transaction)
-        .await?;
-
-        let mut stable_groups = HashMap::new();
-        for identity in observed_identities {
-            let row: Option<(String, i64)> = sqlx::query_as(
-                r#"
-                SELECT g.virtual_media_id, COUNT(m.media_mapping_id)
-                FROM movie_version_groups g
-                JOIN movie_version_members m ON m.group_id = g.id
-                WHERE g.provider = ? AND g.provider_id = ? AND g.ambiguous = 0
-                GROUP BY g.id
-                "#,
-            )
-            .bind(identity.provider.as_str())
-            .bind(&identity.provider_id)
-            .fetch_optional(&mut *transaction)
-            .await?;
-            if let Some(row) = row {
-                stable_groups.insert(
-                    identity,
-                    StableMovieGroup {
-                        virtual_media_id: row.0,
-                        member_count: row.1.max(0) as usize,
-                    },
-                );
+        for (source_id, snapshot, observed_mapping_ids) in resolved_snapshots {
+            for mapping_id in &observed_mapping_ids {
+                sqlx::query(
+                    r#"
+                    INSERT INTO movie_catalog_sightings (
+                        source_id, scope_id, media_mapping_id, generation
+                    ) VALUES (?, ?, ?, ?)
+                    ON CONFLICT (source_id, media_mapping_id) DO UPDATE SET
+                        generation = excluded.generation
+                    "#,
+                )
+                .bind(source_id)
+                .bind(scope_id)
+                .bind(*mapping_id)
+                .bind(generation)
+                .execute(&mut *transaction)
+                .await?;
             }
+
+            if snapshot.complete {
+                let existing = sqlx::query(
+                    "SELECT media_mapping_id FROM movie_catalog_sightings WHERE source_id = ?",
+                )
+                .bind(source_id)
+                .fetch_all(&mut *transaction)
+                .await?;
+                for row in existing {
+                    let mapping_id: i64 = row.get("media_mapping_id");
+                    if !observed_mapping_ids.contains(&mapping_id) {
+                        sqlx::query(
+                            "DELETE FROM movie_catalog_sightings WHERE source_id = ? AND media_mapping_id = ?",
+                        )
+                        .bind(source_id)
+                        .bind(mapping_id)
+                        .execute(&mut *transaction)
+                        .await?;
+                    }
+                }
+            }
+            sqlx::query("UPDATE movie_catalog_sources SET committed_generation = ? WHERE id = ?")
+                .bind(generation)
+                .bind(source_id)
+                .execute(&mut *transaction)
+                .await?;
         }
 
+        sqlx::query("UPDATE movie_catalog_scopes SET committed_generation = ? WHERE id = ?")
+            .bind(generation)
+            .bind(scope_id)
+            .execute(&mut *transaction)
+            .await?;
+
+        let scope_sources_generation: (i64,) =
+            sqlx::query_as("SELECT sources_generation FROM movie_catalog_scopes WHERE id = ?")
+                .bind(scope_id)
+                .fetch_one(&mut *transaction)
+                .await?;
+        if prune_missing_sources && generation > scope_sources_generation.0 {
+            let current_source_keys = snapshots
+                .iter()
+                .map(|snapshot| snapshot.source_key.as_str())
+                .collect::<HashSet<_>>();
+            let source_rows =
+                sqlx::query("SELECT id, source_key FROM movie_catalog_sources WHERE scope_id = ?")
+                    .bind(scope_id)
+                    .fetch_all(&mut *transaction)
+                    .await?;
+            for row in source_rows {
+                let source_key: String = row.get("source_key");
+                if !current_source_keys.contains(source_key.as_str()) {
+                    let source_id: i64 = row.get("id");
+                    sqlx::query("DELETE FROM movie_catalog_sources WHERE id = ?")
+                        .bind(source_id)
+                        .execute(&mut *transaction)
+                        .await?;
+                }
+            }
+            sqlx::query("UPDATE movie_catalog_scopes SET sources_generation = ? WHERE id = ?")
+                .bind(generation)
+                .bind(scope_id)
+                .execute(&mut *transaction)
+                .await?;
+        }
+
+        let stable_groups = Self::rebuild_movie_groups(&mut transaction, scope_id).await?;
         transaction.commit().await?;
         Ok(stable_groups)
     }
 
-    async fn get_or_create_movie_version_group(
+    async fn movie_scope_id(
         transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-        identity: &MovieIdentity,
-    ) -> Result<MovieVersionGroup, sqlx::Error> {
+        scope_key: &str,
+    ) -> Result<i64, sqlx::Error> {
         sqlx::query(
+            "INSERT INTO movie_catalog_scopes (scope_key) VALUES (?) ON CONFLICT DO NOTHING",
+        )
+        .bind(scope_key)
+        .execute(&mut **transaction)
+        .await?;
+        let (id,): (i64,) =
+            sqlx::query_as("SELECT id FROM movie_catalog_scopes WHERE scope_key = ?")
+                .bind(scope_key)
+                .fetch_one(&mut **transaction)
+                .await?;
+        Ok(id)
+    }
+
+    async fn movie_source_id(
+        transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        scope_id: i64,
+        source_key: &str,
+        server_id: ServerId,
+    ) -> Result<i64, sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO movie_catalog_sources (scope_id, source_key, server_id) VALUES (?, ?, ?) ON CONFLICT (scope_id, source_key) DO UPDATE SET server_id = excluded.server_id",
+        )
+        .bind(scope_id)
+        .bind(source_key)
+        .bind(server_id.as_i64())
+        .execute(&mut **transaction)
+        .await?;
+        let (id,): (i64,) = sqlx::query_as(
+            "SELECT id FROM movie_catalog_sources WHERE scope_id = ? AND source_key = ?",
+        )
+        .bind(scope_id)
+        .bind(source_key)
+        .fetch_one(&mut **transaction)
+        .await?;
+        Ok(id)
+    }
+
+    async fn rebuild_movie_groups(
+        transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        scope_id: i64,
+    ) -> Result<HashMap<String, StableMovieGroup>, sqlx::Error> {
+        let rows = sqlx::query(
             r#"
-            INSERT INTO movie_version_groups (
-                virtual_media_id, provider, provider_id, created_at
-            )
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT (provider, provider_id) DO NOTHING
+            SELECT DISTINCT
+                mapping.id,
+                mapping.virtual_media_id,
+                mapping.server_id,
+                member.group_id
+            FROM movie_version_members member
+            JOIN media_mappings mapping ON mapping.id = member.media_mapping_id
+            WHERE member.scope_id = ?
+              AND EXISTS (
+                  SELECT 1 FROM movie_catalog_sightings sighting
+                  WHERE sighting.scope_id = member.scope_id
+                    AND sighting.media_mapping_id = member.media_mapping_id
+              )
+              AND EXISTS (
+                  SELECT 1 FROM movie_version_aliases alias
+                  WHERE alias.scope_id = member.scope_id
+                    AND alias.media_mapping_id = member.media_mapping_id
+              )
             "#,
         )
-        .bind(generate_token())
-        .bind(identity.provider.as_str())
-        .bind(&identity.provider_id)
-        .bind(chrono::Utc::now())
+        .bind(scope_id)
+        .fetch_all(&mut **transaction)
+        .await?;
+        let mut members = rows
+            .into_iter()
+            .map(|row| ActiveMovieMember {
+                mapping_id: row.get("id"),
+                virtual_media_id: row.get("virtual_media_id"),
+                server_id: ServerId::new(row.get("server_id")),
+                group_id: row.get("group_id"),
+                aliases: BTreeSet::new(),
+            })
+            .collect::<Vec<_>>();
+        let member_positions = members
+            .iter()
+            .enumerate()
+            .map(|(index, member)| (member.mapping_id, index))
+            .collect::<HashMap<_, _>>();
+        let alias_rows = sqlx::query(
+            r#"
+            SELECT media_mapping_id, provider, provider_id
+            FROM movie_version_aliases
+            WHERE scope_id = ?
+            "#,
+        )
+        .bind(scope_id)
+        .fetch_all(&mut **transaction)
+        .await?;
+        for row in alias_rows {
+            let mapping_id: i64 = row.get("media_mapping_id");
+            let Some(&position) = member_positions.get(&mapping_id) else {
+                continue;
+            };
+            let provider: String = row.get("provider");
+            let Some(provider) = MovieProvider::parse(&provider) else {
+                continue;
+            };
+            members[position].aliases.insert(MovieAlias {
+                provider,
+                provider_id: row.get("provider_id"),
+            });
+        }
+
+        sqlx::query(
+            r#"
+            UPDATE movie_version_members
+            SET group_id = NULL
+            WHERE scope_id = ?
+              AND EXISTS (
+                  SELECT 1 FROM movie_catalog_sightings sighting
+                  WHERE sighting.scope_id = movie_version_members.scope_id
+                    AND sighting.media_mapping_id = movie_version_members.media_mapping_id
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM movie_version_aliases alias
+                  WHERE alias.scope_id = movie_version_members.scope_id
+                    AND alias.media_mapping_id = movie_version_members.media_mapping_id
+              )
+            "#,
+        )
+        .bind(scope_id)
         .execute(&mut **transaction)
         .await?;
 
-        let row = sqlx::query(
-            r#"
-            SELECT id, virtual_media_id, provider, provider_id, ambiguous
-            FROM movie_version_groups
-            WHERE provider = ? AND provider_id = ?
-            "#,
+        let mut parents = (0..members.len()).collect::<Vec<_>>();
+        let mut alias_owners = HashMap::new();
+        for (index, member) in members.iter().enumerate() {
+            for alias in &member.aliases {
+                if let Some(owner) = alias_owners.insert(alias.clone(), index) {
+                    union_indexes(&mut parents, owner, index);
+                }
+            }
+        }
+        let mut components = HashMap::<usize, Vec<usize>>::new();
+        for index in 0..members.len() {
+            let root = find_index(&mut parents, index);
+            components.entry(root).or_default().push(index);
+        }
+        let mut components = components.into_values().collect::<Vec<_>>();
+        components.sort_by_key(|component| {
+            component
+                .iter()
+                .map(|index| members[*index].mapping_id)
+                .min()
+                .unwrap_or_default()
+        });
+
+        let group_alias_rows = sqlx::query(
+            "SELECT group_id, provider, provider_id FROM movie_version_group_aliases WHERE scope_id = ?",
         )
-        .bind(identity.provider.as_str())
-        .bind(&identity.provider_id)
-        .fetch_one(&mut **transaction)
+        .bind(scope_id)
+        .fetch_all(&mut **transaction)
         .await?;
-        Self::movie_version_group_from_row(&row)
+        let mut historical_groups = HashMap::new();
+        for row in group_alias_rows {
+            let provider: String = row.get("provider");
+            let Some(provider) = MovieProvider::parse(&provider) else {
+                continue;
+            };
+            historical_groups.insert(
+                MovieAlias {
+                    provider,
+                    provider_id: row.get("provider_id"),
+                },
+                row.get::<i64, _>("group_id"),
+            );
+        }
+        let component_groups = components
+            .iter()
+            .map(|component| {
+                let mut group_ids = component
+                    .iter()
+                    .filter_map(|index| members[*index].group_id)
+                    .collect::<HashSet<_>>();
+                for alias in component
+                    .iter()
+                    .flat_map(|index| members[*index].aliases.iter())
+                {
+                    if let Some(group_id) = historical_groups.get(alias) {
+                        group_ids.insert(*group_id);
+                    }
+                }
+                let mut group_ids = group_ids.into_iter().collect::<Vec<_>>();
+                group_ids.sort_unstable();
+                group_ids
+            })
+            .collect::<Vec<_>>();
+
+        let mut group_components = HashMap::<i64, Vec<usize>>::new();
+        for (component_index, group_ids) in component_groups.iter().enumerate() {
+            for group_id in group_ids {
+                group_components
+                    .entry(*group_id)
+                    .or_default()
+                    .push(component_index);
+            }
+        }
+        let split_groups = group_components
+            .iter()
+            .filter_map(|(group_id, component_indexes)| {
+                (component_indexes.len() > 1).then_some(*group_id)
+            })
+            .collect::<HashSet<_>>();
+        for group_id in &split_groups {
+            sqlx::query(
+                "UPDATE movie_version_groups SET ambiguous = 1 WHERE id = ? AND scope_id = ?",
+            )
+            .bind(group_id)
+            .bind(scope_id)
+            .execute(&mut **transaction)
+            .await?;
+        }
+
+        let mut assignments = HashMap::new();
+        for (component, existing_groups) in components.into_iter().zip(component_groups) {
+            let group_id = if let Some(group_id) = existing_groups
+                .iter()
+                .copied()
+                .find(|group_id| !split_groups.contains(group_id))
+            {
+                group_id
+            } else {
+                Self::create_movie_group(transaction, scope_id).await?
+            };
+
+            for losing_group_id in existing_groups.iter().copied() {
+                if losing_group_id == group_id || split_groups.contains(&losing_group_id) {
+                    continue;
+                }
+                sqlx::query("UPDATE movie_version_group_ids SET canonical = 0 WHERE group_id = ?")
+                    .bind(losing_group_id)
+                    .execute(&mut **transaction)
+                    .await?;
+                sqlx::query("UPDATE movie_version_group_ids SET group_id = ? WHERE group_id = ?")
+                    .bind(group_id)
+                    .bind(losing_group_id)
+                    .execute(&mut **transaction)
+                    .await?;
+            }
+
+            for index in &component {
+                if members[*index].group_id != Some(group_id) {
+                    sqlx::query(
+                        "DELETE FROM movie_version_sources WHERE scope_id = ? AND member_mapping_id = ?",
+                    )
+                    .bind(scope_id)
+                    .bind(members[*index].mapping_id)
+                    .execute(&mut **transaction)
+                    .await?;
+                }
+                sqlx::query(
+                    "UPDATE movie_version_members SET group_id = ? WHERE scope_id = ? AND media_mapping_id = ?",
+                )
+                .bind(group_id)
+                .bind(scope_id)
+                .bind(members[*index].mapping_id)
+                .execute(&mut **transaction)
+                .await?;
+            }
+            for losing_group_id in existing_groups.iter().copied() {
+                if losing_group_id == group_id || split_groups.contains(&losing_group_id) {
+                    continue;
+                }
+                sqlx::query(
+                    "DELETE FROM movie_version_sources WHERE scope_id = ? AND group_id = ?",
+                )
+                .bind(scope_id)
+                .bind(losing_group_id)
+                .execute(&mut **transaction)
+                .await?;
+                sqlx::query(
+                    "UPDATE movie_version_members SET group_id = ? WHERE scope_id = ? AND group_id = ?",
+                )
+                .bind(group_id)
+                .bind(scope_id)
+                .bind(losing_group_id)
+                .execute(&mut **transaction)
+                .await?;
+                sqlx::query("DELETE FROM movie_version_groups WHERE id = ? AND scope_id = ?")
+                    .bind(losing_group_id)
+                    .bind(scope_id)
+                    .execute(&mut **transaction)
+                    .await?;
+            }
+
+            for old_group_id in existing_groups
+                .iter()
+                .copied()
+                .chain(std::iter::once(group_id))
+            {
+                sqlx::query(
+                    "DELETE FROM movie_version_group_aliases WHERE scope_id = ? AND group_id = ?",
+                )
+                .bind(scope_id)
+                .bind(old_group_id)
+                .execute(&mut **transaction)
+                .await?;
+            }
+            let component_aliases = component
+                .iter()
+                .flat_map(|index| members[*index].aliases.iter())
+                .collect::<BTreeSet<_>>();
+            for alias in component_aliases {
+                sqlx::query(
+                    r#"
+                    INSERT INTO movie_version_group_aliases (
+                        scope_id, group_id, provider, provider_id
+                    ) VALUES (?, ?, ?, ?)
+                    ON CONFLICT (scope_id, provider, provider_id) DO UPDATE SET
+                        group_id = excluded.group_id
+                    "#,
+                )
+                .bind(scope_id)
+                .bind(group_id)
+                .bind(alias.provider.as_str())
+                .bind(&alias.provider_id)
+                .execute(&mut **transaction)
+                .await?;
+            }
+
+            let server_count = component
+                .iter()
+                .map(|index| members[*index].server_id)
+                .collect::<HashSet<_>>()
+                .len();
+            let ambiguous = server_count != component.len();
+            let publish = !ambiguous && server_count > 1;
+            sqlx::query(
+                "UPDATE movie_version_groups SET ambiguous = ?, published = CASE WHEN published = 1 OR ? THEN 1 ELSE 0 END WHERE id = ?",
+            )
+            .bind(ambiguous)
+            .bind(publish)
+            .bind(group_id)
+            .execute(&mut **transaction)
+            .await?;
+            let (virtual_media_id, published): (String, bool) = sqlx::query_as(
+                r#"
+                SELECT id.virtual_media_id, group_row.published
+                FROM movie_version_group_ids id
+                JOIN movie_version_groups group_row ON group_row.id = id.group_id
+                WHERE id.group_id = ? AND id.canonical = 1
+                "#,
+            )
+            .bind(group_id)
+            .fetch_one(&mut **transaction)
+            .await?;
+            let stable_group = StableMovieGroup {
+                virtual_media_id,
+                active_member_count: component.len(),
+                ambiguous,
+                published,
+            };
+            for index in component {
+                assignments.insert(
+                    members[index].virtual_media_id.clone(),
+                    stable_group.clone(),
+                );
+            }
+        }
+        Ok(assignments)
     }
 
-    async fn mark_movie_version_group_ambiguous(
+    async fn create_movie_group(
         transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-        group_id: i64,
-    ) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE movie_version_groups SET ambiguous = 1 WHERE id = ?")
-            .bind(group_id)
-            .execute(&mut **transaction)
-            .await?;
-        sqlx::query("DELETE FROM movie_version_members WHERE group_id = ?")
-            .bind(group_id)
-            .execute(&mut **transaction)
-            .await?;
-        Ok(())
+        scope_id: i64,
+    ) -> Result<i64, sqlx::Error> {
+        let result =
+            sqlx::query("INSERT INTO movie_version_groups (scope_id, created_at) VALUES (?, ?)")
+                .bind(scope_id)
+                .bind(chrono::Utc::now())
+                .execute(&mut **transaction)
+                .await?;
+        let group_id = result.last_insert_rowid();
+        sqlx::query(
+            "INSERT INTO movie_version_group_ids (virtual_media_id, group_id, canonical, created_at) VALUES (?, ?, 1, ?)",
+        )
+        .bind(generate_token())
+        .bind(group_id)
+        .bind(chrono::Utc::now())
+        .execute(&mut **transaction)
+        .await?;
+        Ok(group_id)
     }
 
     pub async fn get_movie_version_group(
@@ -486,9 +888,15 @@ impl MediaStorageService {
     ) -> Result<Option<MovieVersionGroup>, sqlx::Error> {
         let row = sqlx::query(
             r#"
-            SELECT id, virtual_media_id, provider, provider_id, ambiguous
-            FROM movie_version_groups
-            WHERE virtual_media_id = ? AND ambiguous = 0
+            SELECT
+                group_row.id,
+                group_id.virtual_media_id,
+                group_row.scope_id,
+                group_row.published,
+                group_row.ambiguous
+            FROM movie_version_group_ids group_id
+            JOIN movie_version_groups group_row ON group_row.id = group_id.group_id
+            WHERE group_id.virtual_media_id = ?
             "#,
         )
         .bind(Self::normalize_uuid(virtual_media_id))
@@ -522,7 +930,18 @@ impl MediaStorageService {
             FROM movie_version_members vm
             JOIN media_mappings m ON m.id = vm.media_mapping_id
             JOIN servers s ON s.id = m.server_id
-            WHERE vm.group_id = ?
+            JOIN movie_version_groups version_group ON version_group.id = vm.group_id
+            WHERE vm.group_id = ? AND version_group.ambiguous = 0
+              AND EXISTS (
+                  SELECT 1 FROM movie_catalog_sightings sighting
+                  WHERE sighting.scope_id = vm.scope_id
+                    AND sighting.media_mapping_id = vm.media_mapping_id
+              )
+              AND EXISTS (
+                  SELECT 1 FROM movie_version_aliases alias
+                  WHERE alias.scope_id = vm.scope_id
+                    AND alias.media_mapping_id = vm.media_mapping_id
+              )
             "#,
         )
         .bind(group_id)
@@ -563,41 +982,80 @@ impl MediaStorageService {
     pub async fn replace_movie_version_sources(
         &self,
         group_id: i64,
+        generation: i64,
         refreshed_member_mapping_ids: &[i64],
         observations: &[MovieVersionSourceObservation],
     ) -> Result<bool, sqlx::Error> {
         let _reconciliation_guard = self.movie_version_reconciliation.lock().await;
         let mut transaction = self.pool.begin().await?;
+        let refreshed_members = refreshed_member_mapping_ids
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>();
+        if observations
+            .iter()
+            .any(|observation| !refreshed_members.contains(&observation.member_mapping_id))
+        {
+            transaction.rollback().await?;
+            return Ok(false);
+        }
+        let mut scope_id = None;
         for member_id in refreshed_member_mapping_ids {
-            let is_current_member: (bool,) = sqlx::query_as(
+            let current_member: Option<(i64, i64)> = sqlx::query_as(
                 r#"
-                SELECT EXISTS (
-                    SELECT 1
-                    FROM movie_version_members
-                    WHERE group_id = ? AND media_mapping_id = ?
-                )
+                SELECT member.sources_generation, member.scope_id
+                FROM movie_version_members member
+                JOIN movie_version_groups version_group ON version_group.id = member.group_id
+                WHERE member.group_id = ? AND member.media_mapping_id = ?
+                  AND version_group.ambiguous = 0
+                  AND EXISTS (
+                      SELECT 1 FROM movie_catalog_sightings sighting
+                      WHERE sighting.scope_id = member.scope_id
+                        AND sighting.media_mapping_id = member.media_mapping_id
+                  )
                 "#,
             )
             .bind(group_id)
             .bind(member_id)
-            .fetch_one(&mut *transaction)
+            .fetch_optional(&mut *transaction)
             .await?;
-            if !is_current_member.0 {
+            let Some((current_generation, member_scope_id)) = current_member else {
+                transaction.rollback().await?;
+                return Ok(false);
+            };
+            if current_generation >= generation
+                || scope_id.is_some_and(|scope_id| scope_id != member_scope_id)
+            {
                 transaction.rollback().await?;
                 return Ok(false);
             }
+            scope_id = Some(member_scope_id);
             sqlx::query(
-                "DELETE FROM movie_version_sources WHERE group_id = ? AND member_mapping_id = ?",
+                "DELETE FROM movie_version_sources WHERE scope_id = ? AND group_id = ? AND member_mapping_id = ?",
             )
+            .bind(member_scope_id)
+            .bind(group_id)
+            .bind(member_id)
+            .execute(&mut *transaction)
+            .await?;
+            sqlx::query(
+                "UPDATE movie_version_members SET sources_generation = ? WHERE group_id = ? AND media_mapping_id = ?",
+            )
+            .bind(generation)
             .bind(group_id)
             .bind(member_id)
             .execute(&mut *transaction)
             .await?;
         }
 
+        let Some(scope_id) = scope_id else {
+            transaction.commit().await?;
+            return Ok(observations.is_empty());
+        };
         for observation in observations {
             Self::upsert_movie_version_source_route(
                 &mut transaction,
+                scope_id,
                 group_id,
                 observation.member_mapping_id,
                 &observation.source_virtual_id,
@@ -611,6 +1069,7 @@ impl MediaStorageService {
 
     async fn upsert_movie_version_source_route(
         transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        scope_id: i64,
         group_id: i64,
         member_mapping_id: i64,
         source_virtual_id: &str,
@@ -627,24 +1086,33 @@ impl MediaStorageService {
         sqlx::query(
             r#"
             INSERT INTO movie_version_sources (
-                group_id, member_mapping_id, source_mapping_id, observed_at
+                scope_id, group_id, member_mapping_id, source_mapping_id, observed_at
             )
-            SELECT ?, ?, ?, ?
+            SELECT ?, ?, ?, ?, ?
             WHERE EXISTS (
-                SELECT 1
-                FROM movie_version_members
-                WHERE group_id = ? AND media_mapping_id = ?
+                SELECT 1 FROM movie_version_members member
+                JOIN media_mappings member_mapping ON member_mapping.id = member.media_mapping_id
+                JOIN media_mappings source_mapping ON source_mapping.id = ?
+                WHERE member.scope_id = ? AND member.group_id = ? AND member.media_mapping_id = ?
+                  AND member_mapping.server_id = source_mapping.server_id
+                  AND EXISTS (
+                      SELECT 1 FROM movie_catalog_sightings sighting
+                      WHERE sighting.scope_id = member.scope_id
+                        AND sighting.media_mapping_id = member.media_mapping_id
+                  )
             )
-            ON CONFLICT (source_mapping_id) DO UPDATE SET
-                group_id = excluded.group_id,
+            ON CONFLICT (scope_id, group_id, source_mapping_id) DO UPDATE SET
                 member_mapping_id = excluded.member_mapping_id,
                 observed_at = excluded.observed_at
             "#,
         )
+        .bind(scope_id)
         .bind(group_id)
         .bind(member_mapping_id)
         .bind(source_mapping_id)
         .bind(chrono::Utc::now())
+        .bind(source_mapping_id)
+        .bind(scope_id)
         .bind(group_id)
         .bind(member_mapping_id)
         .execute(&mut **transaction)
@@ -673,12 +1141,22 @@ impl MediaStorageService {
                 member.server_url AS member_server_url,
                 member.created_at AS member_created_at
             FROM movie_version_sources source_route
-            JOIN movie_version_members version_member
-                ON version_member.group_id = source_route.group_id
+            JOIN movie_version_members version_member ON
+                version_member.scope_id = source_route.scope_id
+                AND version_member.group_id = source_route.group_id
                 AND version_member.media_mapping_id = source_route.member_mapping_id
+            JOIN movie_version_groups version_group ON
+                version_group.id = version_member.group_id
+                AND version_group.scope_id = version_member.scope_id
             JOIN media_mappings source ON source.id = source_route.source_mapping_id
             JOIN media_mappings member ON member.id = source_route.member_mapping_id
             WHERE source_route.group_id = ? AND source.virtual_media_id = ?
+              AND version_group.ambiguous = 0
+              AND EXISTS (
+                  SELECT 1 FROM movie_catalog_sightings sighting
+                  WHERE sighting.scope_id = version_member.scope_id
+                    AND sighting.media_mapping_id = version_member.media_mapping_id
+              )
             "#,
         )
         .bind(group_id)
@@ -707,20 +1185,11 @@ impl MediaStorageService {
     }
 
     fn movie_version_group_from_row(row: &SqliteRow) -> Result<MovieVersionGroup, sqlx::Error> {
-        let provider_value: String = row.try_get("provider")?;
-        let provider = MovieProvider::parse(&provider_value).ok_or_else(|| {
-            sqlx::Error::Decode(Box::new(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("unknown movie provider {provider_value}"),
-            )))
-        })?;
         Ok(MovieVersionGroup {
             id: row.try_get("id")?,
             virtual_media_id: row.try_get("virtual_media_id")?,
-            identity: MovieIdentity {
-                provider,
-                provider_id: row.try_get("provider_id")?,
-            },
+            scope_id: row.try_get("scope_id")?,
+            published: row.try_get("published")?,
             ambiguous: row.try_get::<i64, _>("ambiguous")? != 0,
         })
     }
@@ -788,11 +1257,46 @@ impl MediaStorageService {
     }
 }
 
+fn find_index(parents: &mut [usize], index: usize) -> usize {
+    if parents[index] != index {
+        parents[index] = find_index(parents, parents[index]);
+    }
+    parents[index]
+}
+
+fn union_indexes(parents: &mut [usize], left: usize, right: usize) {
+    let left = find_index(parents, left);
+    let right = find_index(parents, right);
+    if left != right {
+        let (root, child) = if left < right {
+            (left, right)
+        } else {
+            (right, left)
+        };
+        parents[child] = root;
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
     use crate::config::MIGRATOR;
 
     use super::*;
+
+    async fn foreign_key_pool() -> SqlitePool {
+        let options = SqliteConnectOptions::from_str("sqlite::memory:")
+            .unwrap()
+            .foreign_keys(true);
+        SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap()
+    }
 
     async fn create_test_server(pool: &SqlitePool) -> Server {
         create_test_server_with_url(pool, "http://localhost:8096").await
@@ -917,7 +1421,7 @@ mod tests {
 
     #[tokio::test]
     async fn movie_groups_have_stable_ids_and_exact_source_routes() {
-        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let pool = foreign_key_pool().await;
         MIGRATOR.run(&pool).await.unwrap();
         let service = MediaStorageService::new(pool.clone());
         let primary = create_test_server_with_url(&pool, "http://primary.example:8096").await;
@@ -932,42 +1436,56 @@ mod tests {
             .await
             .unwrap();
 
-        let identity = MovieIdentity {
+        let alias = MovieAlias {
             provider: MovieProvider::Tmdb,
             provider_id: "42".to_string(),
         };
-        let mut observations = vec![
-            MovieObservation {
-                virtual_media_id: primary_mapping.virtual_media_id.clone(),
-                identity: Some(identity.clone()),
-                ambiguous: false,
-                source_virtual_ids: Vec::new(),
-            },
-            MovieObservation {
-                virtual_media_id: sibling_mapping.virtual_media_id.clone(),
-                identity: Some(identity.clone()),
-                ambiguous: false,
-                source_virtual_ids: Vec::new(),
-            },
-        ];
-        let assignments = service.observe_movie_versions(&observations).await.unwrap();
-        let assignment = assignments.get(&identity).unwrap().clone();
+        let primary_observation = MovieObservation {
+            virtual_media_id: primary_mapping.virtual_media_id.clone(),
+            aliases: BTreeSet::from([alias.clone()]),
+        };
+        let sibling_observation = MovieObservation {
+            virtual_media_id: sibling_mapping.virtual_media_id.clone(),
+            aliases: BTreeSet::from([alias.clone()]),
+        };
+        let generation = service.begin_movie_reconciliation().await.unwrap();
+        let assignments = service
+            .reconcile_movie_catalog(
+                "configured:library:user",
+                generation,
+                &[
+                    MovieCatalogSnapshot {
+                        source_key: "primary:library".to_string(),
+                        server_id: primary.id,
+                        complete: true,
+                        observations: vec![primary_observation.clone()],
+                    },
+                    MovieCatalogSnapshot {
+                        source_key: "sibling:library".to_string(),
+                        server_id: sibling.id,
+                        complete: true,
+                        observations: vec![sibling_observation.clone()],
+                    },
+                ],
+                true,
+            )
+            .await
+            .unwrap();
+        let assignment = assignments
+            .get(&primary_mapping.virtual_media_id)
+            .unwrap()
+            .clone();
         let aggregate_id = assignment.virtual_media_id;
-        assert_eq!(assignment.member_count, 2);
-        let repeated = service.observe_movie_versions(&observations).await.unwrap();
-        assert_eq!(
-            repeated
-                .get(&identity)
-                .map(|group| group.virtual_media_id.as_str()),
-            Some(aggregate_id.as_str())
-        );
+        assert_eq!(assignment.active_member_count, 2);
+        assert!(assignment.published);
+        assert!(!assignment.ambiguous);
 
         let group = service
             .get_movie_version_group(&aggregate_id)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(group.identity, identity);
+        assert!(group.published);
         assert_eq!(
             service
                 .get_movie_version_members(group.id)
@@ -981,18 +1499,11 @@ mod tests {
             .get_or_create_media_mapping("source-1", &sibling)
             .await
             .unwrap();
-        observations[1]
-            .source_virtual_ids
-            .push(source_mapping.virtual_media_id.clone());
-        service.observe_movie_versions(&observations).await.unwrap();
-        assert!(service
-            .get_movie_version_source_route(group.id, &source_mapping.virtual_media_id)
-            .await
-            .unwrap()
-            .is_some());
+        let source_generation = service.begin_movie_reconciliation().await.unwrap();
         service
             .replace_movie_version_sources(
                 group.id,
+                source_generation,
                 &[sibling_mapping.id],
                 &[MovieVersionSourceObservation {
                     member_mapping_id: sibling_mapping.id,
@@ -1009,57 +1520,338 @@ mod tests {
         assert_eq!(route.source_mapping.id, source_mapping.id);
         assert_eq!(route.member_mapping.id, sibling_mapping.id);
 
-        service.observe_movie_versions(&observations).await.unwrap();
-        assert!(service
-            .get_movie_version_source_route(group.id, &source_mapping.virtual_media_id)
-            .await
-            .unwrap()
-            .is_some());
-
-        service
-            .observe_movie_versions(&[MovieObservation {
-                virtual_media_id: primary_mapping.virtual_media_id,
-                identity: None,
-                ambiguous: false,
-                source_virtual_ids: Vec::new(),
-            }])
-            .await
-            .unwrap();
-        assert_eq!(
-            service
-                .get_movie_version_members(group.id)
-                .await
-                .unwrap()
-                .len(),
-            1
-        );
-
         let same_server_copy = service
             .get_or_create_media_mapping("movie-copy", &sibling)
             .await
             .unwrap();
+        let copy_observation = MovieObservation {
+            virtual_media_id: same_server_copy.virtual_media_id.clone(),
+            aliases: BTreeSet::from([alias.clone()]),
+        };
+        let ambiguous_generation = service.begin_movie_reconciliation().await.unwrap();
         let assignments = service
-            .observe_movie_versions(&[
-                MovieObservation {
-                    virtual_media_id: sibling_mapping.virtual_media_id,
-                    identity: Some(identity.clone()),
-                    ambiguous: false,
-                    source_virtual_ids: Vec::new(),
-                },
-                MovieObservation {
-                    virtual_media_id: same_server_copy.virtual_media_id,
-                    identity: Some(identity.clone()),
-                    ambiguous: false,
-                    source_virtual_ids: Vec::new(),
-                },
-            ])
+            .reconcile_movie_catalog(
+                "configured:library:user",
+                ambiguous_generation,
+                &[MovieCatalogSnapshot {
+                    source_key: "sibling:library".to_string(),
+                    server_id: sibling.id,
+                    complete: false,
+                    observations: vec![sibling_observation.clone(), copy_observation],
+                }],
+                false,
+            )
             .await
             .unwrap();
-        assert!(!assignments.contains_key(&identity));
-        assert!(service
-            .get_movie_version_group(&aggregate_id)
+        assert!(assignments[&sibling_mapping.virtual_media_id].ambiguous);
+
+        let recovery_generation = service.begin_movie_reconciliation().await.unwrap();
+        let recovered = service
+            .reconcile_movie_catalog(
+                "configured:library:user",
+                recovery_generation,
+                &[MovieCatalogSnapshot {
+                    source_key: "sibling:library".to_string(),
+                    server_id: sibling.id,
+                    complete: true,
+                    observations: vec![sibling_observation.clone()],
+                }],
+                false,
+            )
+            .await
+            .unwrap();
+        let recovered = &recovered[&sibling_mapping.virtual_media_id];
+        assert!(!recovered.ambiguous);
+        assert_eq!(recovered.virtual_media_id, aggregate_id);
+
+        let stale_generation = service.begin_movie_reconciliation().await.unwrap();
+        let fresh_generation = service.begin_movie_reconciliation().await.unwrap();
+        service
+            .reconcile_movie_catalog(
+                "configured:library:user",
+                fresh_generation,
+                &[MovieCatalogSnapshot {
+                    source_key: "sibling:library".to_string(),
+                    server_id: sibling.id,
+                    complete: true,
+                    observations: Vec::new(),
+                }],
+                false,
+            )
+            .await
+            .unwrap();
+        let stale = service
+            .reconcile_movie_catalog(
+                "configured:library:user",
+                stale_generation,
+                &[MovieCatalogSnapshot {
+                    source_key: "sibling:library".to_string(),
+                    server_id: sibling.id,
+                    complete: true,
+                    observations: vec![sibling_observation],
+                }],
+                false,
+            )
+            .await
+            .unwrap();
+        assert!(!stale.contains_key(&sibling_mapping.virtual_media_id));
+
+        let replacement_primary = service
+            .get_or_create_media_mapping("replacement-primary", &primary)
+            .await
+            .unwrap();
+        let replacement_sibling = service
+            .get_or_create_media_mapping("replacement-sibling", &sibling)
+            .await
+            .unwrap();
+        let replacement_generation = service.begin_movie_reconciliation().await.unwrap();
+        let replacements = service
+            .reconcile_movie_catalog(
+                "configured:library:user",
+                replacement_generation,
+                &[
+                    MovieCatalogSnapshot {
+                        source_key: "primary:library".to_string(),
+                        server_id: primary.id,
+                        complete: true,
+                        observations: vec![MovieObservation {
+                            virtual_media_id: replacement_primary.virtual_media_id.clone(),
+                            aliases: BTreeSet::from([alias.clone()]),
+                        }],
+                    },
+                    MovieCatalogSnapshot {
+                        source_key: "sibling:library".to_string(),
+                        server_id: sibling.id,
+                        complete: true,
+                        observations: vec![MovieObservation {
+                            virtual_media_id: replacement_sibling.virtual_media_id.clone(),
+                            aliases: BTreeSet::from([alias]),
+                        }],
+                    },
+                ],
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            replacements[&replacement_primary.virtual_media_id].virtual_media_id,
+            aggregate_id
+        );
+
+        let foreign_key_violations = sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert!(foreign_key_violations.is_empty());
+    }
+
+    #[tokio::test]
+    async fn scoped_movie_migration_preserves_legacy_aggregate_routes() {
+        let pool = foreign_key_pool().await;
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE servers (id INTEGER PRIMARY KEY);
+            CREATE TABLE media_mappings (
+                id INTEGER PRIMARY KEY,
+                virtual_media_id TEXT NOT NULL UNIQUE,
+                original_media_id TEXT NOT NULL,
+                server_id INTEGER NOT NULL,
+                server_url TEXT NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO servers (id) VALUES (1), (2);
+            INSERT INTO media_mappings (
+                id, virtual_media_id, original_media_id, server_id, server_url
+            ) VALUES
+                (1, 'member-a', 'movie-a', 1, 'http://a'),
+                (2, 'member-b', 'movie-b', 2, 'http://b'),
+                (3, 'source-b', 'source-b', 2, 'http://b');
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::raw_sql(include_str!(
+            "../migrations/20260827130000_movie_versions.up.sql"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::raw_sql(
+            r#"
+            INSERT INTO movie_version_groups (
+                id, virtual_media_id, provider, provider_id, ambiguous
+            ) VALUES (7, 'aggregate-7', 'tmdb', '42', 0);
+            INSERT INTO movie_version_members (
+                group_id, media_mapping_id, server_id
+            ) VALUES (7, 1, 1), (7, 2, 2);
+            INSERT INTO movie_version_sources (
+                group_id, member_mapping_id, source_mapping_id
+            ) VALUES (7, 2, 3);
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::raw_sql(include_str!(
+            "../migrations/20260827140000_scoped_movie_versions.up.sql"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let migrated_group: (i64, String, bool) = sqlx::query_as(
+            r#"
+            SELECT version_group.id, group_id.virtual_media_id, version_group.published
+            FROM movie_version_groups version_group
+            JOIN movie_version_group_ids group_id ON group_id.group_id = version_group.id
+            WHERE version_group.id = 7 AND group_id.canonical = 1
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(migrated_group, (7, "aggregate-7".to_string(), true));
+        let route_count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM movie_version_sources WHERE group_id = 7")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(route_count.0, 1);
+        assert!(sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(&pool)
             .await
             .unwrap()
-            .is_none());
+            .is_empty());
+
+        sqlx::raw_sql(include_str!(
+            "../migrations/20260827140000_scoped_movie_versions.down.sql"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+        let restored: (String, String, String) = sqlx::query_as(
+            "SELECT virtual_media_id, provider, provider_id FROM movie_version_groups WHERE id = 7",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            restored,
+            (
+                "aggregate-7".to_string(),
+                "tmdb".to_string(),
+                "42".to_string()
+            )
+        );
+        assert!(sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn rebuilding_one_scope_does_not_move_another_scopes_source_routes() {
+        let pool = foreign_key_pool().await;
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = MediaStorageService::new(pool.clone());
+        let primary = create_test_server_with_url(&pool, "http://scope-a.example:8096").await;
+        let sibling = create_test_server_with_url(&pool, "http://scope-b.example:8096").await;
+        let primary_mapping = service
+            .get_or_create_media_mapping("movie-primary", &primary)
+            .await
+            .unwrap();
+        let sibling_mapping = service
+            .get_or_create_media_mapping("movie-sibling", &sibling)
+            .await
+            .unwrap();
+        let source_mapping = service
+            .get_or_create_media_mapping("source-sibling", &sibling)
+            .await
+            .unwrap();
+        let alias = MovieAlias {
+            provider: MovieProvider::Tmdb,
+            provider_id: "42".to_string(),
+        };
+        let snapshots = || {
+            vec![
+                MovieCatalogSnapshot {
+                    source_key: "primary:library".to_string(),
+                    server_id: primary.id,
+                    complete: true,
+                    observations: vec![MovieObservation {
+                        virtual_media_id: primary_mapping.virtual_media_id.clone(),
+                        aliases: BTreeSet::from([alias.clone()]),
+                    }],
+                },
+                MovieCatalogSnapshot {
+                    source_key: "sibling:library".to_string(),
+                    server_id: sibling.id,
+                    complete: true,
+                    observations: vec![MovieObservation {
+                        virtual_media_id: sibling_mapping.virtual_media_id.clone(),
+                        aliases: BTreeSet::from([alias.clone()]),
+                    }],
+                },
+            ]
+        };
+        let mut groups = Vec::new();
+        for scope in ["configured:library:user-a", "configured:library:user-b"] {
+            let generation = service.begin_movie_reconciliation().await.unwrap();
+            let assignments = service
+                .reconcile_movie_catalog(scope, generation, &snapshots(), true)
+                .await
+                .unwrap();
+            let group = service
+                .get_movie_version_group(
+                    &assignments[&sibling_mapping.virtual_media_id].virtual_media_id,
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            let source_generation = service.begin_movie_reconciliation().await.unwrap();
+            assert!(service
+                .replace_movie_version_sources(
+                    group.id,
+                    source_generation,
+                    &[sibling_mapping.id],
+                    &[MovieVersionSourceObservation {
+                        member_mapping_id: sibling_mapping.id,
+                        source_virtual_id: source_mapping.virtual_media_id.clone(),
+                    }],
+                )
+                .await
+                .unwrap());
+            groups.push(group);
+        }
+
+        let split_generation = service.begin_movie_reconciliation().await.unwrap();
+        let mut split_snapshots = snapshots();
+        split_snapshots[1].observations[0].aliases = BTreeSet::from([MovieAlias {
+            provider: MovieProvider::Tmdb,
+            provider_id: "99".to_string(),
+        }]);
+        service
+            .reconcile_movie_catalog(
+                "configured:library:user-a",
+                split_generation,
+                &split_snapshots,
+                true,
+            )
+            .await
+            .unwrap();
+
+        assert!(service
+            .get_movie_version_source_route(groups[1].id, &source_mapping.virtual_media_id)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+            .is_empty());
     }
 }

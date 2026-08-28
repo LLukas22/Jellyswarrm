@@ -186,6 +186,13 @@ async fn request_for_server(
     }
 
     let session = session_for_server(&preprocessed.sessions, server);
+    if preprocessed.auth.is_some() && session.is_none() {
+        error!(
+            "No backend authorization session for media stream server {}",
+            server.name
+        );
+        return Err(StatusCode::UNAUTHORIZED);
+    }
     let auth = remap_authorization(&preprocessed.auth, &session)
         .await
         .map_err(|e| {
@@ -270,9 +277,11 @@ pub async fn get_stream(
     State(state): State<AppState>,
     Preprocessed(preprocessed): Preprocessed,
 ) -> Result<Response, StatusCode> {
-    let item_id = extract_stream_item_id(preprocessed.original_request.url().path());
+    let item_id =
+        extract_stream_item_id(preprocessed.original_request.url().path()).map(str::to_string);
     let session_id = extract_play_session_id(preprocessed.original_request.url());
-    let play_session = if let Some(item_id) = item_id {
+    let user_id = request_user_id(&preprocessed).map(str::to_string);
+    let play_session = if let Some(item_id) = item_id.as_deref() {
         let candidates = state.play_sessions.get_sessions_by_item_id(item_id).await;
         matching_play_session(
             candidates,
@@ -285,8 +294,24 @@ pub async fn get_stream(
     };
 
     let Some(play_session) = play_session else {
-        let server = preprocessed.server;
-        return forward_media_request(&state, &server, preprocessed.request, "media stream").await;
+        let server = preprocessed.server.clone();
+        let response =
+            forward_media_request(&state, &server, preprocessed.request, "media stream").await?;
+        if response.status().is_success() || response.status().is_redirection() {
+            if let (Some(session_id), Some(item_id), Some(user_id)) = (session_id, item_id, user_id)
+            {
+                state
+                    .play_sessions
+                    .add_session(PlaybackSession {
+                        session_id,
+                        item_id,
+                        user_id,
+                        server_id: server.id,
+                    })
+                    .await;
+            }
+        }
+        return Ok(response);
     };
     if play_session.server_id == preprocessed.server.id {
         let server = preprocessed.server;

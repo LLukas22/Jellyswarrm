@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::{
     models::{enums::BaseItemKind, MediaItem},
@@ -12,7 +12,7 @@ pub struct TaggedMediaItem {
     pub server: Server,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum MovieProvider {
     Tmdb,
     Imdb,
@@ -41,54 +41,63 @@ impl MovieProvider {
 /// Conservative cross-server identity. Only authoritative movie provider IDs
 /// are accepted; collection IDs and title/year guesses are intentionally not
 /// safe enough to hide items or authorize playback substitution.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct MovieIdentity {
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct MovieAlias {
     pub provider: MovieProvider,
     pub provider_id: String,
 }
 
-impl MovieIdentity {
-    pub fn from_item(item: &MediaItem) -> Option<Self> {
+impl MovieAlias {
+    pub fn from_item(item: &MediaItem) -> BTreeSet<Self> {
         if item.item_type != BaseItemKind::Movie {
-            return None;
+            return BTreeSet::new();
         }
 
-        let provider_ids = item.provider_ids.as_ref()?.as_object()?;
+        let Some(provider_ids) = item.provider_ids.as_ref().and_then(|ids| ids.as_object()) else {
+            return BTreeSet::new();
+        };
         [
             (MovieProvider::Tmdb, "Tmdb"),
             (MovieProvider::Imdb, "Imdb"),
             (MovieProvider::Tvdb, "Tvdb"),
         ]
         .into_iter()
-        .find_map(|(provider, expected_key)| {
+        .filter_map(|(provider, expected_key)| {
             provider_ids.iter().find_map(|(key, value)| {
                 let provider_id = value.as_str()?.trim();
-                (key.eq_ignore_ascii_case(expected_key) && !provider_id.is_empty()).then(|| Self {
-                    provider,
-                    provider_id: provider_id.to_string(),
+                (key.eq_ignore_ascii_case(expected_key) && !provider_id.is_empty()).then(|| {
+                    let provider_id = match provider {
+                        MovieProvider::Imdb => provider_id.to_ascii_lowercase(),
+                        MovieProvider::Tmdb | MovieProvider::Tvdb => provider_id.to_string(),
+                    };
+                    Self {
+                        provider,
+                        provider_id,
+                    }
                 })
             })
         })
+        .collect()
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct MovieObservation {
     pub virtual_media_id: String,
-    pub identity: Option<MovieIdentity>,
-    pub ambiguous: bool,
-    pub source_virtual_ids: Vec<String>,
+    pub aliases: BTreeSet<MovieAlias>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StableMovieGroup {
     pub virtual_media_id: String,
-    pub member_count: usize,
+    pub active_member_count: usize,
+    pub ambiguous: bool,
+    pub published: bool,
 }
 
 #[derive(Debug)]
 struct CatalogGroup {
-    movie_identity: Option<MovieIdentity>,
+    has_movie_aliases: bool,
     members: Vec<TaggedMediaItem>,
 }
 
@@ -97,89 +106,57 @@ struct CatalogGroup {
 #[derive(Debug)]
 pub struct MovieDedupPlan {
     groups: Vec<CatalogGroup>,
-    observations: Vec<MovieObservation>,
 }
 
 impl MovieDedupPlan {
     pub fn new(items: Vec<TaggedMediaItem>) -> Self {
-        let mut group_positions: HashMap<String, usize> = HashMap::new();
-        let mut groups: Vec<CatalogGroup> = Vec::new();
-
-        for tagged in items {
-            let movie_identity = MovieIdentity::from_item(&tagged.item);
-            let key = movie_identity
-                .as_ref()
-                .map(|identity| {
-                    format!(
-                        "movie:{}:{}",
-                        identity.provider.as_str(),
-                        identity.provider_id
-                    )
-                })
-                .unwrap_or_else(|| duplicate_key(&tagged.item));
-            if let Some(&position) = group_positions.get(&key) {
-                groups[position].members.push(tagged);
+        let aliases = items
+            .iter()
+            .map(|tagged| MovieAlias::from_item(&tagged.item))
+            .collect::<Vec<_>>();
+        let mut parents = (0..items.len()).collect::<Vec<_>>();
+        let mut alias_owners = HashMap::new();
+        let mut fallback_owners = HashMap::new();
+        for (index, (tagged, item_aliases)) in items.iter().zip(&aliases).enumerate() {
+            if item_aliases.is_empty() {
+                let key = duplicate_key(&tagged.item);
+                if let Some(owner) = fallback_owners.insert(key, index) {
+                    union(&mut parents, owner, index);
+                }
             } else {
-                group_positions.insert(key, groups.len());
-                groups.push(CatalogGroup {
-                    movie_identity,
-                    members: vec![tagged],
-                });
+                for alias in item_aliases {
+                    if let Some(owner) = alias_owners.insert(alias.clone(), index) {
+                        union(&mut parents, owner, index);
+                    }
+                }
             }
         }
 
-        let observations = groups
-            .iter()
-            .flat_map(|group| {
-                let distinct_servers = group
-                    .members
-                    .iter()
-                    .map(|member| member.server.id)
-                    .collect::<HashSet<_>>();
-                let ambiguous =
-                    group.movie_identity.is_some() && distinct_servers.len() != group.members.len();
-                let identity = group.movie_identity.clone();
-
-                group
-                    .members
-                    .iter()
-                    .filter(|member| member.item.item_type == BaseItemKind::Movie)
-                    .map(move |member| MovieObservation {
-                        virtual_media_id: member.item.id.clone(),
-                        identity: identity.clone(),
-                        ambiguous,
-                        source_virtual_ids: member
-                            .item
-                            .media_sources
-                            .as_deref()
-                            .unwrap_or_default()
-                            .iter()
-                            .map(|source| source.id.clone())
-                            .collect(),
-                    })
+        let mut grouped = HashMap::<usize, Vec<TaggedMediaItem>>::new();
+        for (index, tagged) in items.into_iter().enumerate() {
+            let root = find(&mut parents, index);
+            grouped.entry(root).or_default().push(tagged);
+        }
+        let mut grouped = grouped.into_iter().collect::<Vec<_>>();
+        grouped.sort_by_key(|(root, _)| *root);
+        let groups = grouped
+            .into_iter()
+            .map(|(root, members)| CatalogGroup {
+                has_movie_aliases: !aliases[root].is_empty(),
+                members,
             })
             .collect();
 
-        Self {
-            groups,
-            observations,
-        }
+        Self { groups }
     }
 
-    pub fn observations(&self) -> &[MovieObservation] {
-        &self.observations
-    }
-
-    pub fn collapse(
-        self,
-        stable_groups: &HashMap<MovieIdentity, StableMovieGroup>,
-    ) -> Vec<MediaItem> {
+    pub fn collapse(self, stable_groups: &HashMap<String, StableMovieGroup>) -> Vec<MediaItem> {
         self.groups
             .into_iter()
             .flat_map(|group| {
-                let Some(identity) = group.movie_identity.as_ref() else {
+                if !group.has_movie_aliases {
                     return label_duplicate_group(group.members);
-                };
+                }
                 let distinct_servers = group
                     .members
                     .iter()
@@ -187,8 +164,19 @@ impl MovieDedupPlan {
                     .collect::<HashSet<_>>();
                 let is_unambiguous_group = distinct_servers.len() == group.members.len();
 
-                match (is_unambiguous_group, stable_groups.get(identity)) {
-                    (true, Some(stable_group)) if stable_group.member_count > 1 => {
+                let stable_group = group
+                    .members
+                    .iter()
+                    .map(|member| stable_groups.get(&member.item.id))
+                    .collect::<Option<Vec<_>>>()
+                    .and_then(|groups| {
+                        let first = groups.first().copied()?;
+                        groups.iter().all(|group| *group == first).then_some(first)
+                    });
+                match (is_unambiguous_group, stable_group) {
+                    (true, Some(stable_group))
+                        if stable_group.published && !stable_group.ambiguous =>
+                    {
                         vec![merge_movie_group(
                             group.members,
                             &stable_group.virtual_media_id,
@@ -198,6 +186,26 @@ impl MovieDedupPlan {
                 }
             })
             .collect()
+    }
+}
+
+fn find(parents: &mut [usize], index: usize) -> usize {
+    if parents[index] != index {
+        parents[index] = find(parents, parents[index]);
+    }
+    parents[index]
+}
+
+fn union(parents: &mut [usize], left: usize, right: usize) {
+    let left = find(parents, left);
+    let right = find(parents, right);
+    if left != right {
+        let (root, child) = if left < right {
+            (left, right)
+        } else {
+            (right, left)
+        };
+        parents[child] = root;
     }
 }
 
@@ -406,8 +414,16 @@ mod tests {
     fn stable_group(member_count: usize) -> StableMovieGroup {
         StableMovieGroup {
             virtual_media_id: "aggregate-id".to_string(),
-            member_count,
+            active_member_count: member_count,
+            ambiguous: false,
+            published: member_count > 1,
         }
+    }
+
+    fn assignments(ids: &[&str], member_count: usize) -> HashMap<String, StableMovieGroup> {
+        ids.iter()
+            .map(|id| ((*id).to_string(), stable_group(member_count)))
+            .collect()
     }
 
     #[test]
@@ -507,11 +523,7 @@ mod tests {
             tagged(1, 50, "The Thing", "same"),
             tagged(2, 100, "The Thing", "same"),
         ]);
-        let identity = MovieIdentity {
-            provider: MovieProvider::Tmdb,
-            provider_id: "same".to_string(),
-        };
-        let merged = plan.collapse(&HashMap::from([(identity, stable_group(2))]));
+        let merged = plan.collapse(&assignments(&["1-The Thing", "2-The Thing"], 2));
 
         assert_eq!(merged.len(), 1);
         assert_eq!(
@@ -525,11 +537,7 @@ mod tests {
 
     #[test]
     fn dedup_uses_the_canonical_server_order_for_equal_priorities() {
-        let identity = MovieIdentity {
-            provider: MovieProvider::Tmdb,
-            provider_id: "same".to_string(),
-        };
-        let assignments = HashMap::from([(identity, stable_group(2))]);
+        let assignments = assignments(&["3-Same Movie", "1-Same Movie"], 2);
         let merged = MovieDedupPlan::new(vec![
             tagged(3, 100, "Same Movie", "same"),
             tagged(1, 100, "Same Movie", "same"),
@@ -552,21 +560,11 @@ mod tests {
 
     #[test]
     fn same_server_copies_are_never_collapsed() {
-        let assignments = HashMap::from([(
-            MovieIdentity {
-                provider: MovieProvider::Tmdb,
-                provider_id: "same".to_string(),
-            },
-            stable_group(3),
-        )]);
+        let assignments = assignments(&["1-Same Movie"], 3);
         let plan = MovieDedupPlan::new(vec![
             tagged(1, 100, "Same Movie", "same"),
             tagged(1, 100, "Same Movie", "same"),
         ]);
-        assert!(plan
-            .observations()
-            .iter()
-            .all(|observation| observation.identity.is_some() && observation.ambiguous));
         let merged = plan.collapse(&assignments);
 
         assert_eq!(merged.len(), 2);
@@ -576,15 +574,36 @@ mod tests {
 
     #[test]
     fn persisted_multi_server_group_keeps_aggregate_id_when_one_server_is_absent() {
-        let identity = MovieIdentity {
-            provider: MovieProvider::Tmdb,
-            provider_id: "same".to_string(),
-        };
         let merged = MovieDedupPlan::new(vec![tagged(1, 100, "Same Movie", "same")])
-            .collapse(&HashMap::from([(identity, stable_group(2))]));
+            .collapse(&assignments(&["1-Same Movie"], 2));
 
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].id, "aggregate-id");
+    }
+
+    #[test]
+    fn collapse_requires_every_visible_member_to_have_the_same_stable_group() {
+        let plan = MovieDedupPlan::new(vec![
+            tagged(1, 100, "Same Movie", "same"),
+            tagged(2, 100, "Same Movie", "same"),
+        ]);
+        let mut stable_groups = assignments(&["1-Same Movie", "2-Same Movie"], 2);
+        stable_groups
+            .get_mut("2-Same Movie")
+            .unwrap()
+            .virtual_media_id = "different-aggregate".to_string();
+
+        let visible = plan.collapse(&stable_groups);
+
+        assert_eq!(visible.len(), 2);
+        assert!(visible.iter().all(|item| item.id != "aggregate-id"));
+
+        let plan = MovieDedupPlan::new(vec![
+            tagged(1, 100, "Same Movie", "same"),
+            tagged(2, 100, "Same Movie", "same"),
+        ]);
+        stable_groups.remove("2-Same Movie");
+        assert_eq!(plan.collapse(&stable_groups).len(), 2);
     }
 
     #[test]
@@ -597,7 +616,7 @@ mod tests {
             "ProviderIds": { "TmdbCollection": "franchise" }
         }))
         .unwrap();
-        assert_eq!(MovieIdentity::from_item(&collection_only), None);
+        assert!(MovieAlias::from_item(&collection_only).is_empty());
 
         let provider_backed: MediaItem = serde_json::from_value(serde_json::json!({
             "Id": "b",
@@ -606,29 +625,62 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(
-            MovieIdentity::from_item(&provider_backed),
-            Some(MovieIdentity {
-                provider: MovieProvider::Tmdb,
-                provider_id: "42".to_string(),
-            })
+            MovieAlias::from_item(&provider_backed),
+            BTreeSet::from([
+                MovieAlias {
+                    provider: MovieProvider::Imdb,
+                    provider_id: "tt123".to_string(),
+                },
+                MovieAlias {
+                    provider: MovieProvider::Tmdb,
+                    provider_id: "42".to_string(),
+                },
+            ])
         );
     }
 
     #[test]
-    fn observations_clear_unidentified_movies_in_storage() {
+    fn unidentified_movies_have_no_authoritative_aliases() {
         let unidentified: MediaItem = serde_json::from_value(serde_json::json!({
             "Id": "unidentified",
             "Type": "Movie",
             "Name": "No provider"
         }))
         .unwrap();
-        let plan = MovieDedupPlan::new(vec![TaggedMediaItem {
-            item: unidentified,
-            server: server_fixture(1, 100),
-        }]);
+        assert!(MovieAlias::from_item(&unidentified).is_empty());
+    }
 
-        assert_eq!(plan.observations().len(), 1);
-        assert_eq!(plan.observations()[0].identity, None);
-        assert!(!plan.observations()[0].ambiguous);
+    #[test]
+    fn aliases_merge_transitively_across_provider_sets() {
+        let first: MediaItem = serde_json::from_value(serde_json::json!({
+            "Id": "first", "Type": "Movie", "ProviderIds": {"Tmdb": "42"}
+        }))
+        .unwrap();
+        let bridge: MediaItem = serde_json::from_value(serde_json::json!({
+            "Id": "bridge", "Type": "Movie", "ProviderIds": {"Tmdb": "42", "Imdb": "TT123"}
+        }))
+        .unwrap();
+        let last: MediaItem = serde_json::from_value(serde_json::json!({
+            "Id": "last", "Type": "Movie", "ProviderIds": {"Imdb": "tt123"}
+        }))
+        .unwrap();
+        let plan = MovieDedupPlan::new(vec![
+            TaggedMediaItem {
+                item: first,
+                server: server_fixture(1, 100),
+            },
+            TaggedMediaItem {
+                item: bridge,
+                server: server_fixture(2, 100),
+            },
+            TaggedMediaItem {
+                item: last,
+                server: server_fixture(3, 100),
+            },
+        ]);
+
+        let merged = plan.collapse(&assignments(&["first", "bridge", "last"], 3));
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].id, "aggregate-id");
     }
 }
