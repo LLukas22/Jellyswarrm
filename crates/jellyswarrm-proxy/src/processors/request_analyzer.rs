@@ -9,6 +9,7 @@ use crate::{
     },
     server_storage::Server,
     user_authorization_service::User,
+    virtual_library_service::compare_virtual_library_routes,
     DataContext,
 };
 
@@ -19,6 +20,40 @@ pub struct RequestAnalyzer {
 impl RequestAnalyzer {
     pub fn new(data_context: DataContext) -> Self {
         Self { data_context }
+    }
+
+    async fn movie_version_server(&self, aggregate_id: &str) -> Result<Option<Server>> {
+        if !self.data_context.config.read().await.deduplicate_movies {
+            return Ok(None);
+        }
+        let members = self
+            .data_context
+            .media_storage
+            .get_movie_version_members_by_virtual_id(aggregate_id)
+            .await?;
+        let mut healthy_members = Vec::new();
+        for member in members {
+            if self
+                .data_context
+                .server_storage
+                .server_status(member.server.id)
+                .await
+                .is_healthy()
+            {
+                healthy_members.push(member);
+            }
+        }
+        Ok(healthy_members
+            .into_iter()
+            .max_by(|left, right| {
+                compare_virtual_library_routes(
+                    &left.server,
+                    &left.mapping.original_media_id,
+                    &right.server,
+                    &right.mapping.original_media_id,
+                )
+            })
+            .map(|member| member.server))
     }
 }
 
@@ -73,12 +108,16 @@ impl JsonAnalyzer<RequestAnalysisContext, RequestBodyAnalysisResult> for Request
         // Check if this is an ID field (case-insensitive)
         if ID_FIELDS.contains(&json_context.key) {
             if let serde_json::Value::String(ref virtual_id) = value {
-                if let Some((_, server)) = self
+                let server = self
                     .data_context
                     .media_storage
                     .get_media_mapping_with_server(virtual_id)
                     .await?
-                {
+                    .map(|(_, server)| server);
+                if let Some(server) = match server {
+                    Some(server) => Some(server),
+                    None => self.movie_version_server(virtual_id).await?,
+                } {
                     accumulator.servers.push(server);
                 }
                 accumulator.found_ids.push(virtual_id.clone());

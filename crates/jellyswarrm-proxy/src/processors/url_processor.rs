@@ -2,11 +2,12 @@ use anyhow::Result;
 use tracing::debug;
 
 use crate::{
-    media_storage_service::MediaMapping,
+    media_storage_service::{MediaMapping, MovieVersionMember},
     server_id::ServerId,
     server_storage::Server,
     url_helper::{contains_id, is_id_like, replace_id},
     user_authorization_service::AuthorizationSession,
+    virtual_library_service::compare_virtual_library_routes,
     virtual_library_service::{VirtualLibraryAccessScope, VirtualLibraryResolution},
     DataContext,
 };
@@ -341,6 +342,13 @@ impl UrlProcessor {
             return Some(mapping);
         }
 
+        if let Some(member) = self
+            .movie_version_member(virtual_media_id, access_scope, required_server_id)
+            .await
+        {
+            return Some(member.mapping);
+        }
+
         self.data_context
             .virtual_library_service
             .routing_target(virtual_media_id, access_scope, required_server_id)
@@ -428,6 +436,13 @@ impl UrlProcessor {
             return Ok(Some(server));
         }
 
+        if let Some(member) = self
+            .movie_version_member(media_id, access_scope, None)
+            .await
+        {
+            return Ok(Some(member.server));
+        }
+
         let target = self
             .data_context
             .virtual_library_service
@@ -448,6 +463,47 @@ impl UrlProcessor {
                 "failed to select a routing target for the resolved virtual library"
             )),
         }
+    }
+
+    async fn movie_version_member(
+        &self,
+        group_virtual_id: &str,
+        access_scope: Option<&VirtualLibraryAccessScope>,
+        required_server_id: Option<ServerId>,
+    ) -> Option<MovieVersionMember> {
+        if !self.data_context.config.read().await.deduplicate_movies {
+            return None;
+        }
+
+        let members = self
+            .data_context
+            .media_storage
+            .get_movie_version_members_by_virtual_id(group_virtual_id)
+            .await
+            .ok()?
+            .into_iter();
+        let mut healthy_members = Vec::new();
+        for member in members {
+            if server_is_allowed(member.server.id, access_scope, required_server_id)
+                && self
+                    .data_context
+                    .server_storage
+                    .server_status(member.server.id)
+                    .await
+                    .is_healthy()
+            {
+                healthy_members.push(member);
+            }
+        }
+
+        healthy_members.into_iter().max_by(|left, right| {
+            compare_virtual_library_routes(
+                &left.server,
+                &left.mapping.original_media_id,
+                &right.server,
+                &right.mapping.original_media_id,
+            )
+        })
     }
 }
 

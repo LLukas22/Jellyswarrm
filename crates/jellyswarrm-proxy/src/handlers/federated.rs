@@ -6,7 +6,7 @@ use tokio::task::JoinSet;
 use tracing::{debug, error, trace, warn};
 
 use crate::{
-    duplicate_handling::{deduplicate_movies, DuplicateGroupKey, TaggedMediaItem},
+    duplicate_handling::{MovieDedupPlan, TaggedMediaItem},
     extractors::Preprocessed,
     handlers::{
         common::{execute_json_request, response_json_to_payload},
@@ -214,15 +214,21 @@ async fn get_virtual_library_items(
         })
         .collect();
 
-    let mut provider_keys = Vec::new();
-    let items = if state.deduplicate_movies_enabled().await {
-        let merged = deduplicate_movies(tagged_items);
-        provider_keys = merged.provider_keys;
-        FederatedItems::from_merged_items(merged.items)
+    let deduplicate_movies = state.deduplicate_movies_enabled().await;
+    let items = if deduplicate_movies {
+        let plan = MovieDedupPlan::new(tagged_items);
+        let stable_group_ids = state
+            .media_storage
+            .observe_movie_versions(plan.observations())
+            .await
+            .map_err(|error| {
+                error!("Failed to reconcile movie version groups: {error}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        FederatedItems::from_merged_items(plan.collapse(&stable_group_ids))
     } else {
         FederatedItems::from_tagged_items(tagged_items)
     };
-    persist_provider_keys(state, provider_keys).await;
     let total_count =
         estimate_merged_library_total(items.len(), upstream_total_sum, all_fully_fetched);
 
@@ -231,22 +237,6 @@ async fn get_virtual_library_items(
         original_request.url(),
         response_shape,
     )
-}
-
-/// Remembers which duplicate identity belongs to every movie so detail pages
-/// can assemble multi-server versions without a full catalog pass.
-async fn persist_provider_keys(state: &AppState, provider_keys: Vec<(String, DuplicateGroupKey)>) {
-    if provider_keys.is_empty() {
-        return;
-    }
-
-    let entries = provider_keys
-        .into_iter()
-        .map(|(virtual_media_id, key)| (virtual_media_id, key.as_str().to_owned()))
-        .collect::<Vec<_>>();
-    if let Err(error) = state.media_storage.set_provider_keys(&entries).await {
-        warn!("Failed to persist duplicate movie identities: {error}");
-    }
 }
 
 async fn get_interleaved_root(

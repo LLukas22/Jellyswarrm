@@ -19,6 +19,27 @@ impl RequestProcessor {
     pub fn new(data_context: DataContext) -> Self {
         Self { data_context }
     }
+
+    async fn upstream_media_id(&self, virtual_id: &str, server: &Server) -> Option<String> {
+        if let Some(mapping) = self
+            .data_context
+            .media_storage
+            .get_media_mapping_by_virtual(virtual_id)
+            .await
+            .unwrap_or_default()
+        {
+            return (mapping.server_id == server.id).then_some(mapping.original_media_id);
+        }
+
+        self.data_context
+            .media_storage
+            .get_movie_version_members_by_virtual_id(virtual_id)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .find(|member| member.mapping.server_id == server.id)
+            .map(|member| member.mapping.original_media_id)
+    }
 }
 
 #[allow(dead_code)]
@@ -56,21 +77,14 @@ impl JsonProcessor<RequestProcessingContext> for RequestProcessor {
         // Check if this is an ID field (case-insensitive)
         if ID_FIELDS.contains(&json_context.key) {
             if let Value::String(ref virtual_id) = value {
-                if let Some(media_mapping) = self
-                    .data_context
-                    .media_storage
-                    .get_media_mapping_by_virtual(virtual_id)
-                    .await
-                    .unwrap_or_default()
+                if let Some(original_media_id) =
+                    self.upstream_media_id(virtual_id, &context.server).await
                 {
-                    if media_mapping.server_id != context.server.id {
-                        return result;
-                    }
                     debug!(
                         "Replacing virtual id  {} -> {} for field: {} in payload",
-                        virtual_id, &media_mapping.original_media_id, &json_context.key
+                        virtual_id, original_media_id, &json_context.key
                     );
-                    *value = Value::String(media_mapping.original_media_id);
+                    *value = Value::String(original_media_id);
                     result = result.mark_modified();
                 }
                 // For r equests, we need to convert virtual IDs back to real IDs
@@ -113,6 +127,7 @@ mod tests {
     use super::*;
     use crate::{
         config::{AppConfig, MediaStreamingMode, MIGRATOR},
+        duplicate_handling::{MovieIdentity, MovieObservation, MovieProvider},
         media_storage_service::MediaStorageService,
         processors::process_json,
         server_id::ServerId,
@@ -196,5 +211,73 @@ mod tests {
 
         assert!(response.was_modified);
         assert_eq!(payload["UserId"], "upstream-user");
+    }
+
+    #[tokio::test]
+    async fn aggregate_item_id_is_rewritten_for_the_selected_server() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let server_storage = ServerStorageService::new(pool.clone());
+        let server_id = server_storage
+            .add_server(
+                "Server",
+                "http://server.example:8096",
+                100,
+                MediaStreamingMode::Redirect,
+            )
+            .await
+            .unwrap();
+        let server = server_storage
+            .get_server_by_id(server_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let media_storage = MediaStorageService::new(pool.clone());
+        let mapping = media_storage
+            .get_or_create_media_mapping("upstream-item", &server)
+            .await
+            .unwrap();
+        let identity = MovieIdentity {
+            provider: MovieProvider::Tmdb,
+            provider_id: "42".to_string(),
+        };
+        let aggregate_id = media_storage
+            .observe_movie_versions(&[MovieObservation {
+                virtual_media_id: mapping.virtual_media_id,
+                identity: Some(identity.clone()),
+                ambiguous: false,
+                source_virtual_ids: Vec::new(),
+            }])
+            .await
+            .unwrap()
+            .remove(&identity)
+            .unwrap()
+            .virtual_media_id;
+        let virtual_libraries =
+            VirtualLibraryService::new(pool.clone(), server_storage.clone(), media_storage.clone());
+        let processor = RequestProcessor::new(DataContext {
+            user_authorization: Arc::new(UserAuthorizationService::new(pool)),
+            server_storage: Arc::new(server_storage),
+            media_storage: Arc::new(media_storage),
+            virtual_library_service: Arc::new(virtual_libraries),
+            play_sessions: Arc::new(SessionStorage::new()),
+            config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
+        });
+        let context = RequestProcessingContext {
+            user: None,
+            server,
+            sessions: None,
+            auth: None,
+            session: None,
+            new_auth: None,
+        };
+        let mut payload = json!({ "ItemId": aggregate_id });
+
+        let response = process_json(&mut payload, &processor, &context)
+            .await
+            .unwrap();
+
+        assert!(response.was_modified);
+        assert_eq!(payload["ItemId"], "upstream-item");
     }
 }

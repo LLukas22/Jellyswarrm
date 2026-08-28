@@ -70,6 +70,40 @@ pub fn replace_id(url: Url, original: &str, replacement: &str) -> Url {
     url
 }
 
+/// Replaces the media ID immediately following `path_tag` without requiring
+/// callers to know the request's full route shape.
+pub fn replace_path_id(url: &Url, path_tag: &str, replacement: &str) -> Option<Url> {
+    let original = contains_id(url, path_tag)?;
+    Some(replace_id(url.clone(), &original, replacement))
+}
+
+/// Ensures a case-insensitive value is present in a comma-separated query
+/// parameter while preserving all unrelated parameters.
+pub fn ensure_query_list_value(url: &mut Url, expected_key: &str, value: &str) {
+    let mut pairs = url
+        .query_pairs()
+        .map(|(key, entry)| (key.into_owned(), entry.into_owned()))
+        .collect::<Vec<_>>();
+
+    if let Some((_key, entries)) = pairs
+        .iter_mut()
+        .find(|(key, _entries)| key.eq_ignore_ascii_case(expected_key))
+    {
+        if entries
+            .split(',')
+            .any(|entry| entry.trim().eq_ignore_ascii_case(value))
+        {
+            return;
+        }
+        entries.push(',');
+        entries.push_str(value);
+    } else {
+        pairs.push((expected_key.to_string(), value.to_string()));
+    }
+
+    url.query_pairs_mut().clear().extend_pairs(pairs);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,5 +160,35 @@ mod tests {
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         );
         assert_eq!(replaced.path(), "/foo/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/bar");
+    }
+
+    #[test]
+    fn replaces_id_after_named_path_segment() {
+        let url = Url::parse(
+            "https://example.com/Users/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/Items/0123456789abcdef0123456789abcdef",
+        )
+        .unwrap();
+
+        let replaced = replace_path_id(&url, "Items", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap();
+
+        assert_eq!(
+            replaced.path(),
+            "/Users/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/Items/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        );
+    }
+
+    #[test]
+    fn query_list_value_is_added_once() {
+        let mut url = Url::parse("https://example.com/Items/id?Fields=Overview").unwrap();
+
+        ensure_query_list_value(&mut url, "Fields", "MediaSources");
+        ensure_query_list_value(&mut url, "fields", "mediasources");
+
+        assert_eq!(
+            url.query_pairs()
+                .find(|(key, _)| key.eq_ignore_ascii_case("Fields"))
+                .map(|(_, value)| value.into_owned()),
+            Some("Overview,MediaSources".to_string())
+        );
     }
 }
