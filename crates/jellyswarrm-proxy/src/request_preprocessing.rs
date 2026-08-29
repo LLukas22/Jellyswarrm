@@ -6,6 +6,7 @@ use http_body_util::BodyExt;
 use std::fmt;
 use tracing::{debug, error};
 
+use crate::device_profile::{classify_device_identity, DeviceClass};
 use crate::models::Authorization;
 use crate::processors::analyze_json;
 use crate::processors::request_analyzer::{RequestAnalysisContext, RequestBodyAnalysisResult};
@@ -205,6 +206,10 @@ pub struct PreprocessedRequest {
     pub new_auth: Option<JellyfinAuthorization>,
     pub access_scope: Option<VirtualLibraryAccessScope>,
     pub server_matched_request: bool,
+    /// The device identity resolved from the handshake headers.
+    pub device: Option<Device>,
+    /// Coarse classification of [`Self::device`] (mobile/TV/desktop/unknown).
+    pub device_class: DeviceClass,
 }
 
 pub async fn extract_request_infos(
@@ -216,6 +221,7 @@ pub async fn extract_request_infos(
     Option<User>,
     Option<Vec<(AuthorizationSession, Server)>>,
     Option<RequestBodyAnalysisResult>,
+    Option<Device>,
 )> {
     let request = axum_to_reqwest(req).await?;
 
@@ -315,13 +321,22 @@ pub async fn extract_request_infos(
         None
     };
 
-    Ok((request, auth, user, sessions, request_body_result))
+    Ok((request, auth, user, sessions, request_body_result, device))
 }
 
 pub async fn preprocess_request(req: Request, state: &AppState) -> Result<PreprocessedRequest> {
     debug!("Preprocessing request: {:?}", req.uri());
-    let (mut request, auth, user, sessions, request_body_result) =
+    let (mut request, auth, user, sessions, request_body_result, device) =
         extract_request_infos(req, state).await?;
+    let user_agent = request
+        .headers()
+        .get("user-agent")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let device_class = device
+        .as_ref()
+        .map(|device| classify_device_identity(device, user_agent.as_deref()))
+        .unwrap_or(DeviceClass::Unknown);
     let original_request = request
         .try_clone()
         .ok_or_else(|| anyhow!("failed to clone preprocessed request body"))?;
@@ -373,6 +388,8 @@ pub async fn preprocess_request(req: Request, state: &AppState) -> Result<Prepro
         new_auth,
         access_scope,
         server_matched_request,
+        device,
+        device_class,
     })
 }
 

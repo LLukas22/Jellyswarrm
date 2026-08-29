@@ -7,6 +7,7 @@ use tracing::{error, info, warn};
 
 use crate::{
     config::MediaStreamingMode,
+    device_profile::{apply_stream_bitrate_cap, DataSaverProfile, DeviceClass},
     extractors::Preprocessed,
     proxy_headers::remove_hop_by_hop_headers,
     request_preprocessing::{apply_to_request, remap_authorization, PreprocessedRequest},
@@ -89,9 +90,21 @@ async fn proxy_request(
 async fn forward_media_request(
     state: &AppState,
     server: &Server,
-    request: reqwest::Request,
+    mut request: reqwest::Request,
     log_label: &str,
+    device_class: DeviceClass,
 ) -> Result<Response, StatusCode> {
+    // Mobile data-saver: cap the stream bitrate so the upstream server
+    // transcodes to a cellular-friendly rate. This also applies to Redirect
+    // mode, where the query parameters are carried in the redirect URL.
+    if let Some(profile) =
+        DataSaverProfile::for_device_class(device_class, &*state.config.read().await)
+    {
+        if let Some(cap_bps) = profile.max_streaming_bitrate {
+            apply_stream_bitrate_cap(request.url_mut(), cap_bps);
+        }
+    }
+
     let url = request.url().clone();
 
     match server.media_streaming_mode {
@@ -235,7 +248,14 @@ async fn forward_preprocessed_resource(
         "No matching play session for resource {}; using media mapping via {}",
         id, server.name
     );
-    forward_media_request(state, &server, preprocessed.request, "media resource").await
+    forward_media_request(
+        state,
+        &server,
+        preprocessed.request,
+        "media resource",
+        preprocessed.device_class,
+    )
+    .await
 }
 
 pub async fn get_video_resource(
@@ -262,8 +282,9 @@ pub async fn get_video_resource(
         id, play_session.session_id, server.name
     );
 
+    let device_class = preprocessed.device_class;
     let request = request_for_server(&state, preprocessed, &server).await?;
-    forward_media_request(&state, &server, request, "media resource").await
+    forward_media_request(&state, &server, request, "media resource", device_class).await
 }
 
 pub async fn get_stream(
@@ -271,6 +292,7 @@ pub async fn get_stream(
     Preprocessed(preprocessed): Preprocessed,
 ) -> Result<Response, StatusCode> {
     let item_id = extract_stream_item_id(preprocessed.original_request.url().path());
+    let device_class = preprocessed.device_class;
     let session_id = extract_play_session_id(preprocessed.original_request.url());
     let play_session = if let Some(item_id) = item_id {
         let candidates = state.play_sessions.get_sessions_by_item_id(item_id).await;
@@ -286,16 +308,30 @@ pub async fn get_stream(
 
     let Some(play_session) = play_session else {
         let server = preprocessed.server;
-        return forward_media_request(&state, &server, preprocessed.request, "media stream").await;
+        return forward_media_request(
+            &state,
+            &server,
+            preprocessed.request,
+            "media stream",
+            device_class,
+        )
+        .await;
     };
     if play_session.server_id == preprocessed.server.id {
         let server = preprocessed.server;
-        return forward_media_request(&state, &server, preprocessed.request, "media stream").await;
+        return forward_media_request(
+            &state,
+            &server,
+            preprocessed.request,
+            "media stream",
+            device_class,
+        )
+        .await;
     }
 
     let server = resolve_play_session_server(&state, &play_session).await?;
     let request = request_for_server(&state, preprocessed, &server).await?;
-    forward_media_request(&state, &server, request, "media stream").await
+    forward_media_request(&state, &server, request, "media stream", device_class).await
 }
 
 #[cfg(test)]

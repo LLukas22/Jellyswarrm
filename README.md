@@ -41,6 +41,7 @@ Jellyswarrm is a reverse proxy that lets you combine multiple Jellyfin servers i
 * **Direct Playback** – Play content straight from the original server without extra overhead.
 * **User Mapping** – Link accounts across servers for a consistent user experience.
 * **API Compatibility** – Appears as a normal Jellyfin server, so existing apps and tools still work.
+* **Mobile Data Saver** – Mobile clients (Jellyfin Mobile, Swiftfin, Findroid, ...) are recognized at login and get capped stream bitrates and downscaled images, keeping cellular usage low.
 * **Server Federation** – Automatically sync users across connected servers.
 * **User Page** – Personal dashboard for managing credentials and libraries. 
 
