@@ -35,6 +35,10 @@ The table below lists all available configuration options:
 | `url_prefix` | *(none)* | `JELLYSWARRM_URL_PREFIX` | Optional URL prefix for all routes (useful for reverse proxy setups). |
 | `server_background_check_interval_secs` | `30` | `JELLYSWARRM_SERVER_BACKGROUND_CHECK_INTERVAL_SECS` | Interval in seconds for background server health checks. |
 | `auto_create_users_on_login` | `true` | `JELLYSWARRM_AUTO_CREATE_USERS_ON_LOGIN` | Automatically create local users on successful upstream login. |
+| `mobile_data_saver_enabled` | `true` | `JELLYSWARRM_MOBILE_DATA_SAVER_ENABLED` | Apply the data-saver profile to mobile clients (bitrate cap + downscaled images). |
+| `mobile_max_streaming_bitrate` | `4000000` | `JELLYSWARRM_MOBILE_MAX_STREAMING_BITRATE` | Maximum stream bitrate in bits per second for mobile clients; the upstream server transcodes down to this. `0` disables the cap. |
+| `mobile_image_max_width` | `640` | `JELLYSWARRM_MOBILE_IMAGE_MAX_WIDTH` | Maximum width in pixels for images served to mobile clients. `0` disables image downscaling. |
+| `mobile_image_quality` | `70` | `JELLYSWARRM_MOBILE_IMAGE_QUALITY` | Image encoding quality (0-100) for images served to mobile clients. `0` disables image downscaling. |
 
 ---
 

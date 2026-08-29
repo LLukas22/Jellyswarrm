@@ -3,6 +3,7 @@ use hyper::StatusCode;
 use tracing::{debug, error, warn};
 
 use crate::{
+    device_profile::DataSaverProfile,
     extractors::{Preprocessed, RequireSession},
     handlers::common::{
         execute_json_request, execute_processed_json_request, payload_from_request,
@@ -113,6 +114,21 @@ pub async fn post_playback_info(
     let server = preprocessed.server;
 
     let mut payload = payload;
+
+    // Mobile data-saver: cap the bitrate the client may request so the
+    // upstream server transcodes to a cellular-friendly rate. A lower
+    // client-requested value is always respected.
+    if let Some(profile) =
+        DataSaverProfile::for_device_class(preprocessed.device_class, &*state.config.read().await)
+    {
+        if let Some(cap_bps) = profile.max_streaming_bitrate {
+            payload.max_streaming_bitrate = Some(match payload.max_streaming_bitrate {
+                Some(existing) if existing <= cap_bps => existing,
+                _ => cap_bps,
+            });
+        }
+    }
+
     remap_playback_request(&mut payload, &state, &session).await?;
 
     debug!("Forwarding PlaybackRequest JSON: {:?}", &payload);

@@ -142,6 +142,25 @@ fn default_merge_libraries() -> bool {
     true
 }
 
+fn default_mobile_data_saver_enabled() -> bool {
+    true
+}
+
+/// Default cap for mobile stream bitrates, in bits per second (4 Mbps).
+fn default_mobile_max_streaming_bitrate() -> i64 {
+    4_000_000
+}
+
+/// Default maximum image width for mobile clients, in pixels.
+fn default_mobile_image_max_width() -> u32 {
+    640
+}
+
+/// Default image quality for mobile clients (0-100).
+fn default_mobile_image_quality() -> u32 {
+    70
+}
+
 mod base64_serde {
     use super::*;
     use serde::de::Error as DeError;
@@ -235,6 +254,26 @@ define_fallback_deserializer!(
     default_auto_create_users_on_login
 );
 define_fallback_deserializer!(deserialize_merge_libraries, bool, default_merge_libraries);
+define_fallback_deserializer!(
+    deserialize_mobile_data_saver_enabled,
+    bool,
+    default_mobile_data_saver_enabled
+);
+define_fallback_deserializer!(
+    deserialize_mobile_max_streaming_bitrate,
+    i64,
+    default_mobile_max_streaming_bitrate
+);
+define_fallback_deserializer!(
+    deserialize_mobile_image_max_width,
+    u32,
+    default_mobile_image_max_width
+);
+define_fallback_deserializer!(
+    deserialize_mobile_image_quality,
+    u32,
+    default_mobile_image_quality
+);
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PreconfiguredServer {
@@ -318,6 +357,38 @@ pub struct AppConfig {
         deserialize_with = "deserialize_merge_libraries"
     )]
     pub merge_libraries: bool,
+
+    /// Whether mobile clients get the data-saver profile (bitrate cap,
+    /// downscaled images). Defaults to `true`.
+    #[serde(
+        default = "default_mobile_data_saver_enabled",
+        deserialize_with = "deserialize_mobile_data_saver_enabled"
+    )]
+    pub mobile_data_saver_enabled: bool,
+
+    /// Cap for mobile stream bitrates in bits per second. `0` disables the
+    /// cap. Defaults to 4 Mbps.
+    #[serde(
+        default = "default_mobile_max_streaming_bitrate",
+        deserialize_with = "deserialize_mobile_max_streaming_bitrate"
+    )]
+    pub mobile_max_streaming_bitrate: i64,
+
+    /// Maximum image width in pixels for mobile clients. `0` disables image
+    /// downscaling. Defaults to 640.
+    #[serde(
+        default = "default_mobile_image_max_width",
+        deserialize_with = "deserialize_mobile_image_max_width"
+    )]
+    pub mobile_image_max_width: u32,
+
+    /// Image encoding quality (0-100) for mobile clients. `0` disables image
+    /// downscaling. Defaults to 70.
+    #[serde(
+        default = "default_mobile_image_quality",
+        deserialize_with = "deserialize_mobile_image_quality"
+    )]
+    pub mobile_image_quality: u32,
 }
 
 impl fmt::Debug for AppConfig {
@@ -350,6 +421,14 @@ impl fmt::Debug for AppConfig {
                 "auto_create_users_on_login",
                 &self.auto_create_users_on_login,
             )
+            .field("merge_libraries", &self.merge_libraries)
+            .field("mobile_data_saver_enabled", &self.mobile_data_saver_enabled)
+            .field(
+                "mobile_max_streaming_bitrate",
+                &self.mobile_max_streaming_bitrate,
+            )
+            .field("mobile_image_max_width", &self.mobile_image_max_width)
+            .field("mobile_image_quality", &self.mobile_image_quality)
             .finish()
     }
 }

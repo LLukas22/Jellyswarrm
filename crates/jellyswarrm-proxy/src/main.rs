@@ -30,6 +30,7 @@ use axum_login::{
 mod config;
 #[cfg(debug_assertions)]
 mod debug_initialization;
+mod device_profile;
 mod duplicate_handling;
 mod encryption;
 mod extractors;
@@ -76,6 +77,7 @@ use crate::{
 };
 use crate::{
     config::{MediaStreamingMode, DATA_DIR},
+    device_profile::{apply_image_params, is_image_request_path, DataSaverProfile},
     encryption::Password,
     request_preprocessing::preprocess_request,
     session_storage::SessionStorage,
@@ -944,6 +946,8 @@ async fn proxy_handler(
         StatusCode::BAD_REQUEST
     })?;
 
+    let mut preprocessed = preprocessed;
+
     let request_url = preprocessed.request.url().clone();
     let response_server = preprocessed.server.clone();
     let response_proxy_api_key = preprocessed
@@ -959,6 +963,23 @@ async fn proxy_handler(
     );
 
     let request_processing_context = RequestProcessingContext::new(&preprocessed);
+
+    // Mobile data-saver: downscale image requests so browsing over cellular
+    // transfers far fewer bytes. The rewrite happens on the outgoing
+    // (upstream) URL after ID remapping.
+    if is_image_request_path(preprocessed.original_request.url().path()) {
+        if let Some(profile) = DataSaverProfile::for_device_class(
+            preprocessed.device_class,
+            &*state.config.read().await,
+        ) {
+            if let (Some(max_width), Some(quality)) =
+                (profile.image_max_width, profile.image_quality)
+            {
+                apply_image_params(preprocessed.request.url_mut(), max_width, quality);
+            }
+        }
+    }
+
     let mut request = preprocessed.request;
     state
         .processors

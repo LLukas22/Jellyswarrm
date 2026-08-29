@@ -6,6 +6,7 @@ use hyper::{HeaderMap, StatusCode};
 use tracing::{debug, error, info, warn};
 
 use crate::{
+    device_profile::classify_device,
     encryption::Password,
     extractors::{RequireUser, RequireUserSession},
     handlers::common::execute_json_request,
@@ -114,6 +115,21 @@ pub async fn handle_authenticate_by_name(
     info!(
         "Got login request with authentication header: {}",
         authentication.to_redacted_header_value()
+    );
+
+    // Device handshake: classify the connecting client so the data-saver
+    // profile can be applied to mobile devices for the whole session.
+    let device_class = classify_device(
+        &authentication.client,
+        &authentication.device,
+        headers
+            .get("user-agent")
+            .and_then(|value| value.to_str().ok()),
+    );
+    info!(
+        "Client handshake from {} classified as {:?}",
+        authentication.to_short_string(),
+        device_class
     );
 
     info!(
