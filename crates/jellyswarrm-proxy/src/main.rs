@@ -30,7 +30,6 @@ use axum_login::{
 mod config;
 #[cfg(debug_assertions)]
 mod debug_initialization;
-mod duplicate_handling;
 mod encryption;
 mod extractors;
 mod federated_users;
@@ -38,6 +37,8 @@ mod handlers;
 mod legacy_server_identity;
 mod media_storage_service;
 mod models;
+mod movie_catalog;
+mod movie_identity;
 mod processors;
 mod proxy_headers;
 mod request_preprocessing;
@@ -63,7 +64,7 @@ use crate::{
     handlers::common::set_json_body,
     handlers::quick_connect::{self, QuickConnectStorage},
     processors::{
-        request_analyzer::RequestAnalyzer,
+        request_analyzer::{PlaybackSessionAction, RequestAnalyzer},
         request_processor::{RequestProcessingContext, RequestProcessor},
         response_processor::{
             ResponseProcessingContext, ResponseProcessingProfile, ResponseProcessor,
@@ -177,6 +178,10 @@ impl AppState {
 
     pub async fn merge_libraries_enabled(&self) -> bool {
         self.config.read().await.merge_libraries
+    }
+
+    pub async fn deduplicate_movies_enabled(&self) -> bool {
+        self.config.read().await.deduplicate_movies
     }
 
     pub async fn process_response_json(
@@ -945,6 +950,7 @@ async fn proxy_handler(
     })?;
 
     let request_url = preprocessed.request.url().clone();
+    let pending_playback_session_update = preprocessed.pending_playback_session_update.clone();
     let response_server = preprocessed.server.clone();
     let response_proxy_api_key = preprocessed
         .auth
@@ -1036,6 +1042,34 @@ async fn proxy_handler(
         error!("Failed to build response: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
+
+    if status.is_success() {
+        if let Some(update) = pending_playback_session_update {
+            match update.action {
+                PlaybackSessionAction::Start => {
+                    state.play_sessions.add_session(update.session).await;
+                }
+                PlaybackSessionAction::Refresh => {
+                    state
+                        .play_sessions
+                        .refresh_session_for_user(
+                            &update.session.session_id,
+                            &update.session.user_id,
+                        )
+                        .await;
+                }
+                PlaybackSessionAction::Remove => {
+                    state
+                        .play_sessions
+                        .remove_session_for_user(
+                            &update.session.session_id,
+                            &update.session.user_id,
+                        )
+                        .await;
+                }
+            }
+        }
+    }
 
     Ok(response)
 }

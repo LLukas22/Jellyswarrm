@@ -15,6 +15,7 @@ pub(super) enum CatalogPlan {
     EmptyVirtual,
     SingleServer,
     Virtual {
+        catalog_scope_key: String,
         targets: Vec<CatalogFetchTarget>,
         skipped_targets: usize,
     },
@@ -78,6 +79,7 @@ pub(super) async fn resolve_catalog_plan(
                     parent_id, resolved.name, member_count
                 );
                 return Ok(CatalogPlan::Virtual {
+                    catalog_scope_key: resolved.catalog_scope_key,
                     targets,
                     skipped_targets,
                 });

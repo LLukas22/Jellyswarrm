@@ -2,11 +2,12 @@ use anyhow::Result;
 use tracing::debug;
 
 use crate::{
-    media_storage_service::MediaMapping,
+    media_storage_service::{MediaMapping, MovieVersionMember},
     server_id::ServerId,
     server_storage::Server,
     url_helper::{contains_id, is_id_like, replace_id},
     user_authorization_service::AuthorizationSession,
+    virtual_library_service::compare_virtual_library_routes,
     virtual_library_service::{VirtualLibraryAccessScope, VirtualLibraryResolution},
     DataContext,
 };
@@ -106,11 +107,75 @@ impl UrlProcessor {
         url: &url::Url,
         access_scope: Option<&VirtualLibraryAccessScope>,
     ) -> Result<Option<Server>> {
+        if let Some(server) = self
+            .server_from_explicit_media_source(url, access_scope)
+            .await?
+        {
+            return Ok(Some(server));
+        }
         if let Some(server) = self.server_from_path_media_ids(url, access_scope).await? {
             return Ok(Some(server));
         }
 
         self.server_from_query_media_ids(url, access_scope).await
+    }
+
+    async fn server_from_explicit_media_source(
+        &self,
+        url: &url::Url,
+        access_scope: Option<&VirtualLibraryAccessScope>,
+    ) -> Result<Option<Server>> {
+        let mut aggregate_group = None;
+        for path_segment in MEDIA_ID_PATH_TAGS {
+            let Some(media_id) = contains_id(url, path_segment) else {
+                continue;
+            };
+            if let Some(group) = self
+                .data_context
+                .media_storage
+                .get_movie_version_group(&media_id)
+                .await?
+            {
+                aggregate_group = Some(group);
+                break;
+            }
+        }
+
+        for (name, value) in url.query_pairs() {
+            if !name.eq_ignore_ascii_case("MediaSourceId") {
+                continue;
+            }
+            for source_id in value.split(',').map(str::trim).filter(|id| !id.is_empty()) {
+                if let Some(group) = &aggregate_group {
+                    let route = self
+                        .data_context
+                        .media_storage
+                        .get_movie_version_source_route(group.id, source_id)
+                        .await?
+                        .filter(|route| {
+                            access_scope
+                                .is_none_or(|scope| scope.allows(route.member_mapping.server_id))
+                        })
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "media source does not belong to the requested movie aggregate"
+                            )
+                        })?;
+                    return Ok(self
+                        .data_context
+                        .server_storage
+                        .get_server_by_id(route.member_mapping.server_id)
+                        .await?);
+                }
+                if let Some(server) = self
+                    .server_from_client_media_id(source_id, access_scope)
+                    .await?
+                {
+                    return Ok(Some(server));
+                }
+            }
+        }
+        Ok(None)
     }
 
     fn replace_user_ids_in_path(&self, url: &mut url::Url, session: &Option<AuthorizationSession>) {
@@ -341,6 +406,13 @@ impl UrlProcessor {
             return Some(mapping);
         }
 
+        if let Some(member) = self
+            .movie_version_member(virtual_media_id, access_scope, required_server_id)
+            .await
+        {
+            return Some(member.mapping);
+        }
+
         self.data_context
             .virtual_library_service
             .routing_target(virtual_media_id, access_scope, required_server_id)
@@ -428,6 +500,24 @@ impl UrlProcessor {
             return Ok(Some(server));
         }
 
+        if let Some(member) = self
+            .movie_version_member(media_id, access_scope, None)
+            .await
+        {
+            return Ok(Some(member.server));
+        }
+        if self
+            .data_context
+            .media_storage
+            .get_movie_version_group(media_id)
+            .await?
+            .is_some()
+        {
+            return Err(anyhow::anyhow!(
+                "movie aggregate has no healthy authorized version"
+            ));
+        }
+
         let target = self
             .data_context
             .virtual_library_service
@@ -448,6 +538,43 @@ impl UrlProcessor {
                 "failed to select a routing target for the resolved virtual library"
             )),
         }
+    }
+
+    async fn movie_version_member(
+        &self,
+        group_virtual_id: &str,
+        access_scope: Option<&VirtualLibraryAccessScope>,
+        required_server_id: Option<ServerId>,
+    ) -> Option<MovieVersionMember> {
+        let members = self
+            .data_context
+            .media_storage
+            .get_movie_version_members_by_virtual_id(group_virtual_id)
+            .await
+            .ok()?
+            .into_iter();
+        let mut healthy_members = Vec::new();
+        for member in members {
+            if server_is_allowed(member.server.id, access_scope, required_server_id)
+                && self
+                    .data_context
+                    .server_storage
+                    .server_status(member.server.id)
+                    .await
+                    .is_healthy()
+            {
+                healthy_members.push(member);
+            }
+        }
+
+        healthy_members.into_iter().max_by(|left, right| {
+            compare_virtual_library_routes(
+                &left.server,
+                &left.mapping.original_media_id,
+                &right.server,
+                &right.mapping.original_media_id,
+            )
+        })
     }
 }
 
@@ -667,5 +794,72 @@ mod tests {
                 .map(|(_, value)| value.into_owned()),
             Some(mapping.original_media_id)
         );
+    }
+
+    #[tokio::test]
+    async fn explicit_media_source_selects_server_before_path_item() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let server_storage = ServerStorageService::new(pool.clone());
+        let first_id = server_storage
+            .add_server(
+                "First",
+                "http://first.example",
+                200,
+                MediaStreamingMode::Redirect,
+            )
+            .await
+            .unwrap();
+        let second_id = server_storage
+            .add_server(
+                "Second",
+                "http://second.example",
+                100,
+                MediaStreamingMode::Redirect,
+            )
+            .await
+            .unwrap();
+        let first = server_storage
+            .get_server_by_id(first_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let second = server_storage
+            .get_server_by_id(second_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let media_storage = MediaStorageService::new(pool.clone());
+        let item = media_storage
+            .get_or_create_media_mapping("item", &first)
+            .await
+            .unwrap();
+        let source = media_storage
+            .get_or_create_media_mapping("source", &second)
+            .await
+            .unwrap();
+        let virtual_libraries =
+            VirtualLibraryService::new(pool.clone(), server_storage.clone(), media_storage.clone());
+        let processor = UrlProcessor::new(DataContext {
+            user_authorization: Arc::new(UserAuthorizationService::new(pool)),
+            server_storage: Arc::new(server_storage),
+            media_storage: Arc::new(media_storage),
+            virtual_library_service: Arc::new(virtual_libraries),
+            play_sessions: Arc::new(SessionStorage::new()),
+            config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
+        });
+        let url = url::Url::parse(&format!(
+            "http://localhost/Videos/{}/stream?MediaSourceId={}",
+            item.virtual_media_id, source.virtual_media_id
+        ))
+        .unwrap();
+
+        let selected = processor
+            .server_from_client_url(&url, None)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(selected.id, second.id);
     }
 }

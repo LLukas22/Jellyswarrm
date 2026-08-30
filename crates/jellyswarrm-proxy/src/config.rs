@@ -142,6 +142,10 @@ fn default_merge_libraries() -> bool {
     true
 }
 
+fn default_deduplicate_movies() -> bool {
+    false
+}
+
 mod base64_serde {
     use super::*;
     use serde::de::Error as DeError;
@@ -235,6 +239,11 @@ define_fallback_deserializer!(
     default_auto_create_users_on_login
 );
 define_fallback_deserializer!(deserialize_merge_libraries, bool, default_merge_libraries);
+define_fallback_deserializer!(
+    deserialize_deduplicate_movies,
+    bool,
+    default_deduplicate_movies
+);
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PreconfiguredServer {
@@ -318,6 +327,14 @@ pub struct AppConfig {
         deserialize_with = "deserialize_merge_libraries"
     )]
     pub merge_libraries: bool,
+
+    /// Collapse duplicate movies across backend servers into a single item
+    /// whose media sources carry one entry per server.
+    #[serde(
+        default = "default_deduplicate_movies",
+        deserialize_with = "deserialize_deduplicate_movies"
+    )]
+    pub deduplicate_movies: bool,
 }
 
 impl fmt::Debug for AppConfig {
@@ -350,6 +367,7 @@ impl fmt::Debug for AppConfig {
                 "auto_create_users_on_login",
                 &self.auto_create_users_on_login,
             )
+            .field("deduplicate_movies", &self.deduplicate_movies)
             .finish()
     }
 }

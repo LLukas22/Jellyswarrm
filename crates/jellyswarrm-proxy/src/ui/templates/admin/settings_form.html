@@ -16,6 +16,9 @@
     <label>Auto Create Users On Login
       <input type="checkbox" role="switch" name="auto_create_users_on_login" value="true" {% if auto_create_users_on_login %}checked{% endif %}>
     </label>
+    <label>Merge Duplicate Movies Across Servers
+      <input type="checkbox" role="switch" name="deduplicate_movies" value="true" {% if deduplicate_movies %}checked{% endif %}>
+    </label>
   </fieldset>
   <div style="display:flex; gap:.5rem;">
     <button type="submit">Save</button>

@@ -383,6 +383,20 @@ async fn add_tracked_play_session(
         .await;
 }
 
+/// Associates an aggregate client-facing item ID with the upstream play
+/// session selected during playback negotiation. Subsequent stream requests
+/// can then route by `(PlaySessionId, aggregate item id)` even though the
+/// aggregate ID does not exist on any backend.
+pub async fn track_playback_alias(
+    item_id: &str,
+    session_id: &str,
+    user_id: &str,
+    server: &Server,
+    state: &AppState,
+) {
+    add_tracked_play_session(item_id, session_id, user_id, server, state).await;
+}
+
 fn extract_media_id_from_delivery_url(value: &str) -> Option<String> {
     let url = parse_delivery_url(value)?;
     let mut segments = url.path_segments()?;

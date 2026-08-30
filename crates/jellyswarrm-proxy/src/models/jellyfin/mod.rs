@@ -351,6 +351,7 @@ pub struct MediaItem {
     pub collection_type: Option<CollectionType>,
     pub user_data: Option<UserData>,
     pub child_count: Option<i32>,
+    pub media_source_count: Option<i32>,
     pub display_preferences_id: Option<String>,
     pub tags: Option<Vec<String>>,
     pub series_primary_image_tag: Option<String>,

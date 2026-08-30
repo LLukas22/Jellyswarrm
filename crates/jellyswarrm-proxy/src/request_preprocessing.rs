@@ -8,12 +8,15 @@ use tracing::{debug, error};
 
 use crate::models::Authorization;
 use crate::processors::analyze_json;
-use crate::processors::request_analyzer::{RequestAnalysisContext, RequestBodyAnalysisResult};
+use crate::processors::request_analyzer::{
+    PlaybackSessionAction, RequestAnalysisContext, RequestBodyAnalysisResult,
+};
 use crate::proxy_headers::remove_hop_by_hop_headers;
 use crate::server_storage::Server;
+use crate::session_storage::PlaybackSession;
 use crate::url_helper::join_server_url;
 use crate::user_authorization_service::{AuthorizationSession, Device, User};
-use crate::virtual_library_service::VirtualLibraryAccessScope;
+use crate::virtual_library_service::{compare_virtual_library_routes, VirtualLibraryAccessScope};
 use crate::AppState;
 
 pub struct RequestIdentity {
@@ -205,11 +208,19 @@ pub struct PreprocessedRequest {
     pub new_auth: Option<JellyfinAuthorization>,
     pub access_scope: Option<VirtualLibraryAccessScope>,
     pub server_matched_request: bool,
+    pub pending_playback_session_update: Option<PendingPlaybackSessionUpdate>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingPlaybackSessionUpdate {
+    pub action: PlaybackSessionAction,
+    pub session: PlaybackSession,
 }
 
 pub async fn extract_request_infos(
     req: Request,
     state: &AppState,
+    playback_session_action: Option<PlaybackSessionAction>,
 ) -> Result<(
     reqwest::Request,
     Option<JellyfinAuthorization>,
@@ -234,11 +245,15 @@ pub async fn extract_request_infos(
     };
 
     let mut user = get_user_from_request(&auth, state).await?;
+    let authenticated_user_id = user.as_ref().map(|user| user.id.clone());
 
     // look into the body for information
     let request_body_result = if let Some(json) = body_to_json(&request) {
         let accumulator = RequestBodyAnalysisResult::default();
-        let context = RequestAnalysisContext;
+        let context = RequestAnalysisContext {
+            authenticated_user_id: authenticated_user_id.clone(),
+            playback_session_action,
+        };
         let analysis_result = analyze_json(
             &json,
             &state.processors.request_analyzer,
@@ -246,9 +261,28 @@ pub async fn extract_request_infos(
             accumulator,
         )
         .await?;
+        if matches!(
+            playback_session_action,
+            Some(PlaybackSessionAction::Refresh | PlaybackSessionAction::Remove)
+        ) && (analysis_result.requested_play_session_id.is_none()
+            || analysis_result.authoritative_play_session.is_none())
+        {
+            return Err(anyhow!(
+                "playback session is missing or does not belong to the user"
+            ));
+        }
+        if playback_session_action == Some(PlaybackSessionAction::Start)
+            && (analysis_result.requested_play_session_id.is_none()
+                || analysis_result.requested_play_item_id.is_none()
+                || authenticated_user_id.is_none())
+        {
+            return Err(anyhow!(
+                "playback start is missing session authority fields"
+            ));
+        }
         if let Some(found_user) = analysis_result.get_user() {
             debug!("Found user in request body: {:?}", found_user);
-            if user.is_none() {
+            if user.is_none() && auth.is_none() {
                 user = Some(found_user);
             }
         }
@@ -261,6 +295,9 @@ pub async fn extract_request_infos(
         debug!("No JSON body found in request");
         None
     };
+    if playback_session_action.is_some() && request_body_result.is_none() {
+        return Err(anyhow!("playback session report requires a JSON body"));
+    }
 
     let sessions = if auth.is_none() {
         None
@@ -320,8 +357,11 @@ pub async fn extract_request_infos(
 
 pub async fn preprocess_request(req: Request, state: &AppState) -> Result<PreprocessedRequest> {
     debug!("Preprocessing request: {:?}", req.uri());
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
+    let playback_session_action = playback_session_action(&method, &path, state).await;
     let (mut request, auth, user, sessions, request_body_result) =
-        extract_request_infos(req, state).await?;
+        extract_request_infos(req, state, playback_session_action).await?;
     let original_request = request
         .try_clone()
         .ok_or_else(|| anyhow!("failed to clone preprocessed request body"))?;
@@ -349,6 +389,28 @@ pub async fn preprocess_request(req: Request, state: &AppState) -> Result<Prepro
         access_scope.as_ref(),
     )
     .await?;
+    let pending_playback_session_update = match playback_session_action {
+        Some(PlaybackSessionAction::Start) => request_body_result.as_ref().and_then(|result| {
+            Some(PendingPlaybackSessionUpdate {
+                action: PlaybackSessionAction::Start,
+                session: PlaybackSession {
+                    session_id: result.requested_play_session_id.clone()?,
+                    item_id: result.requested_play_item_id.clone()?,
+                    user_id: user.as_ref()?.id.clone(),
+                    server_id: server.id,
+                },
+            })
+        }),
+        Some(action @ (PlaybackSessionAction::Refresh | PlaybackSessionAction::Remove)) => {
+            request_body_result.as_ref().and_then(|result| {
+                Some(PendingPlaybackSessionUpdate {
+                    action,
+                    session: result.authoritative_play_session.clone()?,
+                })
+            })
+        }
+        None => None,
+    };
 
     let new_auth = remap_authorization(&auth, &session).await?;
 
@@ -373,7 +435,30 @@ pub async fn preprocess_request(req: Request, state: &AppState) -> Result<Prepro
         new_auth,
         access_scope,
         server_matched_request,
+        pending_playback_session_update,
     })
+}
+
+async fn playback_session_action(
+    method: &http::Method,
+    request_path: &str,
+    state: &AppState,
+) -> Option<PlaybackSessionAction> {
+    if method != http::Method::POST {
+        return None;
+    }
+
+    let path = state.remove_prefix_from_path(request_path).await;
+    let path = path.trim_end_matches('/');
+    if path.eq_ignore_ascii_case("/Sessions/Playing") {
+        Some(PlaybackSessionAction::Start)
+    } else if path.eq_ignore_ascii_case("/Sessions/Playing/Progress") {
+        Some(PlaybackSessionAction::Refresh)
+    } else if path.eq_ignore_ascii_case("/Sessions/Playing/Stopped") {
+        Some(PlaybackSessionAction::Remove)
+    } else {
+        None
+    }
 }
 
 pub async fn apply_to_request(
@@ -508,6 +593,26 @@ pub async fn resolve_server(
     request: &reqwest::Request,
     access_scope: Option<&VirtualLibraryAccessScope>,
 ) -> Result<(Server, Option<AuthorizationSession>, bool)> {
+    if let Some(play_session) = request_body_result
+        .as_ref()
+        .and_then(|result| result.authoritative_play_session.as_ref())
+    {
+        let server = state
+            .server_storage
+            .get_server_by_id(play_session.server_id)
+            .await?
+            .ok_or_else(|| anyhow!("playback session server no longer exists"))?;
+        let (session, _) = sessions
+            .as_ref()
+            .and_then(|sessions| {
+                sessions
+                    .iter()
+                    .find(|(_session, candidate)| candidate.id == server.id)
+            })
+            .ok_or_else(|| anyhow!("playback session server is unavailable"))?;
+        return Ok((server, Some(session.clone()), true));
+    }
+
     let mut request_server = server_from_request_media_ids(state, request, access_scope).await?;
 
     if request_server.is_none() {
@@ -522,6 +627,12 @@ pub async fn resolve_server(
                 }
             }
         }
+    }
+
+    if request_server.is_none() {
+        request_server =
+            server_from_body_movie_aggregate_ids(state, request_body_result.as_ref(), access_scope)
+                .await?;
     }
 
     if let Some(sessions) = sessions {
@@ -553,6 +664,45 @@ pub async fn resolve_server(
     let server = state.server_storage.get_best_server().await?;
     let server = server.ok_or_else(|| anyhow!("No server available"))?;
     Ok((server, None, false))
+}
+
+async fn server_from_body_movie_aggregate_ids(
+    state: &AppState,
+    analysis: Option<&RequestBodyAnalysisResult>,
+    access_scope: Option<&VirtualLibraryAccessScope>,
+) -> Result<Option<Server>> {
+    let Some(analysis) = analysis else {
+        return Ok(None);
+    };
+    for media_id in &analysis.found_ids {
+        let members = state
+            .media_storage
+            .get_movie_version_members_by_virtual_id(media_id)
+            .await?;
+        let mut healthy_members = Vec::new();
+        for member in members {
+            if access_scope.is_none_or(|scope| scope.allows(member.server.id))
+                && state
+                    .server_storage
+                    .server_status(member.server.id)
+                    .await
+                    .is_healthy()
+            {
+                healthy_members.push(member);
+            }
+        }
+        if let Some(member) = healthy_members.into_iter().max_by(|left, right| {
+            compare_virtual_library_routes(
+                &left.server,
+                &left.mapping.original_media_id,
+                &right.server,
+                &right.mapping.original_media_id,
+            )
+        }) {
+            return Ok(Some(member.server));
+        }
+    }
+    Ok(None)
 }
 
 async fn server_from_request_media_ids(
@@ -687,6 +837,7 @@ mod tests {
     use crate::config::{AppConfig, MIGRATOR};
     use crate::handlers::quick_connect::QuickConnectStorage;
     use crate::media_storage_service::MediaStorageService;
+    use crate::server_id::ServerId;
     use crate::server_storage::ServerStorageService;
     use crate::session_storage::SessionStorage;
     use crate::user_authorization_service::UserAuthorizationService;
@@ -842,5 +993,72 @@ mod tests {
             .unwrap();
 
         assert_eq!(identity.user.unwrap().id, caller.id);
+    }
+
+    #[tokio::test]
+    async fn invalid_token_cannot_adopt_user_from_request_body() {
+        let state = create_test_app_state().await;
+        let victim = state
+            .user_authorization
+            .get_or_create_user("victim", &"password123".into())
+            .await
+            .unwrap();
+        let uri: http::Uri = "/Sessions/Capabilities/Full".parse().unwrap();
+        let mut request = Request::builder()
+            .method(http::Method::POST)
+            .uri(uri.clone())
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header("X-MediaBrowser-Token", "invalid-token")
+            .body(axum::body::Body::from(
+                serde_json::json!({ "UserId": victim.id }).to_string(),
+            ))
+            .unwrap();
+        request.extensions_mut().insert(OriginalUri(uri));
+
+        let (_request, auth, user, sessions, _analysis) =
+            extract_request_infos(request, &state, None).await.unwrap();
+
+        assert!(auth.is_some());
+        assert!(user.is_none());
+        assert!(sessions.is_none());
+    }
+
+    #[tokio::test]
+    async fn progress_rejects_a_session_owned_by_another_user() {
+        let state = create_test_app_state().await;
+        let caller = state
+            .user_authorization
+            .get_or_create_user("caller", &"password123".into())
+            .await
+            .unwrap();
+        state
+            .play_sessions
+            .add_session(PlaybackSession {
+                session_id: "victim-session".to_string(),
+                item_id: "item".to_string(),
+                user_id: "victim".to_string(),
+                server_id: ServerId::new(1),
+            })
+            .await;
+        let uri: http::Uri = "/Sessions/Playing/Progress".parse().unwrap();
+        let mut request = Request::builder()
+            .method(http::Method::POST)
+            .uri(uri.clone())
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header("X-MediaBrowser-Token", caller.virtual_key)
+            .body(axum::body::Body::from(
+                serde_json::json!({
+                    "PlaySessionId": "victim-session",
+                    "ItemId": "item"
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        request.extensions_mut().insert(OriginalUri(uri));
+
+        let result =
+            extract_request_infos(request, &state, Some(PlaybackSessionAction::Refresh)).await;
+
+        assert!(result.is_err());
     }
 }
