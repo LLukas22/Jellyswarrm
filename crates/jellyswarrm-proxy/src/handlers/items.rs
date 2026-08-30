@@ -8,7 +8,7 @@ use crate::{
         execute_json_request, execute_processed_json_request, payload_from_request,
         process_playback_response, remap_playback_request, set_json_body, track_playback_alias,
     },
-    handlers::media_dedup::{
+    handlers::movie_versions::{
         merge_movie_detail, record_playback_sources, resolve_playback_route, DetailMergeContext,
         PlaybackRouteDecision,
     },

@@ -15,8 +15,8 @@ use crate::server_storage::Server;
 #[cfg(test)]
 use crate::server_url::ServerUrl;
 use crate::{
-    duplicate_handling::{MovieAlias, MovieObservation, MovieProvider, StableMovieGroup},
     models::generate_token,
+    movie_identity::{MovieAlias, MovieObservation, MovieProvider, StableMovieGroup},
 };
 use moka::future::Cache;
 

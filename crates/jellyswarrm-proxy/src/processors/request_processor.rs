@@ -127,8 +127,8 @@ mod tests {
     use super::*;
     use crate::{
         config::{AppConfig, MediaStreamingMode, MIGRATOR},
-        duplicate_handling::{MovieAlias, MovieObservation, MovieProvider},
         media_storage_service::{MediaStorageService, MovieCatalogSnapshot},
+        movie_identity::{MovieAlias, MovieObservation, MovieProvider},
         processors::process_json,
         server_id::ServerId,
         server_storage::ServerStorageService,

@@ -30,7 +30,6 @@ use axum_login::{
 mod config;
 #[cfg(debug_assertions)]
 mod debug_initialization;
-mod duplicate_handling;
 mod encryption;
 mod extractors;
 mod federated_users;
@@ -38,6 +37,8 @@ mod handlers;
 mod legacy_server_identity;
 mod media_storage_service;
 mod models;
+mod movie_catalog;
+mod movie_identity;
 mod processors;
 mod proxy_headers;
 mod request_preprocessing;

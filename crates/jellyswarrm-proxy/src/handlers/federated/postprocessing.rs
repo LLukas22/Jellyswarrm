@@ -2,13 +2,15 @@ use std::collections::VecDeque;
 use std::str::FromStr;
 
 use crate::{
-    duplicate_handling::{label_duplicates, TaggedMediaItem},
     models::{
-        enums::{BaseItemKind, CollectionType, ItemSortBy, SortOrder},
+        enums::{ItemSortBy, SortOrder},
         ItemsResponseVariants, ItemsResponseWithCount, MediaItem,
     },
+    movie_catalog::{label_duplicates, TaggedMediaItem},
     server_storage::Server,
 };
+
+use super::item_policy::is_live_tv_user_view;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Pagination {
@@ -250,10 +252,6 @@ fn interleave(responses: Vec<ItemsResponseVariants>) -> Vec<MediaItem> {
     }
 
     items
-}
-
-fn is_live_tv_user_view(item: &MediaItem) -> bool {
-    item.collection_type == Some(CollectionType::LiveTv) && item.item_type == BaseItemKind::UserView
 }
 
 fn to_i32(value: usize) -> i32 {
