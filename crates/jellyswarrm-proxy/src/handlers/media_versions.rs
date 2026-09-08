@@ -7,7 +7,7 @@ use tracing::{debug, error, warn};
 
 use crate::{
     handlers::common::{execute_processed_json_request, response_json_to_payload},
-    media_storage_service::{MediaMapping, MovieVersionMember, MovieVersionSourceObservation},
+    media_storage_service::{MediaMapping, MediaVersionMember, MediaVersionSourceObservation},
     models::{MediaItem, MediaSource},
     processors::response_processor::ResponseProcessingProfile,
     request_preprocessing::{
@@ -35,7 +35,7 @@ pub(super) struct DetailMergeContext<'a> {
 
 #[derive(Debug)]
 struct VersionHost {
-    member: MovieVersionMember,
+    member: MediaVersionMember,
     session: AuthorizationSession,
     server: Server,
 }
@@ -48,9 +48,9 @@ struct HostedMediaSources {
     is_primary: bool,
 }
 
-/// Merges all reachable members of a stable movie group into one typed item
+/// Merges all reachable members of a stable media group into one typed item
 /// response. Unknown Jellyfin fields survive through the flattened DTO fields.
-pub(super) async fn merge_movie_detail(
+pub(super) async fn merge_media_detail(
     state: &AppState,
     context: DetailMergeContext<'_>,
     proxy_api_key: Option<&str>,
@@ -58,7 +58,7 @@ pub(super) async fn merge_movie_detail(
 ) -> Result<(), StatusCode> {
     let Some(group) = state
         .media_storage
-        .get_movie_version_group(context.requested_item_id)
+        .get_media_version_group(context.requested_item_id)
         .await
         .map_err(storage_error)?
     else {
@@ -77,7 +77,7 @@ pub(super) async fn merge_movie_detail(
 
     let members = state
         .media_storage
-        .get_movie_version_members(group.id)
+        .get_media_version_members(group.id)
         .await
         .map_err(storage_error)?;
     let mut hosts = context
@@ -111,7 +111,7 @@ pub(super) async fn merge_movie_detail(
 
     let sources_replaced = state
         .media_storage
-        .replace_movie_version_sources(
+        .replace_media_version_sources(
             group.id,
             context.source_generation,
             &refreshed_member_mapping_ids,
@@ -124,7 +124,7 @@ pub(super) async fn merge_movie_detail(
         for source in item.media_sources.take().unwrap_or_default() {
             if state
                 .media_storage
-                .get_movie_version_source_route(group.id, &source.id)
+                .get_media_version_source_route(group.id, &source.id)
                 .await
                 .map_err(storage_error)?
                 .is_some()
@@ -136,7 +136,7 @@ pub(super) async fn merge_movie_detail(
         item.media_sources = Some(routable_sources);
     }
     *payload = serde_json::to_value(item).map_err(|conversion_error| {
-        error!("Failed to serialize merged movie detail: {conversion_error}");
+        error!("Failed to serialize merged media detail: {conversion_error}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
@@ -144,7 +144,7 @@ pub(super) async fn merge_movie_detail(
 }
 
 fn authorized_hosts(
-    members: Vec<MovieVersionMember>,
+    members: Vec<MediaVersionMember>,
     sessions: &[(AuthorizationSession, Server)],
     access_scope: Option<&VirtualLibraryAccessScope>,
     base_mapping_id: i64,
@@ -199,7 +199,7 @@ async fn fetch_member_sources(
 
     for host in hosts {
         let Some(original_request) = context.original_request.try_clone() else {
-            warn!("Failed to clone item detail request for movie version fetch");
+            warn!("Failed to clone item detail request for media version fetch");
             continue;
         };
         join_set.spawn(fetch_member_source(
@@ -216,8 +216,8 @@ async fn fetch_member_sources(
     while let Some(result) = join_set.join_next().await {
         match result {
             Ok(Ok(hosted)) => sources.push(hosted),
-            Ok(Err(status)) => warn!("Movie version detail fetch failed with status {status}"),
-            Err(join_error) => error!("Movie version detail task aborted: {join_error}"),
+            Ok(Err(status)) => warn!("Media version detail fetch failed with status {status}"),
+            Err(join_error) => error!("Media version detail task aborted: {join_error}"),
         }
     }
     sources
@@ -284,7 +284,7 @@ async fn fetch_member_source(
 
 fn merge_sources(
     hosted_sources: &[HostedMediaSources],
-) -> (Vec<MediaSource>, Vec<MovieVersionSourceObservation>) {
+) -> (Vec<MediaSource>, Vec<MediaVersionSourceObservation>) {
     let mut seen_source_ids = HashSet::new();
     let mut sources = Vec::new();
     let mut observations = Vec::new();
@@ -299,7 +299,7 @@ fn merge_sources(
             if !hosted.is_primary {
                 source.source_type = Some(GROUPING_SOURCE_TYPE.to_string());
             }
-            observations.push(MovieVersionSourceObservation {
+            observations.push(MediaVersionSourceObservation {
                 member_mapping_id: hosted.member_mapping.id,
                 source_virtual_id: source.id.clone(),
             });
@@ -360,7 +360,7 @@ pub(super) async fn record_playback_sources(
 ) -> Result<(), StatusCode> {
     let Some(group) = state
         .media_storage
-        .get_movie_version_group(aggregate_id)
+        .get_media_version_group(aggregate_id)
         .await
         .map_err(storage_error)?
     else {
@@ -368,7 +368,7 @@ pub(super) async fn record_playback_sources(
     };
     let Some(member) = state
         .media_storage
-        .get_movie_version_members(group.id)
+        .get_media_version_members(group.id)
         .await
         .map_err(storage_error)?
         .into_iter()
@@ -378,14 +378,14 @@ pub(super) async fn record_playback_sources(
     };
     let observations = sources
         .iter()
-        .map(|source| MovieVersionSourceObservation {
+        .map(|source| MediaVersionSourceObservation {
             member_mapping_id: member.mapping.id,
             source_virtual_id: source.id.clone(),
         })
         .collect::<Vec<_>>();
     let sources_replaced = state
         .media_storage
-        .replace_movie_version_sources(
+        .replace_media_version_sources(
             group.id,
             source_generation,
             &[member.mapping.id],
@@ -398,7 +398,7 @@ pub(super) async fn record_playback_sources(
         for source in sources.drain(..) {
             if state
                 .media_storage
-                .get_movie_version_source_route(group.id, &source.id)
+                .get_media_version_source_route(group.id, &source.id)
                 .await
                 .map_err(storage_error)?
                 .is_some()
@@ -423,7 +423,7 @@ pub(super) async fn resolve_playback_route(
 ) -> Result<PlaybackRouteDecision, StatusCode> {
     let Some(group) = state
         .media_storage
-        .get_movie_version_group(requested_item_id)
+        .get_media_version_group(requested_item_id)
         .await
         .map_err(storage_error)?
     else {
@@ -434,7 +434,7 @@ pub(super) async fn resolve_playback_route(
     };
     let Some(route) = state
         .media_storage
-        .get_movie_version_source_route(group.id, selected_source_id)
+        .get_media_version_source_route(group.id, selected_source_id)
         .await
         .map_err(storage_error)?
     else {
@@ -494,7 +494,7 @@ pub(super) async fn resolve_playback_route(
     .await;
 
     debug!(
-        "Routing aggregate movie {} source {} to server {}",
+        "Routing aggregate media {} source {} to server {}",
         group.virtual_media_id, route.source_mapping.virtual_media_id, server.name
     );
     Ok(PlaybackRouteDecision::Rerouted(Box::new(
@@ -507,12 +507,12 @@ pub(super) async fn resolve_playback_route(
 }
 
 fn storage_error(error: sqlx::Error) -> StatusCode {
-    error!("Movie version storage operation failed: {error}");
+    error!("Media version storage operation failed: {error}");
     StatusCode::INTERNAL_SERVER_ERROR
 }
 
 fn unexpected_error(error: anyhow::Error) -> StatusCode {
-    error!("Movie version request preparation failed: {error}");
+    error!("Media version request preparation failed: {error}");
     StatusCode::INTERNAL_SERVER_ERROR
 }
 

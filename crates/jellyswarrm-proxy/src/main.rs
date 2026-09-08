@@ -35,10 +35,10 @@ mod extractors;
 mod federated_users;
 mod handlers;
 mod legacy_server_identity;
+mod media_catalog;
+mod media_identity;
 mod media_storage_service;
 mod models;
-mod movie_catalog;
-mod movie_identity;
 mod processors;
 mod proxy_headers;
 mod request_preprocessing;
@@ -180,8 +180,8 @@ impl AppState {
         self.config.read().await.merge_libraries
     }
 
-    pub async fn deduplicate_movies_enabled(&self) -> bool {
-        self.config.read().await.deduplicate_movies
+    pub async fn deduplicate_media_enabled(&self) -> bool {
+        self.config.read().await.deduplicate_media
     }
 
     pub async fn process_response_json(
@@ -659,8 +659,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .nest(
                 "/Shows",
                 Router::new()
-                    .route("/{item_id}/Seasons", get(handlers::items::get_items))
-                    .route("/{item_id}/Episodes", get(handlers::items::get_items))
+                    .route(
+                        "/{item_id}/Seasons",
+                        get(handlers::federated::get_show_children_from_all_servers),
+                    )
+                    .route(
+                        "/{item_id}/Episodes",
+                        get(handlers::federated::get_show_children_from_all_servers),
+                    )
                     .route(
                         "/NextUp",
                         get(handlers::federated::get_items_from_all_servers_if_not_restricted),

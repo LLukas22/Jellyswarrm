@@ -8,8 +8,8 @@ use crate::{
         execute_json_request, execute_processed_json_request, payload_from_request,
         process_playback_response, remap_playback_request, set_json_body, track_playback_alias,
     },
-    handlers::movie_versions::{
-        merge_movie_detail, record_playback_sources, resolve_playback_route, DetailMergeContext,
+    handlers::media_versions::{
+        merge_media_detail, record_playback_sources, resolve_playback_route, DetailMergeContext,
         PlaybackRouteDecision,
     },
     models::{PlaybackRequest, PlaybackResponse},
@@ -23,7 +23,7 @@ use crate::{
 async fn get_processed_item_json(
     state: &AppState,
     mut preprocessed: PreprocessedRequest,
-    merge_movie_versions: bool,
+    merge_media_versions: bool,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let virtual_library = preprocessed
         .original_request
@@ -33,11 +33,11 @@ async fn get_processed_item_json(
         .map(str::to_string);
     let requested_item_id = contains_id(preprocessed.original_request.url(), "Items");
     let server = preprocessed.server.clone();
-    let source_generation = if merge_movie_versions {
+    let source_generation = if merge_media_versions {
         Some(
             state
                 .media_storage
-                .begin_movie_reconciliation()
+                .begin_media_reconciliation()
                 .await
                 .map_err(|error| {
                     error!("Failed to begin detail source reconciliation: {error}");
@@ -53,7 +53,7 @@ async fn get_processed_item_json(
         .and_then(|auth| auth.token_ref())
         .map(str::to_string);
 
-    if merge_movie_versions {
+    if merge_media_versions {
         ensure_query_list_value(preprocessed.request.url_mut(), "Fields", "MediaSources");
     }
 
@@ -67,8 +67,8 @@ async fn get_processed_item_json(
     )
     .await?;
 
-    if let (true, Some(requested_item_id)) = (merge_movie_versions, requested_item_id.as_deref()) {
-        merge_movie_detail(
+    if let (true, Some(requested_item_id)) = (merge_media_versions, requested_item_id.as_deref()) {
+        merge_media_detail(
             state,
             DetailMergeContext {
                 requested_item_id,
@@ -152,7 +152,7 @@ pub async fn post_playback_info(
         contains_id(preprocessed.original_request.url(), "Items").ok_or(StatusCode::BAD_REQUEST)?;
     let source_generation = state
         .media_storage
-        .begin_movie_reconciliation()
+        .begin_media_reconciliation()
         .await
         .map_err(|error| {
             error!("Failed to begin playback source reconciliation: {error}");

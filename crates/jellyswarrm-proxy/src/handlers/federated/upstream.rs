@@ -23,9 +23,11 @@ use super::{
     request_policy::{
         ensure_duplicate_identity_field, ensure_global_sort_fields,
         is_upstream_limited_catalog_request, merged_library_max_pages,
-        normalize_upstream_pagination, replace_parent_id, set_upstream_page, UPSTREAM_PAGE_SIZE,
+        normalize_upstream_pagination, replace_aggregate_parent_id, set_upstream_page,
+        UPSTREAM_PAGE_SIZE,
     },
 };
+use crate::url_helper::replace_path_id;
 
 const MAX_PARALLEL_UPSTREAM_PAGES: usize = 8;
 
@@ -47,6 +49,79 @@ pub(super) struct FetchedServerItems {
     pub(super) upstream_total: Option<i32>,
     pub(super) fully_fetched: bool,
     pub(super) source_parent_id: Option<String>,
+}
+
+/// Federates `/Shows/{seriesId}/Seasons|Episodes` for a collapsed (aggregate)
+/// show by fanning out the path ID to each member's original series ID.
+pub(super) async fn fetch_show_catalog(
+    state: &AppState,
+    original_request: &reqwest::Request,
+    targets: Vec<CatalogFetchTarget>,
+    mut failures: usize,
+) -> Result<FetchedCatalog, StatusCode> {
+    let mut join_set = JoinSet::new();
+
+    for (index, target) in targets.into_iter().enumerate() {
+        let Some(mut request) = original_request.try_clone() else {
+            error!("Failed to clone request for server: {}", target.server.name);
+            failures += 1;
+            continue;
+        };
+        ensure_global_sort_fields(request.url_mut());
+        let source_parent_id = target.parent_id.clone();
+        if let Some(parent_id) = target.parent_id.as_deref() {
+            if let Some(replaced) = replace_path_id(request.url(), "Shows", parent_id) {
+                *request.url_mut() = replaced;
+            }
+            // Episodes listing benefits from provider IDs the same way Items does.
+            ensure_duplicate_identity_field(request.url_mut());
+        }
+
+        let state = state.clone();
+        join_set.spawn(async move {
+            let result = fetch_items_from_server(
+                index,
+                state,
+                request,
+                target.session,
+                target.server,
+                Pagination::unbounded(),
+                true,
+            )
+            .await
+            .map(FetchedServerItems::complete);
+            (
+                index,
+                result.map(|mut fetched| {
+                    fetched.source_parent_id = source_parent_id;
+                    fetched
+                }),
+            )
+        });
+    }
+
+    let (indexed_results, failures) = collect_federated_results(join_set, failures).await?;
+    if failures > 0 {
+        warn!(
+            "Returning partial federated show response after {} server failure(s)",
+            failures
+        );
+    }
+    let server_items = indexed_results
+        .into_iter()
+        .map(|(_, items)| items)
+        .collect::<Vec<_>>();
+    let response_shape = ResponseShape::from_responses(
+        server_items
+            .iter()
+            .map(|items| &items.server_items.response),
+    );
+
+    Ok(FetchedCatalog {
+        server_items,
+        failures,
+        response_shape,
+    })
 }
 
 impl FetchedServerItems {
@@ -88,7 +163,7 @@ pub(super) async fn fetch_catalog(
         ensure_global_sort_fields(request.url_mut());
         let source_parent_id = target.parent_id.clone();
         if let Some(parent_id) = target.parent_id.as_deref() {
-            *request.url_mut() = replace_parent_id(request.url(), parent_id);
+            *request.url_mut() = replace_aggregate_parent_id(request.url(), parent_id);
             ensure_duplicate_identity_field(request.url_mut());
         }
 

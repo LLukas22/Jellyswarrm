@@ -2,7 +2,7 @@ use anyhow::Result;
 use tracing::debug;
 
 use crate::{
-    media_storage_service::{MediaMapping, MovieVersionMember},
+    media_storage_service::{MediaMapping, MediaVersionMember},
     server_id::ServerId,
     server_storage::Server,
     url_helper::{contains_id, is_id_like, replace_id},
@@ -133,7 +133,7 @@ impl UrlProcessor {
             if let Some(group) = self
                 .data_context
                 .media_storage
-                .get_movie_version_group(&media_id)
+                .get_media_version_group(&media_id)
                 .await?
             {
                 aggregate_group = Some(group);
@@ -150,7 +150,7 @@ impl UrlProcessor {
                     let route = self
                         .data_context
                         .media_storage
-                        .get_movie_version_source_route(group.id, source_id)
+                        .get_media_version_source_route(group.id, source_id)
                         .await?
                         .filter(|route| {
                             access_scope
@@ -158,7 +158,7 @@ impl UrlProcessor {
                         })
                         .ok_or_else(|| {
                             anyhow::anyhow!(
-                                "media source does not belong to the requested movie aggregate"
+                                "media source does not belong to the requested media aggregate"
                             )
                         })?;
                     return Ok(self
@@ -407,7 +407,7 @@ impl UrlProcessor {
         }
 
         if let Some(member) = self
-            .movie_version_member(virtual_media_id, access_scope, required_server_id)
+            .media_version_member(virtual_media_id, access_scope, required_server_id)
             .await
         {
             return Some(member.mapping);
@@ -501,7 +501,7 @@ impl UrlProcessor {
         }
 
         if let Some(member) = self
-            .movie_version_member(media_id, access_scope, None)
+            .media_version_member(media_id, access_scope, None)
             .await
         {
             return Ok(Some(member.server));
@@ -509,12 +509,12 @@ impl UrlProcessor {
         if self
             .data_context
             .media_storage
-            .get_movie_version_group(media_id)
+            .get_media_version_group(media_id)
             .await?
             .is_some()
         {
             return Err(anyhow::anyhow!(
-                "movie aggregate has no healthy authorized version"
+                "media aggregate has no healthy authorized version"
             ));
         }
 
@@ -540,16 +540,16 @@ impl UrlProcessor {
         }
     }
 
-    async fn movie_version_member(
+    async fn media_version_member(
         &self,
         group_virtual_id: &str,
         access_scope: Option<&VirtualLibraryAccessScope>,
         required_server_id: Option<ServerId>,
-    ) -> Option<MovieVersionMember> {
+    ) -> Option<MediaVersionMember> {
         let members = self
             .data_context
             .media_storage
-            .get_movie_version_members_by_virtual_id(group_virtual_id)
+            .get_media_version_members_by_virtual_id(group_virtual_id)
             .await
             .ok()?
             .into_iter();

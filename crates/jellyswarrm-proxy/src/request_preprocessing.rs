@@ -631,7 +631,7 @@ pub async fn resolve_server(
 
     if request_server.is_none() {
         request_server =
-            server_from_body_movie_aggregate_ids(state, request_body_result.as_ref(), access_scope)
+            server_from_body_media_aggregate_ids(state, request_body_result.as_ref(), access_scope)
                 .await?;
     }
 
@@ -666,7 +666,7 @@ pub async fn resolve_server(
     Ok((server, None, false))
 }
 
-async fn server_from_body_movie_aggregate_ids(
+async fn server_from_body_media_aggregate_ids(
     state: &AppState,
     analysis: Option<&RequestBodyAnalysisResult>,
     access_scope: Option<&VirtualLibraryAccessScope>,
@@ -677,7 +677,7 @@ async fn server_from_body_movie_aggregate_ids(
     for media_id in &analysis.found_ids {
         let members = state
             .media_storage
-            .get_movie_version_members_by_virtual_id(media_id)
+            .get_media_version_members_by_virtual_id(media_id)
             .await?;
         let mut healthy_members = Vec::new();
         for member in members {

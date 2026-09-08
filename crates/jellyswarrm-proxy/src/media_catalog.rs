@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
+    media_identity::{MediaAlias, MediaKind, StableMediaGroup},
     models::{enums::BaseItemKind, MediaItem},
-    movie_identity::{MovieAlias, StableMovieGroup},
     server_storage::Server,
     virtual_library_service::compare_virtual_library_routes,
 };
@@ -15,22 +15,22 @@ pub struct TaggedMediaItem {
 
 #[derive(Debug)]
 struct CatalogGroup {
-    has_movie_aliases: bool,
+    has_media_aliases: bool,
     members: Vec<TaggedMediaItem>,
 }
 
 /// Pure catalog plan. Database-backed stable group IDs are applied only after
 /// all observations have been reconciled.
 #[derive(Debug)]
-pub struct MovieDedupPlan {
+pub struct MediaDedupPlan {
     groups: Vec<CatalogGroup>,
 }
 
-impl MovieDedupPlan {
+impl MediaDedupPlan {
     pub fn new(items: Vec<TaggedMediaItem>) -> Self {
         let aliases = items
             .iter()
-            .map(|tagged| MovieAlias::from_item(&tagged.item))
+            .map(|tagged| MediaAlias::from_item(&tagged.item))
             .collect::<Vec<_>>();
         let mut parents = (0..items.len()).collect::<Vec<_>>();
         let mut alias_owners = HashMap::new();
@@ -60,7 +60,7 @@ impl MovieDedupPlan {
         let groups = grouped
             .into_iter()
             .map(|(root, members)| CatalogGroup {
-                has_movie_aliases: !aliases[root].is_empty(),
+                has_media_aliases: !aliases[root].is_empty(),
                 members,
             })
             .collect();
@@ -68,11 +68,11 @@ impl MovieDedupPlan {
         Self { groups }
     }
 
-    pub fn collapse(self, stable_groups: &HashMap<String, StableMovieGroup>) -> Vec<MediaItem> {
+    pub fn collapse(self, stable_groups: &HashMap<String, StableMediaGroup>) -> Vec<MediaItem> {
         self.groups
             .into_iter()
             .flat_map(|group| {
-                if !group.has_movie_aliases {
+                if !group.has_media_aliases {
                     return label_duplicate_group(group.members);
                 }
                 let distinct_servers = group
@@ -95,7 +95,7 @@ impl MovieDedupPlan {
                     (true, Some(stable_group))
                         if stable_group.published && !stable_group.ambiguous =>
                     {
-                        vec![merge_movie_group(
+                        vec![merge_media_group(
                             group.members,
                             &stable_group.virtual_media_id,
                         )]
@@ -127,7 +127,11 @@ fn union(parents: &mut [usize], left: usize, right: usize) {
     }
 }
 
-fn merge_movie_group(members: Vec<TaggedMediaItem>, group_id: &str) -> MediaItem {
+fn merge_media_group(members: Vec<TaggedMediaItem>, group_id: &str) -> MediaItem {
+    let advertises_versions = members.iter().any(|member| {
+        MediaKind::from_item_kind(&member.item.item_type)
+            .is_some_and(|kind| kind.has_media_sources())
+    });
     let media_source_count = members
         .iter()
         .map(|member| member.item.media_source_count.unwrap_or(1).max(1) as i64)
@@ -144,10 +148,16 @@ fn merge_movie_group(members: Vec<TaggedMediaItem>, group_id: &str) -> MediaItem
                 &right.item.id,
             )
         })
-        .expect("movie group is never empty");
+        .expect("media group is never empty");
 
     best.item.id = group_id.to_string();
-    best.item.media_source_count = Some(media_source_count);
+    // Movies and (Jellyfin v12+) episodes carry one MediaSource per version,
+    // so the collapsed item advertises the summed count. Series/seasons have
+    // no versions on the item itself — keep their original count instead of
+    // inventing one.
+    if advertises_versions {
+        best.item.media_source_count = Some(media_source_count);
+    }
     best.item
 }
 
@@ -303,7 +313,9 @@ mod tests {
     use std::collections::BTreeSet;
 
     use crate::{
-        config::MediaStreamingMode, movie_identity::MovieProvider, server_id::ServerId,
+        config::MediaStreamingMode,
+        media_identity::{MediaKind, MediaProvider},
+        server_id::ServerId,
         server_url::ServerUrl,
     };
 
@@ -334,8 +346,8 @@ mod tests {
         }
     }
 
-    fn stable_group(member_count: usize) -> StableMovieGroup {
-        StableMovieGroup {
+    fn stable_group(member_count: usize) -> StableMediaGroup {
+        StableMediaGroup {
             virtual_media_id: "aggregate-id".to_string(),
             active_member_count: member_count,
             ambiguous: false,
@@ -343,7 +355,7 @@ mod tests {
         }
     }
 
-    fn assignments(ids: &[&str], member_count: usize) -> HashMap<String, StableMovieGroup> {
+    fn assignments(ids: &[&str], member_count: usize) -> HashMap<String, StableMediaGroup> {
         ids.iter()
             .map(|id| ((*id).to_string(), stable_group(member_count)))
             .collect()
@@ -442,7 +454,7 @@ mod tests {
 
     #[test]
     fn dedup_collapse_keeps_highest_priority_representative_and_advertises_versions() {
-        let plan = MovieDedupPlan::new(vec![
+        let plan = MediaDedupPlan::new(vec![
             tagged(1, 50, "The Thing", "same"),
             tagged(2, 100, "The Thing", "same"),
         ]);
@@ -461,7 +473,7 @@ mod tests {
     #[test]
     fn dedup_uses_the_canonical_server_order_for_equal_priorities() {
         let assignments = assignments(&["3-Same Movie", "1-Same Movie"], 2);
-        let merged = MovieDedupPlan::new(vec![
+        let merged = MediaDedupPlan::new(vec![
             tagged(3, 100, "Same Movie", "same"),
             tagged(1, 100, "Same Movie", "same"),
         ])
@@ -472,7 +484,7 @@ mod tests {
         // Server 1 wins the canonical name/id tie break, irrespective of input.
         assert_eq!(merged[0].name.as_deref(), Some("Same Movie"));
 
-        let merged_again = MovieDedupPlan::new(vec![
+        let merged_again = MediaDedupPlan::new(vec![
             tagged(1, 100, "Same Movie", "same"),
             tagged(3, 100, "Same Movie", "same"),
         ])
@@ -484,7 +496,7 @@ mod tests {
     #[test]
     fn same_server_copies_are_never_collapsed() {
         let assignments = assignments(&["1-Same Movie"], 3);
-        let plan = MovieDedupPlan::new(vec![
+        let plan = MediaDedupPlan::new(vec![
             tagged(1, 100, "Same Movie", "same"),
             tagged(1, 100, "Same Movie", "same"),
         ]);
@@ -497,7 +509,7 @@ mod tests {
 
     #[test]
     fn persisted_multi_server_group_keeps_aggregate_id_when_one_server_is_absent() {
-        let merged = MovieDedupPlan::new(vec![tagged(1, 100, "Same Movie", "same")])
+        let merged = MediaDedupPlan::new(vec![tagged(1, 100, "Same Movie", "same")])
             .collapse(&assignments(&["1-Same Movie"], 2));
 
         assert_eq!(merged.len(), 1);
@@ -506,7 +518,7 @@ mod tests {
 
     #[test]
     fn collapse_requires_every_visible_member_to_have_the_same_stable_group() {
-        let plan = MovieDedupPlan::new(vec![
+        let plan = MediaDedupPlan::new(vec![
             tagged(1, 100, "Same Movie", "same"),
             tagged(2, 100, "Same Movie", "same"),
         ]);
@@ -521,7 +533,7 @@ mod tests {
         assert_eq!(visible.len(), 2);
         assert!(visible.iter().all(|item| item.id != "aggregate-id"));
 
-        let plan = MovieDedupPlan::new(vec![
+        let plan = MediaDedupPlan::new(vec![
             tagged(1, 100, "Same Movie", "same"),
             tagged(2, 100, "Same Movie", "same"),
         ]);
@@ -530,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn only_authoritative_movie_provider_ids_create_an_identity() {
+    fn only_authoritative_media_provider_ids_create_an_identity() {
         let collection_only: MediaItem = serde_json::from_value(serde_json::json!({
             "Id": "a",
             "Type": "Movie",
@@ -539,7 +551,7 @@ mod tests {
             "ProviderIds": { "TmdbCollection": "franchise" }
         }))
         .unwrap();
-        assert!(MovieAlias::from_item(&collection_only).is_empty());
+        assert!(MediaAlias::from_item(&collection_only).is_empty());
 
         let provider_backed: MediaItem = serde_json::from_value(serde_json::json!({
             "Id": "b",
@@ -548,14 +560,16 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(
-            MovieAlias::from_item(&provider_backed),
+            MediaAlias::from_item(&provider_backed),
             BTreeSet::from([
-                MovieAlias {
-                    provider: MovieProvider::Imdb,
+                MediaAlias {
+                    provider: MediaProvider::Imdb,
+                    kind: MediaKind::Movie,
                     provider_id: "tt123".to_string(),
                 },
-                MovieAlias {
-                    provider: MovieProvider::Tmdb,
+                MediaAlias {
+                    provider: MediaProvider::Tmdb,
+                    kind: MediaKind::Movie,
                     provider_id: "42".to_string(),
                 },
             ])
@@ -563,14 +577,14 @@ mod tests {
     }
 
     #[test]
-    fn unidentified_movies_have_no_authoritative_aliases() {
+    fn unidentified_media_have_no_authoritative_aliases() {
         let unidentified: MediaItem = serde_json::from_value(serde_json::json!({
             "Id": "unidentified",
             "Type": "Movie",
             "Name": "No provider"
         }))
         .unwrap();
-        assert!(MovieAlias::from_item(&unidentified).is_empty());
+        assert!(MediaAlias::from_item(&unidentified).is_empty());
     }
 
     #[test]
@@ -587,7 +601,7 @@ mod tests {
             "Id": "last", "Type": "Movie", "ProviderIds": {"Imdb": "tt123"}
         }))
         .unwrap();
-        let plan = MovieDedupPlan::new(vec![
+        let plan = MediaDedupPlan::new(vec![
             TaggedMediaItem {
                 item: first,
                 server: server_fixture(1, 100),
@@ -605,5 +619,106 @@ mod tests {
         let merged = plan.collapse(&assignments(&["first", "bridge", "last"], 3));
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].id, "aggregate-id");
+    }
+
+    fn typed_tagged(
+        server_id: i64,
+        priority: i32,
+        id: &str,
+        item_type: &str,
+        provider: &str,
+    ) -> TaggedMediaItem {
+        let item: MediaItem = serde_json::from_value(serde_json::json!({
+            "Id": id,
+            "Name": "Show",
+            "Type": item_type,
+            "ProviderIds": { "Tvdb": provider }
+        }))
+        .unwrap();
+        TaggedMediaItem {
+            item,
+            server: server_fixture(server_id, priority),
+        }
+    }
+
+    #[test]
+    fn series_with_matching_providers_collapse_to_one_item_without_version_count() {
+        let plan = MediaDedupPlan::new(vec![
+            typed_tagged(1, 100, "s1", "Series", "tv-1"),
+            typed_tagged(2, 100, "s2", "Series", "tv-1"),
+        ]);
+        let merged = plan.collapse(&assignments(&["s1", "s2"], 2));
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].id, "aggregate-id");
+        // Series carry no MediaSources, so collapsing must not invent a count.
+        assert_eq!(merged[0].media_source_count, None);
+    }
+
+    #[test]
+    fn episodes_with_matching_providers_collapse_and_advertise_versions() {
+        let plan = MediaDedupPlan::new(vec![
+            typed_tagged(1, 100, "e1", "Episode", "ep-9"),
+            typed_tagged(2, 100, "e2", "Episode", "ep-9"),
+        ]);
+        let merged = plan.collapse(&assignments(&["e1", "e2"], 2));
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].id, "aggregate-id");
+        assert_eq!(merged[0].media_source_count, Some(2));
+    }
+
+    #[test]
+    fn same_provider_id_across_types_never_merges() {
+        let plan = MediaDedupPlan::new(vec![
+            typed_tagged(1, 100, "movie", "Movie", "42"),
+            typed_tagged(2, 100, "series", "Series", "42"),
+            typed_tagged(3, 100, "episode", "Episode", "42"),
+        ]);
+        // No stable groups: nothing may collapse across kinds.
+        let merged = plan.collapse(&HashMap::new());
+
+        assert_eq!(merged.len(), 3);
+    }
+
+    #[test]
+    fn series_aliases_carry_their_kind() {
+        let series: MediaItem = serde_json::from_value(serde_json::json!({
+            "Id": "s", "Type": "Series", "ProviderIds": {"Tvdb": "abc", "Tmdb": "42"}
+        }))
+        .unwrap();
+        assert_eq!(
+            MediaAlias::from_item(&series),
+            BTreeSet::from([
+                MediaAlias {
+                    provider: MediaProvider::Tmdb,
+                    kind: MediaKind::Series,
+                    provider_id: "42".to_string(),
+                },
+                MediaAlias {
+                    provider: MediaProvider::Tvdb,
+                    kind: MediaKind::Series,
+                    provider_id: "abc".to_string(),
+                },
+            ])
+        );
+    }
+
+    #[test]
+    fn legacy_storage_provider_strings_read_back_as_media() {
+        let alias = MediaAlias::parse_storage("tmdb", "42").unwrap();
+        assert_eq!(alias.provider, MediaProvider::Tmdb);
+        assert_eq!(alias.kind, MediaKind::Movie);
+
+        let series = MediaAlias {
+            provider: MediaProvider::Tvdb,
+            kind: MediaKind::Series,
+            provider_id: "abc".to_string(),
+        };
+        assert_eq!(series.storage_provider(), "tvdb:series");
+        assert_eq!(
+            MediaAlias::parse_storage("tvdb:series", "abc").unwrap(),
+            series
+        );
     }
 }

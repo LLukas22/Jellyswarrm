@@ -10,17 +10,34 @@ use crate::{
 mod item_policy;
 mod library_resolution;
 mod library_root;
-mod movie_reconciliation;
+mod media_reconciliation;
 mod postprocessing;
 mod request_policy;
 mod upstream;
 
 use library_resolution::{resolve_catalog_plan, CatalogFetchTarget, CatalogPlan};
 use library_root::{get_automatic_library_root, get_configured_library_root};
-use movie_reconciliation::get_virtual_library_items;
+use media_reconciliation::{get_aggregate_show_items, get_virtual_library_items};
 use postprocessing::{FederatedItems, Pagination, ResponseShape};
 use request_policy::has_query_key;
 use upstream::{fetch_catalog, FetchMode, FetchedCatalog};
+
+async fn is_aggregate_id(state: &AppState, url: &url::Url) -> bool {
+    let series_id = url.query_pairs().find_map(|(key, value)| {
+        (key.eq_ignore_ascii_case("SeriesId") || key.eq_ignore_ascii_case("SeasonId"))
+            .then(|| value.into_owned())
+    });
+    let Some(series_id) = series_id else {
+        return false;
+    };
+    state
+        .media_storage
+        .get_media_version_group(&series_id)
+        .await
+        .ok()
+        .flatten()
+        .is_some()
+}
 
 pub async fn get_items_from_all_servers_if_not_restricted(
     State(state): State<AppState>,
@@ -28,7 +45,9 @@ pub async fn get_items_from_all_servers_if_not_restricted(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let original_request = &preprocessed.original_request;
 
-    if has_query_key(original_request.url(), &["SeriesId"]) {
+    if has_query_key(original_request.url(), &["SeriesId"])
+        && !is_aggregate_id(&state, original_request.url()).await
+    {
         return get_items(State(state), Preprocessed(preprocessed)).await;
     }
 
@@ -40,6 +59,81 @@ pub async fn get_items_from_all_servers(
     Preprocessed(preprocessed): Preprocessed,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     get_items_from_all_servers_preprocessed(&state, preprocessed).await
+}
+
+/// Federates `/Shows/{seriesId}/Seasons|Episodes` when `seriesId` is a
+/// collapsed show aggregate; otherwise falls back to single-server proxying.
+pub async fn get_show_children_from_all_servers(
+    State(state): State<AppState>,
+    Preprocessed(preprocessed): Preprocessed,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    use crate::url_helper::contains_id;
+
+    let aggregate_id = contains_id(preprocessed.original_request.url(), "Shows");
+    let Some(aggregate_id) = aggregate_id else {
+        return get_items(State(state), Preprocessed(preprocessed)).await;
+    };
+    if !state.deduplicate_media_enabled().await {
+        return get_items(State(state), Preprocessed(preprocessed)).await;
+    }
+    let Some(group) = state
+        .media_storage
+        .get_media_version_group(&aggregate_id)
+        .await
+        .map_err(|error| {
+            error!("Failed to resolve show aggregate {aggregate_id}: {error}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+    else {
+        return get_items(State(state), Preprocessed(preprocessed)).await;
+    };
+    let members = state
+        .media_storage
+        .get_media_version_members(group.id)
+        .await
+        .map_err(|error| {
+            error!("Failed to load show aggregate members: {error}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let Some(sessions) = preprocessed.sessions.clone() else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+    let mut skipped_targets = 0;
+    let mut targets = Vec::new();
+    for member in members {
+        if preprocessed
+            .access_scope
+            .as_ref()
+            .is_some_and(|scope| !scope.allows(member.server.id))
+        {
+            skipped_targets += 1;
+            continue;
+        }
+        let Some((session, server)) = sessions
+            .iter()
+            .find(|(_, server)| server.id == member.server.id)
+            .cloned()
+        else {
+            skipped_targets += 1;
+            continue;
+        };
+        targets.push(CatalogFetchTarget {
+            session,
+            server,
+            parent_id: Some(member.mapping.original_media_id),
+        });
+    }
+    if targets.is_empty() {
+        return get_items(State(state), Preprocessed(preprocessed)).await;
+    }
+    get_aggregate_show_items(
+        &state,
+        preprocessed,
+        group.virtual_media_id,
+        targets,
+        skipped_targets,
+    )
+    .await
 }
 
 pub async fn get_media_folders(

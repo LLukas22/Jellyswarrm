@@ -2,11 +2,11 @@ use std::collections::VecDeque;
 use std::str::FromStr;
 
 use crate::{
+    media_catalog::{label_duplicates, TaggedMediaItem},
     models::{
         enums::{ItemSortBy, SortOrder},
         ItemsResponseVariants, ItemsResponseWithCount, MediaItem,
     },
-    movie_catalog::{label_duplicates, TaggedMediaItem},
     server_storage::Server,
 };
 

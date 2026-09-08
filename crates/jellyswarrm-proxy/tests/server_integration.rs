@@ -50,7 +50,7 @@ async fn user_can_login_browse_merged_libraries_and_stream_mapped_media() -> Res
     let upstreams = upstream_urls(&compose).await?;
     let data_dir = tempfile::tempdir().context("failed to create Jellyswarrm test data dir")?;
     let proxy_port = available_port()?;
-    write_proxy_config(data_dir.path(), proxy_port, &upstreams)?;
+    write_proxy_config(data_dir.path(), proxy_port, &upstreams, false)?;
     let mut proxy = start_proxy(data_dir, proxy_port)?;
     let proxy_url = format!("http://127.0.0.1:{proxy_port}");
     let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
@@ -121,6 +121,103 @@ async fn user_can_login_browse_merged_libraries_and_stream_mapped_media() -> Res
     Ok(())
 }
 
+// Show merging with Jellyfin v12 multi-versions: with deduplicate_media
+// enabled, "One Step Beyond" exists on both tv servers (same Tvdb ids via the
+// .nfo fixtures) and must collapse into a single series whose shared season
+// and episode merge, while the single-server "The Cisco Kid" passes through.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker and the Git LFS media fixtures"]
+async fn shows_on_two_servers_merge_into_one_with_merged_episodes() -> Result<()> {
+    let workspace = workspace_root();
+    ensure_media_fixture_is_present(&workspace)?;
+
+    let compose_files = vec![
+        workspace.join("dev/docker-compose.yml"),
+        workspace.join("dev/docker-compose.integration.yml"),
+    ];
+    let mut compose = DockerCompose::with_local_client(compose_files).with_wait(false);
+    tokio::time::timeout(STARTUP_TIMEOUT, compose.up())
+        .await
+        .context("timed out starting the Jellyfin development stack")??;
+
+    let upstreams = upstream_urls(&compose).await?;
+    let data_dir = tempfile::tempdir().context("failed to create Jellyswarrm test data dir")?;
+    let proxy_port = available_port()?;
+    write_proxy_config(data_dir.path(), proxy_port, &upstreams, true)?;
+    let mut proxy = start_proxy(data_dir, proxy_port)?;
+    let proxy_url = format!("http://127.0.0.1:{proxy_port}");
+    let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
+    wait_for_proxy(&client, &proxy_url, &mut proxy.child).await?;
+
+    let login = success_json(login(&client, &proxy_url, PASSWORD).await?).await?;
+    let token = required_string(&login, "/AccessToken")?;
+    let user_id = required_string(&login, "/User/Id")?;
+
+    let views = wait_for_views(&client, &proxy_url, user_id, token).await?;
+    let shows = wait_for_library_items(
+        &client,
+        &proxy_url,
+        user_id,
+        token,
+        &views,
+        ("Shows", "Series", &["One Step Beyond", "The Cisco Kid"]),
+    )
+    .await?;
+    assert_eq!(
+        item_names(&shows)?,
+        HashSet::from(["One Step Beyond", "The Cisco Kid"]),
+        "shared show must collapse instead of being labeled per server"
+    );
+    let series_id = item_id_named(&shows, "One Step Beyond")?;
+
+    // Season 1 exists on both servers and merges; seasons 2 and 3 are unique
+    // to one server each.
+    let seasons = wait_for_seasons(&client, &proxy_url, user_id, token, series_id).await?;
+    assert_eq!(
+        item_names(&seasons)?,
+        HashSet::from(["Season 1", "Season 2", "Season 3"]),
+        "shared season must collapse instead of being labeled per server"
+    );
+
+    // S01E02 exists on both servers and merges into one episode advertising
+    // one media source per server; the other two episodes stay single.
+    let episode = wait_for_merged_episode(&client, &proxy_url, user_id, token, series_id).await?;
+    let episode_id = required_string(&episode, "/Id")?;
+    assert_eq!(
+        episode["MediaSourceCount"].as_i64(),
+        Some(2),
+        "merged episode must advertise one version per server"
+    );
+
+    // The merged detail response exposes both backend versions for playback
+    // source selection.
+    let detail = success_json(
+        authenticated(
+            client
+                .get(format!("{proxy_url}/Users/{user_id}/Items/{episode_id}"))
+                .query(&[("Fields", "MediaSources")]),
+            token,
+        )
+        .send()
+        .await?,
+    )
+    .await?;
+    let sources = detail["MediaSources"]
+        .as_array()
+        .context("detail response did not contain MediaSources")?;
+    assert_eq!(
+        sources.len(),
+        2,
+        "merged episode detail must list both versions"
+    );
+
+    verify_playback(&client, &proxy_url, user_id, token, episode_id)
+        .await
+        .context("failed playback check for merged episode")?;
+
+    Ok(())
+}
+
 // Regression test for the WebOS client (#173): the official webOS app loads the UI
 // from `<server>/web/index.html` (see jellyfin-webos `frontend/js/index.js`) and
 // fetches every asset relative to that page. All `/web/*` requests must be served
@@ -143,7 +240,7 @@ async fn web_ui_is_served_under_web_prefix_for_webos_clients() -> Result<()> {
     let upstreams = upstream_urls(&compose).await?;
     let data_dir = tempfile::tempdir().context("failed to create Jellyswarrm test data dir")?;
     let proxy_port = available_port()?;
-    write_proxy_config(data_dir.path(), proxy_port, &upstreams)?;
+    write_proxy_config(data_dir.path(), proxy_port, &upstreams, false)?;
     let mut proxy = start_proxy(data_dir, proxy_port)?;
     let proxy_url = format!("http://127.0.0.1:{proxy_port}");
     let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
@@ -254,9 +351,10 @@ fn write_proxy_config(
     data_dir: &Path,
     proxy_port: u16,
     upstreams: &[(&str, String, i32)],
+    deduplicate_media: bool,
 ) -> Result<()> {
     let mut config = format!(
-        "host = \"127.0.0.1\"\nport = {proxy_port}\ninclude_server_name_in_media = false\nmerge_libraries = true\nserver_background_check_interval_secs = 1\n"
+        "host = \"127.0.0.1\"\nport = {proxy_port}\ninclude_server_name_in_media = false\nmerge_libraries = true\ndeduplicate_media = {deduplicate_media}\nserver_background_check_interval_secs = 1\n"
     );
     for (name, url, priority) in upstreams {
         config.push_str(&format!(
@@ -536,6 +634,111 @@ async fn wait_for_library_items(
         if Instant::now() >= deadline {
             bail!(
                 "merged {view_name} catalog was not ready within {CATALOG_TIMEOUT:?}; last observation: {last_observation}"
+            );
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+async fn wait_for_seasons(
+    client: &Client,
+    base_url: &str,
+    user_id: &str,
+    token: &str,
+    series_id: &str,
+) -> Result<Value> {
+    let expected = HashSet::from(["Season 1", "Season 2", "Season 3"]);
+    let deadline = Instant::now() + CATALOG_TIMEOUT;
+    loop {
+        let response = authenticated(
+            client
+                .get(format!("{base_url}/Users/{user_id}/Items"))
+                .query(&[
+                    ("ParentId", series_id),
+                    ("IncludeItemTypes", "Season"),
+                    ("Fields", "ProviderIds"),
+                ]),
+            token,
+        )
+        .send()
+        .await?;
+        let last_observation = if response.status().is_success() {
+            let seasons: Value = response.json().await?;
+            let names = item_names(&seasons)?;
+            if names == expected {
+                return Ok(seasons);
+            }
+            format!("seasons: {names:?}")
+        } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            format!("Seasons returned {status}: {body}")
+        };
+        if Instant::now() >= deadline {
+            bail!(
+                "merged seasons were not ready within {CATALOG_TIMEOUT:?}; last observation: {last_observation}"
+            );
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+async fn wait_for_merged_episode(
+    client: &Client,
+    base_url: &str,
+    user_id: &str,
+    token: &str,
+    series_id: &str,
+) -> Result<Value> {
+    let deadline = Instant::now() + CATALOG_TIMEOUT;
+    loop {
+        let response = authenticated(
+            client
+                .get(format!("{base_url}/Users/{user_id}/Items"))
+                .query(&[
+                    ("ParentId", series_id),
+                    ("Recursive", "true"),
+                    ("IncludeItemTypes", "Episode"),
+                    ("Fields", "ProviderIds,MediaSources"),
+                ]),
+            token,
+        )
+        .send()
+        .await?;
+        let last_observation = if response.status().is_success() {
+            let episodes: Value = response.json().await?;
+            let all = items(&episodes)?;
+            let shared: Vec<&Value> = all
+                .iter()
+                .filter(|episode| {
+                    episode["ParentIndexNumber"].as_i64() == Some(1)
+                        && episode["IndexNumber"].as_i64() == Some(2)
+                })
+                .collect();
+            if all.len() == 3
+                && shared.len() == 1
+                && shared[0]["MediaSourceCount"].as_i64() == Some(2)
+            {
+                return Ok(shared[0].clone());
+            }
+            format!(
+                "episodes: {:?}",
+                all.iter()
+                    .map(|episode| (
+                        episode["ParentIndexNumber"].as_i64(),
+                        episode["IndexNumber"].as_i64(),
+                        episode["MediaSourceCount"].as_i64(),
+                    ))
+                    .collect::<Vec<_>>()
+            )
+        } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            format!("Episodes returned {status}: {body}")
+        };
+        if Instant::now() >= deadline {
+            bail!(
+                "merged episode was not ready within {CATALOG_TIMEOUT:?}; last observation: {last_observation}"
             );
         }
         tokio::time::sleep(Duration::from_secs(1)).await;

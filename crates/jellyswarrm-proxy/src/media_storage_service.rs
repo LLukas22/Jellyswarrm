@@ -15,8 +15,8 @@ use crate::server_storage::Server;
 #[cfg(test)]
 use crate::server_url::ServerUrl;
 use crate::{
+    media_identity::{MediaAlias, MediaObservation, StableMediaGroup},
     models::generate_token,
-    movie_identity::{MovieAlias, MovieObservation, MovieProvider, StableMovieGroup},
 };
 use moka::future::Cache;
 
@@ -31,7 +31,7 @@ pub struct MediaMapping {
 }
 
 #[derive(Debug, Clone)]
-pub struct MovieVersionGroup {
+pub struct MediaVersionGroup {
     pub id: i64,
     pub virtual_media_id: String,
     pub scope_id: i64,
@@ -40,38 +40,38 @@ pub struct MovieVersionGroup {
 }
 
 #[derive(Debug, Clone)]
-pub struct MovieVersionMember {
+pub struct MediaVersionMember {
     pub mapping: MediaMapping,
     pub server: Server,
 }
 
 #[derive(Debug, Clone)]
-pub struct MovieVersionSourceObservation {
+pub struct MediaVersionSourceObservation {
     pub member_mapping_id: i64,
     pub source_virtual_id: String,
 }
 
 #[derive(Debug, Clone)]
-pub struct MovieVersionSourceRoute {
+pub struct MediaVersionSourceRoute {
     pub source_mapping: MediaMapping,
     pub member_mapping: MediaMapping,
 }
 
 #[derive(Debug, Clone)]
-pub struct MovieCatalogSnapshot {
+pub struct MediaCatalogSnapshot {
     pub source_key: String,
     pub server_id: ServerId,
     pub complete: bool,
-    pub observations: Vec<MovieObservation>,
+    pub observations: Vec<MediaObservation>,
 }
 
 #[derive(Debug)]
-struct ActiveMovieMember {
+struct ActiveMediaMember {
     mapping_id: i64,
     virtual_media_id: String,
     server_id: ServerId,
     group_id: Option<i64>,
-    aliases: BTreeSet<MovieAlias>,
+    aliases: BTreeSet<MediaAlias>,
 }
 
 impl<'r> sqlx::FromRow<'r, SqliteRow> for MediaMapping {
@@ -92,7 +92,7 @@ pub struct MediaStorageService {
     pool: SqlitePool,
     original_mapping_cache: Cache<String, MediaMapping>,
     mapping_with_server_cache: Cache<String, (MediaMapping, Server)>,
-    movie_version_reconciliation: Arc<tokio::sync::Mutex<()>>,
+    media_version_reconciliation: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl MediaStorageService {
@@ -107,7 +107,7 @@ impl MediaStorageService {
                 .time_to_live(Duration::from_secs(60 * 30))
                 .max_capacity(10_000)
                 .build(),
-            movie_version_reconciliation: Arc::new(tokio::sync::Mutex::new(())),
+            media_version_reconciliation: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -303,7 +303,7 @@ impl MediaStorageService {
         }
     }
 
-    pub async fn begin_movie_reconciliation(&self) -> Result<i64, sqlx::Error> {
+    pub async fn begin_media_reconciliation(&self) -> Result<i64, sqlx::Error> {
         let (generation,): (i64,) = sqlx::query_as(
             "UPDATE movie_version_clock SET generation = generation + 1 WHERE singleton = 1 RETURNING generation",
         )
@@ -312,31 +312,31 @@ impl MediaStorageService {
         Ok(generation)
     }
 
-    pub async fn reconcile_movie_catalog(
+    pub async fn reconcile_media_catalog(
         &self,
         scope_key: &str,
         generation: i64,
-        snapshots: &[MovieCatalogSnapshot],
+        snapshots: &[MediaCatalogSnapshot],
         prune_missing_sources: bool,
-    ) -> Result<HashMap<String, StableMovieGroup>, sqlx::Error> {
-        let _guard = self.movie_version_reconciliation.lock().await;
+    ) -> Result<HashMap<String, StableMediaGroup>, sqlx::Error> {
+        let _guard = self.media_version_reconciliation.lock().await;
         let mut transaction = self.pool.begin().await?;
-        let scope_id = Self::movie_scope_id(&mut transaction, scope_key).await?;
+        let scope_id = Self::media_scope_id(&mut transaction, scope_key).await?;
         let (committed_generation,): (i64,) =
             sqlx::query_as("SELECT committed_generation FROM movie_catalog_scopes WHERE id = ?")
                 .bind(scope_id)
                 .fetch_one(&mut *transaction)
                 .await?;
         if generation <= committed_generation {
-            let stable_groups = Self::rebuild_movie_groups(&mut transaction, scope_id).await?;
+            let stable_groups = Self::rebuild_media_groups(&mut transaction, scope_id).await?;
             transaction.commit().await?;
             return Ok(stable_groups);
         }
 
         let mut resolved_snapshots = Vec::with_capacity(snapshots.len());
-        let mut aliases_by_mapping = HashMap::<i64, BTreeSet<MovieAlias>>::new();
+        let mut aliases_by_mapping = HashMap::<i64, BTreeSet<MediaAlias>>::new();
         for snapshot in snapshots {
-            let source_id = Self::movie_source_id(
+            let source_id = Self::media_source_id(
                 &mut transaction,
                 scope_id,
                 &snapshot.source_key,
@@ -394,7 +394,7 @@ impl MediaStorageService {
                 )
                 .bind(scope_id)
                 .bind(mapping_id)
-                .bind(alias.provider.as_str())
+                .bind(alias.storage_provider())
                 .bind(alias.provider_id)
                 .execute(&mut *transaction)
                 .await?;
@@ -485,12 +485,12 @@ impl MediaStorageService {
                 .await?;
         }
 
-        let stable_groups = Self::rebuild_movie_groups(&mut transaction, scope_id).await?;
+        let stable_groups = Self::rebuild_media_groups(&mut transaction, scope_id).await?;
         transaction.commit().await?;
         Ok(stable_groups)
     }
 
-    async fn movie_scope_id(
+    async fn media_scope_id(
         transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         scope_key: &str,
     ) -> Result<i64, sqlx::Error> {
@@ -508,7 +508,7 @@ impl MediaStorageService {
         Ok(id)
     }
 
-    async fn movie_source_id(
+    async fn media_source_id(
         transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         scope_id: i64,
         source_key: &str,
@@ -532,10 +532,10 @@ impl MediaStorageService {
         Ok(id)
     }
 
-    async fn rebuild_movie_groups(
+    async fn rebuild_media_groups(
         transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         scope_id: i64,
-    ) -> Result<HashMap<String, StableMovieGroup>, sqlx::Error> {
+    ) -> Result<HashMap<String, StableMediaGroup>, sqlx::Error> {
         let rows = sqlx::query(
             r#"
             SELECT DISTINCT
@@ -563,7 +563,7 @@ impl MediaStorageService {
         .await?;
         let mut members = rows
             .into_iter()
-            .map(|row| ActiveMovieMember {
+            .map(|row| ActiveMediaMember {
                 mapping_id: row.get("id"),
                 virtual_media_id: row.get("virtual_media_id"),
                 server_id: ServerId::new(row.get("server_id")),
@@ -592,13 +592,11 @@ impl MediaStorageService {
                 continue;
             };
             let provider: String = row.get("provider");
-            let Some(provider) = MovieProvider::parse(&provider) else {
+            let provider_id: String = row.get("provider_id");
+            let Some(alias) = MediaAlias::parse_storage(&provider, &provider_id) else {
                 continue;
             };
-            members[position].aliases.insert(MovieAlias {
-                provider,
-                provider_id: row.get("provider_id"),
-            });
+            members[position].aliases.insert(alias);
         }
 
         sqlx::query(
@@ -654,16 +652,11 @@ impl MediaStorageService {
         let mut historical_groups = HashMap::new();
         for row in group_alias_rows {
             let provider: String = row.get("provider");
-            let Some(provider) = MovieProvider::parse(&provider) else {
+            let provider_id: String = row.get("provider_id");
+            let Some(alias) = MediaAlias::parse_storage(&provider, &provider_id) else {
                 continue;
             };
-            historical_groups.insert(
-                MovieAlias {
-                    provider,
-                    provider_id: row.get("provider_id"),
-                },
-                row.get::<i64, _>("group_id"),
-            );
+            historical_groups.insert(alias, row.get::<i64, _>("group_id"));
         }
         let component_groups = components
             .iter()
@@ -720,7 +713,7 @@ impl MediaStorageService {
             {
                 group_id
             } else {
-                Self::create_movie_group(transaction, scope_id).await?
+                Self::create_media_group(transaction, scope_id).await?
             };
 
             for losing_group_id in existing_groups.iter().copied() {
@@ -812,7 +805,7 @@ impl MediaStorageService {
                 )
                 .bind(scope_id)
                 .bind(group_id)
-                .bind(alias.provider.as_str())
+                .bind(alias.storage_provider())
                 .bind(&alias.provider_id)
                 .execute(&mut **transaction)
                 .await?;
@@ -844,7 +837,7 @@ impl MediaStorageService {
             .bind(group_id)
             .fetch_one(&mut **transaction)
             .await?;
-            let stable_group = StableMovieGroup {
+            let stable_group = StableMediaGroup {
                 virtual_media_id,
                 active_member_count: component.len(),
                 ambiguous,
@@ -860,7 +853,7 @@ impl MediaStorageService {
         Ok(assignments)
     }
 
-    async fn create_movie_group(
+    async fn create_media_group(
         transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         scope_id: i64,
     ) -> Result<i64, sqlx::Error> {
@@ -882,10 +875,10 @@ impl MediaStorageService {
         Ok(group_id)
     }
 
-    pub async fn get_movie_version_group(
+    pub async fn get_media_version_group(
         &self,
         virtual_media_id: &str,
-    ) -> Result<Option<MovieVersionGroup>, sqlx::Error> {
+    ) -> Result<Option<MediaVersionGroup>, sqlx::Error> {
         let row = sqlx::query(
             r#"
             SELECT
@@ -903,14 +896,14 @@ impl MediaStorageService {
         .fetch_optional(&self.pool)
         .await?;
         row.as_ref()
-            .map(Self::movie_version_group_from_row)
+            .map(Self::media_version_group_from_row)
             .transpose()
     }
 
-    pub async fn get_movie_version_members(
+    pub async fn get_media_version_members(
         &self,
         group_id: i64,
-    ) -> Result<Vec<MovieVersionMember>, sqlx::Error> {
+    ) -> Result<Vec<MediaVersionMember>, sqlx::Error> {
         let rows = sqlx::query(
             r#"
             SELECT
@@ -958,7 +951,7 @@ impl MediaStorageService {
                     server_url: row.try_get("media_server_url")?,
                     created_at: row.try_get("media_created_at")?,
                 };
-                Ok(MovieVersionMember {
+                Ok(MediaVersionMember {
                     mapping,
                     server: Server::from_session_join_row(&row)?,
                 })
@@ -966,27 +959,27 @@ impl MediaStorageService {
             .collect()
     }
 
-    pub async fn get_movie_version_members_by_virtual_id(
+    pub async fn get_media_version_members_by_virtual_id(
         &self,
         group_virtual_id: &str,
-    ) -> Result<Vec<MovieVersionMember>, sqlx::Error> {
-        let Some(group) = self.get_movie_version_group(group_virtual_id).await? else {
+    ) -> Result<Vec<MediaVersionMember>, sqlx::Error> {
+        let Some(group) = self.get_media_version_group(group_virtual_id).await? else {
             return Ok(Vec::new());
         };
-        self.get_movie_version_members(group.id).await
+        self.get_media_version_members(group.id).await
     }
 
     /// Replaces source routing observations only for members included in this
     /// detail response, leaving inaccessible or temporarily offline members
     /// untouched.
-    pub async fn replace_movie_version_sources(
+    pub async fn replace_media_version_sources(
         &self,
         group_id: i64,
         generation: i64,
         refreshed_member_mapping_ids: &[i64],
-        observations: &[MovieVersionSourceObservation],
+        observations: &[MediaVersionSourceObservation],
     ) -> Result<bool, sqlx::Error> {
-        let _reconciliation_guard = self.movie_version_reconciliation.lock().await;
+        let _reconciliation_guard = self.media_version_reconciliation.lock().await;
         let mut transaction = self.pool.begin().await?;
         let refreshed_members = refreshed_member_mapping_ids
             .iter()
@@ -1120,11 +1113,11 @@ impl MediaStorageService {
         Ok(())
     }
 
-    pub async fn get_movie_version_source_route(
+    pub async fn get_media_version_source_route(
         &self,
         group_id: i64,
         source_virtual_id: &str,
-    ) -> Result<Option<MovieVersionSourceRoute>, sqlx::Error> {
+    ) -> Result<Option<MediaVersionSourceRoute>, sqlx::Error> {
         let row = sqlx::query(
             r#"
             SELECT
@@ -1164,7 +1157,7 @@ impl MediaStorageService {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(|row| MovieVersionSourceRoute {
+        Ok(row.map(|row| MediaVersionSourceRoute {
             source_mapping: MediaMapping {
                 id: row.get("source_id"),
                 virtual_media_id: row.get("source_virtual_media_id"),
@@ -1184,8 +1177,8 @@ impl MediaStorageService {
         }))
     }
 
-    fn movie_version_group_from_row(row: &SqliteRow) -> Result<MovieVersionGroup, sqlx::Error> {
-        Ok(MovieVersionGroup {
+    fn media_version_group_from_row(row: &SqliteRow) -> Result<MediaVersionGroup, sqlx::Error> {
+        Ok(MediaVersionGroup {
             id: row.try_get("id")?,
             virtual_media_id: row.try_get("virtual_media_id")?,
             scope_id: row.try_get("scope_id")?,
@@ -1339,11 +1332,11 @@ mod tests {
 
         // Create media mapping
         let mapping = service
-            .get_or_create_media_mapping("original-movie-123", &server)
+            .get_or_create_media_mapping("original-media-123", &server)
             .await
             .unwrap();
 
-        assert_eq!(mapping.original_media_id, "original-movie-123");
+        assert_eq!(mapping.original_media_id, "original-media-123");
         assert_eq!(mapping.server_url, "http://localhost:8096");
 
         // Get mapping by virtual ID
@@ -1354,7 +1347,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(retrieved_mapping.virtual_media_id, mapping.virtual_media_id);
-        assert_eq!(retrieved_mapping.original_media_id, "original-movie-123");
+        assert_eq!(retrieved_mapping.original_media_id, "original-media-123");
     }
 
     #[tokio::test]
@@ -1366,7 +1359,7 @@ mod tests {
 
         // Create media mapping
         let mapping = service
-            .get_or_create_media_mapping("original-movie-123", &server)
+            .get_or_create_media_mapping("original-media-123", &server)
             .await
             .unwrap();
 
@@ -1378,7 +1371,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(retrieved_mapping.virtual_media_id, mapping.virtual_media_id);
-        assert_eq!(retrieved_mapping.original_media_id, "original-movie-123");
+        assert_eq!(retrieved_mapping.original_media_id, "original-media-123");
         assert_eq!(server.name, "http://localhost:8096");
         assert_eq!(server.url.as_str(), "http://localhost:8096");
     }
@@ -1392,7 +1385,7 @@ mod tests {
 
         // Create media mapping
         let mapping = service
-            .get_or_create_media_mapping("movie-123", &server)
+            .get_or_create_media_mapping("media-123", &server)
             .await
             .unwrap();
 
@@ -1420,7 +1413,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn movie_groups_have_stable_ids_and_exact_source_routes() {
+    async fn media_groups_have_stable_ids_and_exact_source_routes() {
         let pool = foreign_key_pool().await;
         MIGRATOR.run(&pool).await.unwrap();
         let service = MediaStorageService::new(pool.clone());
@@ -1428,39 +1421,40 @@ mod tests {
         let sibling = create_test_server_with_url(&pool, "http://sibling.example:8096").await;
 
         let primary_mapping = service
-            .get_or_create_media_mapping("movie-1", &primary)
+            .get_or_create_media_mapping("media-1", &primary)
             .await
             .unwrap();
         let sibling_mapping = service
-            .get_or_create_media_mapping("movie-1", &sibling)
+            .get_or_create_media_mapping("media-1", &sibling)
             .await
             .unwrap();
 
-        let alias = MovieAlias {
-            provider: MovieProvider::Tmdb,
+        let alias = MediaAlias {
+            provider: crate::media_identity::MediaProvider::Tmdb,
+            kind: crate::media_identity::MediaKind::Movie,
             provider_id: "42".to_string(),
         };
-        let primary_observation = MovieObservation {
+        let primary_observation = MediaObservation {
             virtual_media_id: primary_mapping.virtual_media_id.clone(),
             aliases: BTreeSet::from([alias.clone()]),
         };
-        let sibling_observation = MovieObservation {
+        let sibling_observation = MediaObservation {
             virtual_media_id: sibling_mapping.virtual_media_id.clone(),
             aliases: BTreeSet::from([alias.clone()]),
         };
-        let generation = service.begin_movie_reconciliation().await.unwrap();
+        let generation = service.begin_media_reconciliation().await.unwrap();
         let assignments = service
-            .reconcile_movie_catalog(
+            .reconcile_media_catalog(
                 "configured:library:user",
                 generation,
                 &[
-                    MovieCatalogSnapshot {
+                    MediaCatalogSnapshot {
                         source_key: "primary:library".to_string(),
                         server_id: primary.id,
                         complete: true,
                         observations: vec![primary_observation.clone()],
                     },
-                    MovieCatalogSnapshot {
+                    MediaCatalogSnapshot {
                         source_key: "sibling:library".to_string(),
                         server_id: sibling.id,
                         complete: true,
@@ -1481,14 +1475,14 @@ mod tests {
         assert!(!assignment.ambiguous);
 
         let group = service
-            .get_movie_version_group(&aggregate_id)
+            .get_media_version_group(&aggregate_id)
             .await
             .unwrap()
             .unwrap();
         assert!(group.published);
         assert_eq!(
             service
-                .get_movie_version_members(group.id)
+                .get_media_version_members(group.id)
                 .await
                 .unwrap()
                 .len(),
@@ -1499,13 +1493,13 @@ mod tests {
             .get_or_create_media_mapping("source-1", &sibling)
             .await
             .unwrap();
-        let source_generation = service.begin_movie_reconciliation().await.unwrap();
+        let source_generation = service.begin_media_reconciliation().await.unwrap();
         service
-            .replace_movie_version_sources(
+            .replace_media_version_sources(
                 group.id,
                 source_generation,
                 &[sibling_mapping.id],
-                &[MovieVersionSourceObservation {
+                &[MediaVersionSourceObservation {
                     member_mapping_id: sibling_mapping.id,
                     source_virtual_id: source_mapping.virtual_media_id.clone(),
                 }],
@@ -1513,7 +1507,7 @@ mod tests {
             .await
             .unwrap();
         let route = service
-            .get_movie_version_source_route(group.id, &source_mapping.virtual_media_id)
+            .get_media_version_source_route(group.id, &source_mapping.virtual_media_id)
             .await
             .unwrap()
             .unwrap();
@@ -1521,19 +1515,19 @@ mod tests {
         assert_eq!(route.member_mapping.id, sibling_mapping.id);
 
         let same_server_copy = service
-            .get_or_create_media_mapping("movie-copy", &sibling)
+            .get_or_create_media_mapping("media-copy", &sibling)
             .await
             .unwrap();
-        let copy_observation = MovieObservation {
+        let copy_observation = MediaObservation {
             virtual_media_id: same_server_copy.virtual_media_id.clone(),
             aliases: BTreeSet::from([alias.clone()]),
         };
-        let ambiguous_generation = service.begin_movie_reconciliation().await.unwrap();
+        let ambiguous_generation = service.begin_media_reconciliation().await.unwrap();
         let assignments = service
-            .reconcile_movie_catalog(
+            .reconcile_media_catalog(
                 "configured:library:user",
                 ambiguous_generation,
-                &[MovieCatalogSnapshot {
+                &[MediaCatalogSnapshot {
                     source_key: "sibling:library".to_string(),
                     server_id: sibling.id,
                     complete: false,
@@ -1545,12 +1539,12 @@ mod tests {
             .unwrap();
         assert!(assignments[&sibling_mapping.virtual_media_id].ambiguous);
 
-        let recovery_generation = service.begin_movie_reconciliation().await.unwrap();
+        let recovery_generation = service.begin_media_reconciliation().await.unwrap();
         let recovered = service
-            .reconcile_movie_catalog(
+            .reconcile_media_catalog(
                 "configured:library:user",
                 recovery_generation,
-                &[MovieCatalogSnapshot {
+                &[MediaCatalogSnapshot {
                     source_key: "sibling:library".to_string(),
                     server_id: sibling.id,
                     complete: true,
@@ -1564,13 +1558,13 @@ mod tests {
         assert!(!recovered.ambiguous);
         assert_eq!(recovered.virtual_media_id, aggregate_id);
 
-        let stale_generation = service.begin_movie_reconciliation().await.unwrap();
-        let fresh_generation = service.begin_movie_reconciliation().await.unwrap();
+        let stale_generation = service.begin_media_reconciliation().await.unwrap();
+        let fresh_generation = service.begin_media_reconciliation().await.unwrap();
         service
-            .reconcile_movie_catalog(
+            .reconcile_media_catalog(
                 "configured:library:user",
                 fresh_generation,
-                &[MovieCatalogSnapshot {
+                &[MediaCatalogSnapshot {
                     source_key: "sibling:library".to_string(),
                     server_id: sibling.id,
                     complete: true,
@@ -1581,10 +1575,10 @@ mod tests {
             .await
             .unwrap();
         let stale = service
-            .reconcile_movie_catalog(
+            .reconcile_media_catalog(
                 "configured:library:user",
                 stale_generation,
-                &[MovieCatalogSnapshot {
+                &[MediaCatalogSnapshot {
                     source_key: "sibling:library".to_string(),
                     server_id: sibling.id,
                     complete: true,
@@ -1604,26 +1598,26 @@ mod tests {
             .get_or_create_media_mapping("replacement-sibling", &sibling)
             .await
             .unwrap();
-        let replacement_generation = service.begin_movie_reconciliation().await.unwrap();
+        let replacement_generation = service.begin_media_reconciliation().await.unwrap();
         let replacements = service
-            .reconcile_movie_catalog(
+            .reconcile_media_catalog(
                 "configured:library:user",
                 replacement_generation,
                 &[
-                    MovieCatalogSnapshot {
+                    MediaCatalogSnapshot {
                         source_key: "primary:library".to_string(),
                         server_id: primary.id,
                         complete: true,
-                        observations: vec![MovieObservation {
+                        observations: vec![MediaObservation {
                             virtual_media_id: replacement_primary.virtual_media_id.clone(),
                             aliases: BTreeSet::from([alias.clone()]),
                         }],
                     },
-                    MovieCatalogSnapshot {
+                    MediaCatalogSnapshot {
                         source_key: "sibling:library".to_string(),
                         server_id: sibling.id,
                         complete: true,
-                        observations: vec![MovieObservation {
+                        observations: vec![MediaObservation {
                             virtual_media_id: replacement_sibling.virtual_media_id.clone(),
                             aliases: BTreeSet::from([alias]),
                         }],
@@ -1646,7 +1640,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scoped_movie_migration_preserves_legacy_aggregate_routes() {
+    async fn scoped_media_migration_preserves_legacy_aggregate_routes() {
         let pool = foreign_key_pool().await;
         sqlx::raw_sql(
             r#"
@@ -1663,8 +1657,8 @@ mod tests {
             INSERT INTO media_mappings (
                 id, virtual_media_id, original_media_id, server_id, server_url
             ) VALUES
-                (1, 'member-a', 'movie-a', 1, 'http://a'),
-                (2, 'member-b', 'movie-b', 2, 'http://b'),
+                (1, 'member-a', 'media-a', 1, 'http://a'),
+                (2, 'member-b', 'media-b', 2, 'http://b'),
                 (3, 'source-b', 'source-b', 2, 'http://b');
             "#,
         )
@@ -1760,37 +1754,38 @@ mod tests {
         let primary = create_test_server_with_url(&pool, "http://scope-a.example:8096").await;
         let sibling = create_test_server_with_url(&pool, "http://scope-b.example:8096").await;
         let primary_mapping = service
-            .get_or_create_media_mapping("movie-primary", &primary)
+            .get_or_create_media_mapping("media-primary", &primary)
             .await
             .unwrap();
         let sibling_mapping = service
-            .get_or_create_media_mapping("movie-sibling", &sibling)
+            .get_or_create_media_mapping("media-sibling", &sibling)
             .await
             .unwrap();
         let source_mapping = service
             .get_or_create_media_mapping("source-sibling", &sibling)
             .await
             .unwrap();
-        let alias = MovieAlias {
-            provider: MovieProvider::Tmdb,
+        let alias = MediaAlias {
+            provider: crate::media_identity::MediaProvider::Tmdb,
+            kind: crate::media_identity::MediaKind::Movie,
             provider_id: "42".to_string(),
         };
         let snapshots = || {
             vec![
-                MovieCatalogSnapshot {
+                MediaCatalogSnapshot {
                     source_key: "primary:library".to_string(),
                     server_id: primary.id,
                     complete: true,
-                    observations: vec![MovieObservation {
+                    observations: vec![MediaObservation {
                         virtual_media_id: primary_mapping.virtual_media_id.clone(),
                         aliases: BTreeSet::from([alias.clone()]),
                     }],
                 },
-                MovieCatalogSnapshot {
+                MediaCatalogSnapshot {
                     source_key: "sibling:library".to_string(),
                     server_id: sibling.id,
                     complete: true,
-                    observations: vec![MovieObservation {
+                    observations: vec![MediaObservation {
                         virtual_media_id: sibling_mapping.virtual_media_id.clone(),
                         aliases: BTreeSet::from([alias.clone()]),
                     }],
@@ -1799,25 +1794,25 @@ mod tests {
         };
         let mut groups = Vec::new();
         for scope in ["configured:library:user-a", "configured:library:user-b"] {
-            let generation = service.begin_movie_reconciliation().await.unwrap();
+            let generation = service.begin_media_reconciliation().await.unwrap();
             let assignments = service
-                .reconcile_movie_catalog(scope, generation, &snapshots(), true)
+                .reconcile_media_catalog(scope, generation, &snapshots(), true)
                 .await
                 .unwrap();
             let group = service
-                .get_movie_version_group(
+                .get_media_version_group(
                     &assignments[&sibling_mapping.virtual_media_id].virtual_media_id,
                 )
                 .await
                 .unwrap()
                 .unwrap();
-            let source_generation = service.begin_movie_reconciliation().await.unwrap();
+            let source_generation = service.begin_media_reconciliation().await.unwrap();
             assert!(service
-                .replace_movie_version_sources(
+                .replace_media_version_sources(
                     group.id,
                     source_generation,
                     &[sibling_mapping.id],
-                    &[MovieVersionSourceObservation {
+                    &[MediaVersionSourceObservation {
                         member_mapping_id: sibling_mapping.id,
                         source_virtual_id: source_mapping.virtual_media_id.clone(),
                     }],
@@ -1827,14 +1822,15 @@ mod tests {
             groups.push(group);
         }
 
-        let split_generation = service.begin_movie_reconciliation().await.unwrap();
+        let split_generation = service.begin_media_reconciliation().await.unwrap();
         let mut split_snapshots = snapshots();
-        split_snapshots[1].observations[0].aliases = BTreeSet::from([MovieAlias {
-            provider: MovieProvider::Tmdb,
+        split_snapshots[1].observations[0].aliases = BTreeSet::from([MediaAlias {
+            provider: crate::media_identity::MediaProvider::Tmdb,
+            kind: crate::media_identity::MediaKind::Movie,
             provider_id: "99".to_string(),
         }]);
         service
-            .reconcile_movie_catalog(
+            .reconcile_media_catalog(
                 "configured:library:user-a",
                 split_generation,
                 &split_snapshots,
@@ -1844,7 +1840,7 @@ mod tests {
             .unwrap();
 
         assert!(service
-            .get_movie_version_source_route(groups[1].id, &source_mapping.virtual_media_id)
+            .get_media_version_source_route(groups[1].id, &source_mapping.virtual_media_id)
             .await
             .unwrap()
             .is_some());

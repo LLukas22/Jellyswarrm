@@ -23,11 +23,11 @@ impl RequestAnalyzer {
         Self { data_context }
     }
 
-    async fn movie_version_server(&self, aggregate_id: &str) -> Result<Option<Server>> {
+    async fn media_version_server(&self, aggregate_id: &str) -> Result<Option<Server>> {
         let members = self
             .data_context
             .media_storage
-            .get_movie_version_members_by_virtual_id(aggregate_id)
+            .get_media_version_members_by_virtual_id(aggregate_id)
             .await?;
         let mut healthy_members = Vec::new();
         for member in members {
@@ -127,7 +127,7 @@ impl JsonAnalyzer<RequestAnalysisContext, RequestBodyAnalysisResult> for Request
                     .map(|(_, server)| server);
                 if let Some(server) = match server {
                     Some(server) => Some(server),
-                    None => self.movie_version_server(virtual_id).await?,
+                    None => self.media_version_server(virtual_id).await?,
                 } {
                     accumulator.servers.push(server);
                 }

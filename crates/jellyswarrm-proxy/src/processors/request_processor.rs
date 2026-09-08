@@ -33,7 +33,7 @@ impl RequestProcessor {
 
         self.data_context
             .media_storage
-            .get_movie_version_members_by_virtual_id(virtual_id)
+            .get_media_version_members_by_virtual_id(virtual_id)
             .await
             .unwrap_or_default()
             .into_iter()
@@ -127,8 +127,8 @@ mod tests {
     use super::*;
     use crate::{
         config::{AppConfig, MediaStreamingMode, MIGRATOR},
-        media_storage_service::{MediaStorageService, MovieCatalogSnapshot},
-        movie_identity::{MovieAlias, MovieObservation, MovieProvider},
+        media_identity::{MediaAlias, MediaKind, MediaObservation, MediaProvider},
+        media_storage_service::{MediaCatalogSnapshot, MediaStorageService},
         processors::process_json,
         server_id::ServerId,
         server_storage::ServerStorageService,
@@ -237,20 +237,21 @@ mod tests {
             .get_or_create_media_mapping("upstream-item", &server)
             .await
             .unwrap();
-        let alias = MovieAlias {
-            provider: MovieProvider::Tmdb,
+        let alias = MediaAlias {
+            provider: MediaProvider::Tmdb,
+            kind: MediaKind::Movie,
             provider_id: "42".to_string(),
         };
-        let generation = media_storage.begin_movie_reconciliation().await.unwrap();
+        let generation = media_storage.begin_media_reconciliation().await.unwrap();
         let aggregate_id = media_storage
-            .reconcile_movie_catalog(
+            .reconcile_media_catalog(
                 "configured:library:user",
                 generation,
-                &[MovieCatalogSnapshot {
+                &[MediaCatalogSnapshot {
                     source_key: "server:library".to_string(),
                     server_id: server.id,
                     complete: true,
-                    observations: vec![MovieObservation {
+                    observations: vec![MediaObservation {
                         virtual_media_id: mapping.virtual_media_id.clone(),
                         aliases: BTreeSet::from([alias]),
                     }],
