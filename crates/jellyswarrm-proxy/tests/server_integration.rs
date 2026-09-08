@@ -20,6 +20,9 @@ const SEERR_AUTHORIZATION: &str =
     "MediaBrowser Client=\"Seerr\", Device=\"Seerr\", DeviceId=\"BOT_seerr\", Version=\"3.4.0\"";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const CATALOG_TIMEOUT: Duration = Duration::from_secs(3 * 60);
+// Show merging converges only once both tv servers finished scanning, which
+// can lag behind the movie/music catalogs on a cold stack.
+const SHOW_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 struct ServerProcess {
     child: Child,
@@ -154,6 +157,27 @@ async fn shows_on_two_servers_merge_into_one_with_merged_episodes() -> Result<()
     let user_id = required_string(&login, "/User/Id")?;
 
     let views = wait_for_views(&client, &proxy_url, user_id, token).await?;
+    wait_for_library_items(
+        &client,
+        &proxy_url,
+        user_id,
+        token,
+        &views,
+        ("Shows", "Series", &["One Step Beyond", "The Cisco Kid"]),
+    )
+    .await?;
+    // Converge on the collapsed aggregate: early in a library scan only one
+    // server's copy may be visible (an unlabeled singleton), so the series id
+    // is re-resolved on every poll until the aggregate serves all seasons.
+    // Season 1 exists on both servers and merges; seasons 2 and 3 are unique
+    // to one server each.
+    let (seasons, _) = wait_for_merged_seasons(&client, &proxy_url, user_id, token, &views).await?;
+    assert_eq!(
+        item_names(&seasons)?,
+        HashSet::from(["Season 1", "Season 2", "Season 3"]),
+        "shared season must collapse instead of being labeled per server"
+    );
+
     let shows = wait_for_library_items(
         &client,
         &proxy_url,
@@ -168,20 +192,10 @@ async fn shows_on_two_servers_merge_into_one_with_merged_episodes() -> Result<()
         HashSet::from(["One Step Beyond", "The Cisco Kid"]),
         "shared show must collapse instead of being labeled per server"
     );
-    let series_id = item_id_named(&shows, "One Step Beyond")?;
-
-    // Season 1 exists on both servers and merges; seasons 2 and 3 are unique
-    // to one server each.
-    let seasons = wait_for_seasons(&client, &proxy_url, user_id, token, series_id).await?;
-    assert_eq!(
-        item_names(&seasons)?,
-        HashSet::from(["Season 1", "Season 2", "Season 3"]),
-        "shared season must collapse instead of being labeled per server"
-    );
 
     // S01E02 exists on both servers and merges into one episode advertising
     // one media source per server; the other two episodes stay single.
-    let episode = wait_for_merged_episode(&client, &proxy_url, user_id, token, series_id).await?;
+    let (episode, _) = wait_for_merged_episode(&client, &proxy_url, user_id, token, &views).await?;
     let episode_id = required_string(&episode, "/Id")?;
     assert_eq!(
         episode["MediaSourceCount"].as_i64(),
@@ -369,7 +383,11 @@ fn start_proxy(data_dir: TempDir, proxy_port: u16) -> Result<ServerProcess> {
     let mut command = Command::new(env!("CARGO_BIN_EXE_jellyswarrm-proxy"));
     command
         .env("JELLYSWARRM_DATA_DIR", data_dir.path())
-        .env("RUST_LOG", "jellyswarrm_proxy=warn")
+        .env(
+            "RUST_LOG",
+            std::env::var("JELLYSWARRM_TEST_RUST_LOG")
+                .unwrap_or_else(|_| "jellyswarrm_proxy=warn".to_string()),
+        )
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .kill_on_drop(true);
@@ -640,43 +658,58 @@ async fn wait_for_library_items(
     }
 }
 
-async fn wait_for_seasons(
+async fn wait_for_merged_seasons(
     client: &Client,
     base_url: &str,
     user_id: &str,
     token: &str,
-    series_id: &str,
-) -> Result<Value> {
+    views: &Value,
+) -> Result<(Value, String)> {
     let expected = HashSet::from(["Season 1", "Season 2", "Season 3"]);
-    let deadline = Instant::now() + CATALOG_TIMEOUT;
+    let deadline = Instant::now() + SHOW_TIMEOUT;
     loop {
-        let response = authenticated(
-            client
-                .get(format!("{base_url}/Users/{user_id}/Items"))
-                .query(&[
-                    ("ParentId", series_id),
-                    ("IncludeItemTypes", "Season"),
-                    ("Fields", "ProviderIds"),
-                ]),
-            token,
-        )
-        .send()
-        .await?;
-        let last_observation = if response.status().is_success() {
-            let seasons: Value = response.json().await?;
-            let names = item_names(&seasons)?;
-            if names == expected {
-                return Ok(seasons);
+        let mut last_observation = String::from("Shows view was not found");
+        for view_id in item_ids_named(views, "Shows")? {
+            let shows = fetch_items(
+                client,
+                base_url,
+                user_id,
+                token,
+                view_id,
+                "Series",
+                "ProviderIds",
+            )
+            .await?;
+            for series_id in item_ids_named(&shows, "One Step Beyond")? {
+                let response = authenticated(
+                    client
+                        .get(format!("{base_url}/Users/{user_id}/Items"))
+                        .query(&[
+                            ("ParentId", series_id),
+                            ("IncludeItemTypes", "Season"),
+                            ("Fields", "ProviderIds"),
+                        ]),
+                    token,
+                )
+                .send()
+                .await?;
+                if response.status().is_success() {
+                    let seasons: Value = response.json().await?;
+                    let names = item_names(&seasons)?;
+                    if names == expected {
+                        return Ok((seasons, series_id.to_string()));
+                    }
+                    last_observation = format!("seasons of {series_id}: {names:?}");
+                } else {
+                    let status = response.status();
+                    let body = response.text().await.unwrap_or_default();
+                    last_observation = format!("Seasons {series_id} returned {status}: {body}");
+                }
             }
-            format!("seasons: {names:?}")
-        } else {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            format!("Seasons returned {status}: {body}")
-        };
+        }
         if Instant::now() >= deadline {
             bail!(
-                "merged seasons were not ready within {CATALOG_TIMEOUT:?}; last observation: {last_observation}"
+                "merged seasons were not ready within {SHOW_TIMEOUT:?}; last observation: {last_observation}"
             );
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -688,61 +721,103 @@ async fn wait_for_merged_episode(
     base_url: &str,
     user_id: &str,
     token: &str,
-    series_id: &str,
-) -> Result<Value> {
-    let deadline = Instant::now() + CATALOG_TIMEOUT;
+    views: &Value,
+) -> Result<(Value, String)> {
+    let deadline = Instant::now() + SHOW_TIMEOUT;
     loop {
-        let response = authenticated(
-            client
-                .get(format!("{base_url}/Users/{user_id}/Items"))
-                .query(&[
-                    ("ParentId", series_id),
-                    ("Recursive", "true"),
-                    ("IncludeItemTypes", "Episode"),
-                    ("Fields", "ProviderIds,MediaSources"),
-                ]),
-            token,
-        )
-        .send()
-        .await?;
-        let last_observation = if response.status().is_success() {
-            let episodes: Value = response.json().await?;
-            let all = items(&episodes)?;
-            let shared: Vec<&Value> = all
-                .iter()
-                .filter(|episode| {
-                    episode["ParentIndexNumber"].as_i64() == Some(1)
-                        && episode["IndexNumber"].as_i64() == Some(2)
-                })
-                .collect();
-            if all.len() == 3
-                && shared.len() == 1
-                && shared[0]["MediaSourceCount"].as_i64() == Some(2)
-            {
-                return Ok(shared[0].clone());
-            }
-            format!(
-                "episodes: {:?}",
-                all.iter()
-                    .map(|episode| (
-                        episode["ParentIndexNumber"].as_i64(),
-                        episode["IndexNumber"].as_i64(),
-                        episode["MediaSourceCount"].as_i64(),
-                    ))
-                    .collect::<Vec<_>>()
+        let mut last_observation = String::from("Shows view was not found");
+        for view_id in item_ids_named(views, "Shows")? {
+            let shows = fetch_items(
+                client,
+                base_url,
+                user_id,
+                token,
+                view_id,
+                "Series",
+                "ProviderIds",
             )
-        } else {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            format!("Episodes returned {status}: {body}")
-        };
+            .await?;
+            for series_id in item_ids_named(&shows, "One Step Beyond")? {
+                let response = authenticated(
+                    client
+                        .get(format!("{base_url}/Users/{user_id}/Items"))
+                        .query(&[
+                            ("ParentId", series_id),
+                            ("Recursive", "true"),
+                            ("IncludeItemTypes", "Episode"),
+                            ("Fields", "ProviderIds,MediaSources"),
+                        ]),
+                    token,
+                )
+                .send()
+                .await?;
+                if response.status().is_success() {
+                    let episodes: Value = response.json().await?;
+                    let all = items(&episodes)?;
+                    let shared: Vec<&Value> = all
+                        .iter()
+                        .filter(|episode| {
+                            episode["ParentIndexNumber"].as_i64() == Some(1)
+                                && episode["IndexNumber"].as_i64() == Some(2)
+                        })
+                        .collect();
+                    if all.len() == 3
+                        && shared.len() == 1
+                        && shared[0]["MediaSourceCount"].as_i64() == Some(2)
+                    {
+                        return Ok((shared[0].clone(), series_id.to_string()));
+                    }
+                    last_observation = format!(
+                        "episodes of {series_id}: {:?}",
+                        all.iter()
+                            .map(|episode| (
+                                episode["ParentIndexNumber"].as_i64(),
+                                episode["IndexNumber"].as_i64(),
+                                episode["MediaSourceCount"].as_i64(),
+                            ))
+                            .collect::<Vec<_>>()
+                    );
+                } else {
+                    let status = response.status();
+                    let body = response.text().await.unwrap_or_default();
+                    last_observation = format!("Episodes {series_id} returned {status}: {body}");
+                }
+            }
+        }
         if Instant::now() >= deadline {
             bail!(
-                "merged episode was not ready within {CATALOG_TIMEOUT:?}; last observation: {last_observation}"
+                "merged episode was not ready within {SHOW_TIMEOUT:?}; last observation: {last_observation}"
             );
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
+}
+
+async fn fetch_items(
+    client: &Client,
+    base_url: &str,
+    user_id: &str,
+    token: &str,
+    view_id: &str,
+    item_type: &str,
+    fields: &str,
+) -> Result<Value> {
+    success_json(
+        authenticated(
+            client
+                .get(format!("{base_url}/Users/{user_id}/Items"))
+                .query(&[
+                    ("ParentId", view_id),
+                    ("Recursive", "true"),
+                    ("IncludeItemTypes", item_type),
+                    ("Fields", fields),
+                ]),
+            token,
+        )
+        .send()
+        .await?,
+    )
+    .await
 }
 
 fn expected_movie_names() -> [&'static str; 5] {
