@@ -1,7 +1,7 @@
 #################################
 # Stage 1: Build UI (Node.js optimized)
 #################################
-FROM node:20-alpine AS ui-build
+FROM node:24-alpine AS ui-build
 
 # Install git for version detection
 RUN apk add --no-cache git

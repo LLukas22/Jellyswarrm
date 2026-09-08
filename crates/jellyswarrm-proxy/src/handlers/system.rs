@@ -18,7 +18,7 @@ fn reported_server_version() -> String {
         .to_string();
     if version.is_empty() || version.eq_ignore_ascii_case("unknown") {
         // Fallback for test builds that skip ui-version.env generation.
-        "10.11.0".to_string()
+        "12.0.0".to_string()
     } else {
         version
     }
