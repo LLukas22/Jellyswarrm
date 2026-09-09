@@ -116,8 +116,8 @@ impl FederatedItems {
         Self::new(interleave(responses))
     }
 
-    pub(super) fn from_tagged_items(items: Vec<TaggedMediaItem>) -> Self {
-        Self::new(label_duplicates(items))
+    pub(super) fn from_tagged_items(items: Vec<TaggedMediaItem>, deduplicate: bool) -> Self {
+        Self::new(label_duplicates(items, deduplicate))
     }
 
     pub(super) fn merge_interleaved(mut self, server_items: Vec<ServerItems>) -> Self {

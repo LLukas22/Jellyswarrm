@@ -142,6 +142,10 @@ fn default_merge_libraries() -> bool {
     true
 }
 
+fn default_deduplicate_merged_content() -> bool {
+    true
+}
+
 mod base64_serde {
     use super::*;
     use serde::de::Error as DeError;
@@ -235,6 +239,11 @@ define_fallback_deserializer!(
     default_auto_create_users_on_login
 );
 define_fallback_deserializer!(deserialize_merge_libraries, bool, default_merge_libraries);
+define_fallback_deserializer!(
+    deserialize_deduplicate_merged_content,
+    bool,
+    default_deduplicate_merged_content
+);
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PreconfiguredServer {
@@ -318,6 +327,15 @@ pub struct AppConfig {
         deserialize_with = "deserialize_merge_libraries"
     )]
     pub merge_libraries: bool,
+
+    /// When a merged library contains the same title from more than one server,
+    /// collapse it to a single entry (the highest-priority server's copy) rather
+    /// than listing one row per server.
+    #[serde(
+        default = "default_deduplicate_merged_content",
+        deserialize_with = "deserialize_deduplicate_merged_content"
+    )]
+    pub deduplicate_merged_content: bool,
 }
 
 impl fmt::Debug for AppConfig {

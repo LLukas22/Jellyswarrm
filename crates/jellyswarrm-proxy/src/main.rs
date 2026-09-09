@@ -179,6 +179,10 @@ impl AppState {
         self.config.read().await.merge_libraries
     }
 
+    pub async fn deduplicate_merged_content_enabled(&self) -> bool {
+        self.config.read().await.deduplicate_merged_content
+    }
+
     pub async fn process_response_json(
         &self,
         payload: &mut serde_json::Value,
