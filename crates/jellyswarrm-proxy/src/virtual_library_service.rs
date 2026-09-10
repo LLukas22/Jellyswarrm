@@ -62,7 +62,7 @@ impl VirtualLibraryAccessScope {
         }
     }
 
-    fn user_id(&self) -> &str {
+    pub(crate) fn user_id(&self) -> &str {
         &self.user_id
     }
 
@@ -122,6 +122,7 @@ pub struct DiscoveredLibrary {
 pub struct ResolvedVirtualLibrary {
     pub name: String,
     pub members: Vec<VirtualLibraryMember>,
+    pub catalog_scope_key: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,14 +188,36 @@ impl VirtualLibraryService {
         access_scope: Option<&VirtualLibraryAccessScope>,
     ) -> Result<VirtualLibraryResolution, sqlx::Error> {
         if let Some((group, members)) = self.resolve_group(virtual_id, access_scope).await? {
-            return Ok(resolution(group.name, members));
+            let viewer = access_scope
+                .map(VirtualLibraryAccessScope::user_id)
+                .unwrap_or("anonymous");
+            return Ok(resolution(
+                group.name,
+                members,
+                format!(
+                    "configured:{}:{}",
+                    normalize_library_id(&group.virtual_id),
+                    viewer
+                ),
+            ));
         }
 
         if let Some((library, members)) = self
             .resolve_automatic_library(virtual_id, access_scope)
             .await?
         {
-            return Ok(resolution(library.name, members));
+            let Some(access_scope) = access_scope else {
+                return Ok(VirtualLibraryResolution::Empty { name: library.name });
+            };
+            return Ok(resolution(
+                library.name,
+                members,
+                format!(
+                    "automatic:{}:{}",
+                    normalize_library_id(&library.virtual_id),
+                    access_scope.user_id()
+                ),
+            ));
         }
 
         Ok(VirtualLibraryResolution::Unknown)
@@ -837,11 +860,19 @@ async fn upsert_discovered_libraries(
     Ok(())
 }
 
-fn resolution(name: String, members: Vec<VirtualLibraryMember>) -> VirtualLibraryResolution {
+fn resolution(
+    name: String,
+    members: Vec<VirtualLibraryMember>,
+    catalog_scope_key: String,
+) -> VirtualLibraryResolution {
     if members.is_empty() {
         VirtualLibraryResolution::Empty { name }
     } else {
-        VirtualLibraryResolution::Resolved(ResolvedVirtualLibrary { name, members })
+        VirtualLibraryResolution::Resolved(ResolvedVirtualLibrary {
+            name,
+            members,
+            catalog_scope_key,
+        })
     }
 }
 

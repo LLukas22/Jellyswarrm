@@ -24,7 +24,9 @@ Debug builds of `jellyswarrm-proxy` load `data/jellyswarrm.dev.toml` and
 automatically add or update these six servers in Jellyswarrm. Existing
 non-development servers are left untouched. They also create the local
 Jellyswarrm user `test` / `test` and map all six upstream servers to that user
-with the same credentials.
+with the same credentials. Movie deduplication can be enabled from the admin
+Settings tab to expose Big Buck Bunny as one item with versions from both movie
+servers.
 
 Requirements:
 

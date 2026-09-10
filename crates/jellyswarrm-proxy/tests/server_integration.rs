@@ -20,6 +20,9 @@ const SEERR_AUTHORIZATION: &str =
     "MediaBrowser Client=\"Seerr\", Device=\"Seerr\", DeviceId=\"BOT_seerr\", Version=\"3.4.0\"";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const CATALOG_TIMEOUT: Duration = Duration::from_secs(3 * 60);
+// Show merging converges only once both tv servers finished scanning, which
+// can lag behind the movie/music catalogs on a cold stack.
+const SHOW_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 struct ServerProcess {
     child: Child,
@@ -32,42 +35,66 @@ impl Drop for ServerProcess {
     }
 }
 
+struct ServerFixture {
+    client: Client,
+    proxy_url: String,
+    // Drop the proxy before the upstream stack; ServerProcess owns its temp state.
+    _proxy: ServerProcess,
+    _compose: DockerCompose,
+}
+
+impl ServerFixture {
+    async fn start(deduplicate_media: bool) -> Result<Self> {
+        let workspace = workspace_root();
+        ensure_media_fixture_is_present(&workspace)?;
+
+        let compose_files = vec![
+            workspace.join("dev/docker-compose.yml"),
+            workspace.join("dev/docker-compose.integration.yml"),
+        ];
+        let mut compose = DockerCompose::with_local_client(compose_files).with_wait(false);
+        tokio::time::timeout(STARTUP_TIMEOUT, compose.up())
+            .await
+            .context("timed out starting the Jellyfin development stack")??;
+
+        let upstreams = upstream_urls(&compose).await?;
+        let data_dir = tempfile::tempdir().context("failed to create Jellyswarrm test data dir")?;
+        let proxy_port = available_port()?;
+        write_proxy_config(data_dir.path(), proxy_port, &upstreams, deduplicate_media)?;
+        let mut proxy = start_proxy(data_dir, proxy_port)?;
+        let proxy_url = format!("http://127.0.0.1:{proxy_port}");
+        let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
+        wait_for_proxy(&client, &proxy_url, &mut proxy.child).await?;
+
+        Ok(Self {
+            client,
+            proxy_url,
+            _proxy: proxy,
+            _compose: compose,
+        })
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires Docker and the Git LFS media fixtures"]
 async fn user_can_login_browse_merged_libraries_and_stream_mapped_media() -> Result<()> {
-    let workspace = workspace_root();
-    ensure_media_fixture_is_present(&workspace)?;
+    let fixture = ServerFixture::start(false).await?;
+    let ServerFixture {
+        client, proxy_url, ..
+    } = &fixture;
 
-    let compose_files = vec![
-        workspace.join("dev/docker-compose.yml"),
-        workspace.join("dev/docker-compose.integration.yml"),
-    ];
-    let mut compose = DockerCompose::with_local_client(compose_files).with_wait(false);
-    tokio::time::timeout(STARTUP_TIMEOUT, compose.up())
-        .await
-        .context("timed out starting the Jellyfin development stack")??;
-
-    let upstreams = upstream_urls(&compose).await?;
-    let data_dir = tempfile::tempdir().context("failed to create Jellyswarrm test data dir")?;
-    let proxy_port = available_port()?;
-    write_proxy_config(data_dir.path(), proxy_port, &upstreams)?;
-    let mut proxy = start_proxy(data_dir, proxy_port)?;
-    let proxy_url = format!("http://127.0.0.1:{proxy_port}");
-    let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
-    wait_for_proxy(&client, &proxy_url, &mut proxy.child).await?;
-
-    let bad_login = login(&client, &proxy_url, "wrong-password").await?;
+    let bad_login = login(client, proxy_url, "wrong-password").await?;
     assert_eq!(bad_login.status(), StatusCode::UNAUTHORIZED);
 
-    let login = success_json(login(&client, &proxy_url, PASSWORD).await?).await?;
+    let login = success_json(login(client, proxy_url, PASSWORD).await?).await?;
     let token = required_string(&login, "/AccessToken")?;
     let user_id = required_string(&login, "/User/Id")?;
     assert_eq!(required_string(&login, "/User/Name")?, USERNAME);
 
-    let views = wait_for_views(&client, &proxy_url, user_id, token).await?;
+    let views = wait_for_views(client, proxy_url, user_id, token).await?;
     let movies = wait_for_library_items(
-        &client,
-        &proxy_url,
+        client,
+        proxy_url,
         user_id,
         token,
         &views,
@@ -93,14 +120,14 @@ async fn user_can_login_browse_merged_libraries_and_stream_mapped_media() -> Res
 
     for movie_name in ["Night of the Living Dead", "Plan 9 from Outer Space"] {
         let item_id = item_id_named(&movies, movie_name)?;
-        verify_playback(&client, &proxy_url, user_id, token, item_id)
+        verify_playback(client, proxy_url, user_id, token, item_id)
             .await
             .with_context(|| format!("failed playback check for {movie_name}"))?;
     }
 
     let music = wait_for_library_items(
-        &client,
-        &proxy_url,
+        client,
+        proxy_url,
         user_id,
         token,
         &views,
@@ -108,16 +135,338 @@ async fn user_can_login_browse_merged_libraries_and_stream_mapped_media() -> Res
     )
     .await?;
     verify_audio_playback(
-        &client,
-        &proxy_url,
+        client,
+        proxy_url,
         user_id,
         token,
         item_named(&music, "01 - Death Valley Waltz")?,
     )
     .await
     .context("failed playback check for Death Valley Waltz")?;
-    verify_seerr_integration(&client, &proxy_url).await?;
+    verify_seerr_integration(client, proxy_url).await?;
 
+    Ok(())
+}
+
+// Show merging with Jellyfin v12 multi-versions: with deduplicate_media
+// enabled, "One Step Beyond" exists on both tv servers (same Tvdb ids via the
+// .nfo fixtures) and must collapse into a single series whose shared season
+// and episode merge, while the single-server "The Cisco Kid" passes through.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker and the Git LFS media fixtures"]
+async fn merged_shows_preserve_season_navigation_versions_and_latest_identity() -> Result<()> {
+    let fixture = ServerFixture::start(true).await?;
+    let ServerFixture {
+        client, proxy_url, ..
+    } = &fixture;
+
+    let login = success_json(login(client, proxy_url, PASSWORD).await?).await?;
+    let token = required_string(&login, "/AccessToken")?;
+    let user_id = required_string(&login, "/User/Id")?;
+
+    let views = wait_for_views(client, proxy_url, user_id, token).await?;
+    wait_for_library_items(
+        client,
+        proxy_url,
+        user_id,
+        token,
+        &views,
+        ("Shows", "Series", &["One Step Beyond", "The Cisco Kid"]),
+    )
+    .await?;
+    // Converge on the collapsed aggregate: early in a library scan only one
+    // server's copy may be visible (an unlabeled singleton), so the series id
+    // is re-resolved on every poll until the aggregate serves all seasons.
+    // Season 1 exists on both servers and merges; seasons 2 and 3 are unique
+    // to one server each.
+    let (seasons, _) = wait_for_merged_seasons(client, proxy_url, user_id, token, &views).await?;
+    assert_eq!(
+        item_names(&seasons)?,
+        HashSet::from(["Season 1", "Season 2", "Season 3"]),
+        "shared season must collapse instead of being labeled per server"
+    );
+
+    let shows = wait_for_library_items(
+        client,
+        proxy_url,
+        user_id,
+        token,
+        &views,
+        ("Shows", "Series", &["One Step Beyond", "The Cisco Kid"]),
+    )
+    .await?;
+    assert_eq!(
+        item_names(&shows)?,
+        HashSet::from(["One Step Beyond", "The Cisco Kid"]),
+        "shared show must collapse instead of being labeled per server"
+    );
+
+    // S01E02 exists on both servers and merges into one episode advertising
+    // one media source per server; the other two episodes stay single.
+    let (episode, series_id) =
+        wait_for_merged_episode(client, proxy_url, user_id, token, &views).await?;
+    let episode_id = required_string(&episode, "/Id")?;
+    assert_eq!(
+        episode["MediaSourceCount"].as_i64(),
+        Some(2),
+        "merged episode must advertise one version per server"
+    );
+
+    let show_seasons = success_json(
+        authenticated(
+            client
+                .get(format!("{proxy_url}/Shows/{series_id}/Seasons"))
+                .query(&[
+                    ("userId", user_id),
+                    (
+                        "Fields",
+                        "ItemCounts,PrimaryImageAspectRatio,CanDelete,MediaSourceCount",
+                    ),
+                ]),
+            token,
+        )
+        .send()
+        .await?,
+    )
+    .await?;
+    assert_eq!(show_seasons["TotalRecordCount"], 3);
+    let season_items = items(&show_seasons)?;
+    assert_eq!(
+        season_items
+            .iter()
+            .map(|season| season["IndexNumber"].as_i64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
+    for (season, episode_number) in season_items.iter().zip([2, 21, 34]) {
+        let season_id = required_string(season, "/Id")?;
+        // Use the response's parent link, just as the season details UI does.
+        let parent_series_id = required_string(season, "/SeriesId")?;
+        assert_eq!(
+            parent_series_id, series_id,
+            "seasons must retain the merged series navigation link"
+        );
+        let episodes = success_json(
+            authenticated(
+                client
+                    .get(format!("{proxy_url}/Shows/{parent_series_id}/Episodes"))
+                    .query(&[
+                        ("userId", user_id),
+                        ("seasonId", season_id),
+                        (
+                            "Fields",
+                            "ItemCounts,PrimaryImageAspectRatio,CanDelete,MediaSourceCount,Overview",
+                        ),
+                    ]),
+                token,
+            )
+            .send()
+            .await?,
+        )
+        .await?;
+        assert_eq!(
+            episodes["TotalRecordCount"], 1,
+            "season filter must not leak episodes from another season"
+        );
+        let filtered = items(&episodes)?;
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0]["ParentIndexNumber"], season["IndexNumber"]);
+        assert_eq!(filtered[0]["IndexNumber"], episode_number);
+        if episode_number == 2 {
+            assert_eq!(required_string(&filtered[0], "/Id")?, episode_id);
+            assert_eq!(filtered[0]["MediaSourceCount"], 2);
+            verify_version_switching(client, proxy_url, user_id, token, episode_id).await?;
+        } else {
+            verify_playback(
+                client,
+                proxy_url,
+                user_id,
+                token,
+                required_string(&filtered[0], "/Id")?,
+            )
+            .await?;
+        }
+    }
+
+    // The merged detail response exposes both backend versions for playback
+    // source selection.
+    let detail = success_json(
+        authenticated(
+            client
+                .get(format!("{proxy_url}/Users/{user_id}/Items/{episode_id}"))
+                .query(&[("Fields", "MediaSources")]),
+            token,
+        )
+        .send()
+        .await?,
+    )
+    .await?;
+    let sources = detail["MediaSources"]
+        .as_array()
+        .context("detail response did not contain MediaSources")?;
+    assert_eq!(
+        sources.len(),
+        2,
+        "merged episode detail must list both versions"
+    );
+
+    verify_playback(client, proxy_url, user_id, token, episode_id)
+        .await
+        .context("failed playback check for merged episode")?;
+
+    verify_latest_aggregate(
+        client,
+        proxy_url,
+        user_id,
+        token,
+        &views,
+        ("Shows", "Series", "One Step Beyond"),
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker and the Git LFS media fixtures"]
+async fn merged_movies_preserve_versions_and_latest_identity() -> Result<()> {
+    let fixture = ServerFixture::start(true).await?;
+    let ServerFixture {
+        client, proxy_url, ..
+    } = &fixture;
+    let login = success_json(login(client, proxy_url, PASSWORD).await?).await?;
+    let token = required_string(&login, "/AccessToken")?;
+    let user_id = required_string(&login, "/User/Id")?;
+    let views = wait_for_views(client, proxy_url, user_id, token).await?;
+
+    // Unique titles from each movie server ensure both catalogs have scanned
+    // before checking that the shared movie collapses in the latest feed.
+    let movies = wait_for_library_items(
+        client,
+        proxy_url,
+        user_id,
+        token,
+        &views,
+        (
+            "Movies",
+            "Movie",
+            &[
+                "Big Buck Bunny",
+                "Night of the Living Dead",
+                "Plan 9 from Outer Space",
+                "Sintel",
+            ],
+        ),
+    )
+    .await?;
+
+    let aggregate = item_named(&movies, "Big Buck Bunny")?;
+    assert_eq!(aggregate["MediaSourceCount"], 2);
+    verify_version_switching(
+        client,
+        proxy_url,
+        user_id,
+        token,
+        required_string(aggregate, "/Id")?,
+    )
+    .await?;
+    verify_latest_aggregate(
+        client,
+        proxy_url,
+        user_id,
+        token,
+        &views,
+        ("Movies", "Movie", "Big Buck Bunny"),
+    )
+    .await?;
+
+    Ok(())
+}
+
+async fn verify_latest_aggregate(
+    client: &Client,
+    proxy_url: &str,
+    user_id: &str,
+    token: &str,
+    views: &Value,
+    catalog: (&str, &str, &str),
+) -> Result<()> {
+    let (view_name, item_type, shared_name) = catalog;
+    let view_id = item_id_named(views, view_name)?;
+    let before = fetch_items(
+        client,
+        proxy_url,
+        user_id,
+        token,
+        view_id,
+        item_type,
+        "ProviderIds,MediaSources,DateCreated,Path",
+    )
+    .await?;
+    let aggregate = item_named(&before, shared_name)?;
+    assert!(
+        aggregate["ProviderIds"]
+            .as_object()
+            .is_some_and(|ids| !ids.is_empty()),
+        "{shared_name} must have provider IDs before loading Latest: {aggregate}"
+    );
+
+    // Preserve the SDK's repeated lowercase fields parameters on the wire.
+    // Rewriting each occurrence to the same comma list makes Jellyfin omit
+    // ProviderIds, preventing the two backend copies from deduplicating.
+    let latest = success_json(
+        authenticated(
+            client.get(format!("{proxy_url}/Items/Latest")).query(&[
+                ("userId", user_id),
+                ("parentId", view_id),
+                ("fields", "PrimaryImageAspectRatio"),
+                ("fields", "Path"),
+            ]),
+            token,
+        )
+        .send()
+        .await?,
+    )
+    .await?;
+    let latest_items = latest
+        .as_array()
+        .context("Latest response must be a bare array")?;
+    let shared: Vec<_> = latest_items
+        .iter()
+        .filter(|item| {
+            item["Name"]
+                .as_str()
+                .is_some_and(|name| name.starts_with(shared_name))
+        })
+        .collect();
+    assert_eq!(
+        shared.len(),
+        1,
+        "{view_name} Latest must contain one shared aggregate: {latest}"
+    );
+    let latest_aggregate = shared[0];
+    assert_eq!(latest_aggregate["Name"], shared_name, "no server suffix");
+    assert_eq!(latest_aggregate["Type"], item_type);
+    assert_eq!(latest_aggregate["Id"], aggregate["Id"]);
+    assert_eq!(latest_aggregate["ProviderIds"], aggregate["ProviderIds"]);
+    assert!(!required_string(latest_aggregate, "/Path")?.is_empty());
+    chrono::DateTime::parse_from_rfc3339(required_string(latest_aggregate, "/DateCreated")?)
+        .context("Latest must retain a valid DateCreated for sorting")?;
+
+    let after = fetch_items(
+        client,
+        proxy_url,
+        user_id,
+        token,
+        view_id,
+        item_type,
+        "ProviderIds",
+    )
+    .await?;
+    assert_eq!(item_ids_named(&after, shared_name)?.len(), 1);
+    let after_aggregate = item_named(&after, shared_name)?;
+    assert_eq!(after_aggregate["Id"], aggregate["Id"]);
+    assert_eq!(after_aggregate["ProviderIds"], aggregate["ProviderIds"]);
     Ok(())
 }
 
@@ -128,26 +477,10 @@ async fn user_can_login_browse_merged_libraries_and_stream_mapped_media() -> Res
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires Docker and the Git LFS media fixtures"]
 async fn web_ui_is_served_under_web_prefix_for_webos_clients() -> Result<()> {
-    let workspace = workspace_root();
-    ensure_media_fixture_is_present(&workspace)?;
-
-    let compose_files = vec![
-        workspace.join("dev/docker-compose.yml"),
-        workspace.join("dev/docker-compose.integration.yml"),
-    ];
-    let mut compose = DockerCompose::with_local_client(compose_files).with_wait(false);
-    tokio::time::timeout(STARTUP_TIMEOUT, compose.up())
-        .await
-        .context("timed out starting the Jellyfin development stack")??;
-
-    let upstreams = upstream_urls(&compose).await?;
-    let data_dir = tempfile::tempdir().context("failed to create Jellyswarrm test data dir")?;
-    let proxy_port = available_port()?;
-    write_proxy_config(data_dir.path(), proxy_port, &upstreams)?;
-    let mut proxy = start_proxy(data_dir, proxy_port)?;
-    let proxy_url = format!("http://127.0.0.1:{proxy_port}");
-    let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
-    wait_for_proxy(&client, &proxy_url, &mut proxy.child).await?;
+    let fixture = ServerFixture::start(false).await?;
+    let ServerFixture {
+        client, proxy_url, ..
+    } = &fixture;
 
     let index = client
         .get(format!("{proxy_url}/web/index.html"))
@@ -254,9 +587,10 @@ fn write_proxy_config(
     data_dir: &Path,
     proxy_port: u16,
     upstreams: &[(&str, String, i32)],
+    deduplicate_media: bool,
 ) -> Result<()> {
     let mut config = format!(
-        "host = \"127.0.0.1\"\nport = {proxy_port}\ninclude_server_name_in_media = false\nmerge_libraries = true\nserver_background_check_interval_secs = 1\n"
+        "host = \"127.0.0.1\"\nport = {proxy_port}\ninclude_server_name_in_media = false\nmerge_libraries = true\ndeduplicate_media = {deduplicate_media}\nserver_background_check_interval_secs = 1\n"
     );
     for (name, url, priority) in upstreams {
         config.push_str(&format!(
@@ -271,7 +605,11 @@ fn start_proxy(data_dir: TempDir, proxy_port: u16) -> Result<ServerProcess> {
     let mut command = Command::new(env!("CARGO_BIN_EXE_jellyswarrm-proxy"));
     command
         .env("JELLYSWARRM_DATA_DIR", data_dir.path())
-        .env("RUST_LOG", "jellyswarrm_proxy=warn")
+        .env(
+            "RUST_LOG",
+            std::env::var("JELLYSWARRM_TEST_RUST_LOG")
+                .unwrap_or_else(|_| "jellyswarrm_proxy=warn".to_string()),
+        )
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .kill_on_drop(true);
@@ -542,6 +880,168 @@ async fn wait_for_library_items(
     }
 }
 
+async fn wait_for_merged_seasons(
+    client: &Client,
+    base_url: &str,
+    user_id: &str,
+    token: &str,
+    views: &Value,
+) -> Result<(Value, String)> {
+    let expected = HashSet::from(["Season 1", "Season 2", "Season 3"]);
+    let deadline = Instant::now() + SHOW_TIMEOUT;
+    loop {
+        let mut last_observation = String::from("Shows view was not found");
+        for view_id in item_ids_named(views, "Shows")? {
+            let shows = fetch_items(
+                client,
+                base_url,
+                user_id,
+                token,
+                view_id,
+                "Series",
+                "ProviderIds",
+            )
+            .await?;
+            for series_id in item_ids_named(&shows, "One Step Beyond")? {
+                let response = authenticated(
+                    client
+                        .get(format!("{base_url}/Users/{user_id}/Items"))
+                        .query(&[
+                            ("ParentId", series_id),
+                            ("IncludeItemTypes", "Season"),
+                            ("Fields", "ProviderIds"),
+                        ]),
+                    token,
+                )
+                .send()
+                .await?;
+                if response.status().is_success() {
+                    let seasons: Value = response.json().await?;
+                    let names = item_names(&seasons)?;
+                    if names == expected {
+                        return Ok((seasons, series_id.to_string()));
+                    }
+                    last_observation = format!("seasons of {series_id}: {names:?}");
+                } else {
+                    let status = response.status();
+                    let body = response.text().await.unwrap_or_default();
+                    last_observation = format!("Seasons {series_id} returned {status}: {body}");
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "merged seasons were not ready within {SHOW_TIMEOUT:?}; last observation: {last_observation}"
+            );
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+async fn wait_for_merged_episode(
+    client: &Client,
+    base_url: &str,
+    user_id: &str,
+    token: &str,
+    views: &Value,
+) -> Result<(Value, String)> {
+    let deadline = Instant::now() + SHOW_TIMEOUT;
+    loop {
+        let mut last_observation = String::from("Shows view was not found");
+        for view_id in item_ids_named(views, "Shows")? {
+            let shows = fetch_items(
+                client,
+                base_url,
+                user_id,
+                token,
+                view_id,
+                "Series",
+                "ProviderIds",
+            )
+            .await?;
+            for series_id in item_ids_named(&shows, "One Step Beyond")? {
+                let response = authenticated(
+                    client
+                        .get(format!("{base_url}/Users/{user_id}/Items"))
+                        .query(&[
+                            ("ParentId", series_id),
+                            ("Recursive", "true"),
+                            ("IncludeItemTypes", "Episode"),
+                            ("Fields", "ProviderIds,MediaSources"),
+                        ]),
+                    token,
+                )
+                .send()
+                .await?;
+                if response.status().is_success() {
+                    let episodes: Value = response.json().await?;
+                    let all = items(&episodes)?;
+                    let shared: Vec<&Value> = all
+                        .iter()
+                        .filter(|episode| {
+                            episode["ParentIndexNumber"].as_i64() == Some(1)
+                                && episode["IndexNumber"].as_i64() == Some(2)
+                        })
+                        .collect();
+                    if all.len() == 3
+                        && shared.len() == 1
+                        && shared[0]["MediaSourceCount"].as_i64() == Some(2)
+                    {
+                        return Ok((shared[0].clone(), series_id.to_string()));
+                    }
+                    last_observation = format!(
+                        "episodes of {series_id}: {:?}",
+                        all.iter()
+                            .map(|episode| (
+                                episode["ParentIndexNumber"].as_i64(),
+                                episode["IndexNumber"].as_i64(),
+                                episode["MediaSourceCount"].as_i64(),
+                            ))
+                            .collect::<Vec<_>>()
+                    );
+                } else {
+                    let status = response.status();
+                    let body = response.text().await.unwrap_or_default();
+                    last_observation = format!("Episodes {series_id} returned {status}: {body}");
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "merged episode was not ready within {SHOW_TIMEOUT:?}; last observation: {last_observation}"
+            );
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+async fn fetch_items(
+    client: &Client,
+    base_url: &str,
+    user_id: &str,
+    token: &str,
+    view_id: &str,
+    item_type: &str,
+    fields: &str,
+) -> Result<Value> {
+    success_json(
+        authenticated(
+            client
+                .get(format!("{base_url}/Users/{user_id}/Items"))
+                .query(&[
+                    ("ParentId", view_id),
+                    ("Recursive", "true"),
+                    ("IncludeItemTypes", item_type),
+                    ("Fields", fields),
+                ]),
+            token,
+        )
+        .send()
+        .await?,
+    )
+    .await
+}
+
 fn expected_movie_names() -> [&'static str; 5] {
     [
         "Big Buck Bunny [Movies 1]",
@@ -559,11 +1059,113 @@ async fn verify_playback(
     token: &str,
     item_id: &str,
 ) -> Result<()> {
+    verify_playback_source(client, base_url, user_id, token, item_id, None).await
+}
+
+async fn verify_version_switching(
+    client: &Client,
+    base_url: &str,
+    user_id: &str,
+    token: &str,
+    aggregate_id: &str,
+) -> Result<()> {
+    let detail = fetch_user_item(client, base_url, user_id, token, aggregate_id).await?;
+    let sources = detail["MediaSources"]
+        .as_array()
+        .context("missing versions")?;
+    assert_eq!(sources.len(), 2);
+    let source_ids = sources
+        .iter()
+        .map(|source| required_string(source, "/Id"))
+        .collect::<Result<HashSet<_>>>()?;
+    // The details UI reloads by source ID, without Fields or aggregate context.
+    for index in [1, 0, 1] {
+        let source_id = required_string(&sources[index], "/Id")?;
+        let selected = success_json(
+            authenticated(
+                client
+                    .get(format!("{base_url}/Items/{source_id}"))
+                    .query(&[("userId", user_id)]),
+                token,
+            )
+            .send()
+            .await?,
+        )
+        .await?;
+        assert_eq!(
+            required_string(&selected, "/Id")?,
+            source_id,
+            "selecting a version must retain its item identity"
+        );
+        assert_ne!(source_id, aggregate_id);
+        assert_eq!(selected["MediaSourceCount"], 2);
+        let selected_sources = selected["MediaSources"]
+            .as_array()
+            .context("selected detail lost versions")?;
+        assert_eq!(
+            selected_sources
+                .iter()
+                .map(|source| required_string(source, "/Id"))
+                .collect::<Result<HashSet<_>>>()?,
+            source_ids,
+            "switching versions must retain both selector options"
+        );
+        assert_eq!(selected_sources[0]["Id"], source_id);
+        assert_eq!(selected_sources[0]["Path"], sources[index]["Path"]);
+        if selected["Type"] == "Episode" {
+            assert_eq!(selected["SeriesId"], detail["SeriesId"]);
+            assert_eq!(selected["SeasonId"], detail["SeasonId"]);
+            assert_eq!(selected["ParentIndexNumber"], detail["ParentIndexNumber"]);
+            assert_eq!(selected["IndexNumber"], detail["IndexNumber"]);
+            let series_id = required_string(&selected, "/SeriesId")?;
+            let season_id = required_string(&selected, "/SeasonId")?;
+            // Episode details reloads "More from season" after a version switch.
+            let more = success_json(
+                authenticated(
+                    client
+                        .get(format!("{base_url}/Shows/{series_id}/Episodes"))
+                        .query(&[
+                            ("UserId", user_id),
+                            ("SeasonId", season_id),
+                            (
+                                "Fields",
+                                "ItemCounts,PrimaryImageAspectRatio,CanDelete,MediaSourceCount",
+                            ),
+                        ]),
+                    token,
+                )
+                .send()
+                .await?,
+            )
+            .await?;
+            let more_items = items(&more)?;
+            assert_eq!(more_items.len(), 1);
+            assert_eq!(more_items[0]["Id"], aggregate_id);
+            assert_eq!(more_items[0]["MediaSourceCount"], 2);
+        }
+        verify_playback_source(client, base_url, user_id, token, source_id, Some(source_id))
+            .await?;
+    }
+    Ok(())
+}
+
+async fn verify_playback_source(
+    client: &Client,
+    base_url: &str,
+    user_id: &str,
+    token: &str,
+    item_id: &str,
+    selected_source: Option<&str>,
+) -> Result<()> {
+    let mut payload = json!({"UserId": user_id, "IsPlayback": true});
+    if let Some(source) = selected_source {
+        payload["MediaSourceId"] = json!(source);
+    }
     let playback = authenticated(
         client
             .post(format!("{base_url}/Items/{item_id}/PlaybackInfo"))
             .query(&[("UserId", user_id)])
-            .json(&json!({"UserId": user_id, "IsPlayback": true})),
+            .json(&payload),
         token,
     )
     .send()
@@ -571,6 +1173,12 @@ async fn verify_playback(
     let playback = success_json(playback).await?;
     let play_session_id = required_string(&playback, "/PlaySessionId")?;
     let media_source_id = required_string(&playback, "/MediaSources/0/Id")?;
+    if let Some(selected_source) = selected_source {
+        assert_eq!(
+            media_source_id, selected_source,
+            "playback must use the selected version"
+        );
+    }
 
     let stream = authenticated(
         client

@@ -30,12 +30,13 @@ use axum_login::{
 mod config;
 #[cfg(debug_assertions)]
 mod debug_initialization;
-mod duplicate_handling;
 mod encryption;
 mod extractors;
 mod federated_users;
 mod handlers;
 mod legacy_server_identity;
+mod media_catalog;
+mod media_identity;
 mod media_storage_service;
 mod models;
 mod processors;
@@ -63,7 +64,7 @@ use crate::{
     handlers::common::set_json_body,
     handlers::quick_connect::{self, QuickConnectStorage},
     processors::{
-        request_analyzer::RequestAnalyzer,
+        request_analyzer::{PlaybackSessionAction, RequestAnalyzer},
         request_processor::{RequestProcessingContext, RequestProcessor},
         response_processor::{
             ResponseProcessingContext, ResponseProcessingProfile, ResponseProcessor,
@@ -177,6 +178,10 @@ impl AppState {
 
     pub async fn merge_libraries_enabled(&self) -> bool {
         self.config.read().await.merge_libraries
+    }
+
+    pub async fn deduplicate_media_enabled(&self) -> bool {
+        self.config.read().await.deduplicate_media
     }
 
     pub async fn process_response_json(
@@ -654,8 +659,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .nest(
                 "/Shows",
                 Router::new()
-                    .route("/{item_id}/Seasons", get(handlers::items::get_items))
-                    .route("/{item_id}/Episodes", get(handlers::items::get_items))
+                    .route(
+                        "/{item_id}/Seasons",
+                        get(handlers::federated::get_show_children_from_all_servers),
+                    )
+                    .route(
+                        "/{item_id}/Episodes",
+                        get(handlers::federated::get_show_children_from_all_servers),
+                    )
                     .route(
                         "/NextUp",
                         get(handlers::federated::get_items_from_all_servers_if_not_restricted),
@@ -945,6 +956,7 @@ async fn proxy_handler(
     })?;
 
     let request_url = preprocessed.request.url().clone();
+    let pending_playback_session_update = preprocessed.pending_playback_session_update.clone();
     let response_server = preprocessed.server.clone();
     let response_proxy_api_key = preprocessed
         .auth
@@ -1036,6 +1048,42 @@ async fn proxy_handler(
         error!("Failed to build response: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
+
+    if status.is_success() {
+        if let Some(update) = pending_playback_session_update {
+            match update.action {
+                PlaybackSessionAction::Start => {
+                    state.play_sessions.add_session(update.session).await;
+                }
+                PlaybackSessionAction::Refresh => {
+                    let Some(revision) = update.revision else {
+                        return Ok(response);
+                    };
+                    state
+                        .play_sessions
+                        .refresh_session_for_user(
+                            &update.session.session_id,
+                            &update.session.user_id,
+                            revision,
+                        )
+                        .await;
+                }
+                PlaybackSessionAction::Remove => {
+                    let Some(revision) = update.revision else {
+                        return Ok(response);
+                    };
+                    state
+                        .play_sessions
+                        .remove_session_for_user(
+                            &update.session.session_id,
+                            &update.session.user_id,
+                            revision,
+                        )
+                        .await;
+                }
+            }
+        }
+    }
 
     Ok(response)
 }

@@ -2,4 +2,5 @@
 <tvshow>
   <title>One Step Beyond</title>
   <year>1959</year>
+  <uniqueid type="tvdb" default="true">100001</uniqueid>
 </tvshow>

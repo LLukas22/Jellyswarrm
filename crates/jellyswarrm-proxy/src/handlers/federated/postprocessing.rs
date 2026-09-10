@@ -2,13 +2,15 @@ use std::collections::VecDeque;
 use std::str::FromStr;
 
 use crate::{
-    duplicate_handling::{label_duplicates, TaggedMediaItem},
+    media_catalog::{label_duplicates, TaggedMediaItem},
     models::{
-        enums::{BaseItemKind, CollectionType, ItemSortBy, SortOrder},
+        enums::{ItemSortBy, SortOrder},
         ItemsResponseVariants, ItemsResponseWithCount, MediaItem,
     },
     server_storage::Server,
 };
+
+use super::item_policy::is_live_tv_user_view;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Pagination {
@@ -120,6 +122,10 @@ impl FederatedItems {
         Self::new(label_duplicates(items))
     }
 
+    pub(super) fn from_merged_items(items: Vec<MediaItem>) -> Self {
+        Self::new(items)
+    }
+
     pub(super) fn merge_interleaved(mut self, server_items: Vec<ServerItems>) -> Self {
         self.items.extend(interleave(
             server_items
@@ -159,6 +165,36 @@ struct SortCriterion {
 }
 
 fn sort_items(items: &mut [MediaItem], url: &url::Url) {
+    let path = url.path().trim_end_matches('/').to_ascii_lowercase();
+    if path.contains("/shows/")
+        && (path.ends_with("/seasons") || path.ends_with("/episodes"))
+        && query_list::<ItemSortBy>(url, "SortBy").is_empty()
+    {
+        let episodes = path.ends_with("/episodes");
+        let numeric_key = |item: &MediaItem| {
+            let number = |key: &str| {
+                item.extra
+                    .iter()
+                    .find(|(field, _)| field.eq_ignore_ascii_case(key))
+                    .and_then(|(_, value)| value.as_i64())
+                    .unwrap_or(i64::MAX)
+            };
+            (
+                if episodes {
+                    number("ParentIndexNumber")
+                } else {
+                    0
+                },
+                number("IndexNumber"),
+            )
+        };
+        items.sort_by(|left, right| {
+            numeric_key(left)
+                .cmp(&numeric_key(right))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        return;
+    }
     let criteria = sort_criteria(url);
     items.sort_by(|left, right| {
         criteria
@@ -246,10 +282,6 @@ fn interleave(responses: Vec<ItemsResponseVariants>) -> Vec<MediaItem> {
     }
 
     items
-}
-
-fn is_live_tv_user_view(item: &MediaItem) -> bool {
-    item.collection_type == Some(CollectionType::LiveTv) && item.item_type == BaseItemKind::UserView
 }
 
 fn to_i32(value: usize) -> i32 {
@@ -349,6 +381,85 @@ mod tests {
         let response = FederatedItems::new(items).into_response(&url, ResponseShape::Bare);
 
         assert_eq!(item_ids(&response.into_items()), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn show_children_sort_numerically_before_pagination() {
+        for (endpoint, kind, numbers, expected) in [
+            (
+                "Seasons",
+                "Season",
+                vec![(0, 10), (0, 2), (0, 1)],
+                vec!["2", "10"],
+            ),
+            (
+                "Episodes",
+                "Episode",
+                vec![(2, 1), (1, 10), (1, 2)],
+                vec!["10", "1"],
+            ),
+        ] {
+            let items = numbers
+                .into_iter()
+                .map(|(season, index)| {
+                    serde_json::from_value(json!({
+                        "Id": index.to_string(), "Type": kind,
+                        "Name": format!("Title {index}"),
+                        "ParentIndexNumber": season, "IndexNumber": index,
+                    }))
+                    .unwrap()
+                })
+                .collect();
+            let url = url::Url::parse(&format!(
+                "http://localhost/Shows/show/{endpoint}?StartIndex=1&Limit=2"
+            ))
+            .unwrap();
+            let response = FederatedItems::new(items).into_response(&url, ResponseShape::Counted);
+            let ItemsResponseVariants::WithCount(response) = response else {
+                panic!("expected count")
+            };
+            assert_eq!(item_ids(&response.items), expected);
+            assert_eq!(response.total_record_count, 3);
+            assert_eq!(response.start_index, 1);
+        }
+    }
+
+    #[test]
+    fn show_children_numeric_ties_paginate_by_id_regardless_of_input_order() {
+        for (endpoint, kind) in [("Seasons", "Season"), ("Episodes", "Episode")] {
+            let url = url::Url::parse(&format!(
+                "http://localhost/Shows/show/{endpoint}?StartIndex=1&Limit=1"
+            ))
+            .unwrap();
+            for ids in [["a", "b", "c"], ["c", "a", "b"]] {
+                let items = ids
+                    .into_iter()
+                    .map(|id| {
+                        serde_json::from_value(json!({
+                            "Id": id, "Type": kind,
+                            "ParentIndexNumber": 1, "IndexNumber": 2,
+                        }))
+                        .unwrap()
+                    })
+                    .collect();
+                let response = FederatedItems::new(items).into_response(&url, ResponseShape::Bare);
+                assert_eq!(item_ids(&response.into_items()), vec!["b"]);
+            }
+        }
+    }
+
+    #[test]
+    fn show_children_preserve_explicit_sort() {
+        let url = url::Url::parse(
+            "http://localhost/Shows/show/Episodes?SortBy=SortName&SortOrder=Descending",
+        )
+        .unwrap();
+        let items = vec![
+            named_media_item("a", "Alpha"),
+            named_media_item("b", "Beta"),
+        ];
+        let response = FederatedItems::new(items).into_response(&url, ResponseShape::Bare);
+        assert_eq!(item_ids(&response.into_items()), vec!["b", "a"]);
     }
 
     #[test]

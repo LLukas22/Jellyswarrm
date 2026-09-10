@@ -15,6 +15,7 @@ pub(super) enum CatalogPlan {
     EmptyVirtual,
     SingleServer,
     Virtual {
+        catalog_scope_key: String,
         targets: Vec<CatalogFetchTarget>,
         skipped_targets: usize,
     },
@@ -27,6 +28,7 @@ pub(super) struct CatalogFetchTarget {
     pub(super) session: AuthorizationSession,
     pub(super) server: Server,
     pub(super) parent_id: Option<String>,
+    pub(super) resolved_parent_id: Option<String>,
 }
 
 pub(super) async fn resolve_catalog_plan(
@@ -69,6 +71,7 @@ pub(super) async fn resolve_catalog_plan(
                             session,
                             server: member.server,
                             parent_id: Some(member.mapping.original_media_id),
+                            resolved_parent_id: Some(parent_id.clone()),
                         })
                     })
                     .collect();
@@ -78,6 +81,7 @@ pub(super) async fn resolve_catalog_plan(
                     parent_id, resolved.name, member_count
                 );
                 return Ok(CatalogPlan::Virtual {
+                    catalog_scope_key: resolved.catalog_scope_key,
                     targets,
                     skipped_targets,
                 });
@@ -87,9 +91,24 @@ pub(super) async fn resolve_catalog_plan(
                 return Ok(CatalogPlan::EmptyVirtual);
             }
             VirtualLibraryResolution::Unknown => {
+                if let Some(plan) = resolve_aggregate_plan(state, preprocessed, &parent_id).await? {
+                    return Ok(plan);
+                }
                 if is_single_server_parent(state, &parent_id).await {
                     return Ok(CatalogPlan::SingleServer);
                 }
+            }
+        }
+    }
+
+    // Series/season scoped queries (e.g. Episodes?SeriesId=<aggregate>) fan out
+    // the same way as ParentId so aggregate shows merge their children.
+    if parent_id(preprocessed.original_request.url()).is_none() {
+        if let Some(series_parent_id) = series_parent_id(preprocessed.original_request.url()) {
+            if let Some(plan) =
+                resolve_aggregate_plan(state, preprocessed, &series_parent_id).await?
+            {
+                return Ok(plan);
             }
         }
     }
@@ -116,8 +135,37 @@ pub(super) async fn resolve_catalog_plan(
             session,
             server,
             parent_id: None,
+            resolved_parent_id: None,
         })
         .collect();
+
+    if preprocessed
+        .original_request
+        .url()
+        .path()
+        .to_ascii_lowercase()
+        .ends_with("/latest")
+        && state.deduplicate_media_enabled().await
+    {
+        let viewer = preprocessed
+            .access_scope
+            .as_ref()
+            .map(|scope| scope.user_id())
+            .or_else(|| preprocessed.user.as_ref().map(|user| user.id.as_str()))
+            .ok_or(StatusCode::UNAUTHORIZED)?;
+        // Latest is an additive feed, not an inventory. Keep its identity scope
+        // stable across windows, endpoint aliases and temporarily missing sessions.
+        return Ok(CatalogPlan::Virtual {
+            catalog_scope_key: format!(
+                "latest:{viewer}:{}",
+                parent_id(preprocessed.original_request.url())
+                    .map(|id| normalize_library_id(&id))
+                    .unwrap_or_default()
+            ),
+            targets,
+            skipped_targets: 0,
+        });
+    }
 
     Ok(match grouping {
         LibraryGrouping::Automatic => CatalogPlan::AutomaticRoot(targets),
@@ -151,6 +199,92 @@ fn parent_id(url: &url::Url) -> Option<String> {
     url.query_pairs()
         .find(|(key, _)| key.eq_ignore_ascii_case("ParentId"))
         .map(|(_, value)| value.into_owned())
+}
+
+fn series_parent_id(url: &url::Url) -> Option<String> {
+    url.query_pairs()
+        .find(|(key, _)| {
+            key.eq_ignore_ascii_case("SeriesId") || key.eq_ignore_ascii_case("SeasonId")
+        })
+        .map(|(_, value)| value.into_owned())
+}
+
+async fn resolve_aggregate_plan(
+    state: &AppState,
+    preprocessed: &PreprocessedRequest,
+    parent_id: &str,
+) -> Result<Option<CatalogPlan>, StatusCode> {
+    // A collapsed series/season (aggregate version group) fans out to its
+    // member items so seasons/episodes merge across backends the same way
+    // movies merge at the library level.
+    let Some(group) = state
+        .media_storage
+        .get_media_version_group(parent_id)
+        .await
+        .map_err(|error| {
+            error!("Failed to resolve version aggregate for {parent_id}: {error}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+    else {
+        return Ok(None);
+    };
+    let members = state
+        .media_storage
+        .get_media_version_members(group.id)
+        .await
+        .map_err(|error| {
+            error!("Failed to load version aggregate members: {error}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    if members.is_empty() {
+        return Ok(None);
+    }
+    let sessions = available_sessions(preprocessed)?;
+    let mut skipped_targets = 0;
+    let mut targets = Vec::new();
+    for member in members {
+        if preprocessed
+            .access_scope
+            .as_ref()
+            .is_some_and(|scope| !scope.allows(member.server.id))
+        {
+            skipped_targets += 1;
+            continue;
+        }
+        let Some((session, server)) = sessions
+            .iter()
+            .find(|(_, server)| server.id == member.server.id)
+            .cloned()
+        else {
+            skipped_targets += 1;
+            continue;
+        };
+        targets.push(CatalogFetchTarget {
+            session,
+            server,
+            parent_id: Some(member.mapping.original_media_id),
+            resolved_parent_id: Some(parent_id.to_string()),
+        });
+    }
+    if targets.is_empty() {
+        return Ok(None);
+    }
+    let viewer = preprocessed
+        .access_scope
+        .as_ref()
+        .map(|scope| scope.user_id())
+        .unwrap_or("anonymous");
+    debug!(
+        "ParentId {} is version aggregate '{}' - fanning out to {} members",
+        parent_id,
+        group.virtual_media_id,
+        targets.len()
+    );
+    Ok(Some(CatalogPlan::Virtual {
+        catalog_scope_key: format!("aggregate:{}:{viewer}", group.virtual_media_id),
+        targets,
+        skipped_targets,
+    }))
 }
 
 async fn is_single_server_parent(state: &AppState, parent_id: &str) -> bool {
