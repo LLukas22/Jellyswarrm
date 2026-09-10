@@ -7,7 +7,9 @@ use tracing::{debug, error, warn};
 
 use crate::{
     handlers::common::{execute_processed_json_request, response_json_to_payload},
-    media_storage_service::{MediaMapping, MediaVersionMember, MediaVersionSourceObservation},
+    media_storage_service::{
+        MediaMapping, MediaVersionGroup, MediaVersionMember, MediaVersionSourceObservation,
+    },
     models::{MediaItem, MediaSource},
     processors::response_processor::ResponseProcessingProfile,
     request_preprocessing::{
@@ -25,6 +27,7 @@ const GROUPING_SOURCE_TYPE: &str = "Grouping";
 
 pub(super) struct DetailMergeContext<'a> {
     pub requested_item_id: &'a str,
+    pub selected_group: Option<MediaVersionGroup>,
     pub base_server: &'a Server,
     pub auth: &'a Option<JellyfinAuthorization>,
     pub access_scope: Option<&'a VirtualLibraryAccessScope>,
@@ -56,12 +59,18 @@ pub(super) async fn merge_media_detail(
     proxy_api_key: Option<&str>,
     payload: &mut Value,
 ) -> Result<(), StatusCode> {
-    let Some(group) = state
+    if let Some(scope) = context.access_scope {
+        let mut item: MediaItem = response_json_to_payload(payload.clone())?;
+        preserve_media_parent_groups(state, &mut item, scope.user_id()).await?;
+        *payload = serde_json::to_value(item).map_err(|error| unexpected_error(error.into()))?;
+    }
+    let aggregate_group = state
         .media_storage
         .get_media_version_group(context.requested_item_id)
         .await
-        .map_err(storage_error)?
-    else {
+        .map_err(storage_error)?;
+    let is_aggregate = aggregate_group.is_some();
+    let Some(group) = aggregate_group.or_else(|| context.selected_group.clone()) else {
         return Ok(());
     };
 
@@ -107,7 +116,9 @@ pub(super) async fn merge_media_detail(
         item.media_source_count = Some(sources.len().min(i32::MAX as usize) as i32);
         item.media_sources = Some(sources);
     }
-    item.id = group.virtual_media_id.clone();
+    if is_aggregate {
+        item.id = group.virtual_media_id.clone();
+    }
 
     let sources_replaced = state
         .media_storage
@@ -140,6 +151,35 @@ pub(super) async fn merge_media_detail(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
+    Ok(())
+}
+
+pub(super) async fn preserve_media_parent_groups(
+    state: &AppState,
+    item: &mut MediaItem,
+    viewer: &str,
+) -> Result<(), StatusCode> {
+    if !matches!(
+        item.item_type,
+        crate::models::enums::BaseItemKind::Season | crate::models::enums::BaseItemKind::Episode
+    ) {
+        return Ok(());
+    }
+    for parent in [&mut item.series_id, &mut item.season_id] {
+        if let Some(id) = parent.as_deref() {
+            if let Some(aggregate) = state
+                .media_storage
+                .get_media_parent_group_id(id, viewer)
+                .await
+                .map_err(storage_error)?
+            {
+                if item.parent_id.as_deref() == Some(id) {
+                    item.parent_id = Some(aggregate.clone());
+                }
+                *parent = Some(aggregate);
+            }
+        }
+    }
     Ok(())
 }
 
@@ -587,6 +627,52 @@ mod tests {
         assert_eq!(observations[0].source_virtual_id, "source-a");
         assert_eq!(observations[1].member_mapping_id, 2);
         assert_eq!(observations[1].source_virtual_id, "source-b");
+    }
+
+    #[test]
+    fn selected_version_keeps_its_source_metadata_and_can_switch_back() {
+        let selected: MediaSource = serde_json::from_value(json!({
+            "Id": "selected-source",
+            "Name": "Selected",
+            "Type": "Default",
+            "Path": "/selected/movie.mkv",
+            "DirectStreamUrl": "/Videos/selected-owner/stream?MediaSourceId=selected-source",
+            "MediaStreams": [{"Type": "Audio", "Index": 3, "Language": "deu"}],
+            "DefaultAudioStreamIndex": 3,
+            "SupportsDirectPlay": true
+        }))
+        .unwrap();
+        let before = serde_json::to_value(&selected).unwrap();
+        let (sources, routes) = merge_sources(&[
+            HostedMediaSources {
+                member_mapping: mapping(2, 2),
+                server: server(2, "Selected"),
+                sources: vec![selected],
+                is_primary: true,
+            },
+            HostedMediaSources {
+                member_mapping: mapping(1, 1),
+                server: server(1, "Original"),
+                sources: vec![source("original-source", None, None)],
+                is_primary: false,
+            },
+        ]);
+        let after = serde_json::to_value(&sources[0]).unwrap();
+        for field in [
+            "Id",
+            "Type",
+            "Path",
+            "DirectStreamUrl",
+            "MediaStreams",
+            "DefaultAudioStreamIndex",
+            "SupportsDirectPlay",
+        ] {
+            assert_eq!(after[field], before[field], "{field}");
+        }
+        assert_eq!(sources[1].id, "original-source");
+        assert_eq!(sources[1].source_type.as_deref(), Some("Grouping"));
+        assert_eq!(routes[0].member_mapping_id, 2);
+        assert_eq!(routes[0].source_virtual_id, "selected-source");
     }
 
     #[test]

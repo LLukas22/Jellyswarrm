@@ -139,6 +139,34 @@ pub(super) async fn resolve_catalog_plan(
         })
         .collect();
 
+    if preprocessed
+        .original_request
+        .url()
+        .path()
+        .to_ascii_lowercase()
+        .ends_with("/latest")
+        && state.deduplicate_media_enabled().await
+    {
+        let viewer = preprocessed
+            .access_scope
+            .as_ref()
+            .map(|scope| scope.user_id())
+            .or_else(|| preprocessed.user.as_ref().map(|user| user.id.as_str()))
+            .ok_or(StatusCode::UNAUTHORIZED)?;
+        // Latest is an additive feed, not an inventory. Keep its identity scope
+        // stable across windows, endpoint aliases and temporarily missing sessions.
+        return Ok(CatalogPlan::Virtual {
+            catalog_scope_key: format!(
+                "latest:{viewer}:{}",
+                parent_id(preprocessed.original_request.url())
+                    .map(|id| normalize_library_id(&id))
+                    .unwrap_or_default()
+            ),
+            targets,
+            skipped_targets: 0,
+        });
+    }
+
     Ok(match grouping {
         LibraryGrouping::Automatic => CatalogPlan::AutomaticRoot(targets),
         LibraryGrouping::Configured => CatalogPlan::ConfiguredRoot(targets),

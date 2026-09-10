@@ -8,7 +8,7 @@ use crate::{
         json_processor::{JsonAnalyzer, JsonProcessingContext},
     },
     server_storage::Server,
-    session_storage::PlaybackSession,
+    session_storage::{PlaybackSession, SessionRevision},
     user_authorization_service::User,
     virtual_library_service::compare_virtual_library_routes,
     DataContext,
@@ -63,6 +63,7 @@ pub struct RequestBodyAnalysisResult {
     pub servers: Vec<Server>,
     pub users: Vec<User>,
     pub authoritative_play_session: Option<PlaybackSession>,
+    pub authoritative_play_session_revision: Option<SessionRevision>,
     pub requested_play_session_id: Option<String>,
     pub requested_play_item_id: Option<String>,
     pub requested_play_source_id: Option<String>,
@@ -131,8 +132,14 @@ impl JsonAnalyzer<RequestAnalysisContext, RequestBodyAnalysisResult> for Request
                 if !value.is_null() {
                     let id = value
                         .as_str()
-                        .filter(|id| !id.is_empty())
                         .ok_or_else(|| anyhow::anyhow!("invalid playback authority field"))?;
+                    if id.trim().is_empty() {
+                        if json_context.key.eq_ignore_ascii_case("ItemId") {
+                            anyhow::bail!("playback report requires a nonempty item ID");
+                        }
+                        // Clients may send blank optional IDs instead of omitting them.
+                        return Ok(None);
+                    }
                     if field.as_deref().is_some_and(|previous| previous != id) {
                         anyhow::bail!("conflicting playback authority fields");
                     }
@@ -167,11 +174,15 @@ impl JsonAnalyzer<RequestAnalysisContext, RequestBodyAnalysisResult> for Request
                     && json_context.key.eq_ignore_ascii_case("PlaySessionId");
                 if is_authoritative_field {
                     if let Some(user_id) = context.authenticated_user_id.as_deref() {
-                        accumulator.authoritative_play_session = self
+                        let binding = self
                             .data_context
                             .play_sessions
                             .resolve_report_session(session_id, user_id)
                             .await?;
+                        (
+                            accumulator.authoritative_play_session,
+                            accumulator.authoritative_play_session_revision,
+                        ) = binding.unzip();
                     }
                 } else if context.playback_session_action.is_none() {
                     if let Some(play_session) = match context.authenticated_user_id.as_deref() {

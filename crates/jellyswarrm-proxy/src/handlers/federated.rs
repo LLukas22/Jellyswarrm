@@ -13,6 +13,8 @@ mod library_root;
 mod media_reconciliation;
 mod postprocessing;
 mod request_policy;
+#[cfg(test)]
+mod tests;
 mod upstream;
 
 use library_resolution::{resolve_catalog_plan, CatalogFetchTarget, CatalogPlan};

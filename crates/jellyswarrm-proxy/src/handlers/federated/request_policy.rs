@@ -135,44 +135,8 @@ pub(super) fn ensure_global_sort_fields(url: &mut url::Url) {
 }
 
 fn ensure_item_fields(url: &mut url::Url, required_fields: &[&str]) {
-    let pairs = url
-        .query_pairs()
-        .map(|(key, value)| (key.into_owned(), value.into_owned()))
-        .collect::<Vec<_>>();
-    let mut fields = pairs
-        .iter()
-        .find(|(key, _)| key.eq_ignore_ascii_case("Fields"))
-        .map(|(_, value)| {
-            value
-                .split(',')
-                .map(str::trim)
-                .filter(|field| !field.is_empty())
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
     for required_field in required_fields {
-        if !fields
-            .iter()
-            .any(|field| field.eq_ignore_ascii_case(required_field))
-        {
-            fields.push((*required_field).to_string());
-        }
-    }
-    let fields_value = fields.join(",");
-    let mut wrote_fields = false;
-    let mut query = url.query_pairs_mut();
-    query.clear();
-    for (key, value) in pairs {
-        if key.eq_ignore_ascii_case("Fields") {
-            query.append_pair("Fields", &fields_value);
-            wrote_fields = true;
-        } else {
-            query.append_pair(&key, &value);
-        }
-    }
-    if !wrote_fields {
-        query.append_pair("Fields", &fields_value);
+        crate::url_helper::ensure_query_list_value(url, "Fields", required_field);
     }
 }
 

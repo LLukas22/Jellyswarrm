@@ -77,30 +77,33 @@ pub fn replace_path_id(url: &Url, path_tag: &str, replacement: &str) -> Option<U
     Some(replace_id(url.clone(), &original, replacement))
 }
 
-/// Ensures a case-insensitive value is present in a comma-separated query
-/// parameter while preserving all unrelated parameters.
+/// Consolidates repeated/comma-separated values into one query parameter,
+/// ensuring the requested value is present and preserving unrelated parameters.
 pub fn ensure_query_list_value(url: &mut Url, expected_key: &str, value: &str) {
     let mut pairs = url
         .query_pairs()
         .map(|(key, entry)| (key.into_owned(), entry.into_owned()))
         .collect::<Vec<_>>();
 
-    if let Some((_key, entries)) = pairs
-        .iter_mut()
-        .find(|(key, _entries)| key.eq_ignore_ascii_case(expected_key))
+    let mut values = Vec::<String>::new();
+    for entry in pairs
+        .iter()
+        .filter(|(key, _)| key.eq_ignore_ascii_case(expected_key))
+        .flat_map(|(_, entries)| entries.split(','))
+        .chain(std::iter::once(value))
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
     {
-        if entries
-            .split(',')
-            .any(|entry| entry.trim().eq_ignore_ascii_case(value))
+        if !values
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(entry))
         {
-            return;
+            values.push(entry.to_string());
         }
-        entries.push(',');
-        entries.push_str(value);
-    } else {
-        pairs.push((expected_key.to_string(), value.to_string()));
     }
-
+    // Jellyfin only splits comma-delimited collections when there is one value.
+    pairs.retain(|(key, _)| !key.eq_ignore_ascii_case(expected_key));
+    pairs.push((expected_key.to_string(), values.join(",")));
     url.query_pairs_mut().clear().extend_pairs(pairs);
 }
 
@@ -175,6 +178,28 @@ mod tests {
             replaced.path(),
             "/Users/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/Items/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
         );
+    }
+
+    #[test]
+    fn query_list_consolidates_sdk_repeated_fields_without_losing_values() {
+        let mut url = Url::parse("https://example.com/Items/Latest?fields=PrimaryImageAspectRatio&fields=Path&FIELDS=path,%20ProviderIds,,&enableImageTypes=Primary&enableImageTypes=Backdrop&limit=16").unwrap();
+        ensure_query_list_value(&mut url, "Fields", "DateCreated");
+        ensure_query_list_value(&mut url, "Fields", "ProviderIds");
+        assert_eq!(
+            url.query_pairs().collect::<Vec<_>>(),
+            vec![
+                ("enableImageTypes".into(), "Primary".into()),
+                ("enableImageTypes".into(), "Backdrop".into()),
+                ("limit".into(), "16".into()),
+                (
+                    "Fields".into(),
+                    "PrimaryImageAspectRatio,Path,ProviderIds,DateCreated".into()
+                ),
+            ]
+        );
+        let normalized = url.clone();
+        ensure_query_list_value(&mut url, "Fields", "providerids");
+        assert_eq!(url, normalized);
     }
 
     #[test]

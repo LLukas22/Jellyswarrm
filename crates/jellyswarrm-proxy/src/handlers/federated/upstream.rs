@@ -60,13 +60,79 @@ pub(super) async fn fetch_show_catalog(
     mut failures: usize,
 ) -> Result<FetchedCatalog, StatusCode> {
     let mut join_set = JoinSet::new();
+    let season_id = original_request
+        .url()
+        .query_pairs()
+        .find(|(key, _)| key.eq_ignore_ascii_case("SeasonId"))
+        .map(|(_, id)| id.into_owned());
+    let season_mappings = if let Some(id) = season_id.as_deref() {
+        if let Some(group) = state
+            .media_storage
+            .get_media_version_group(id)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        {
+            Some(
+                state
+                    .media_storage
+                    .get_media_version_members(group.id)
+                    .await
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+                    .into_iter()
+                    .map(|member| member.mapping)
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            Some(
+                state
+                    .media_storage
+                    .get_media_mapping_by_virtual(id)
+                    .await
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+                    .into_iter()
+                    .collect(),
+            )
+        }
+    } else {
+        None
+    };
 
     for (index, target) in targets.into_iter().enumerate() {
+        let season_mapping = if let Some(mappings) = &season_mappings {
+            let Some(mapping) = mappings
+                .iter()
+                .find(|mapping| mapping.server_id == target.server.id)
+            else {
+                continue;
+            };
+            Some(mapping)
+        } else {
+            None
+        };
         let Some(mut request) = original_request.try_clone() else {
             error!("Failed to clone request for server: {}", target.server.name);
             failures += 1;
             continue;
         };
+        if let Some(mapping) = season_mapping {
+            let pairs = request
+                .url()
+                .query_pairs()
+                .map(|(key, value)| {
+                    let value = if key.eq_ignore_ascii_case("SeasonId") {
+                        mapping.original_media_id.clone()
+                    } else {
+                        value.into_owned()
+                    };
+                    (key.into_owned(), value)
+                })
+                .collect::<Vec<_>>();
+            request
+                .url_mut()
+                .query_pairs_mut()
+                .clear()
+                .extend_pairs(pairs);
+        }
         ensure_global_sort_fields(request.url_mut());
         let source_parent_id = target.parent_id.clone();
         if let Some(parent_id) = target.parent_id.as_deref() {
@@ -100,6 +166,13 @@ pub(super) async fn fetch_show_catalog(
         });
     }
 
+    if join_set.is_empty() && failures == 0 {
+        return Ok(FetchedCatalog {
+            server_items: Vec::new(),
+            failures: 0,
+            response_shape: ResponseShape::Counted,
+        });
+    }
     let (indexed_results, failures) = collect_federated_results(join_set, failures).await?;
     if failures > 0 {
         warn!(
@@ -167,6 +240,8 @@ pub(super) async fn fetch_catalog(
                 *request.url_mut() =
                     replace_aggregate_parent_id(request.url(), resolved_id, parent_id);
             }
+        }
+        if target.parent_id.is_some() || matches!(mode, FetchMode::VirtualLibrary { .. }) {
             ensure_duplicate_identity_field(request.url_mut());
         }
 

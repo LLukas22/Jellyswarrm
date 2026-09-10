@@ -183,9 +183,8 @@ pub(super) async fn get_aggregate_show_items(
                 ),
                 server_id: server.id,
                 // Seasons, episodes and filtered listings share this source.
-                // Only a full recursive Items inventory may replace sightings.
-                complete: is_authoritative_media_inventory_request(original_request.url())
-                    && fetch.fully_fetched,
+                // A show-child response cannot replace the whole inventory.
+                complete: false,
                 observations: items
                     .iter()
                     .filter(|item| MediaKind::from_item_kind(&item.item_type).is_some())
@@ -200,6 +199,25 @@ pub(super) async fn get_aggregate_show_items(
             item,
             server: server.clone(),
         }));
+    }
+
+    for tagged in &mut tagged_items {
+        crate::handlers::media_versions::preserve_media_parent_groups(
+            state,
+            &mut tagged.item,
+            &viewer,
+        )
+        .await?;
+        if matches!(
+            tagged.item.item_type,
+            crate::models::enums::BaseItemKind::Season
+                | crate::models::enums::BaseItemKind::Episode
+        ) {
+            if tagged.item.series_id.is_some() && tagged.item.parent_id == tagged.item.series_id {
+                tagged.item.parent_id = Some(aggregate_id.clone());
+            }
+            tagged.item.series_id = Some(aggregate_id.clone());
+        }
     }
 
     let items = if deduplicate {

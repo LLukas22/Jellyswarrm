@@ -1056,20 +1056,28 @@ async fn proxy_handler(
                     state.play_sessions.add_session(update.session).await;
                 }
                 PlaybackSessionAction::Refresh => {
+                    let Some(revision) = update.revision else {
+                        return Ok(response);
+                    };
                     state
                         .play_sessions
                         .refresh_session_for_user(
                             &update.session.session_id,
                             &update.session.user_id,
+                            revision,
                         )
                         .await;
                 }
                 PlaybackSessionAction::Remove => {
+                    let Some(revision) = update.revision else {
+                        return Ok(response);
+                    };
                     state
                         .play_sessions
                         .remove_session_for_user(
                             &update.session.session_id,
                             &update.session.user_id,
+                            revision,
                         )
                         .await;
                 }

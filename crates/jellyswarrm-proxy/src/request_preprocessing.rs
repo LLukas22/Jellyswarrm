@@ -13,7 +13,7 @@ use crate::processors::request_analyzer::{
 };
 use crate::proxy_headers::remove_hop_by_hop_headers;
 use crate::server_storage::Server;
-use crate::session_storage::PlaybackSession;
+use crate::session_storage::{PlaybackSession, SessionRevision};
 use crate::url_helper::join_server_url;
 use crate::user_authorization_service::{AuthorizationSession, Device, User};
 use crate::virtual_library_service::{compare_virtual_library_routes, VirtualLibraryAccessScope};
@@ -215,6 +215,7 @@ pub struct PreprocessedRequest {
 pub struct PendingPlaybackSessionUpdate {
     pub action: PlaybackSessionAction,
     pub session: PlaybackSession,
+    pub revision: Option<SessionRevision>,
 }
 
 pub async fn extract_request_infos(
@@ -392,6 +393,7 @@ pub async fn preprocess_request(req: Request, state: &AppState) -> Result<Prepro
         Some(PlaybackSessionAction::Start) => request_body_result.as_ref().and_then(|result| {
             Some(PendingPlaybackSessionUpdate {
                 action: PlaybackSessionAction::Start,
+                revision: None,
                 session: PlaybackSession {
                     session_id: result.requested_play_session_id.clone()?,
                     item_id: result.requested_play_item_id.clone()?,
@@ -405,6 +407,7 @@ pub async fn preprocess_request(req: Request, state: &AppState) -> Result<Prepro
                 Some(PendingPlaybackSessionUpdate {
                     action,
                     session: result.authoritative_play_session.clone()?,
+                    revision: Some(result.authoritative_play_session_revision?),
                 })
             })
         }
@@ -948,14 +951,30 @@ mod tests {
         )
     }
 
+    async fn test_user(state: &AppState, name: &str) -> User {
+        state
+            .user_authorization
+            .get_or_create_user(name, &"password123".into())
+            .await
+            .unwrap()
+    }
+
+    fn json_post(path: &str, token: &str, body: serde_json::Value) -> Request {
+        let uri: http::Uri = path.parse().unwrap();
+        Request::builder()
+            .method(http::Method::POST)
+            .uri(uri.clone())
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header("X-MediaBrowser-Token", token)
+            .extension(OriginalUri(uri))
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap()
+    }
+
     #[tokio::test]
     async fn resolve_identity_ignores_valid_userid_path_segment_without_auth() {
         let state = create_test_app_state().await;
-        let victim = state
-            .user_authorization
-            .get_or_create_user("victim", &"password123".into())
-            .await
-            .unwrap();
+        let victim = test_user(&state, "victim").await;
 
         let headers = http::HeaderMap::new();
         let uri: http::Uri = format!("/Users/{}", victim.id).parse().unwrap();
@@ -970,11 +989,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_identity_ignores_valid_userid_query_on_user_views_without_auth() {
         let state = create_test_app_state().await;
-        let victim = state
-            .user_authorization
-            .get_or_create_user("victim", &"password123".into())
-            .await
-            .unwrap();
+        let victim = test_user(&state, "victim").await;
 
         let headers = http::HeaderMap::new();
         let uri: http::Uri = format!("/UserViews?userId={}", victim.id).parse().unwrap();
@@ -989,11 +1004,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_identity_ignores_valid_userid_query_on_user_items_resume_without_auth() {
         let state = create_test_app_state().await;
-        let victim = state
-            .user_authorization
-            .get_or_create_user("victim", &"password123".into())
-            .await
-            .unwrap();
+        let victim = test_user(&state, "victim").await;
 
         let headers = http::HeaderMap::new();
         let uri: http::Uri = format!("/UserItems/Resume?userId={}", victim.id)
@@ -1010,11 +1021,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_identity_treats_malformed_authorization_header_as_unauthenticated() {
         let state = create_test_app_state().await;
-        let victim = state
-            .user_authorization
-            .get_or_create_user("victim", &"password123".into())
-            .await
-            .unwrap();
+        let victim = test_user(&state, "victim").await;
 
         let mut headers = http::HeaderMap::new();
         headers.insert(
@@ -1034,16 +1041,8 @@ mod tests {
     #[tokio::test]
     async fn resolve_identity_resolves_authenticated_user_ignoring_different_userid_in_url() {
         let state = create_test_app_state().await;
-        let caller = state
-            .user_authorization
-            .get_or_create_user("caller", &"password123".into())
-            .await
-            .unwrap();
-        let other = state
-            .user_authorization
-            .get_or_create_user("other", &"password456".into())
-            .await
-            .unwrap();
+        let caller = test_user(&state, "caller").await;
+        let other = test_user(&state, "other").await;
 
         let auth_header = Authorization {
             client: "Test".to_string(),
@@ -1071,22 +1070,12 @@ mod tests {
     #[tokio::test]
     async fn invalid_token_cannot_adopt_user_from_request_body() {
         let state = create_test_app_state().await;
-        let victim = state
-            .user_authorization
-            .get_or_create_user("victim", &"password123".into())
-            .await
-            .unwrap();
-        let uri: http::Uri = "/Sessions/Capabilities/Full".parse().unwrap();
-        let mut request = Request::builder()
-            .method(http::Method::POST)
-            .uri(uri.clone())
-            .header(http::header::CONTENT_TYPE, "application/json")
-            .header("X-MediaBrowser-Token", "invalid-token")
-            .body(axum::body::Body::from(
-                serde_json::json!({ "UserId": victim.id }).to_string(),
-            ))
-            .unwrap();
-        request.extensions_mut().insert(OriginalUri(uri));
+        let victim = test_user(&state, "victim").await;
+        let request = json_post(
+            "/Sessions/Capabilities/Full",
+            "invalid-token",
+            serde_json::json!({ "UserId": victim.id }),
+        );
 
         let (_request, auth, user, sessions, _analysis) =
             extract_request_infos(request, &state, None).await.unwrap();
@@ -1096,14 +1085,7 @@ mod tests {
         assert!(sessions.is_none());
     }
 
-    #[tokio::test]
-    async fn playback_reports_route_without_cached_session_authority() {
-        let state = create_test_app_state().await;
-        let caller = state
-            .user_authorization
-            .get_or_create_user("caller", &"password123".into())
-            .await
-            .unwrap();
+    async fn playback_server(state: &AppState) -> Server {
         let server_id = state
             .server_storage
             .add_server(
@@ -1114,12 +1096,35 @@ mod tests {
             )
             .await
             .unwrap();
-        let server = state
+        state
             .server_storage
             .get_server_by_id(server_id)
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
+    }
+
+    fn authorization_session(caller: &User, server: &Server) -> AuthorizationSession {
+        let now = chrono::Utc::now();
+        AuthorizationSession {
+            id: 1,
+            user_id: caller.id.clone(),
+            mapping_id: 1,
+            server_url: server.url.to_string(),
+            device: Device::from_useragent("Test"),
+            jellyfin_token: "upstream-token".into(),
+            original_user_id: "upstream-user".into(),
+            expires_at: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[tokio::test]
+    async fn playback_reports_route_without_cached_session_authority() {
+        let state = create_test_app_state().await;
+        let caller = test_user(&state, "caller").await;
+        let server = playback_server(&state).await;
         let item = state
             .media_storage
             .get_or_create_media_mapping("item", &server)
@@ -1130,20 +1135,8 @@ mod tests {
             .get_or_create_media_mapping("source", &server)
             .await
             .unwrap();
-        let now = chrono::Utc::now();
         let sessions = Some(vec![(
-            AuthorizationSession {
-                id: 1,
-                user_id: caller.id.clone(),
-                mapping_id: 1,
-                server_url: server.url.to_string(),
-                device: Device::from_useragent("Test"),
-                jellyfin_token: "upstream-token".into(),
-                original_user_id: "upstream-user".into(),
-                expires_at: None,
-                created_at: now,
-                updated_at: now,
-            },
+            authorization_session(&caller, &server),
             server.clone(),
         )]);
 
@@ -1152,74 +1145,152 @@ mod tests {
             ("/Sessions/Playing/Progress", PlaybackSessionAction::Refresh),
             ("/Sessions/Playing/Stopped", PlaybackSessionAction::Remove),
         ] {
-            for session_id in [
-                None,
-                Some(serde_json::Value::Null),
-                Some(serde_json::json!("unknown-session")),
+            for (case, session_id, source_id) in [
+                ("missing session", None, source.virtual_media_id.as_str()),
+                (
+                    "null session",
+                    Some(serde_json::Value::Null),
+                    source.virtual_media_id.as_str(),
+                ),
+                (
+                    "unknown session",
+                    Some(serde_json::json!("unknown-session")),
+                    source.virtual_media_id.as_str(),
+                ),
+                (
+                    "empty session",
+                    Some(serde_json::json!("")),
+                    source.virtual_media_id.as_str(),
+                ),
+                (
+                    "whitespace session",
+                    Some(serde_json::json!("  ")),
+                    source.virtual_media_id.as_str(),
+                ),
+                ("empty session and source", Some(serde_json::json!("")), ""),
+                (
+                    "empty session and whitespace source",
+                    Some(serde_json::json!("")),
+                    "  ",
+                ),
             ] {
                 let mut body = serde_json::json!({
                     "ItemId": item.virtual_media_id,
-                    "MediaSourceId": source.virtual_media_id,
+                    "MediaSourceId": source_id,
                     "NowPlayingQueue": [{"Id": "unrelated-queue-item"}]
                 });
                 if let Some(session_id) = session_id {
                     body["PlaySessionId"] = session_id;
                 }
-                let uri: http::Uri = path.parse().unwrap();
-                let mut request = Request::builder()
-                    .method(http::Method::POST)
-                    .uri(uri.clone())
-                    .header(http::header::CONTENT_TYPE, "application/json")
-                    .header("X-MediaBrowser-Token", &caller.virtual_key)
-                    .body(axum::body::Body::from(body.to_string()))
-                    .unwrap();
-                request.extensions_mut().insert(OriginalUri(uri));
+                let request = json_post(path, &caller.virtual_key, body.clone());
                 let (_, _, user, _, analysis) =
                     extract_request_infos(request, &state, Some(action))
                         .await
-                        .unwrap();
-                assert_eq!(user.unwrap().id, caller.id);
-                let mut analysis = analysis.unwrap();
-                assert!(analysis.authoritative_play_session.is_none());
+                        .unwrap_or_else(|error| panic!("{path}: {case}: {error}"));
+                assert_eq!(user.expect(case).id, caller.id, "{path}: {case}");
+                let analysis = analysis.expect(case);
+                assert!(
+                    analysis.authoritative_play_session.is_none(),
+                    "{path}: {case}"
+                );
+                if source_id.trim().is_empty() {
+                    assert!(
+                        analysis.requested_play_source_id.is_none(),
+                        "{path}: {case}"
+                    );
+                }
+                if body
+                    .get("PlaySessionId")
+                    .and_then(|id| id.as_str())
+                    .is_some_and(|id| id.trim().is_empty())
+                {
+                    assert!(
+                        analysis.requested_play_session_id.is_none(),
+                        "{path}: {case}"
+                    );
+                    assert!(analysis.found_session_ids.is_empty(), "{path}: {case}");
+                }
                 let (selected, auth, matched) =
                     resolve_playback_report_server(&sessions, &analysis, &state)
                         .await
-                        .unwrap();
-                assert_eq!(selected.id, server.id);
-                assert_eq!(auth.unwrap().user_id, caller.id);
-                assert!(matched);
-                analysis.requested_play_source_id = None;
-                assert_eq!(
-                    resolve_playback_report_server(&sessions, &analysis, &state)
-                        .await
-                        .unwrap()
-                        .0
-                        .id,
-                    server.id
-                );
-                assert!(resolve_playback_report_server(&None, &analysis, &state)
-                    .await
-                    .is_err());
-                analysis.authoritative_play_session = Some(PlaybackSession {
-                    session_id: "known-session".into(),
-                    item_id: item.virtual_media_id.clone(),
-                    user_id: caller.id.clone(),
-                    server_id: ServerId::new(server.id.as_i64() + 1),
-                });
-                assert!(resolve_playback_report_server(&sessions, &analysis, &state)
-                    .await
-                    .is_err());
-                analysis.authoritative_play_session = None;
-                analysis.requested_play_source_id = Some("unknown-source".into());
-                assert!(resolve_playback_report_server(&sessions, &analysis, &state)
-                    .await
-                    .is_err());
-                analysis.requested_play_source_id = None;
-                analysis.requested_play_item_id = Some("unknown-item".into());
-                assert!(resolve_playback_report_server(&sessions, &analysis, &state)
-                    .await
-                    .is_err());
+                        .unwrap_or_else(|error| panic!("{path}: {case}: {error}"));
+                assert_eq!(selected.id, server.id, "{path}: {case}");
+                assert_eq!(auth.expect(case).user_id, caller.id, "{path}: {case}");
+                assert!(matched, "{path}: {case}");
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn playback_report_rejects_unavailable_or_conflicting_routes() {
+        let state = create_test_app_state().await;
+        let caller = test_user(&state, "caller").await;
+        let server = playback_server(&state).await;
+        let item = state
+            .media_storage
+            .get_or_create_media_mapping("item", &server)
+            .await
+            .unwrap();
+        let sessions = Some(vec![(
+            authorization_session(&caller, &server),
+            server.clone(),
+        )]);
+        let analysis = RequestBodyAnalysisResult {
+            requested_play_item_id: Some(item.virtual_media_id.clone()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_playback_report_server(&sessions, &analysis, &state)
+                .await
+                .unwrap()
+                .0
+                .id,
+            server.id,
+            "item-only route"
+        );
+        assert!(
+            resolve_playback_report_server(&None, &analysis, &state)
+                .await
+                .is_err(),
+            "missing authorization sessions"
+        );
+
+        for (case, analysis) in [
+            (
+                "conflicting session authority",
+                RequestBodyAnalysisResult {
+                    authoritative_play_session: Some(PlaybackSession {
+                        session_id: "known-session".into(),
+                        item_id: item.virtual_media_id.clone(),
+                        user_id: caller.id.clone(),
+                        server_id: ServerId::new(server.id.as_i64() + 1),
+                    }),
+                    requested_play_item_id: Some(item.virtual_media_id.clone()),
+                    ..Default::default()
+                },
+            ),
+            (
+                "unknown source",
+                RequestBodyAnalysisResult {
+                    requested_play_source_id: Some("unknown-source".into()),
+                    requested_play_item_id: Some(item.virtual_media_id.clone()),
+                    ..Default::default()
+                },
+            ),
+            (
+                "unknown item",
+                RequestBodyAnalysisResult {
+                    requested_play_item_id: Some("unknown-item".into()),
+                    ..analysis
+                },
+            ),
+        ] {
+            assert!(
+                resolve_playback_report_server(&sessions, &analysis, &state)
+                    .await
+                    .is_err(),
+                "{case}"
+            );
         }
     }
 
@@ -1349,11 +1420,7 @@ mod tests {
     #[tokio::test]
     async fn playback_reports_reject_missing_auth_and_conflicting_fields() {
         let state = create_test_app_state().await;
-        let caller = state
-            .user_authorization
-            .get_or_create_user("caller", &"password123".into())
-            .await
-            .unwrap();
+        let caller = test_user(&state, "caller").await;
         for (token, body) in [
             (
                 "invalid",
@@ -1375,16 +1442,20 @@ mod tests {
                 caller.virtual_key.as_str(),
                 serde_json::json!({"NowPlayingQueue": [{"ItemId": "item"}]}),
             ),
+            (
+                caller.virtual_key.as_str(),
+                serde_json::json!({"ItemId": "", "PlaySessionId": ""}),
+            ),
+            (
+                caller.virtual_key.as_str(),
+                serde_json::json!({"ItemId": "item", "PlaySessionId": 42}),
+            ),
+            (
+                caller.virtual_key.as_str(),
+                serde_json::json!({"ItemId": "item", "MediaSourceId": false}),
+            ),
         ] {
-            let uri: http::Uri = "/Sessions/Playing/Progress".parse().unwrap();
-            let mut request = Request::builder()
-                .method(http::Method::POST)
-                .uri(uri.clone())
-                .header(http::header::CONTENT_TYPE, "application/json")
-                .header("X-MediaBrowser-Token", token)
-                .body(axum::body::Body::from(body.to_string()))
-                .unwrap();
-            request.extensions_mut().insert(OriginalUri(uri));
+            let request = json_post("/Sessions/Playing/Progress", token, body);
             assert!(
                 extract_request_infos(request, &state, Some(PlaybackSessionAction::Refresh))
                     .await
@@ -1394,13 +1465,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn blank_session_alias_does_not_clear_known_authority() {
+        let state = create_test_app_state().await;
+        let caller = test_user(&state, "caller").await;
+        state
+            .play_sessions
+            .add_session(PlaybackSession {
+                session_id: "known-session".into(),
+                item_id: "item".into(),
+                user_id: caller.id.clone(),
+                server_id: ServerId::new(1),
+            })
+            .await;
+        for (pascal, camel) in [("known-session", ""), ("", "known-session")] {
+            let request = json_post(
+                "/Sessions/Playing/Progress",
+                &caller.virtual_key,
+                serde_json::json!({
+                    "ItemId": "item", "PlaySessionId": pascal, "playSessionId": camel
+                }),
+            );
+            let (_, _, _, _, analysis) =
+                extract_request_infos(request, &state, Some(PlaybackSessionAction::Refresh))
+                    .await
+                    .unwrap();
+            let analysis = analysis.unwrap();
+            assert_eq!(
+                analysis.requested_play_session_id.as_deref(),
+                Some("known-session")
+            );
+            assert_eq!(
+                analysis.authoritative_play_session.unwrap().session_id,
+                "known-session"
+            );
+            assert!(analysis.authoritative_play_session_revision.is_some());
+        }
+    }
+
+    #[tokio::test]
     async fn progress_rejects_a_session_owned_by_another_user() {
         let state = create_test_app_state().await;
-        let caller = state
-            .user_authorization
-            .get_or_create_user("caller", &"password123".into())
-            .await
-            .unwrap();
+        let caller = test_user(&state, "caller").await;
         state
             .play_sessions
             .add_session(PlaybackSession {
@@ -1410,21 +1515,14 @@ mod tests {
                 server_id: ServerId::new(1),
             })
             .await;
-        let uri: http::Uri = "/Sessions/Playing/Progress".parse().unwrap();
-        let mut request = Request::builder()
-            .method(http::Method::POST)
-            .uri(uri.clone())
-            .header(http::header::CONTENT_TYPE, "application/json")
-            .header("X-MediaBrowser-Token", caller.virtual_key)
-            .body(axum::body::Body::from(
-                serde_json::json!({
-                    "PlaySessionId": "victim-session",
-                    "ItemId": "item"
-                })
-                .to_string(),
-            ))
-            .unwrap();
-        request.extensions_mut().insert(OriginalUri(uri));
+        let request = json_post(
+            "/Sessions/Playing/Progress",
+            &caller.virtual_key,
+            serde_json::json!({
+                "PlaySessionId": "victim-session",
+                "ItemId": "item"
+            }),
+        );
 
         let result =
             extract_request_infos(request, &state, Some(PlaybackSessionAction::Refresh)).await;

@@ -2,6 +2,9 @@ use axum::{extract::State, Json};
 use hyper::StatusCode;
 use tracing::{debug, error, warn};
 
+#[cfg(test)]
+mod tests;
+
 use crate::{
     extractors::{Preprocessed, RequireSession},
     handlers::common::{
@@ -15,7 +18,7 @@ use crate::{
     models::{PlaybackRequest, PlaybackResponse},
     processors::response_processor::ResponseProcessingProfile,
     request_preprocessing::PreprocessedRequest,
-    url_helper::{contains_id, ensure_query_list_value},
+    url_helper::{contains_id, ensure_query_list_value, replace_path_id},
     virtual_library_service::VirtualLibraryResolution,
     AppState,
 };
@@ -33,6 +36,35 @@ async fn get_processed_item_json(
         .map(str::to_string);
     let requested_item_id = contains_id(preprocessed.original_request.url(), "Items");
     let server = preprocessed.server.clone();
+    let mut selected_group = None;
+    if let (true, Some(item_id), Some(scope)) = (
+        merge_media_versions,
+        requested_item_id.as_deref(),
+        preprocessed.access_scope.as_ref(),
+    ) {
+        if let Some((group, owner)) = state
+            .media_storage
+            .get_media_version_detail_route(item_id, scope.user_id())
+            .await
+            .map_err(|error| {
+                error!("Failed to resolve selected media detail: {error}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+        {
+            if owner.server_id == server.id && scope.allows(owner.server_id) {
+                // The processed request already targets this server and user.
+                // Source IDs need not be item IDs: fetch the recorded owner.
+                let url = replace_path_id(
+                    preprocessed.request.url(),
+                    "Items",
+                    &owner.original_media_id,
+                )
+                .ok_or(StatusCode::BAD_REQUEST)?;
+                *preprocessed.request.url_mut() = url;
+                selected_group = Some(group);
+            }
+        }
+    }
     let source_generation = if merge_media_versions {
         Some(
             state
@@ -72,6 +104,7 @@ async fn get_processed_item_json(
             state,
             DetailMergeContext {
                 requested_item_id,
+                selected_group,
                 base_server: &server,
                 auth: &preprocessed.auth,
                 access_scope: preprocessed.access_scope.as_ref(),
