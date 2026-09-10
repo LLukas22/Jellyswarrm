@@ -2,20 +2,19 @@ use super::postprocessing::Pagination;
 
 pub(super) const UPSTREAM_PAGE_SIZE: usize = 100;
 
-/// Replaces any parent-like query key (ParentId/SeriesId/SeasonId) with the
-/// per-server member ID when fanning out a virtual library or an aggregate
-/// series/season.
-pub(super) fn replace_aggregate_parent_id(url: &url::Url, new_id: &str) -> url::Url {
-    replace_item_parent_id(url, new_id, &["ParentId", "SeriesId", "SeasonId"])
-}
-
-fn replace_item_parent_id(url: &url::Url, new_id: &str, keys: &[&str]) -> url::Url {
+/// Leave other parent references for the per-server request processor.
+pub(super) fn replace_aggregate_parent_id(
+    url: &url::Url,
+    resolved_id: &str,
+    new_id: &str,
+) -> url::Url {
     let pairs = url
         .query_pairs()
         .map(|(key, value)| {
-            let value = if keys
-                .iter()
-                .any(|expected| key.eq_ignore_ascii_case(expected))
+            let value = if value == resolved_id
+                && ["ParentId", "SeriesId", "SeasonId"]
+                    .iter()
+                    .any(|expected| key.eq_ignore_ascii_case(expected))
             {
                 new_id.to_string()
             } else {
@@ -77,16 +76,16 @@ pub(super) fn is_authoritative_media_inventory_request(url: &url::Url) -> bool {
         if key.eq_ignore_ascii_case("recursive") {
             recursive = value.eq_ignore_ascii_case("true");
         } else if key.eq_ignore_ascii_case("includeitemtypes") {
-            // Movies keep their original behavior; shows (series/season/episode)
-            // participate in the same version reconciliation now that Jellyfin
-            // v12 supports multi-versions for episodes.
-            includes_dedup_types = value.split(',').any(|item_type| {
-                let item_type = item_type.trim();
-                item_type.eq_ignore_ascii_case("movie")
-                    || item_type.eq_ignore_ascii_case("series")
-                    || item_type.eq_ignore_ascii_case("season")
-                    || item_type.eq_ignore_ascii_case("episode")
-            });
+            // A source shares sightings across types, so replacing it requires
+            // coverage of every type participating in reconciliation.
+            includes_dedup_types &=
+                ["Movie", "Series", "Season", "Episode"]
+                    .iter()
+                    .all(|required| {
+                        value
+                            .split(',')
+                            .any(|item_type| item_type.trim().eq_ignore_ascii_case(required))
+                    });
         }
         SAFE_KEYS.iter().any(|safe| key.eq_ignore_ascii_case(safe))
     });
@@ -346,17 +345,19 @@ mod tests {
     #[test]
     fn only_recursive_media_catalogs_are_authoritative_inventories() {
         for query in [
-            "ParentId=library&Recursive=true&IncludeItemTypes=Movie&Limit=100",
-            "ParentId=library&Recursive=true&IncludeItemTypes=Series",
-            "ParentId=library&Recursive=true&IncludeItemTypes=Season",
-            "ParentId=library&Recursive=true&IncludeItemTypes=Episode",
-            "ParentId=library&Recursive=true&IncludeItemTypes=Movie,Series,Episode",
+            "ParentId=library&Recursive=true&Limit=100",
+            "ParentId=library&Recursive=true&IncludeItemTypes=Movie,Series,Season,Episode",
         ] {
             let url = url::Url::parse(&format!("http://localhost/Items?{query}")).unwrap();
             assert!(is_authoritative_media_inventory_request(&url), "{query}");
         }
 
         for query in [
+            "ParentId=library&Recursive=true&IncludeItemTypes=Movie&Limit=100",
+            "ParentId=library&Recursive=true&IncludeItemTypes=Series",
+            "ParentId=library&Recursive=true&IncludeItemTypes=Season",
+            "ParentId=library&Recursive=true&IncludeItemTypes=Episode",
+            "ParentId=library&Recursive=true&IncludeItemTypes=Movie,Series,Episode",
             "ParentId=library&Recursive=false&IncludeItemTypes=Movie",
             "ParentId=library&Recursive=true&IncludeItemTypes=Audio",
             "ParentId=library&Recursive=true&IncludeItemTypes=Movie&SearchTerm=Alien",
@@ -370,6 +371,59 @@ mod tests {
         )
         .unwrap();
         assert!(!is_authoritative_media_inventory_request(&resume));
+    }
+
+    #[test]
+    fn show_children_are_additive_even_when_unfiltered() {
+        for endpoint in ["Seasons", "Episodes"] {
+            for query in [
+                "",
+                "?SeasonId=season",
+                "?IsMissing=false",
+                "?IsPlayed=true",
+                "?SearchTerm=pilot",
+            ] {
+                let url =
+                    url::Url::parse(&format!("http://localhost/Shows/show/{endpoint}{query}"))
+                        .unwrap();
+                assert!(!is_authoritative_media_inventory_request(&url));
+            }
+        }
+    }
+
+    #[test]
+    fn aggregate_parent_replacement_only_changes_exact_resolved_values() {
+        let url = url::Url::parse(
+            "http://localhost/Items?parentid=show&SeriesId=show&SeasonId=season&Other=show",
+        )
+        .unwrap();
+        let replaced = replace_aggregate_parent_id(&url, "show", "backend-show");
+        assert_eq!(
+            query_pairs(&replaced),
+            vec![
+                ("parentid".into(), "backend-show".into()),
+                ("SeriesId".into(), "backend-show".into()),
+                ("SeasonId".into(), "season".into()),
+                ("Other".into(), "show".into()),
+            ]
+        );
+        let replaced = replace_aggregate_parent_id(&url, "season", "backend-season");
+        assert_eq!(
+            replaced
+                .query_pairs()
+                .find(|(key, _)| key == "SeriesId")
+                .unwrap()
+                .1,
+            "show"
+        );
+        assert_eq!(
+            replaced
+                .query_pairs()
+                .find(|(key, _)| key == "SeasonId")
+                .unwrap()
+                .1,
+            "backend-season"
+        );
     }
 
     #[test]

@@ -28,6 +28,7 @@ pub(super) struct CatalogFetchTarget {
     pub(super) session: AuthorizationSession,
     pub(super) server: Server,
     pub(super) parent_id: Option<String>,
+    pub(super) resolved_parent_id: Option<String>,
 }
 
 pub(super) async fn resolve_catalog_plan(
@@ -70,6 +71,7 @@ pub(super) async fn resolve_catalog_plan(
                             session,
                             server: member.server,
                             parent_id: Some(member.mapping.original_media_id),
+                            resolved_parent_id: Some(parent_id.clone()),
                         })
                     })
                     .collect();
@@ -133,6 +135,7 @@ pub(super) async fn resolve_catalog_plan(
             session,
             server,
             parent_id: None,
+            resolved_parent_id: None,
         })
         .collect();
 
@@ -232,6 +235,7 @@ async fn resolve_aggregate_plan(
             session,
             server,
             parent_id: Some(member.mapping.original_media_id),
+            resolved_parent_id: Some(parent_id.to_string()),
         });
     }
     if targets.is_empty() {

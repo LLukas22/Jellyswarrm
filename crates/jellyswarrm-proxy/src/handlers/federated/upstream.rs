@@ -163,7 +163,10 @@ pub(super) async fn fetch_catalog(
         ensure_global_sort_fields(request.url_mut());
         let source_parent_id = target.parent_id.clone();
         if let Some(parent_id) = target.parent_id.as_deref() {
-            *request.url_mut() = replace_aggregate_parent_id(request.url(), parent_id);
+            if let Some(resolved_id) = target.resolved_parent_id.as_deref() {
+                *request.url_mut() =
+                    replace_aggregate_parent_id(request.url(), resolved_id, parent_id);
+            }
             ensure_duplicate_identity_field(request.url_mut());
         }
 

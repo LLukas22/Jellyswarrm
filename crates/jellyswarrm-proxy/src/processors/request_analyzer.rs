@@ -65,6 +65,7 @@ pub struct RequestBodyAnalysisResult {
     pub authoritative_play_session: Option<PlaybackSession>,
     pub requested_play_session_id: Option<String>,
     pub requested_play_item_id: Option<String>,
+    pub requested_play_source_id: Option<String>,
 }
 
 impl RequestBodyAnalysisResult {
@@ -116,6 +117,29 @@ impl JsonAnalyzer<RequestAnalysisContext, RequestBodyAnalysisResult> for Request
         context: &RequestAnalysisContext,
         accumulator: &mut RequestBodyAnalysisResult,
     ) -> Result<Option<Vec<String>>> {
+        if context.playback_session_action.is_some() && json_context.depth == 0 {
+            let field = if json_context.key.eq_ignore_ascii_case("ItemId") {
+                Some(&mut accumulator.requested_play_item_id)
+            } else if json_context.key.eq_ignore_ascii_case("MediaSourceId") {
+                Some(&mut accumulator.requested_play_source_id)
+            } else if json_context.key.eq_ignore_ascii_case("PlaySessionId") {
+                Some(&mut accumulator.requested_play_session_id)
+            } else {
+                None
+            };
+            if let Some(field) = field {
+                if !value.is_null() {
+                    let id = value
+                        .as_str()
+                        .filter(|id| !id.is_empty())
+                        .ok_or_else(|| anyhow::anyhow!("invalid playback authority field"))?;
+                    if field.as_deref().is_some_and(|previous| previous != id) {
+                        anyhow::bail!("conflicting playback authority fields");
+                    }
+                    *field = Some(id.to_string());
+                }
+            }
+        }
         // Check if this is an ID field (case-insensitive)
         if ID_FIELDS.contains(&json_context.key) {
             if let serde_json::Value::String(ref virtual_id) = value {
@@ -132,12 +156,6 @@ impl JsonAnalyzer<RequestAnalysisContext, RequestBodyAnalysisResult> for Request
                     accumulator.servers.push(server);
                 }
                 accumulator.found_ids.push(virtual_id.clone());
-                if context.playback_session_action.is_some()
-                    && json_context.depth == 0
-                    && json_context.key.eq_ignore_ascii_case("ItemId")
-                {
-                    accumulator.requested_play_item_id = Some(virtual_id.clone());
-                }
             }
         }
 
@@ -148,13 +166,12 @@ impl JsonAnalyzer<RequestAnalysisContext, RequestBodyAnalysisResult> for Request
                     && json_context.depth == 0
                     && json_context.key.eq_ignore_ascii_case("PlaySessionId");
                 if is_authoritative_field {
-                    accumulator.requested_play_session_id = Some(session_id.clone());
                     if let Some(user_id) = context.authenticated_user_id.as_deref() {
                         accumulator.authoritative_play_session = self
                             .data_context
                             .play_sessions
-                            .get_session_for_user(session_id, user_id)
-                            .await;
+                            .resolve_report_session(session_id, user_id)
+                            .await?;
                     }
                 } else if context.playback_session_action.is_none() {
                     if let Some(play_session) = match context.authenticated_user_id.as_deref() {

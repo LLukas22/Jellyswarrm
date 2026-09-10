@@ -121,6 +121,7 @@ pub async fn get_show_children_from_all_servers(
             session,
             server,
             parent_id: Some(member.mapping.original_media_id),
+            resolved_parent_id: Some(aggregate_id.clone()),
         });
     }
     if targets.is_empty() {

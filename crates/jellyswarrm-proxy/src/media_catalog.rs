@@ -69,7 +69,36 @@ impl MediaDedupPlan {
     }
 
     pub fn collapse(self, stable_groups: &HashMap<String, StableMediaGroup>) -> Vec<MediaItem> {
-        self.groups
+        let mut groups: Vec<CatalogGroup> = Vec::new();
+        let mut stable_indexes = HashMap::new();
+        for group in self.groups {
+            let stable_group = group
+                .members
+                .iter()
+                .map(|member| stable_groups.get(&member.item.id))
+                .collect::<Option<Vec<_>>>()
+                .and_then(|groups| {
+                    let first = groups.first().copied()?;
+                    (group.has_media_aliases
+                        && first.published
+                        && !first.ambiguous
+                        && groups.iter().all(|group| *group == first))
+                    .then_some(first)
+                });
+            // The persisted alias bridge may be absent from this response.
+            if let Some(stable_group) = stable_group {
+                let index = *stable_indexes
+                    .entry(&stable_group.virtual_media_id)
+                    .or_insert(groups.len());
+                if index < groups.len() {
+                    groups[index].members.extend(group.members);
+                    continue;
+                }
+            }
+            groups.push(group);
+        }
+
+        groups
             .into_iter()
             .flat_map(|group| {
                 if !group.has_media_aliases {
@@ -514,6 +543,32 @@ mod tests {
 
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].id, "aggregate-id");
+    }
+
+    #[test]
+    fn persisted_group_collapses_without_the_transitive_bridge_in_the_response() {
+        let mut first = tagged(1, 50, "First", "42");
+        first.item.media_source_count = Some(2);
+        let mut last = tagged(3, 100, "Preferred", "unused");
+        last.item.provider_ids = Some(serde_json::json!({"Imdb": "tt123"}));
+        last.item.media_source_count = Some(3);
+        // A persisted third member carries both Tmdb:42 and Imdb:tt123.
+        let stable_groups = assignments(&["1-First", "bridge", "3-Preferred"], 3);
+
+        for members in [vec![first.clone(), last.clone()], vec![last, first]] {
+            let plan = MediaDedupPlan::new(members);
+            assert_eq!(plan.groups.len(), 2);
+            let merged = plan.collapse(&stable_groups);
+
+            assert_eq!(merged.len(), 1);
+            assert_eq!(merged[0].id, "aggregate-id");
+            assert_eq!(merged[0].name.as_deref(), Some("Preferred"));
+            assert_eq!(merged[0].media_source_count, Some(5));
+            assert_eq!(
+                merged[0].provider_ids,
+                Some(serde_json::json!({"Imdb": "tt123"}))
+            );
+        }
     }
 
     #[test]

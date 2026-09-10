@@ -85,6 +85,28 @@ impl SessionStorage {
             .map(|tracked| tracked.session.clone())
     }
 
+    pub async fn resolve_report_session(
+        &self,
+        session_id: &str,
+        user_id: &str,
+    ) -> anyhow::Result<Option<PlaybackSession>> {
+        let sessions = self.live_sessions().await;
+        let matching = sessions
+            .iter()
+            .rev()
+            .filter(|tracked| tracked.session.session_id == session_id);
+        if let Some(tracked) = matching
+            .clone()
+            .find(|tracked| tracked.session.user_id == user_id)
+        {
+            return Ok(Some(tracked.session.clone()));
+        }
+        if matching.count() != 0 {
+            anyhow::bail!("playback session does not belong to the user");
+        }
+        Ok(None)
+    }
+
     pub async fn refresh_session_for_user(&self, session_id: &str, user_id: &str) -> bool {
         let mut sessions = self.live_sessions().await;
         let now = Instant::now();
@@ -161,6 +183,33 @@ impl SessionStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn report_lookup_distinguishes_unknown_and_other_user_sessions() {
+        let storage = SessionStorage::new();
+        assert!(storage
+            .resolve_report_session("session", "caller")
+            .await
+            .unwrap()
+            .is_none());
+        storage
+            .add_session(PlaybackSession {
+                session_id: "session".into(),
+                item_id: "item".into(),
+                user_id: "owner".into(),
+                server_id: ServerId::new(1),
+            })
+            .await;
+        assert!(storage
+            .resolve_report_session("session", "caller")
+            .await
+            .is_err());
+        assert!(storage
+            .resolve_report_session("session", "owner")
+            .await
+            .unwrap()
+            .is_some());
+    }
 
     #[tokio::test]
     async fn test_add_session_upserts_by_session_and_item_id() {

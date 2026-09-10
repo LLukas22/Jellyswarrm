@@ -261,23 +261,11 @@ pub async fn extract_request_infos(
             accumulator,
         )
         .await?;
-        if matches!(
-            playback_session_action,
-            Some(PlaybackSessionAction::Refresh | PlaybackSessionAction::Remove)
-        ) && (analysis_result.requested_play_session_id.is_none()
-            || analysis_result.authoritative_play_session.is_none())
+        if playback_session_action.is_some()
+            && (analysis_result.requested_play_item_id.is_none() || authenticated_user_id.is_none())
         {
             return Err(anyhow!(
-                "playback session is missing or does not belong to the user"
-            ));
-        }
-        if playback_session_action == Some(PlaybackSessionAction::Start)
-            && (analysis_result.requested_play_session_id.is_none()
-                || analysis_result.requested_play_item_id.is_none()
-                || authenticated_user_id.is_none())
-        {
-            return Err(anyhow!(
-                "playback start is missing session authority fields"
+                "playback report requires an authenticated user and item"
             ));
         }
         if let Some(found_user) = analysis_result.get_user() {
@@ -381,14 +369,25 @@ pub async fn preprocess_request(req: Request, state: &AppState) -> Result<Prepro
         )
     });
 
-    let (server, session, server_matched_request) = resolve_server(
-        &sessions,
-        &request_body_result,
-        state,
-        &request,
-        access_scope.as_ref(),
-    )
-    .await?;
+    let (server, session, server_matched_request) = if playback_session_action.is_some() {
+        resolve_playback_report_server(
+            &sessions,
+            request_body_result
+                .as_ref()
+                .ok_or_else(|| anyhow!("missing playback report"))?,
+            state,
+        )
+        .await?
+    } else {
+        resolve_server(
+            &sessions,
+            &request_body_result,
+            state,
+            &request,
+            access_scope.as_ref(),
+        )
+        .await?
+    };
     let pending_playback_session_update = match playback_session_action {
         Some(PlaybackSessionAction::Start) => request_body_result.as_ref().and_then(|result| {
             Some(PendingPlaybackSessionUpdate {
@@ -586,6 +585,80 @@ pub async fn remap_authorization(
     debug!("Remapped authorization to: {:?}", remapped_session);
     Ok(remapped_session)
 }
+// Reports must not use the generic best-server fallback: a wrong destination can
+// update another copy's playback state. Only top-level item/source fields route them.
+async fn resolve_playback_report_server(
+    sessions: &Option<Vec<(AuthorizationSession, Server)>>,
+    analysis: &RequestBodyAnalysisResult,
+    state: &AppState,
+) -> Result<(Server, Option<AuthorizationSession>, bool)> {
+    let sessions = sessions
+        .as_ref()
+        .ok_or_else(|| anyhow!("no authorization sessions available"))?;
+    let item_id = analysis
+        .requested_play_item_id
+        .as_deref()
+        .ok_or_else(|| anyhow!("playback report requires an item"))?;
+    let mut candidates =
+        if let Some(group) = state.media_storage.get_media_version_group(item_id).await? {
+            if let Some(source_id) = analysis.requested_play_source_id.as_deref() {
+                vec![
+                    state
+                        .media_storage
+                        .get_media_version_source_route(group.id, source_id)
+                        .await?
+                        .ok_or_else(|| anyhow!("media source does not belong to playback item"))?
+                        .member_mapping
+                        .server_id,
+                ]
+            } else {
+                state
+                    .media_storage
+                    .get_media_version_members_by_virtual_id(item_id)
+                    .await?
+                    .into_iter()
+                    .map(|member| member.server.id)
+                    .collect()
+            }
+        } else {
+            let (_, server) = state
+                .media_storage
+                .get_media_mapping_with_server(item_id)
+                .await?
+                .ok_or_else(|| anyhow!("unknown playback item"))?;
+            if let Some(source_id) = analysis.requested_play_source_id.as_deref() {
+                let (_, source_server) = state
+                    .media_storage
+                    .get_media_mapping_with_server(source_id)
+                    .await?
+                    .ok_or_else(|| anyhow!("unknown playback source"))?;
+                if source_server.id != server.id {
+                    return Err(anyhow!("conflicting playback item and source servers"));
+                }
+            }
+            vec![server.id]
+        };
+    if let Some(play_session) = &analysis.authoritative_play_session {
+        if !candidates.contains(&play_session.server_id) {
+            return Err(anyhow!(
+                "conflicting playback session and item/source authority"
+            ));
+        }
+        candidates.retain(|id| *id == play_session.server_id);
+    }
+    candidates.retain(|id| sessions.iter().any(|(_, server)| server.id == *id));
+    if candidates.len() != 1 {
+        return Err(anyhow!(
+            "playback item/source route is unavailable or ambiguous"
+        ));
+    }
+    let (session, server) = sessions
+        .iter()
+        .find(|(_, server)| server.id == candidates[0])
+        .ok_or_else(|| anyhow!("playback server is unavailable"))?;
+    Ok((server.clone(), Some(session.clone()), true))
+}
+
 pub async fn resolve_server(
     sessions: &Option<Vec<(AuthorizationSession, Server)>>,
     request_body_result: &Option<RequestBodyAnalysisResult>,
@@ -1021,6 +1094,303 @@ mod tests {
         assert!(auth.is_some());
         assert!(user.is_none());
         assert!(sessions.is_none());
+    }
+
+    #[tokio::test]
+    async fn playback_reports_route_without_cached_session_authority() {
+        let state = create_test_app_state().await;
+        let caller = state
+            .user_authorization
+            .get_or_create_user("caller", &"password123".into())
+            .await
+            .unwrap();
+        let server_id = state
+            .server_storage
+            .add_server(
+                "Playback",
+                "http://playback.example",
+                100,
+                crate::config::MediaStreamingMode::Redirect,
+            )
+            .await
+            .unwrap();
+        let server = state
+            .server_storage
+            .get_server_by_id(server_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let item = state
+            .media_storage
+            .get_or_create_media_mapping("item", &server)
+            .await
+            .unwrap();
+        let source = state
+            .media_storage
+            .get_or_create_media_mapping("source", &server)
+            .await
+            .unwrap();
+        let now = chrono::Utc::now();
+        let sessions = Some(vec![(
+            AuthorizationSession {
+                id: 1,
+                user_id: caller.id.clone(),
+                mapping_id: 1,
+                server_url: server.url.to_string(),
+                device: Device::from_useragent("Test"),
+                jellyfin_token: "upstream-token".into(),
+                original_user_id: "upstream-user".into(),
+                expires_at: None,
+                created_at: now,
+                updated_at: now,
+            },
+            server.clone(),
+        )]);
+
+        for (path, action) in [
+            ("/Sessions/Playing", PlaybackSessionAction::Start),
+            ("/Sessions/Playing/Progress", PlaybackSessionAction::Refresh),
+            ("/Sessions/Playing/Stopped", PlaybackSessionAction::Remove),
+        ] {
+            for session_id in [
+                None,
+                Some(serde_json::Value::Null),
+                Some(serde_json::json!("unknown-session")),
+            ] {
+                let mut body = serde_json::json!({
+                    "ItemId": item.virtual_media_id,
+                    "MediaSourceId": source.virtual_media_id,
+                    "NowPlayingQueue": [{"Id": "unrelated-queue-item"}]
+                });
+                if let Some(session_id) = session_id {
+                    body["PlaySessionId"] = session_id;
+                }
+                let uri: http::Uri = path.parse().unwrap();
+                let mut request = Request::builder()
+                    .method(http::Method::POST)
+                    .uri(uri.clone())
+                    .header(http::header::CONTENT_TYPE, "application/json")
+                    .header("X-MediaBrowser-Token", &caller.virtual_key)
+                    .body(axum::body::Body::from(body.to_string()))
+                    .unwrap();
+                request.extensions_mut().insert(OriginalUri(uri));
+                let (_, _, user, _, analysis) =
+                    extract_request_infos(request, &state, Some(action))
+                        .await
+                        .unwrap();
+                assert_eq!(user.unwrap().id, caller.id);
+                let mut analysis = analysis.unwrap();
+                assert!(analysis.authoritative_play_session.is_none());
+                let (selected, auth, matched) =
+                    resolve_playback_report_server(&sessions, &analysis, &state)
+                        .await
+                        .unwrap();
+                assert_eq!(selected.id, server.id);
+                assert_eq!(auth.unwrap().user_id, caller.id);
+                assert!(matched);
+                analysis.requested_play_source_id = None;
+                assert_eq!(
+                    resolve_playback_report_server(&sessions, &analysis, &state)
+                        .await
+                        .unwrap()
+                        .0
+                        .id,
+                    server.id
+                );
+                assert!(resolve_playback_report_server(&None, &analysis, &state)
+                    .await
+                    .is_err());
+                analysis.authoritative_play_session = Some(PlaybackSession {
+                    session_id: "known-session".into(),
+                    item_id: item.virtual_media_id.clone(),
+                    user_id: caller.id.clone(),
+                    server_id: ServerId::new(server.id.as_i64() + 1),
+                });
+                assert!(resolve_playback_report_server(&sessions, &analysis, &state)
+                    .await
+                    .is_err());
+                analysis.authoritative_play_session = None;
+                analysis.requested_play_source_id = Some("unknown-source".into());
+                assert!(resolve_playback_report_server(&sessions, &analysis, &state)
+                    .await
+                    .is_err());
+                analysis.requested_play_source_id = None;
+                analysis.requested_play_item_id = Some("unknown-item".into());
+                assert!(resolve_playback_report_server(&sessions, &analysis, &state)
+                    .await
+                    .is_err());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn playback_report_rejects_ambiguous_aggregate_without_session_or_source() {
+        use crate::media_identity::{MediaAlias, MediaKind, MediaObservation, MediaProvider};
+        use crate::media_storage_service::{MediaCatalogSnapshot, MediaVersionSourceObservation};
+        use std::collections::BTreeSet;
+
+        let state = create_test_app_state().await;
+        let mut snapshots = Vec::new();
+        let mut sessions = Vec::new();
+        let mut mappings = Vec::new();
+        for name in ["first", "second"] {
+            let id = state
+                .server_storage
+                .add_server(
+                    name,
+                    &format!("http://{name}.example"),
+                    100,
+                    crate::config::MediaStreamingMode::Redirect,
+                )
+                .await
+                .unwrap();
+            let server = state
+                .server_storage
+                .get_server_by_id(id)
+                .await
+                .unwrap()
+                .unwrap();
+            let mapping = state
+                .media_storage
+                .get_or_create_media_mapping("item", &server)
+                .await
+                .unwrap();
+            snapshots.push(MediaCatalogSnapshot {
+                source_key: name.into(),
+                server_id: id,
+                complete: true,
+                observations: vec![MediaObservation {
+                    virtual_media_id: mapping.virtual_media_id.clone(),
+                    aliases: BTreeSet::from([MediaAlias {
+                        provider: MediaProvider::Tmdb,
+                        kind: MediaKind::Movie,
+                        provider_id: "42".into(),
+                    }]),
+                }],
+            });
+            mappings.push(mapping);
+            let now = chrono::Utc::now();
+            sessions.push((
+                AuthorizationSession {
+                    id: id.as_i64(),
+                    user_id: "caller".into(),
+                    mapping_id: id.as_i64(),
+                    server_url: server.url.to_string(),
+                    device: Device::from_useragent("Test"),
+                    jellyfin_token: "upstream-token".into(),
+                    original_user_id: "upstream-user".into(),
+                    expires_at: None,
+                    created_at: now,
+                    updated_at: now,
+                },
+                server,
+            ));
+        }
+        let generation = state
+            .media_storage
+            .begin_media_reconciliation()
+            .await
+            .unwrap();
+        let groups = state
+            .media_storage
+            .reconcile_media_catalog("configured:library:caller", generation, &snapshots, true)
+            .await
+            .unwrap();
+        let aggregate_id = groups[&mappings[0].virtual_media_id]
+            .virtual_media_id
+            .clone();
+        let group = state
+            .media_storage
+            .get_media_version_group(&aggregate_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let source = state
+            .media_storage
+            .get_or_create_media_mapping("source", &sessions[1].1)
+            .await
+            .unwrap();
+        state
+            .media_storage
+            .replace_media_version_sources(
+                group.id,
+                generation,
+                &[mappings[1].id],
+                &[MediaVersionSourceObservation {
+                    member_mapping_id: mappings[1].id,
+                    source_virtual_id: source.virtual_media_id.clone(),
+                }],
+            )
+            .await
+            .unwrap();
+        let sessions = Some(sessions);
+        let mut analysis = RequestBodyAnalysisResult {
+            requested_play_item_id: Some(aggregate_id),
+            ..Default::default()
+        };
+        assert!(resolve_playback_report_server(&sessions, &analysis, &state)
+            .await
+            .is_err());
+        analysis.requested_play_source_id = Some(source.virtual_media_id.clone());
+        assert_eq!(
+            resolve_playback_report_server(&sessions, &analysis, &state)
+                .await
+                .unwrap()
+                .0
+                .id,
+            mappings[1].server_id
+        );
+        analysis.requested_play_item_id = Some(mappings[0].virtual_media_id.clone());
+        assert!(resolve_playback_report_server(&sessions, &analysis, &state)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn playback_reports_reject_missing_auth_and_conflicting_fields() {
+        let state = create_test_app_state().await;
+        let caller = state
+            .user_authorization
+            .get_or_create_user("caller", &"password123".into())
+            .await
+            .unwrap();
+        for (token, body) in [
+            (
+                "invalid",
+                serde_json::json!({"ItemId": "item", "UserId": caller.id}),
+            ),
+            (
+                caller.virtual_key.as_str(),
+                serde_json::json!({"ItemId": "item", "itemId": "different"}),
+            ),
+            (
+                caller.virtual_key.as_str(),
+                serde_json::json!({"ItemId": "item", "PlaySessionId": "one", "playSessionId": "two"}),
+            ),
+            (
+                caller.virtual_key.as_str(),
+                serde_json::json!({"ItemId": "item", "MediaSourceId": "one", "mediaSourceId": "two"}),
+            ),
+            (
+                caller.virtual_key.as_str(),
+                serde_json::json!({"NowPlayingQueue": [{"ItemId": "item"}]}),
+            ),
+        ] {
+            let uri: http::Uri = "/Sessions/Playing/Progress".parse().unwrap();
+            let mut request = Request::builder()
+                .method(http::Method::POST)
+                .uri(uri.clone())
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .header("X-MediaBrowser-Token", token)
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap();
+            request.extensions_mut().insert(OriginalUri(uri));
+            assert!(
+                extract_request_infos(request, &state, Some(PlaybackSessionAction::Refresh))
+                    .await
+                    .is_err()
+            );
+        }
     }
 
     #[tokio::test]

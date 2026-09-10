@@ -599,6 +599,27 @@ impl MediaStorageService {
             members[position].aliases.insert(alias);
         }
 
+        // Source routes reference the member's group through a composite FK.
+        sqlx::query(
+            r#"
+            DELETE FROM movie_version_sources
+            WHERE scope_id = ?
+              AND EXISTS (
+                  SELECT 1 FROM movie_catalog_sightings sighting
+                  WHERE sighting.scope_id = movie_version_sources.scope_id
+                    AND sighting.media_mapping_id = movie_version_sources.member_mapping_id
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM movie_version_aliases alias
+                  WHERE alias.scope_id = movie_version_sources.scope_id
+                    AND alias.media_mapping_id = movie_version_sources.member_mapping_id
+              )
+            "#,
+        )
+        .bind(scope_id)
+        .execute(&mut **transaction)
+        .await?;
+
         sqlx::query(
             r#"
             UPDATE movie_version_members
@@ -1739,6 +1760,97 @@ mod tests {
                 "42".to_string()
             )
         );
+        assert!(sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn removing_provider_ids_deletes_recorded_sources_only_in_the_current_scope() {
+        let pool = foreign_key_pool().await;
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = MediaStorageService::new(pool.clone());
+        let server = create_test_server(&pool).await;
+        let mapping = service
+            .get_or_create_media_mapping("member", &server)
+            .await
+            .unwrap();
+        let source = service
+            .get_or_create_media_mapping("source", &server)
+            .await
+            .unwrap();
+        let mut snapshots = vec![MediaCatalogSnapshot {
+            source_key: "library".to_string(),
+            server_id: server.id,
+            complete: true,
+            observations: vec![MediaObservation {
+                virtual_media_id: mapping.virtual_media_id.clone(),
+                aliases: BTreeSet::from([MediaAlias::parse_storage("tmdb", "42").unwrap()]),
+            }],
+        }];
+        let mut groups = Vec::new();
+        for scope in ["scope-a", "scope-b"] {
+            let generation = service.begin_media_reconciliation().await.unwrap();
+            let assignments = service
+                .reconcile_media_catalog(scope, generation, &snapshots, true)
+                .await
+                .unwrap();
+            let group = service
+                .get_media_version_group(&assignments[&mapping.virtual_media_id].virtual_media_id)
+                .await
+                .unwrap()
+                .unwrap();
+            let generation = service.begin_media_reconciliation().await.unwrap();
+            assert!(service
+                .replace_media_version_sources(
+                    group.id,
+                    generation,
+                    &[mapping.id],
+                    &[MediaVersionSourceObservation {
+                        member_mapping_id: mapping.id,
+                        source_virtual_id: source.virtual_media_id.clone(),
+                    }],
+                )
+                .await
+                .unwrap());
+            assert!(service
+                .get_media_version_source_route(group.id, &source.virtual_media_id)
+                .await
+                .unwrap()
+                .is_some());
+            groups.push(group);
+        }
+
+        snapshots[0].observations[0].aliases.clear();
+        let generation = service.begin_media_reconciliation().await.unwrap();
+        let assignments = service
+            .reconcile_media_catalog("scope-a", generation, &snapshots, true)
+            .await
+            .unwrap();
+        assert!(!assignments.contains_key(&mapping.virtual_media_id));
+        let (group_id,): (Option<i64>,) = sqlx::query_as(
+            "SELECT group_id FROM movie_version_members WHERE scope_id = ? AND media_mapping_id = ?",
+        )
+        .bind(groups[0].scope_id)
+        .bind(mapping.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(group_id, None);
+        let (source_count,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM movie_version_sources WHERE scope_id = ?")
+                .bind(groups[0].scope_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(source_count, 0);
+        assert!(service
+            .get_media_version_source_route(groups[1].id, &source.virtual_media_id)
+            .await
+            .unwrap()
+            .is_some());
         assert!(sqlx::query("PRAGMA foreign_key_check")
             .fetch_all(&pool)
             .await
