@@ -2,7 +2,9 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tracing::{debug, info};
 
-use crate::processors::field_matcher::{ID_FIELDS, SESSION_FIELDS, USER_FIELDS};
+use crate::processors::field_matcher::{
+    ID_FIELDS, MEDIA_ID_LIST_PARENT_FIELDS, SESSION_FIELDS, USER_FIELDS,
+};
 use crate::processors::json_processor::{
     JsonProcessingContext, JsonProcessingResult, JsonProcessor,
 };
@@ -77,6 +79,33 @@ impl JsonProcessor<RequestProcessingContext> for RequestProcessor {
         context: &RequestProcessingContext,
     ) -> JsonProcessingResult {
         let mut result = JsonProcessingResult::new();
+        // Media ID lists (e.g. `Ids`, `EntryIds`) carry one ID per array
+        // item, where the key is the array index. Match on the parent field.
+        if json_context.is_array_item
+            && MEDIA_ID_LIST_PARENT_FIELDS.contains(last_segment(&json_context.parent_path))
+        {
+            if let Value::String(ref virtual_id) = value {
+                let original_media_id =
+                    match self.upstream_media_id(virtual_id, &context.server).await {
+                        Ok(id) => id,
+                        Err(error) => {
+                            return result.add_error(format!(
+                                "Media ID lookup failed at {}: {}",
+                                json_context.path, error
+                            ));
+                        }
+                    };
+                if let Some(original_media_id) = original_media_id {
+                    debug!(
+                        "Replacing virtual id {} -> {} for list field: {} in payload",
+                        virtual_id, original_media_id, &json_context.parent_path
+                    );
+                    *value = Value::String(original_media_id);
+                    result = result.mark_modified();
+                }
+            }
+            return result;
+        }
         // Check if this is an ID field (case-insensitive)
         if ID_FIELDS.contains(&json_context.key) {
             if let Value::String(ref virtual_id) = value {
@@ -126,6 +155,13 @@ impl JsonProcessor<RequestProcessingContext> for RequestProcessor {
 
         result
     }
+}
+
+fn last_segment(path: &str) -> &str {
+    path.rsplit('.')
+        .next()
+        .map(|segment| segment.split('[').next().unwrap_or(segment))
+        .unwrap_or(path)
 }
 
 #[cfg(test)]

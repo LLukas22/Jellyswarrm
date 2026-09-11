@@ -6,8 +6,9 @@ use crate::{
     processors::{
         field_matcher::{
             DELIVERY_URL_FIELDS, DISABLED_BOOL_FIELDS, MEDIA_ID_ARRAY_FIELDS,
-            MEDIA_ID_MAP_KEY_FIELDS, MEDIA_ID_MAP_VALUE_FIELDS, MEDIA_ID_NESTED_MAP_KEY_FIELDS,
-            NAME_FIELDS, RESPONSE_MEDIA_ID_FIELDS, SERVER_ID_FIELDS,
+            MEDIA_ID_LIST_PARENT_FIELDS, MEDIA_ID_MAP_KEY_FIELDS, MEDIA_ID_MAP_VALUE_FIELDS,
+            MEDIA_ID_NESTED_MAP_KEY_FIELDS, NAME_FIELDS, RESPONSE_MEDIA_ID_FIELDS,
+            SERVER_ID_FIELDS,
         },
         json_processor::{JsonProcessingContext, JsonProcessingResult, JsonProcessor},
         url_processor::UrlProcessor,
@@ -91,7 +92,8 @@ impl JsonProcessor<ResponseProcessingContext> for ResponseProcessor {
 
         if context.rewrites_media_fields()
             && json_context.is_array_item
-            && MEDIA_ID_ARRAY_FIELDS.contains(last_segment(&json_context.parent_path))
+            && (MEDIA_ID_ARRAY_FIELDS.contains(last_segment(&json_context.parent_path))
+                || MEDIA_ID_LIST_PARENT_FIELDS.contains(last_segment(&json_context.parent_path)))
         {
             if let Some(id) = value.as_str().map(str::to_string) {
                 match self.virtual_media_id(&id, &context.server).await {

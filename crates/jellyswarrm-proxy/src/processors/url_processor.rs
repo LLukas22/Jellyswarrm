@@ -17,6 +17,7 @@ pub static MEDIA_ID_PATH_TAGS: &[&str] = &[
     "Audio",
     "Shows",
     "Videos",
+    "Playlists",
     "PlayedItems",
     "FavoriteItems",
     "MediaSegments",
@@ -42,6 +43,9 @@ pub static MEDIA_ID_QUERY_TAGS: &[&str] = &[
     "SeasonId",
     "startItemId",
     "IDs",
+    "EntryIds",
+    "PlaylistItemId",
+    "PlaylistItemIds",
     "PersonIds",
     "ArtistIds",
     "ContributingArtistIds",
@@ -861,5 +865,75 @@ mod tests {
             .unwrap();
 
         assert_eq!(selected.id, second.id);
+    }
+
+    #[tokio::test]
+    async fn playlist_path_and_entry_ids_are_remapped_to_upstream_ids() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let server_storage = ServerStorageService::new(pool.clone());
+        let server_id = server_storage
+            .add_server(
+                "Server",
+                "http://server.example",
+                100,
+                MediaStreamingMode::Redirect,
+            )
+            .await
+            .unwrap();
+        let server = server_storage
+            .get_server_by_id(server_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let media_storage = MediaStorageService::new(pool.clone());
+        let playlist = media_storage
+            .get_or_create_media_mapping("upstream-playlist", &server)
+            .await
+            .unwrap();
+        let entry = media_storage
+            .get_or_create_media_mapping("upstream-entry", &server)
+            .await
+            .unwrap();
+        let virtual_libraries =
+            VirtualLibraryService::new(pool.clone(), server_storage.clone(), media_storage.clone());
+        let processor = UrlProcessor::new(DataContext {
+            user_authorization: Arc::new(UserAuthorizationService::new(pool)),
+            server_storage: Arc::new(server_storage),
+            media_storage: Arc::new(media_storage),
+            virtual_library_service: Arc::new(virtual_libraries),
+            play_sessions: Arc::new(SessionStorage::new()),
+            config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
+        });
+
+        // Routing must find the owning server from the playlist path ID.
+        let url = url::Url::parse(&format!(
+            "http://localhost/Playlists/{}/Items?UserId=user",
+            playlist.virtual_media_id
+        ))
+        .unwrap();
+        let selected = processor
+            .server_from_client_url(&url, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(selected.id, server.id);
+
+        // Path and EntryIds query values must be rewritten to upstream IDs.
+        let mut url = url::Url::parse(&format!(
+            "http://localhost/Playlists/{}/Items?EntryIds={}",
+            playlist.virtual_media_id, entry.virtual_media_id
+        ))
+        .unwrap();
+        processor
+            .client_to_server_url(&mut url, &None, None, Some(server_id))
+            .await;
+        assert_eq!(url.path(), "/Playlists/upstream-playlist/Items");
+        assert_eq!(
+            url.query_pairs()
+                .find(|(key, _)| key.eq_ignore_ascii_case("EntryIds"))
+                .map(|(_, value)| value.into_owned()),
+            Some("upstream-entry".to_string())
+        );
     }
 }
