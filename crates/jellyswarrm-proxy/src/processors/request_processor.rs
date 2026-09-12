@@ -1,8 +1,10 @@
 use async_trait::async_trait;
 use serde_json::Value;
-use tracing::{debug, info};
+use tracing::debug;
 
-use crate::processors::field_matcher::{ID_FIELDS, SESSION_FIELDS, USER_FIELDS};
+use crate::processors::field_matcher::{
+    ID_FIELDS, MEDIA_ID_LIST_PARENT_FIELDS, SESSION_FIELDS, USER_FIELDS,
+};
 use crate::processors::json_processor::{
     JsonProcessingContext, JsonProcessingResult, JsonProcessor,
 };
@@ -77,6 +79,35 @@ impl JsonProcessor<RequestProcessingContext> for RequestProcessor {
         context: &RequestProcessingContext,
     ) -> JsonProcessingResult {
         let mut result = JsonProcessingResult::new();
+        // Media ID lists (e.g. `Ids`, `EntryIds`) carry one ID per array
+        // item, where the key is the array index. Match on the parent field.
+        if json_context.is_array_item
+            && MEDIA_ID_LIST_PARENT_FIELDS.contains(last_segment(&json_context.parent_path))
+        {
+            if let Value::String(ref virtual_id) = value {
+                let original_media_id =
+                    match self.upstream_media_id(virtual_id, &context.server).await {
+                        Ok(id) => id,
+                        Err(error) => {
+                            return result.add_error(format!(
+                                "Media ID lookup failed at {}: {}",
+                                json_context.path, error
+                            ));
+                        }
+                    };
+                if let Some(original_media_id) = original_media_id {
+                    debug!(
+                        "Replacing virtual id {} -> {} for list field: {} in payload",
+                        virtual_id, original_media_id, &json_context.parent_path
+                    );
+                    *value = Value::String(original_media_id);
+                    result = result.mark_modified();
+                } else {
+                    return result.add_error("Playlist track or entry is unavailable on the selected server; mixed-server playlists are unsupported".to_string());
+                }
+            }
+            return result;
+        }
         // Check if this is an ID field (case-insensitive)
         if ID_FIELDS.contains(&json_context.key) {
             if let Value::String(ref virtual_id) = value {
@@ -108,14 +139,17 @@ impl JsonProcessor<RequestProcessingContext> for RequestProcessor {
         // Handle user IDs
         else if USER_FIELDS.contains(&json_context.key) {
             if let Value::String(ref virtual_id) = value {
-                // For requests, we need to convert virtual IDs back to real IDs
-                if let Some(session) = &context.session {
-                    info!(
-                        "Replacing User ID {} -> {} for field: {} in payload",
-                        virtual_id, &session.original_user_id, &json_context.key
-                    );
-                    *value = Value::String(session.original_user_id.clone());
-                    result = result.mark_modified();
+                let processor =
+                    crate::processors::url_processor::UrlProcessor::new(self.data_context.clone());
+                match processor
+                    .upstream_user_id(virtual_id, &context.session, context.server.id)
+                    .await
+                {
+                    Ok(upstream) => {
+                        *value = Value::String(upstream);
+                        result = result.mark_modified();
+                    }
+                    Err(error) => return result.add_error(error.to_string()),
                 }
             }
         }
@@ -126,6 +160,13 @@ impl JsonProcessor<RequestProcessingContext> for RequestProcessor {
 
         result
     }
+}
+
+fn last_segment(path: &str) -> &str {
+    path.rsplit('.')
+        .next()
+        .map(|segment| segment.split('[').next().unwrap_or(segment))
+        .unwrap_or(path)
 }
 
 #[cfg(test)]
@@ -202,6 +243,248 @@ mod tests {
             created_at: now,
             updated_at: now,
         }
+    }
+
+    #[tokio::test]
+    async fn playlist_lifecycle_translation_and_mixed_server_rejection() {
+        use crate::processors::{
+            analyze_json,
+            request_analyzer::{
+                RequestAnalysisContext, RequestAnalyzer, RequestBodyAnalysisResult,
+            },
+            response_processor::{
+                ResponseProcessingContext, ResponseProcessingProfile, ResponseProcessor,
+            },
+            url_processor::UrlProcessor,
+        };
+        let (data, _) = test_data_context().await;
+        let mut servers = Vec::new();
+        for name in ["first", "second"] {
+            let id = data
+                .server_storage
+                .add_server(
+                    name,
+                    &format!("http://{name}.example"),
+                    100,
+                    MediaStreamingMode::Redirect,
+                )
+                .await
+                .unwrap();
+            servers.push(
+                data.server_storage
+                    .get_server_by_id(id)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            );
+        }
+        let server = servers[0].clone();
+        let context = RequestProcessingContext {
+            user: None,
+            server: server.clone(),
+            sessions: None,
+            auth: None,
+            session: None,
+            new_auth: None,
+        };
+        let response_context = ResponseProcessingContext {
+            server: server.clone(),
+            proxy_server_id: "proxy".into(),
+            proxy_api_key: None,
+            profile: ResponseProcessingProfile::Media,
+            should_change_name: false,
+            can_change_item_names: false,
+        };
+        let responses = ResponseProcessor::new(data.clone());
+        let requests = RequestProcessor::new(data.clone());
+        let urls = UrlProcessor::new(data.clone());
+        // Discover IDs from actual response processing, including two entries for the same song.
+        let mut read = json!({"Id":"playlist", "Type":"Playlist", "CanDelete":true,
+            "Items":[{"Id":"song", "PlaylistItemId":"entry-1"}, {"Id":"song", "PlaylistItemId":"entry-2"}],
+            "Ids":["song", "song"], "EntryIds":["entry-1", "entry-2"]});
+        process_json(&mut read, &responses, &response_context)
+            .await
+            .unwrap();
+        assert_eq!(read["CanDelete"], true);
+        assert_eq!(read["Items"][0]["Id"], read["Items"][1]["Id"]);
+        assert_ne!(read["EntryIds"][0], read["EntryIds"][1]);
+        assert_eq!(read["Items"][0]["PlaylistItemId"], read["EntryIds"][0]);
+        let mut create = json!({"Ids":read["Ids"]});
+        let analysis = analyze_json(
+            &create,
+            &RequestAnalyzer::new(data.clone()),
+            &RequestAnalysisContext {
+                authenticated_user_id: None,
+                playback_session_action: None,
+            },
+            RequestBodyAnalysisResult::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(analysis.found_ids.len(), 2);
+        assert_eq!(analysis.get_server().unwrap().id, server.id);
+        process_json(&mut create, &requests, &context)
+            .await
+            .unwrap();
+        assert_eq!(create, json!({"Ids":["song", "song"]}));
+        let playlist = read["Id"].as_str().unwrap();
+        let song = read["Ids"][0].as_str().unwrap();
+        let entry1 = read["EntryIds"][0].as_str().unwrap();
+        let entry2 = read["EntryIds"][1].as_str().unwrap();
+        for (path, expected) in [
+            (
+                format!("/Playlists/{playlist}/Items"),
+                "/Playlists/playlist/Items",
+            ),
+            (
+                format!("/Playlists/{playlist}/Items?Ids={song},{song}"),
+                "/Playlists/playlist/Items?Ids=song%2Csong",
+            ),
+            (
+                format!("/Playlists/{playlist}/Items?EntryIds={entry1},{entry2}"),
+                "/Playlists/playlist/Items?EntryIds=entry-1%2Centry-2",
+            ),
+            (
+                format!("/Playlists/{playlist}/Items/{entry2}/Move/0"),
+                "/Playlists/playlist/Items/entry-2/Move/0",
+            ),
+            (format!("/Items/{playlist}"), "/Items/playlist"),
+        ] {
+            let mut url = url::Url::parse(&format!("http://localhost{path}")).unwrap();
+            urls.validate_playlist_url(&url, &None, None, server.id)
+                .await
+                .unwrap();
+            urls.client_to_server_url(&mut url, &None, None, Some(server.id))
+                .await;
+            assert_eq!(
+                url.as_str().trim_end_matches('?'),
+                format!("http://localhost{expected}")
+            );
+        }
+        let mut remove = json!({"EntryIds":read["EntryIds"], "PlaylistItemIds":read["EntryIds"]});
+        process_json(&mut remove, &requests, &context)
+            .await
+            .unwrap();
+        assert_eq!(
+            remove,
+            json!({"EntryIds":["entry-1", "entry-2"], "PlaylistItemIds":["entry-1", "entry-2"]})
+        );
+        let foreign = data
+            .media_storage
+            .get_or_create_media_mapping("foreign-song", &servers[1])
+            .await
+            .unwrap()
+            .virtual_media_id;
+        for id in [&foreign, "unknown"] {
+            let mut body = json!({"Ids":[song, id]});
+            assert!(process_json(&mut body, &requests, &context)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("mixed-server"));
+            for path in [
+                format!("/Playlists?Ids={song},{id}"),
+                format!("/Playlists/{playlist}/Items?Ids={id}"),
+            ] {
+                let url = url::Url::parse(&format!("http://localhost{path}")).unwrap();
+                assert!(urls
+                    .validate_playlist_url(&url, &None, None, server.id)
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("mixed-server"));
+            }
+        }
+        let mut movie = json!({"Type":"Movie", "CanDelete":true});
+        process_json(&mut movie, &responses, &response_context)
+            .await
+            .unwrap();
+        assert_eq!(movie["CanDelete"], false);
+        let mut denied = json!({"Type":"Playlist", "CanDelete":false});
+        process_json(&mut denied, &responses, &response_context)
+            .await
+            .unwrap();
+        assert_eq!(denied["CanDelete"], false);
+    }
+
+    #[tokio::test]
+    async fn sharing_maps_the_recipient_and_rejects_unknown_users() {
+        use crate::processors::url_processor::UrlProcessor;
+        let (data, _) = test_data_context().await;
+        let server_id = data
+            .server_storage
+            .add_server(
+                "first",
+                "http://server.example:8096",
+                100,
+                MediaStreamingMode::Redirect,
+            )
+            .await
+            .unwrap();
+        let server = data
+            .server_storage
+            .get_server_by_id(server_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let user = data
+            .user_authorization
+            .create_user("recipient", &"password".into())
+            .await
+            .unwrap();
+        data.user_authorization
+            .add_server_mapping(
+                &user.id,
+                server.url.as_str(),
+                "recipient",
+                &"password".into(),
+                Some(&user.local_credential.mapping_key()),
+            )
+            .await
+            .unwrap();
+        data.user_authorization
+            .store_authorization_session(
+                &user.id,
+                &server,
+                &test_session().to_authorization(),
+                "recipient-token".into(),
+                "upstream-recipient".into(),
+                None,
+            )
+            .await
+            .unwrap();
+        let context = RequestProcessingContext {
+            user: None,
+            server: server.clone(),
+            sessions: None,
+            auth: None,
+            session: Some(test_session()),
+            new_auth: None,
+        };
+        let requests = RequestProcessor::new(data.clone());
+        let mut body = json!({"UserId": user.id});
+        process_json(&mut body, &requests, &context).await.unwrap();
+        assert_eq!(body["UserId"], "upstream-recipient");
+        let urls = UrlProcessor::new(data.clone());
+        let mut url = url::Url::parse(&format!(
+            "http://localhost/Playlists/list/Users/{}?UserId={}",
+            user.id, user.id
+        ))
+        .unwrap();
+        urls.client_to_server_url(&mut url, &context.session, None, Some(server.id))
+            .await;
+        assert_eq!(url.path(), "/Playlists/list/Users/upstream-recipient");
+        assert_eq!(url.query(), Some("UserId=upstream-recipient"));
+        let mut body = json!({"UserId":"unknown"});
+        assert!(process_json(&mut body, &requests, &context)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("no mapping"));
+        assert!(urls
+            .upstream_user_id("unknown", &context.session, server.id)
+            .await
+            .is_err());
     }
 
     #[tokio::test]
@@ -341,7 +624,7 @@ mod tests {
             session: None,
             new_auth: None,
         };
-        let mut payload = json!({ "ItemId": aggregate_id });
+        let mut payload = json!({ "ItemId": aggregate_id, "Ids": [aggregate_id] });
 
         let response = process_json(&mut payload, &processor, &context)
             .await
@@ -349,5 +632,6 @@ mod tests {
 
         assert!(response.was_modified);
         assert_eq!(payload["ItemId"], "upstream-item");
+        assert_eq!(payload["Ids"], json!(["upstream-item"]));
     }
 }

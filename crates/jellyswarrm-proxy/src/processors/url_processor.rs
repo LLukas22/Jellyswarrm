@@ -17,6 +17,7 @@ pub static MEDIA_ID_PATH_TAGS: &[&str] = &[
     "Audio",
     "Shows",
     "Videos",
+    "Playlists",
     "PlayedItems",
     "FavoriteItems",
     "MediaSegments",
@@ -42,6 +43,9 @@ pub static MEDIA_ID_QUERY_TAGS: &[&str] = &[
     "SeasonId",
     "startItemId",
     "IDs",
+    "EntryIds",
+    "PlaylistItemId",
+    "PlaylistItemIds",
     "PersonIds",
     "ArtistIds",
     "ContributingArtistIds",
@@ -69,7 +73,8 @@ impl UrlProcessor {
         access_scope: Option<&VirtualLibraryAccessScope>,
         required_server_id: Option<ServerId>,
     ) {
-        self.replace_user_ids_in_path(url, session);
+        self.replace_user_ids_in_path(url, session, required_server_id)
+            .await;
         self.replace_media_ids_in_path(url, access_scope, required_server_id)
             .await;
 
@@ -78,7 +83,8 @@ impl UrlProcessor {
             .map(|(key, value)| (key.to_string(), value.to_string()))
             .collect();
 
-        self.replace_session_query_values(&mut pairs, session);
+        self.replace_session_query_values(&mut pairs, session, required_server_id)
+            .await;
         self.replace_media_ids_in_query(&mut pairs, access_scope, required_server_id)
             .await;
 
@@ -178,18 +184,93 @@ impl UrlProcessor {
         Ok(None)
     }
 
-    fn replace_user_ids_in_path(&self, url: &mut url::Url, session: &Option<AuthorizationSession>) {
-        let Some(session) = session else {
-            return;
-        };
+    pub async fn upstream_user_id(
+        &self,
+        user_id: &str,
+        session: &Option<AuthorizationSession>,
+        server_id: ServerId,
+    ) -> Result<String> {
+        if let Some(session) = session {
+            if user_id == session.user_id || user_id == session.original_user_id {
+                return Ok(session.original_user_id.clone());
+            }
+        }
+        self.data_context
+            .user_authorization
+            .get_user_sessions_by_user_id(user_id)
+            .await?
+            .and_then(|(_, sessions)| {
+                sessions
+                    .into_iter()
+                    .find(|(_, server)| server.id == server_id)
+                    .map(|(session, _)| session.original_user_id)
+            })
+            .ok_or_else(|| anyhow::anyhow!("Requested user has no mapping on the selected server"))
+    }
 
-        for &path_segment in USER_ID_PATH_TAGS {
-            if let Some(user_id) = contains_id(url, path_segment) {
-                debug!(
-                    "Replacing user ID in path: {} -> {}",
-                    user_id, session.original_user_id
-                );
-                *url = replace_id(url.clone(), &user_id, &session.original_user_id);
+    pub async fn validate_playlist_url(
+        &self,
+        url: &url::Url,
+        session: &Option<AuthorizationSession>,
+        scope: Option<&VirtualLibraryAccessScope>,
+        server_id: ServerId,
+    ) -> Result<()> {
+        if !url
+            .path_segments()
+            .is_some_and(|mut parts| parts.any(|p| p.eq_ignore_ascii_case("Playlists")))
+        {
+            return Ok(());
+        }
+        for tag in MEDIA_ID_PATH_TAGS {
+            if let Some(id) = contains_id(url, tag) {
+                if self
+                    .client_media_mapping(&id, scope, Some(server_id))
+                    .await
+                    .is_none()
+                {
+                    anyhow::bail!("Playlist ID is unavailable on the selected server; mixed-server playlists are unsupported");
+                }
+            }
+        }
+        for (key, value) in url.query_pairs() {
+            if matches_case_insensitive(&key, USER_ID_QUERY_TAGS) {
+                self.upstream_user_id(&value, session, server_id).await?;
+            }
+            if matches_case_insensitive(&key, MEDIA_ID_QUERY_TAGS) {
+                for id in value.split(',').map(str::trim).filter(|id| !id.is_empty()) {
+                    if self
+                        .client_media_mapping(id, scope, Some(server_id))
+                        .await
+                        .is_none()
+                    {
+                        anyhow::bail!("Playlist track or entry is unavailable on the selected server; mixed-server playlists are unsupported");
+                    }
+                }
+            }
+        }
+        // Validate even malformed recipient IDs: contains_id deliberately skips
+        // non-UUID path values, which must not bypass sharing validation.
+        let segments: Vec<_> = url.path_segments().into_iter().flatten().collect();
+        if let Some(pair) = segments
+            .windows(2)
+            .find(|pair| pair[0].eq_ignore_ascii_case("Users"))
+        {
+            self.upstream_user_id(pair[1], session, server_id).await?;
+        }
+        Ok(())
+    }
+
+    async fn replace_user_ids_in_path(
+        &self,
+        url: &mut url::Url,
+        session: &Option<AuthorizationSession>,
+        server_id: Option<ServerId>,
+    ) {
+        for &tag in USER_ID_PATH_TAGS {
+            if let (Some(user_id), Some(server_id)) = (contains_id(url, tag), server_id) {
+                if let Ok(upstream) = self.upstream_user_id(&user_id, session, server_id).await {
+                    *url = replace_id(url.clone(), &user_id, &upstream);
+                }
             }
         }
     }
@@ -216,18 +297,27 @@ impl UrlProcessor {
         }
     }
 
-    fn replace_session_query_values(
+    async fn replace_session_query_values(
         &self,
         pairs: &mut [(String, String)],
         session: &Option<AuthorizationSession>,
+        server_id: Option<ServerId>,
     ) {
+        let session_option = session;
         let Some(session) = session else {
             return;
         };
 
         for (name, value) in pairs {
             if matches_case_insensitive(name, USER_ID_QUERY_TAGS) {
-                *value = session.original_user_id.clone();
+                if let Some(server_id) = server_id {
+                    if let Ok(upstream) = self
+                        .upstream_user_id(value, session_option, server_id)
+                        .await
+                    {
+                        *value = upstream;
+                    }
+                }
             } else if matches_case_insensitive(name, API_KEY_QUERY_TAGS) {
                 *value = session.jellyfin_token.clone();
             }
@@ -861,5 +951,75 @@ mod tests {
             .unwrap();
 
         assert_eq!(selected.id, second.id);
+    }
+
+    #[tokio::test]
+    async fn playlist_path_and_entry_ids_are_remapped_to_upstream_ids() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let server_storage = ServerStorageService::new(pool.clone());
+        let server_id = server_storage
+            .add_server(
+                "Server",
+                "http://server.example",
+                100,
+                MediaStreamingMode::Redirect,
+            )
+            .await
+            .unwrap();
+        let server = server_storage
+            .get_server_by_id(server_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let media_storage = MediaStorageService::new(pool.clone());
+        let playlist = media_storage
+            .get_or_create_media_mapping("upstream-playlist", &server)
+            .await
+            .unwrap();
+        let entry = media_storage
+            .get_or_create_media_mapping("upstream-entry", &server)
+            .await
+            .unwrap();
+        let virtual_libraries =
+            VirtualLibraryService::new(pool.clone(), server_storage.clone(), media_storage.clone());
+        let processor = UrlProcessor::new(DataContext {
+            user_authorization: Arc::new(UserAuthorizationService::new(pool)),
+            server_storage: Arc::new(server_storage),
+            media_storage: Arc::new(media_storage),
+            virtual_library_service: Arc::new(virtual_libraries),
+            play_sessions: Arc::new(SessionStorage::new()),
+            config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
+        });
+
+        // Routing must find the owning server from the playlist path ID.
+        let url = url::Url::parse(&format!(
+            "http://localhost/Playlists/{}/Items?UserId=user",
+            playlist.virtual_media_id
+        ))
+        .unwrap();
+        let selected = processor
+            .server_from_client_url(&url, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(selected.id, server.id);
+
+        // Path and EntryIds query values must be rewritten to upstream IDs.
+        let mut url = url::Url::parse(&format!(
+            "http://localhost/Playlists/{}/Items?EntryIds={}",
+            playlist.virtual_media_id, entry.virtual_media_id
+        ))
+        .unwrap();
+        processor
+            .client_to_server_url(&mut url, &None, None, Some(server_id))
+            .await;
+        assert_eq!(url.path(), "/Playlists/upstream-playlist/Items");
+        assert_eq!(
+            url.query_pairs()
+                .find(|(key, _)| key.eq_ignore_ascii_case("EntryIds"))
+                .map(|(_, value)| value.into_owned()),
+            Some("upstream-entry".to_string())
+        );
     }
 }

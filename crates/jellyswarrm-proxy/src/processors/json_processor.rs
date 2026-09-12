@@ -217,6 +217,9 @@ fn parent_context_object(map: &Map<String, Value>) -> Option<Map<String, Value>>
         context.insert(key.clone(), value.clone());
     }
 
+    if let Some((_, value)) = map.iter().find(|(key, _)| key.eq_ignore_ascii_case("Type")) {
+        context.insert("Type".to_string(), value.clone());
+    }
     (!context.is_empty()).then_some(context)
 }
 

@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::{
     processors::{
-        field_matcher::{ID_FIELDS, SESSION_FIELDS, USER_FIELDS},
+        field_matcher::{ID_FIELDS, MEDIA_ID_LIST_PARENT_FIELDS, SESSION_FIELDS, USER_FIELDS},
         json_processor::{JsonAnalyzer, JsonProcessingContext},
     },
     server_storage::Server,
@@ -147,8 +147,13 @@ impl JsonAnalyzer<RequestAnalysisContext, RequestBodyAnalysisResult> for Request
                 }
             }
         }
-        // Check if this is an ID field (case-insensitive)
-        if ID_FIELDS.contains(&json_context.key) {
+        // Check if this is an ID field (case-insensitive). Media ID lists
+        // (e.g. `Ids`, `EntryIds`) carry one ID per array item, where the
+        // key is the array index, so match on the parent field instead.
+        if ID_FIELDS.contains(&json_context.key)
+            || (json_context.is_array_item
+                && MEDIA_ID_LIST_PARENT_FIELDS.contains(last_segment(&json_context.parent_path)))
+        {
             if let serde_json::Value::String(ref virtual_id) = value {
                 let server = self
                     .data_context
@@ -229,4 +234,11 @@ impl JsonAnalyzer<RequestAnalysisContext, RequestBodyAnalysisResult> for Request
         }
         Ok(None)
     }
+}
+
+fn last_segment(path: &str) -> &str {
+    path.rsplit('.')
+        .next()
+        .map(|segment| segment.split('[').next().unwrap_or(segment))
+        .unwrap_or(path)
 }

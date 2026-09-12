@@ -6,8 +6,9 @@ use crate::{
     processors::{
         field_matcher::{
             DELIVERY_URL_FIELDS, DISABLED_BOOL_FIELDS, MEDIA_ID_ARRAY_FIELDS,
-            MEDIA_ID_MAP_KEY_FIELDS, MEDIA_ID_MAP_VALUE_FIELDS, MEDIA_ID_NESTED_MAP_KEY_FIELDS,
-            NAME_FIELDS, RESPONSE_MEDIA_ID_FIELDS, SERVER_ID_FIELDS,
+            MEDIA_ID_LIST_PARENT_FIELDS, MEDIA_ID_MAP_KEY_FIELDS, MEDIA_ID_MAP_VALUE_FIELDS,
+            MEDIA_ID_NESTED_MAP_KEY_FIELDS, NAME_FIELDS, RESPONSE_MEDIA_ID_FIELDS,
+            SERVER_ID_FIELDS,
         },
         json_processor::{JsonProcessingContext, JsonProcessingResult, JsonProcessor},
         url_processor::UrlProcessor,
@@ -91,7 +92,8 @@ impl JsonProcessor<ResponseProcessingContext> for ResponseProcessor {
 
         if context.rewrites_media_fields()
             && json_context.is_array_item
-            && MEDIA_ID_ARRAY_FIELDS.contains(last_segment(&json_context.parent_path))
+            && (MEDIA_ID_ARRAY_FIELDS.contains(last_segment(&json_context.parent_path))
+                || MEDIA_ID_LIST_PARENT_FIELDS.contains(last_segment(&json_context.parent_path)))
         {
             if let Some(id) = value.as_str().map(str::to_string) {
                 match self.virtual_media_id(&id, &context.server).await {
@@ -168,7 +170,15 @@ impl JsonProcessor<ResponseProcessingContext> for ResponseProcessor {
         } else if context.rewrites_media_fields()
             && DISABLED_BOOL_FIELDS.contains(&json_context.key)
         {
-            if value.is_boolean() {
+            let is_playlist = json_context
+                .parent_object
+                .as_ref()
+                .and_then(|object| object.get("Type"))
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind.eq_ignore_ascii_case("Playlist"));
+            if value.is_boolean()
+                && !(json_context.key.eq_ignore_ascii_case("CanDelete") && is_playlist)
+            {
                 *value = Value::Bool(false);
                 result = result.mark_modified();
             }
