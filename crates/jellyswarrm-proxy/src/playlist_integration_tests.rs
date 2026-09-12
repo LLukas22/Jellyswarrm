@@ -388,6 +388,22 @@ async fn sharing_http_requests_map_recipient_without_changing_caller_auth() {
         .status(),
         StatusCode::NO_CONTENT
     );
+    Mock::given(method("DELETE"))
+        .and(path("/Playlists/playlist/Users/recipient-0"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&f.upstreams[0])
+        .await;
+    assert_eq!(
+        f.request(
+            Method::DELETE,
+            &format!("/Playlists/{playlist}/Users/{}", recipient.id),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
     let requests = f.upstreams[0].received_requests().await.unwrap();
     for request in requests.iter().filter(|r| r.url.path().contains("/Users")) {
         let auth = request

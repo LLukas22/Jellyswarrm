@@ -180,7 +180,14 @@ control whether the caller can delete or share a playlist.
 
 The Jellyfin 12 Docker fixture currently returns the song ID as `PlaylistItemId`
 for duplicate songs. Those copies cannot be addressed independently through
-that upstream API. The Docker regression
-`saved_playlist_duplicate_songs_have_independently_addressable_entries`
-exposes this limitation; the mock HTTP suite separately verifies preservation
-of distinct upstream entry IDs.
+that upstream API. The Docker test
+`saved_playlist_duplicate_songs_preserve_upstream_entry_semantics`
+compares proxy behavior with direct Jellyfin responses and verifies removal of
+all copies. The mock HTTP suite separately requires preservation of distinct
+upstream entry IDs.
+
+Jellyfin 12 may also return success when deleting a playlist share without
+removing it. The live test checks the same operation directly upstream before
+accepting this limitation, then verifies revocation through a full playlist
+update (`POST /Playlists/{id}` with `{"Users":[]}`). The proxy does not
+silently apply this workaround to DELETE requests.
