@@ -148,6 +148,54 @@ async fn user_can_login_browse_merged_libraries_and_stream_mapped_media() -> Res
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker and the Git LFS media fixtures"]
+async fn saved_playlists_support_lifecycle_sharing_and_reject_mixed_servers() -> Result<()> {
+    run_saved_playlist_test(false).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker and Git LFS; exposes duplicate-entry IDs in Jellyfin 12"]
+async fn saved_playlist_duplicate_songs_have_independently_addressable_entries() -> Result<()> {
+    run_saved_playlist_test(true).await
+}
+
+async fn run_saved_playlist_test(duplicate_song: bool) -> Result<()> {
+    let fixture = ServerFixture::start(false).await?;
+    let client = &fixture.client;
+    let base_url = &fixture.proxy_url;
+    let login = success_json(login(client, base_url, PASSWORD).await?).await?;
+    let token = required_string(&login, "/AccessToken")?;
+    let user_id = required_string(&login, "/User/Id")?;
+    let views = wait_for_views(client, base_url, user_id, token).await?;
+    let music = wait_for_library_items(
+        client,
+        base_url,
+        user_id,
+        token,
+        &views,
+        ("Music", "Audio", &["01 - Aria", "01 - Death Valley Waltz"]),
+    )
+    .await?;
+    let upstreams = upstream_urls(&fixture._compose).await?;
+    let music_upstream = &upstreams
+        .iter()
+        .find(|(name, _, _)| *name == "Music 1")
+        .context("missing Music 1")?
+        .1;
+    verify_saved_playlist(
+        client,
+        base_url,
+        user_id,
+        token,
+        &music,
+        music_upstream,
+        duplicate_song,
+    )
+    .await
+    .context("saved playlist lifecycle failed")
+}
+
 // Show merging with Jellyfin v12 multi-versions: with deduplicate_media
 // enabled, "One Step Beyond" exists on both tv servers (same Tvdb ids via the
 // .nfo fixtures) and must collapse into a single series whose shared season
@@ -1208,6 +1256,238 @@ async fn verify_playback_source(
         bytes.windows(4).any(|window| window == b"ftyp"),
         "stream does not begin with an MP4 file header"
     );
+    Ok(())
+}
+
+// Exercise persisted Jellyfin state as well as proxy translation. The fixture
+// puts Aria on Music 1 and Death Valley Waltz on Music 2.
+async fn verify_saved_playlist(
+    client: &Client,
+    base_url: &str,
+    user_id: &str,
+    token: &str,
+    music: &Value,
+    music_upstream: &str,
+    duplicate_song: bool,
+) -> Result<()> {
+    let song = item_id_named(music, "01 - Aria")?;
+    let added_song = if duplicate_song {
+        song
+    } else {
+        item_id_named(music, "02 - Variatio 1 a 1 Clav")?
+    };
+    let foreign_song = item_id_named(music, "01 - Death Valley Waltz")?;
+    let created = success_json(authenticated(client.post(format!("{base_url}/Playlists"))
+        .json(&json!({"Name":"Integration saved playlist", "MediaType":"Audio", "Ids":[song], "UserId":user_id})), token)
+        .send().await?).await?;
+    let playlist = required_string(&created, "/Id")?;
+    let playlist_url = format!("{base_url}/Playlists/{playlist}");
+    let entries_url = format!("{playlist_url}/Items");
+    let read = || {
+        authenticated(
+            client.get(&entries_url).query(&[("UserId", user_id)]),
+            token,
+        )
+        .send()
+    };
+    let initial = success_json(read().await?).await?;
+    assert_eq!(items(&initial)?.len(), 1);
+    assert_eq!(items(&initial)?[0]["Id"], song);
+
+    success_text(
+        authenticated(
+            client
+                .post(&entries_url)
+                .query(&[("Ids", added_song), ("UserId", user_id)]),
+            token,
+        )
+        .send()
+        .await?,
+    )
+    .await?;
+    let duplicated = success_json(read().await?).await?;
+    let entries = items(&duplicated)?;
+    assert_eq!(entries.len(), 2, "adding a song must retain both entries");
+    assert_eq!(entries[0]["Id"], song);
+    assert_eq!(entries[1]["Id"], added_song);
+    let first = required_string(&entries[0], "/PlaylistItemId")?;
+    let second = required_string(&entries[1], "/PlaylistItemId")?;
+    if first == second {
+        let upstream_login = success_json(
+            login_as(client, music_upstream, "admin", "password", AUTHORIZATION).await?,
+        )
+        .await
+        .context("direct upstream login")?;
+        let upstream_token = required_string(&upstream_login, "/AccessToken")?;
+        let playlists = success_json(
+            client
+                .get(format!("{music_upstream}/Items"))
+                .header(
+                    "Authorization",
+                    format!("{AUTHORIZATION}, Token=\"{upstream_token}\""),
+                )
+                .query(&[("Recursive", "true"), ("IncludeItemTypes", "Playlist")])
+                .send()
+                .await?,
+        )
+        .await
+        .context("direct playlist lookup")?;
+        let original_playlist = item_id_named(&playlists, "Integration saved playlist")?;
+        let original_entries = success_json(
+            client
+                .get(format!(
+                    "{music_upstream}/Playlists/{original_playlist}/Items"
+                ))
+                .header(
+                    "Authorization",
+                    format!("{AUTHORIZATION}, Token=\"{upstream_token}\""),
+                )
+                .send()
+                .await?,
+        )
+        .await
+        .context("direct playlist entries")?;
+        let upstream_ids: Vec<_> = items(&original_entries)?
+            .iter()
+            .map(|item| item["PlaylistItemId"].clone())
+            .collect();
+        bail!("duplicate songs cannot be addressed independently: proxy entry IDs are [{first}, {second}]; direct Jellyfin entry IDs are {upstream_ids:?}");
+    }
+    success_text(
+        authenticated(client.post(format!("{entries_url}/{second}/Move/0")), token)
+            .send()
+            .await?,
+    )
+    .await?;
+    let reordered = success_json(read().await?).await?;
+    assert_eq!(items(&reordered)?[0]["PlaylistItemId"], second);
+    assert_eq!(items(&reordered)?[1]["PlaylistItemId"], first);
+
+    for (url, body) in [
+        (
+            format!("{base_url}/Playlists"),
+            Some(
+                json!({"Name":"Unsupported mixed playlist", "MediaType":"Audio", "Ids":[song, foreign_song], "UserId":user_id}),
+            ),
+        ),
+        (
+            format!(
+                "{base_url}/Playlists?Name=Unsupported&Ids={song},{foreign_song}&UserId={user_id}"
+            ),
+            None,
+        ),
+        (
+            format!("{entries_url}?Ids={foreign_song}&UserId={user_id}"),
+            None,
+        ),
+        (entries_url.clone(), Some(json!({"Ids":[foreign_song]}))),
+    ] {
+        let mut request = authenticated(client.post(url), token);
+        if let Some(body) = body {
+            request = request.json(&body);
+        }
+        let response = request.send().await?;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(response
+            .text()
+            .await?
+            .contains("mixed-server playlists are unsupported"));
+    }
+    let unchanged = success_json(read().await?).await?;
+    assert_eq!(
+        items(&unchanged)?.len(),
+        2,
+        "rejected adds must leave saved state unchanged"
+    );
+    assert_eq!(items(&unchanged)?[0]["PlaylistItemId"], second);
+    assert_eq!(items(&unchanged)?[1]["PlaylistItemId"], first);
+
+    // Log in a different fixture user so the proxy has their target-server mapping.
+    let recipient =
+        success_json(login_as(client, base_url, "admin", "password", AUTHORIZATION).await?).await?;
+    let recipient_id = required_string(&recipient, "/User/Id")?;
+    assert_ne!(recipient_id, user_id);
+    let users_url = format!("{playlist_url}/Users");
+    let before_share =
+        success_json(authenticated(client.get(&users_url), token).send().await?).await?;
+    success_text(
+        authenticated(
+            client
+                .post(format!("{users_url}/{recipient_id}"))
+                .json(&json!({"CanEdit":true})),
+            token,
+        )
+        .send()
+        .await?,
+    )
+    .await?;
+    let shared = success_json(authenticated(client.get(&users_url), token).send().await?).await?;
+    assert_eq!(
+        shared
+            .as_array()
+            .context("playlist users must be an array")?
+            .len(),
+        before_share
+            .as_array()
+            .context("playlist users must be an array")?
+            .len()
+            + 1,
+        "sharing must add the recipient rather than update the owner"
+    );
+    success_text(
+        authenticated(client.delete(format!("{users_url}/{recipient_id}")), token)
+            .send()
+            .await?,
+    )
+    .await?;
+    let unshared = success_json(authenticated(client.get(&users_url), token).send().await?).await?;
+    let sharing_was_removed = unshared == before_share;
+
+    success_text(
+        authenticated(
+            client.delete(&entries_url).query(&[("EntryIds", second)]),
+            token,
+        )
+        .send()
+        .await?,
+    )
+    .await?;
+    let removed = success_json(read().await?).await?;
+    assert_eq!(items(&removed)?.len(), 1);
+    assert_eq!(items(&removed)?[0]["Id"], song);
+    assert_eq!(
+        items(&removed)?[0]["PlaylistItemId"],
+        first,
+        "removing one duplicate must preserve the other entry"
+    );
+    let detail = success_json(
+        authenticated(
+            client
+                .get(format!("{base_url}/Users/{user_id}/Items/{playlist}"))
+                .query(&[("Fields", "CanDelete")]),
+            token,
+        )
+        .send()
+        .await?,
+    )
+    .await?;
+    assert_eq!(detail["CanDelete"], true);
+    success_text(
+        authenticated(client.delete(format!("{base_url}/Items/{playlist}")), token)
+            .send()
+            .await?,
+    )
+    .await?;
+    let deleted = authenticated(
+        client.get(format!("{base_url}/Users/{user_id}/Items/{playlist}")),
+        token,
+    )
+    .send()
+    .await?;
+    assert_eq!(deleted.status(), StatusCode::NOT_FOUND);
+    if !sharing_was_removed {
+        bail!("removing the sharing recipient returned success but persisted users were {unshared}; expected {before_share}");
+    }
     Ok(())
 }
 

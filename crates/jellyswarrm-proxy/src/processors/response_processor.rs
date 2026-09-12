@@ -170,7 +170,15 @@ impl JsonProcessor<ResponseProcessingContext> for ResponseProcessor {
         } else if context.rewrites_media_fields()
             && DISABLED_BOOL_FIELDS.contains(&json_context.key)
         {
-            if value.is_boolean() {
+            let is_playlist = json_context
+                .parent_object
+                .as_ref()
+                .and_then(|object| object.get("Type"))
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind.eq_ignore_ascii_case("Playlist"));
+            if value.is_boolean()
+                && !(json_context.key.eq_ignore_ascii_case("CanDelete") && is_playlist)
+            {
                 *value = Value::Bool(false);
                 result = result.mark_modified();
             }

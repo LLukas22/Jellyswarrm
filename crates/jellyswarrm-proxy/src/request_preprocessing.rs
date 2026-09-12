@@ -414,6 +414,12 @@ pub async fn preprocess_request(req: Request, state: &AppState) -> Result<Prepro
         None => None,
     };
 
+    state
+        .processors
+        .url_processor
+        .validate_playlist_url(request.url(), &session, access_scope.as_ref(), server.id)
+        .await?;
+
     let new_auth = remap_authorization(&auth, &session).await?;
 
     apply_to_request(

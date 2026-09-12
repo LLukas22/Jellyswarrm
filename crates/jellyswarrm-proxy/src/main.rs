@@ -240,7 +240,7 @@ impl ProxyProcessors {
         request: &mut reqwest::Request,
         context: &RequestProcessingContext,
         request_url: &url::Url,
-    ) -> Result<(), StatusCode> {
+    ) -> Result<(), (StatusCode, String)> {
         let Some(mut json_value) = body_to_json(request) else {
             return Ok(());
         };
@@ -249,12 +249,16 @@ impl ProxyProcessors {
             .await
             .map_err(|e| {
                 error!("Failed to process JSON body: {}", e);
-                StatusCode::BAD_REQUEST
+                (
+                    StatusCode::BAD_REQUEST,
+                    client_request_error(&e).to_string(),
+                )
             })?;
 
         if response.was_modified {
             debug!("Modified JSON body for request to {}", request_url);
-            set_json_body(request, &response.data)?;
+            set_json_body(request, &response.data)
+                .map_err(|status| (status, "Failed to serialize request".to_string()))?;
         }
 
         Ok(())
@@ -642,7 +646,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "/Latest",
                         get(handlers::federated::get_items_from_all_servers_if_not_restricted),
                     )
-                    .route("/{item_id}", get(handlers::items::get_item))
+                    .route("/{item_id}", item_detail_routes())
                     .route("/{item_id}/Similar", get(handlers::items::get_items))
                     .route("/{item_id}/LocalTrailers", get(handlers::items::get_items))
                     .route(
@@ -924,6 +928,18 @@ async fn index_handler(
     }
 }
 
+// Only expose actionable validation messages; database and transport details stay in logs.
+fn client_request_error(error: &anyhow::Error) -> &'static str {
+    let message = error.to_string();
+    if message.contains("mixed-server playlists are unsupported") {
+        "Playlist track or entry is unavailable on the selected server; mixed-server playlists are unsupported"
+    } else if message.contains("Requested user has no mapping on the selected server") {
+        "Requested user has no mapping on the selected server"
+    } else {
+        "Invalid proxy request"
+    }
+}
+
 #[axum::debug_handler]
 async fn proxy_handler(
     State(state): State<AppState>,
@@ -950,10 +966,13 @@ async fn proxy_handler(
             });
     }
 
-    let preprocessed = preprocess_request(req, &state).await.map_err(|e| {
-        error!("Failed to preprocess request: {}", e);
-        StatusCode::BAD_REQUEST
-    })?;
+    let preprocessed = match preprocess_request(req, &state).await {
+        Ok(request) => request,
+        Err(error) => {
+            error!("Failed to preprocess request: {}", error);
+            return Ok((StatusCode::BAD_REQUEST, client_request_error(&error)).into_response());
+        }
+    };
 
     let request_url = preprocessed.request.url().clone();
     let pending_playback_session_update = preprocessed.pending_playback_session_update.clone();
@@ -972,10 +991,13 @@ async fn proxy_handler(
 
     let request_processing_context = RequestProcessingContext::new(&preprocessed);
     let mut request = preprocessed.request;
-    state
+    if let Err(error) = state
         .processors
         .process_request_body(&mut request, &request_processing_context, &request_url)
-        .await?;
+        .await
+    {
+        return Ok(error.into_response());
+    }
     let response = state.reqwest_client.execute(request).await.map_err(|e| {
         error!("Failed to execute proxy request: {}", e);
         StatusCode::BAD_GATEWAY
@@ -1200,3 +1222,11 @@ mod web_asset_path_tests {
         );
     }
 }
+
+// Shared with HTTP integration tests so DELETE coverage exercises the production route.
+fn item_detail_routes() -> axum::routing::MethodRouter<AppState> {
+    get(handlers::items::get_item).delete(proxy_handler)
+}
+
+#[cfg(test)]
+mod playlist_integration_tests;
