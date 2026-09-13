@@ -9,12 +9,15 @@ use tokio::time::{sleep, Duration};
 use tracing::{debug, info};
 use uuid::Uuid;
 
+use crate::sessions::transport::ConnectionHub;
+pub(crate) use crate::sessions::SessionContext;
+#[cfg(test)]
 use crate::user_authorization_service::User;
 
 use super::models::{
     GroupInfoDto, GroupParticipant, GroupStateType, GroupStateUpdate, GroupUpdateEnvelope,
-    GroupUpdateType, OutboundWebSocketMessage, PlayQueueUpdate, PlayQueueUpdateReason,
-    SendCommandEnvelope, SendCommandType, SyncPlayGroup,
+    GroupUpdateType, PlayQueueUpdate, PlayQueueUpdateReason, SendCommandEnvelope, SendCommandType,
+    SyncPlayGroup,
 };
 
 pub(crate) const DEFAULT_PING_MS: i64 = 500;
@@ -24,8 +27,7 @@ const WEBSOCKET_DISCONNECT_GRACE: Duration = Duration::from_secs(30);
 pub(super) struct SyncPlayState {
     groups: HashMap<Uuid, SyncPlayGroup>,
     session_to_group: HashMap<String, Uuid>,
-    ws_connections: HashMap<String, mpsc::UnboundedSender<String>>,
-    ws_connection_ids: HashMap<String, Uuid>,
+    transport: ConnectionHub,
     disconnect_grace_ids: HashMap<String, Uuid>,
 }
 
@@ -37,20 +39,7 @@ impl SyncPlayState {
         msg_type: &'static str,
         data: &T,
     ) {
-        let Some(tx) = self.ws_connections.get(session_id).cloned() else {
-            return;
-        };
-        let payload = OutboundWebSocketMessage {
-            message_type: msg_type,
-            message_id: Uuid::new_v4(),
-            data,
-        };
-        if let Ok(text) = serde_json::to_string(&payload) {
-            if tx.send(text).is_err() {
-                self.ws_connections.remove(session_id);
-                self.ws_connection_ids.remove(session_id);
-            }
-        }
+        let _ = self.transport.send(session_id, msg_type, data);
     }
 
     /// Send a group-update envelope to specific sessions.
@@ -218,12 +207,6 @@ pub struct SyncPlayService {
     state: Arc<RwLock<SyncPlayState>>,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct SessionContext {
-    pub user: User,
-    pub session_id: String,
-}
-
 impl SyncPlayGroup {
     fn all_ready(&self) -> bool {
         self.participants
@@ -233,23 +216,58 @@ impl SyncPlayGroup {
 }
 
 impl SyncPlayService {
+    #[cfg(test)]
     pub fn new() -> Self {
+        Self::with_transport(ConnectionHub::default())
+    }
+
+    pub fn with_transport(transport: ConnectionHub) -> Self {
         Self {
-            state: Arc::new(RwLock::new(SyncPlayState::default())),
+            state: Arc::new(RwLock::new(SyncPlayState {
+                transport,
+                ..Default::default()
+            })),
         }
     }
 
-    pub(super) async fn register_websocket(
+    pub(crate) async fn end_session(&self, session_id: &str) {
+        let mut state = self.state.write().await;
+        state.transport.remove(session_id);
+        state.disconnect_grace_ids.remove(session_id);
+        Self::leave_locked(&mut state, session_id);
+    }
+
+    /// Serialize the membership check and enqueue against group joins/mutations.
+    pub(crate) async fn send_remote_command(
+        &self,
+        session_id: &str,
+        message_type: &str,
+        data: &Value,
+        playback_mutation: bool,
+    ) -> Result<(), axum::http::StatusCode> {
+        let state = self.state.read().await;
+        if playback_mutation && state.session_to_group.contains_key(session_id) {
+            return Err(axum::http::StatusCode::CONFLICT);
+        }
+        state.transport.send(session_id, message_type, data)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn is_group_member(&self, session_id: &str) -> bool {
+        self.state
+            .read()
+            .await
+            .session_to_group
+            .contains_key(session_id)
+    }
+
+    pub(crate) async fn register_websocket(
         &self,
         session_id: String,
-        tx: mpsc::UnboundedSender<String>,
+        tx: mpsc::Sender<String>,
     ) -> Uuid {
         let mut state = self.state.write().await;
-        let connection_id = Uuid::new_v4();
-        state.ws_connections.insert(session_id.clone(), tx);
-        state
-            .ws_connection_ids
-            .insert(session_id.clone(), connection_id);
+        let connection_id = state.transport.register(session_id.clone(), tx);
         state.disconnect_grace_ids.remove(&session_id);
         debug!(session_id = %session_id, "Registered SyncPlay websocket");
         state.send_to_session(&session_id, "ForceKeepAlive", &15_u64);
@@ -299,18 +317,16 @@ impl SyncPlayService {
         connection_id
     }
 
-    pub(super) async fn unregister_websocket_with_grace(
+    pub(crate) async fn unregister_websocket_with_grace(
         &self,
         session_id: String,
         connection_id: Uuid,
     ) {
         {
             let mut state = self.state.write().await;
-            if state.ws_connection_ids.get(&session_id) != Some(&connection_id) {
+            if !state.transport.unregister(&session_id, connection_id) {
                 return;
             }
-            state.ws_connection_ids.remove(&session_id);
-            state.ws_connections.remove(&session_id);
             let disconnect_grace_id = Uuid::new_v4();
             state
                 .disconnect_grace_ids
@@ -338,7 +354,7 @@ impl SyncPlayService {
 
     async fn leave_if_still_disconnected(&self, session_id: &str, disconnect_grace_id: Uuid) {
         let mut state = self.state.write().await;
-        if state.ws_connections.contains_key(session_id) {
+        if state.transport.is_connected(session_id) {
             return;
         }
         if state.disconnect_grace_ids.get(session_id) != Some(&disconnect_grace_id) {
@@ -349,13 +365,9 @@ impl SyncPlayService {
         Self::leave_locked(&mut state, session_id);
     }
 
-    pub(super) async fn send_keepalive(&self, session_id: &str) {
-        let mut state = self.state.write().await;
-        state.send_to_session(session_id, "KeepAlive", &Value::Null);
-    }
-
     fn make_participant(session: &SessionContext, is_buffering: bool) -> GroupParticipant {
         GroupParticipant {
+            user_id: session.user.id.clone(),
             user_name: session.user.original_username.clone(),
             ping: DEFAULT_PING_MS as u64,
             is_buffering,
@@ -372,7 +384,7 @@ impl SyncPlayService {
     ) -> Option<GroupInfoDto> {
         let group_id = Uuid::new_v4();
         let mut state = self.state.write().await;
-        if !state.ws_connections.contains_key(&session.session_id) {
+        if !state.transport.is_connected(&session.session_id) {
             return None;
         }
         Self::leave_locked(&mut state, &session.session_id);
@@ -426,7 +438,7 @@ impl SyncPlayService {
         expected_queue_item_ids: Option<Vec<String>>,
     ) -> bool {
         let mut state = self.state.write().await;
-        if !state.ws_connections.contains_key(&session.session_id) {
+        if !state.transport.is_connected(&session.session_id) {
             return false;
         }
         Self::leave_locked(&mut state, &session.session_id);
@@ -636,7 +648,7 @@ mod tests {
         }
     }
 
-    async fn recv_json(rx: &mut mpsc::UnboundedReceiver<String>) -> serde_json::Value {
+    async fn recv_json(rx: &mut mpsc::Receiver<String>) -> serde_json::Value {
         let msg = timeout(Duration::from_millis(1000), rx.recv())
             .await
             .expect("timed out waiting for websocket message")
@@ -644,10 +656,7 @@ mod tests {
         serde_json::from_str(&msg).expect("invalid json message")
     }
 
-    async fn recv_many(
-        rx: &mut mpsc::UnboundedReceiver<String>,
-        max: usize,
-    ) -> Vec<serde_json::Value> {
+    async fn recv_many(rx: &mut mpsc::Receiver<String>, max: usize) -> Vec<serde_json::Value> {
         let mut out = Vec::new();
         for _ in 0..max {
             match timeout(Duration::from_millis(150), rx.recv()).await {
@@ -666,8 +675,8 @@ mod tests {
         let s1 = make_session(make_user("u1", "alice"), "web");
         let s2 = make_session(make_user("u2", "bob"), "tv");
 
-        let (tx1, _rx1) = mpsc::unbounded_channel::<String>();
-        let (tx2, _rx2) = mpsc::unbounded_channel::<String>();
+        let (tx1, _rx1) = mpsc::channel::<String>(64);
+        let (tx2, _rx2) = mpsc::channel::<String>(64);
         service.register_websocket(s1.session_id.clone(), tx1).await;
         service.register_websocket(s2.session_id.clone(), tx2).await;
 
@@ -705,7 +714,7 @@ mod tests {
     async fn test_queue_media_ids_and_playlist_ids() {
         let service = SyncPlayService::new();
         let s1 = make_session(make_user("u1", "alice"), "web");
-        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        let (tx, _rx) = mpsc::channel::<String>(64);
         service.register_websocket(s1.session_id.clone(), tx).await;
         let group = service
             .create_group(&s1, "party".to_string())
@@ -745,7 +754,7 @@ mod tests {
     async fn test_websocket_envelopes_for_commands_and_updates() {
         let service = SyncPlayService::new();
         let s1 = make_session(make_user("u1", "alice"), "web");
-        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let (tx, mut rx) = mpsc::channel::<String>(64);
 
         service.register_websocket(s1.session_id.clone(), tx).await;
         let keepalive = recv_json(&mut rx).await;
@@ -797,7 +806,7 @@ mod tests {
     async fn test_not_in_group_update_is_emitted() {
         let service = SyncPlayService::new();
         let s1 = make_session(make_user("u1", "alice"), "web");
-        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let (tx, mut rx) = mpsc::channel::<String>(64);
 
         service.register_websocket(s1.session_id.clone(), tx).await;
         let _ = recv_json(&mut rx).await;
@@ -814,7 +823,7 @@ mod tests {
     async fn test_group_scoped_notification_uses_current_group_id() {
         let service = SyncPlayService::new();
         let s1 = make_session(make_user("u1", "alice"), "web");
-        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let (tx, mut rx) = mpsc::channel::<String>(64);
 
         service.register_websocket(s1.session_id.clone(), tx).await;
         let _ = recv_json(&mut rx).await;
@@ -846,7 +855,7 @@ mod tests {
     async fn test_websocket_disconnect_keeps_group_during_grace() {
         let service = SyncPlayService::new();
         let s1 = make_session(make_user("u1", "alice"), "web");
-        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let (tx, mut rx) = mpsc::channel::<String>(64);
 
         let connection_id = service.register_websocket(s1.session_id.clone(), tx).await;
         let _ = recv_json(&mut rx).await;
@@ -870,8 +879,8 @@ mod tests {
     async fn test_stale_websocket_close_does_not_unregister_reconnect() {
         let service = SyncPlayService::new();
         let s1 = make_session(make_user("u1", "alice"), "web");
-        let (tx1, mut rx1) = mpsc::unbounded_channel::<String>();
-        let (tx2, mut rx2) = mpsc::unbounded_channel::<String>();
+        let (tx1, mut rx1) = mpsc::channel::<String>(64);
+        let (tx2, mut rx2) = mpsc::channel::<String>(64);
 
         let old_connection_id = service.register_websocket(s1.session_id.clone(), tx1).await;
         let _ = recv_json(&mut rx1).await;
@@ -885,7 +894,13 @@ mod tests {
         service
             .unregister_websocket_with_grace(s1.session_id.clone(), old_connection_id)
             .await;
-        service.send_keepalive(&s1.session_id).await;
+        service
+            .state
+            .read()
+            .await
+            .transport
+            .send(&s1.session_id, "KeepAlive", &Value::Null)
+            .unwrap();
 
         let messages = recv_many(&mut rx2, 6).await;
         assert!(messages.iter().any(|m| m["MessageType"] == "KeepAlive"));
@@ -899,8 +914,8 @@ mod tests {
     async fn test_stale_disconnect_grace_does_not_remove_later_disconnect() {
         let service = SyncPlayService::new();
         let s1 = make_session(make_user("u1", "alice"), "web");
-        let (tx1, mut rx1) = mpsc::unbounded_channel::<String>();
-        let (tx2, mut rx2) = mpsc::unbounded_channel::<String>();
+        let (tx1, mut rx1) = mpsc::channel::<String>(64);
+        let (tx2, mut rx2) = mpsc::channel::<String>(64);
 
         let first_connection_id = service.register_websocket(s1.session_id.clone(), tx1).await;
         let _ = recv_json(&mut rx1).await;
@@ -941,8 +956,8 @@ mod tests {
     async fn test_reconnect_receives_group_and_queue_snapshot() {
         let service = SyncPlayService::new();
         let s1 = make_session(make_user("u1", "alice"), "web");
-        let (tx1, mut rx1) = mpsc::unbounded_channel::<String>();
-        let (tx2, mut rx2) = mpsc::unbounded_channel::<String>();
+        let (tx1, mut rx1) = mpsc::channel::<String>(64);
+        let (tx2, mut rx2) = mpsc::channel::<String>(64);
 
         service.register_websocket(s1.session_id.clone(), tx1).await;
         let _ = recv_json(&mut rx1).await;
@@ -977,8 +992,8 @@ mod tests {
         let service = SyncPlayService::new();
         let s1 = make_session(make_user("u1", "alice"), "web");
         let s2 = make_session(make_user("u2", "bob"), "tv");
-        let (tx1, mut rx1) = mpsc::unbounded_channel::<String>();
-        let (tx2, mut rx2) = mpsc::unbounded_channel::<String>();
+        let (tx1, mut rx1) = mpsc::channel::<String>(64);
+        let (tx2, mut rx2) = mpsc::channel::<String>(64);
 
         let s1_connection_id = service.register_websocket(s1.session_id.clone(), tx1).await;
         service.register_websocket(s2.session_id.clone(), tx2).await;
@@ -1029,8 +1044,8 @@ mod tests {
         let service = SyncPlayService::new();
         let s1 = make_session(make_user("u1", "alice"), "web");
         let s2 = make_session(make_user("u2", "bob"), "tv");
-        let (tx1, mut rx1) = mpsc::unbounded_channel::<String>();
-        let (tx2, mut rx2) = mpsc::unbounded_channel::<String>();
+        let (tx1, mut rx1) = mpsc::channel::<String>(64);
+        let (tx2, mut rx2) = mpsc::channel::<String>(64);
 
         service.register_websocket(s1.session_id.clone(), tx1).await;
         service.register_websocket(s2.session_id.clone(), tx2).await;
@@ -1080,8 +1095,8 @@ mod tests {
         let s1 = make_session(make_user("u1", "alice"), "web");
         let s2 = make_session(make_user("u2", "bob"), "tv");
 
-        let (tx1, mut rx1) = mpsc::unbounded_channel::<String>();
-        let (tx2, mut rx2) = mpsc::unbounded_channel::<String>();
+        let (tx1, mut rx1) = mpsc::channel::<String>(64);
+        let (tx2, mut rx2) = mpsc::channel::<String>(64);
         service.register_websocket(s1.session_id.clone(), tx1).await;
         service.register_websocket(s2.session_id.clone(), tx2).await;
         let _ = recv_json(&mut rx1).await;
@@ -1165,8 +1180,8 @@ mod tests {
         let s1 = make_session(make_user("u1", "alice"), "web");
         let s2 = make_session(make_user("u2", "bob"), "tv");
 
-        let (tx1, mut rx1) = mpsc::unbounded_channel::<String>();
-        let (tx2, mut rx2) = mpsc::unbounded_channel::<String>();
+        let (tx1, mut rx1) = mpsc::channel::<String>(64);
+        let (tx2, mut rx2) = mpsc::channel::<String>(64);
         service.register_websocket(s1.session_id.clone(), tx1).await;
         service.register_websocket(s2.session_id.clone(), tx2).await;
         let _ = recv_json(&mut rx1).await;
@@ -1205,8 +1220,8 @@ mod tests {
         let s1 = make_session(make_user("u1", "alice"), "web");
         let s2 = make_session(make_user("u2", "bob"), "tv");
 
-        let (tx1, mut rx1) = mpsc::unbounded_channel::<String>();
-        let (tx2, mut rx2) = mpsc::unbounded_channel::<String>();
+        let (tx1, mut rx1) = mpsc::channel::<String>(64);
+        let (tx2, mut rx2) = mpsc::channel::<String>(64);
         service.register_websocket(s1.session_id.clone(), tx1).await;
         service.register_websocket(s2.session_id.clone(), tx2).await;
         let _ = recv_json(&mut rx1).await;
@@ -1240,7 +1255,7 @@ mod tests {
     async fn test_empty_queue_snapshot_uses_minus_one_playing_item_index() {
         let service = SyncPlayService::new();
         let s1 = make_session(make_user("u1", "alice"), "web");
-        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let (tx, mut rx) = mpsc::channel::<String>(64);
 
         service.register_websocket(s1.session_id.clone(), tx).await;
         let _ = recv_json(&mut rx).await;
@@ -1294,7 +1309,7 @@ mod tests {
         let s1 = make_session(make_user("u1", "alice"), "web");
         let s2 = make_session(make_user("u2", "bob"), "tv");
 
-        let (tx1, _rx1) = mpsc::unbounded_channel::<String>();
+        let (tx1, _rx1) = mpsc::channel::<String>(64);
         service.register_websocket(s1.session_id.clone(), tx1).await;
 
         let group = service

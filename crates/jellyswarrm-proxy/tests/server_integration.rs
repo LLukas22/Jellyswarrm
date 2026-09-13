@@ -1,3 +1,7 @@
+#[cfg(feature = "browser-tests")]
+#[path = "browser/mod.rs"]
+mod browser;
+
 use std::{
     collections::HashSet,
     net::TcpListener,

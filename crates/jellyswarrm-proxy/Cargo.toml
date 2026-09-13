@@ -11,7 +11,11 @@ license = "MIT OR Apache-2.0"
 name = "jellyswarrm-proxy"
 path = "src/main.rs"
 
+[features]
+browser-tests = ["dep:playwright-rs"]
+
 [dependencies]
+playwright-rs = { version = "0.18.0", optional = true, default-features = false, features = ["rustls-tls-native-roots", "ring"] }
 jellyswarrm-macros = { workspace = true }
 axum = { workspace = true, features = ["ws"] }
 tokio = { workspace = true }
@@ -64,6 +68,7 @@ jellyfin-api = { workspace = true }
 futures-util = { workspace = true }
 
 [dev-dependencies]
+tokio-tungstenite = { workspace = true }
 tokio-test = { workspace = true }
 tempfile = { workspace = true }
 mockall = { workspace = true }

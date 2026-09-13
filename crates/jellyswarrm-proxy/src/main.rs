@@ -46,6 +46,7 @@ mod server_id;
 mod server_storage;
 mod server_url;
 mod session_storage;
+mod sessions;
 mod ui;
 mod url_helper;
 mod user_authorization_service;
@@ -98,6 +99,7 @@ pub struct AppState {
     pub quick_connect: QuickConnectStorage,
     pub federated_users: Arc<FederatedUserService>,
     pub syncplay: Arc<SyncPlayService>,
+    pub client_sessions: Arc<sessions::ClientSessionService>,
 }
 
 impl AppState {
@@ -117,6 +119,7 @@ impl AppState {
             data_context.config.clone(),
         ));
 
+        let transport = sessions::transport::ConnectionHub::default();
         Self {
             reqwest_client,
             streaming_reqwest_client,
@@ -129,7 +132,8 @@ impl AppState {
             processors: Arc::new(proxy_processors),
             quick_connect,
             federated_users,
-            syncplay: Arc::new(SyncPlayService::new()),
+            syncplay: Arc::new(SyncPlayService::with_transport(transport.clone())),
+            client_sessions: Arc::new(sessions::ClientSessionService::new(transport)),
         }
     }
 
@@ -201,9 +205,18 @@ impl AppState {
             can_change_item_names: self.can_change_item_names().await,
         };
 
-        self.processors
+        let modified = self
+            .processors
             .process_response_json(payload, &context)
-            .await
+            .await?;
+        if profile != ResponseProcessingProfile::Disabled {
+            if let Some(token) = proxy_api_key {
+                self.client_sessions
+                    .cache_media_response(token, payload)
+                    .await;
+            }
+        }
+        Ok(modified)
     }
 }
 
@@ -506,6 +519,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app = lowercase_routes! {
         Router::new()
+            .merge(sessions::router())
             // UI Management routes
             .nest(&format!("/{ui_route}"), ui_routes())
             .route("/", get(index_handler))
@@ -529,8 +543,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "/Branding/Configuration",
                 get(handlers::branding::handle_branding),
             )
-            .route("/websocket", get(handlers::syncplay::websocket))
-            .route("/socket", get(handlers::syncplay::websocket))
+            .route("/websocket", get(sessions::websocket))
+            .route("/socket", get(sessions::websocket))
             .route("/GetUtcTime", get(handlers::syncplay::get_utc_time))
             .route(
                 "/Auth/Keys",
@@ -945,6 +959,20 @@ async fn proxy_handler(
     State(state): State<AppState>,
     req: Request,
 ) -> Result<Response<Body>, StatusCode> {
+    // Session/control routes never fall through, including encoded or mixed-case paths.
+    let path_without_prefix = state.remove_prefix_from_path(req.uri().path()).await;
+    let decoded = percent_decode_str(path_without_prefix).decode_utf8_lossy();
+    let is_session_path = decoded
+        .split('/')
+        .find(|part| !part.is_empty())
+        .is_some_and(|part| part.eq_ignore_ascii_case("sessions"));
+    if is_session_path
+        && request_preprocessing::playback_session_action(req.method(), req.uri().path(), &state)
+            .await
+            .is_none()
+    {
+        return Err(StatusCode::NOT_IMPLEMENTED);
+    }
     // check if a resource was requested
     let path = req.uri().path();
     debug!("Using generic processing for path: {}", path);
@@ -976,6 +1004,7 @@ async fn proxy_handler(
 
     let request_url = preprocessed.request.url().clone();
     let pending_playback_session_update = preprocessed.pending_playback_session_update.clone();
+    let original_session_request = preprocessed.original_request.try_clone();
     let response_server = preprocessed.server.clone();
     let response_proxy_api_key = preprocessed
         .auth
@@ -1004,6 +1033,11 @@ async fn proxy_handler(
     })?;
 
     let status = response.status();
+    if status.is_success() {
+        if let Some(original) = &original_session_request {
+            sessions::observe_playback(&state, original).await;
+        }
+    }
     if !status.is_success() {
         warn!(
             "Upstream server returned error status: {} for Request to: {}",

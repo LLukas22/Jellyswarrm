@@ -253,7 +253,8 @@ pub struct PlayState {
 
 #[skip_serializing_none]
 #[multi_case_struct(pascal, camel)]
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct Capabilities {
     pub playable_media_types: Vec<String>,
     pub supported_commands: Vec<String>,
