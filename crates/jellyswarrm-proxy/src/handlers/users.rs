@@ -94,7 +94,7 @@ pub async fn handle_authenticate_by_name(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(payload): Json<AuthenticateRequest>,
-) -> Result<Json<AuthenticateResponse>, StatusCode> {
+) -> Result<crate::sessions::AuthenticationResponse, StatusCode> {
     let mut servers = state
         .server_storage
         .list_servers()
@@ -265,7 +265,7 @@ pub async fn handle_authenticate_by_name(
             successful_auths.len(),
             total_servers
         );
-        Ok(Json(auth_response))
+        Ok(crate::sessions::authentication_response(auth_response))
     }
 }
 
@@ -360,6 +360,8 @@ async fn decorate_auth_response(
     auth_response.user.policy.sync_play_access = SyncPlayUserAccessType::CreateAndJoinGroups;
     auth_response.access_token = user.virtual_key.clone();
     auth_response.user.id = user.id.clone();
+    crate::sessions::decorate_authentication(state, user, login_authorization, &mut auth_response)
+        .await;
     auth_response
 }
 

@@ -210,6 +210,7 @@ pub struct UtcTimeResponse {
 
 #[derive(Debug, Clone)]
 pub(super) struct GroupParticipant {
+    pub user_id: String,
     pub user_name: String,
     pub ping: u64,
     pub is_buffering: bool,
@@ -334,14 +335,6 @@ impl SyncPlayGroup {
 
 #[derive(Serialize)]
 #[serde(rename_all = "PascalCase")]
-pub(super) struct OutboundWebSocketMessage<T: Serialize> {
-    pub message_type: &'static str,
-    pub message_id: Uuid,
-    pub data: T,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "PascalCase")]
 pub(super) struct GroupUpdateEnvelope {
     pub group_id: Uuid,
     #[serde(rename = "Type")]
@@ -378,13 +371,6 @@ pub(super) struct PlayQueueUpdate {
     pub is_playing: bool,
     pub shuffle_mode: GroupShuffleMode,
     pub repeat_mode: GroupRepeatMode,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
-pub(super) struct InboundWebSocketMessage {
-    pub message_type: String,
-    pub data: Option<Value>,
 }
 
 #[cfg(test)]

@@ -37,37 +37,47 @@ pub async fn resolve_request_identity_from_headers_uri(
     request.headers_mut().extend(headers.clone());
 
     let auth = JellyfinAuthorization::from_request(&request);
-    let mut device = auth.as_ref().and_then(|a| a.get_device(request.headers()));
-    if device.is_none() {
-        let query_device_id = request.url().query_pairs().find_map(|(k, v)| {
-            if k.eq_ignore_ascii_case("deviceid") {
-                Some(v.to_string())
-            } else {
-                None
-            }
-        });
-        if let Some(device_id) = query_device_id {
-            let ua_device = request
-                .headers()
-                .get("user-agent")
-                .and_then(|v| v.to_str().ok())
-                .map(Device::from_useragent)
-                .unwrap_or(Device {
-                    client: "Unknown".to_string(),
-                    device: "Unknown".to_string(),
-                    device_id: device_id.clone(),
-                    version: "Unknown".to_string(),
-                });
-
-            device = Some(Device {
-                device_id,
-                ..ua_device
-            });
-        }
-    }
+    let device = request_device(&request, auth.as_ref());
     let user = get_user_from_request(&auth, state).await?;
 
     Ok(RequestIdentity { auth, user, device })
+}
+
+/// Resolve device identity consistently for HTTP and WebSocket requests.
+pub(crate) fn request_device(
+    request: &reqwest::Request,
+    auth: Option<&JellyfinAuthorization>,
+) -> Option<Device> {
+    let mut device = auth.and_then(|a| a.get_device(request.headers()));
+    let explicit_device = matches!(
+        auth,
+        Some(
+            JellyfinAuthorization::Authorization(_) | JellyfinAuthorization::XEmbyAuthorization(_)
+        )
+    ) && device.as_ref().is_some_and(|d| !d.device_id.is_empty());
+    // /Sessions?DeviceId is a target filter, not the caller's device identity.
+    if !explicit_device
+        && !request
+            .url()
+            .path()
+            .trim_end_matches('/')
+            .to_ascii_lowercase()
+            .ends_with("/sessions")
+    {
+        if let Some(device_id) = request
+            .url()
+            .query_pairs()
+            .find_map(|(k, v)| k.eq_ignore_ascii_case("deviceid").then(|| v.into_owned()))
+        {
+            device = Some(Device {
+                device_id,
+                client: "Unknown".into(),
+                device: "Unknown".into(),
+                version: "Unknown".into(),
+            });
+        }
+    }
+    device
 }
 
 #[derive(Clone)]
@@ -239,13 +249,14 @@ pub async fn extract_request_infos(
         debug!("No authorization found in request");
     }
 
-    let device = if let Some(auth) = &auth {
-        auth.get_device(request.headers())
-    } else {
-        None
-    };
-
+    let device = request_device(&request, auth.as_ref());
     let mut user = get_user_from_request(&auth, state).await?;
+    if let (Some(user), Some(token)) = (user.as_ref(), auth.as_ref().and_then(|a| a.token_ref())) {
+        state
+            .client_sessions
+            .ensure(user, token, device.as_ref())
+            .await;
+    }
     let authenticated_user_id = user.as_ref().map(|user| user.id.clone());
 
     // look into the body for information
@@ -291,9 +302,15 @@ pub async fn extract_request_infos(
     let sessions = if auth.is_none() {
         None
     } else if let Some(user) = &user {
+        // Query-only DeviceId identifies a local player, but does not include
+        // the client metadata required by upstream Device::matches. Preserve
+        // token-only media delivery's existing lookup across this user's sessions.
+        let upstream_device = auth
+            .as_ref()
+            .and_then(|auth| auth.get_device(request.headers()));
         let mut sessions = state
             .user_authorization
-            .get_user_sessions(&user.id, device.clone())
+            .get_user_sessions(&user.id, upstream_device)
             .await?;
 
         // ANDROID TV DEVICE-ID REBIND (intentional behavior):
@@ -447,7 +464,7 @@ pub async fn preprocess_request(req: Request, state: &AppState) -> Result<Prepro
     })
 }
 
-async fn playback_session_action(
+pub(crate) async fn playback_session_action(
     method: &http::Method,
     request_path: &str,
     state: &AppState,

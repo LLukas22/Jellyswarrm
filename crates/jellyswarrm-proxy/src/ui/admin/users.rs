@@ -333,7 +333,10 @@ pub async fn delete_user(
 
     // 3. Delete locally
     match state.user_authorization.delete_user(&user_id).await {
-        Ok(true) => get_user_list_impl(&state, report).await.into_response(),
+        Ok(true) => {
+            crate::sessions::end_user_sessions(&state, &user_id).await;
+            get_user_list_impl(&state, report).await.into_response()
+        }
         Ok(false) => (
             StatusCode::NOT_FOUND,
             Html("<div class=\"alert alert-error\">User not found</div>"),
@@ -527,7 +530,10 @@ pub async fn delete_sessions(
         .delete_all_sessions_for_user(&user_id)
         .await
     {
-        Ok(_) => get_user_item(&state, &user_id).await.into_response(),
+        Ok(_) => {
+            crate::sessions::end_user_sessions(&state, &user_id).await;
+            get_user_item(&state, &user_id).await.into_response()
+        }
         Err(e) => {
             error!("Delete user error: {}", e);
             (

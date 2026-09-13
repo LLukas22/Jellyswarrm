@@ -109,7 +109,7 @@ jobs:
   integration:
     name: Docker integration test
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     permissions:
       contents: read
 
@@ -165,3 +165,17 @@ jobs:
       env:
         JELLYSWARRM_SKIP_UI: "1"
       run: just integration-test
+
+    - name: Run containerized browser integration test
+      env:
+        JELLYSWARRM_SKIP_UI: "1"
+      run: just browser-integration-test-docker
+
+    - name: Upload browser videos, traces and failure screenshots
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: browser-test-artifacts
+        path: target/browser-test-artifacts/
+        if-no-files-found: ignore
+        retention-days: 7

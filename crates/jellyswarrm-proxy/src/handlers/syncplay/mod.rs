@@ -2,7 +2,7 @@
 //!
 //! This module provides:
 //! - HTTP routes under `/SyncPlay/*` and `/GetUtcTime`
-//! - websocket integration for `/websocket` and `/socket`
+//! - group lifecycle integration with the shared `sessions` WebSocket transport
 //! - an in-memory SyncPlay coordinator (`SyncPlayService`)
 //! - wire-compatible DTOs and websocket payload models
 

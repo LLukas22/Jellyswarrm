@@ -4,23 +4,16 @@ use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 use axum::{
-    extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
-        FromRequestParts, Path, Query, State,
-    },
-    http::{request::Parts, StatusCode},
-    response::{IntoResponse, Response},
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::IntoResponse,
     Json,
 };
 use chrono::{Duration, Utc};
-use futures_util::{SinkExt, StreamExt};
-use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::{
-    request_preprocessing::resolve_request_identity_from_headers_uri, server_id::ServerId, AppState,
-};
+use crate::AppState;
 
 use super::models::*;
 use super::service::SessionContext;
@@ -91,91 +84,16 @@ async fn deny_library_access(
         .await;
 }
 
-impl FromRequestParts<AppState> for SessionContext {
-    type Rejection = StatusCode;
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &AppState,
-    ) -> Result<Self, Self::Rejection> {
-        let identity = resolve_request_identity_from_headers_uri(&parts.headers, &parts.uri, state)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-        let Some(auth) = identity.auth else {
-            return Err(StatusCode::UNAUTHORIZED);
-        };
-
-        let Some(token) = auth.token() else {
-            return Err(StatusCode::UNAUTHORIZED);
-        };
-
-        let Some(user) = identity.user else {
-            return Err(StatusCode::UNAUTHORIZED);
-        };
-
-        let session_id = match identity.device {
-            Some(d) if !d.device_id.is_empty() => format!("{}:{}:{}", user.id, d.device_id, token),
-            _ => format!("{}:token:{}", user.id, token),
-        };
-
-        Ok(SessionContext { user, session_id })
-    }
-}
-
-fn user_id_from_session_id(session_id: &str) -> Option<&str> {
-    session_id.split(':').next().filter(|s| !s.is_empty())
-}
-
 async fn users_have_library_access_to_items(
     state: &AppState,
     user_ids: &[String],
     item_ids: &[String],
 ) -> Result<bool, StatusCode> {
-    if item_ids.is_empty() {
-        return Ok(true);
-    }
-
-    let mut user_server_ids: HashMap<String, HashSet<ServerId>> = HashMap::new();
     for user_id in user_ids {
-        if user_server_ids.contains_key(user_id) {
-            continue;
-        }
-
-        let sessions = state
-            .user_authorization
-            .get_user_sessions_by_user_id(user_id)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-        let Some((_user, sessions)) = sessions else {
+        if !crate::sessions::user_has_media_access(state, user_id, item_ids, None).await? {
             return Ok(false);
-        };
-
-        let server_ids = sessions
-            .into_iter()
-            .map(|(_, server)| server.id)
-            .collect::<HashSet<_>>();
-        user_server_ids.insert(user_id.clone(), server_ids);
-    }
-
-    for item_id in item_ids {
-        let Some((mapping, _)) = state
-            .media_storage
-            .get_media_mapping_with_server(item_id)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        else {
-            return Ok(false);
-        };
-
-        for server_ids in user_server_ids.values() {
-            if !server_ids.contains(&mapping.server_id) {
-                return Ok(false);
-            }
         }
     }
-
     Ok(true)
 }
 
@@ -186,8 +104,8 @@ async fn group_has_library_access(
 ) -> Result<bool, StatusCode> {
     let user_ids = group
         .participants
-        .keys()
-        .filter_map(|session_id| user_id_from_session_id(session_id).map(ToString::to_string))
+        .values()
+        .map(|participant| participant.user_id.clone())
         .collect::<Vec<_>>();
     users_have_library_access_to_items(state, &user_ids, item_ids).await
 }
@@ -198,64 +116,6 @@ async fn user_has_library_access(
     item_ids: &[String],
 ) -> Result<bool, StatusCode> {
     users_have_library_access_to_items(state, &[user_id.to_string()], item_ids).await
-}
-
-async fn handle_ws(state: AppState, session: SessionContext, socket: WebSocket) {
-    let (mut ws_sender, mut ws_receiver) = socket.split();
-    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
-
-    let connection_id = state
-        .syncplay
-        .register_websocket(session.session_id.clone(), tx)
-        .await;
-
-    loop {
-        tokio::select! {
-            outbound = rx.recv() => {
-                let Some(outbound) = outbound else { break; };
-                if ws_sender.send(Message::Text(outbound.into())).await.is_err() {
-                    break;
-                }
-            }
-            inbound = ws_receiver.next() => {
-                let Some(inbound) = inbound else { break; };
-                let Ok(inbound) = inbound else { break; };
-
-                match inbound {
-                    Message::Text(text) => {
-                        if let Ok(msg) = serde_json::from_str::<InboundWebSocketMessage>(&text) {
-                            let _ = &msg.data;
-                            if msg.message_type.eq_ignore_ascii_case("KeepAlive") {
-                                state.syncplay.send_keepalive(&session.session_id).await;
-                            }
-                        }
-                    }
-                    Message::Ping(payload) => {
-                        if ws_sender.send(Message::Pong(payload)).await.is_err() {
-                            break;
-                        }
-                    }
-                    Message::Close(_) => break,
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    state
-        .syncplay
-        .unregister_websocket_with_grace(session.session_id.clone(), connection_id)
-        .await;
-}
-
-pub async fn websocket(
-    State(state): State<AppState>,
-    session: SessionContext,
-    ws: WebSocketUpgrade,
-) -> Result<Response, StatusCode> {
-    Ok(ws
-        .on_upgrade(move |socket| handle_ws(state, session, socket))
-        .into_response())
 }
 
 pub async fn create_group(

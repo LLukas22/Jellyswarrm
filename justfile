@@ -66,6 +66,18 @@ check: doctor
 integration-test: doctor media
     cargo test --package jellyswarrm-proxy --test server_integration -- --ignored --nocapture --test-threads=1
 
+# Opt-in browser test: requires Chrome and a built embedded Jellyfin Web UI.
+browser-integration-test: doctor media
+    cargo test --package jellyswarrm-proxy --features browser-tests --test server_integration remote_control:: -- --ignored --nocapture --test-threads=1
+
+# Build the shared image used by both isolated browser containers.
+browser-image: doctor
+    docker build --tag jellyswarrm-browser-tests:1.63.0 dev/browser
+
+# Linux/CI: browsers and backends in Docker, Rust test runner on the host.
+browser-integration-test-docker: browser-image media
+    JELLYSWARRM_BROWSER_CONTAINERS=1 cargo test --locked --package jellyswarrm-proxy --features browser-tests --test server_integration remote_control:: -- --ignored --nocapture --test-threads=1
+
 # Remove only Jellyfin configuration/cache, then recreate the stack.
 reset:
     {{compose}} down --remove-orphans

@@ -451,7 +451,7 @@ pub async fn handle_authenticate_with_quick_connect(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(request): Json<QuickConnectAuthenticateRequest>,
-) -> Result<Json<AuthenticateResponse>, StatusCode> {
+) -> Result<crate::sessions::AuthenticationResponse, StatusCode> {
     let session = state
         .quick_connect
         .get_session(&request.secret)
@@ -557,7 +557,9 @@ pub async fn handle_authenticate_with_quick_connect(
     if successful_auths.is_empty() {
         Err(StatusCode::UNAUTHORIZED)
     } else {
-        Ok(Json(successful_auths[0].clone()))
+        Ok(crate::sessions::authentication_response(
+            successful_auths[0].clone(),
+        ))
     }
 }
 
@@ -638,6 +640,8 @@ async fn authenticate_with_mapping_on_server(
     auth_response.access_token = user.virtual_key.clone();
     auth_response.user.id = user.id.clone();
 
+    crate::sessions::decorate_authentication(&state, &user, &authorization, &mut auth_response)
+        .await;
     let mut auth_to_store = authorization;
     auth_to_store.token = Some(auth_token.clone());
 
@@ -1010,7 +1014,8 @@ mod tests {
         )
         .await
         .unwrap()
-        .0;
+        .1
+         .0;
 
         assert_eq!(auth_response.access_token, user.virtual_key);
 

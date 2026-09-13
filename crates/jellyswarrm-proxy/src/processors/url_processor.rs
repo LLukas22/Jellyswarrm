@@ -477,7 +477,7 @@ impl UrlProcessor {
             .map_err(Into::into)
     }
 
-    async fn client_media_mapping(
+    pub(crate) async fn client_media_mapping(
         &self,
         virtual_media_id: &str,
         access_scope: Option<&VirtualLibraryAccessScope>,

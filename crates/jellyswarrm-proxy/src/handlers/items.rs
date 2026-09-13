@@ -137,6 +137,12 @@ async fn get_processed_item_json(
         }
     }
 
+    if let Some(token) = proxy_api_key.as_deref() {
+        state
+            .client_sessions
+            .cache_media_response(token, &response)
+            .await;
+    }
     Ok(Json(response))
 }
 

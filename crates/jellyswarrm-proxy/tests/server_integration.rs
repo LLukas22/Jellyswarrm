@@ -1,3 +1,7 @@
+#[cfg(feature = "browser-tests")]
+#[path = "browser/remote_control.rs"]
+mod remote_control;
+
 use std::{
     collections::HashSet,
     net::TcpListener,
