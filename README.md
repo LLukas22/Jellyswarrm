@@ -162,32 +162,3 @@ The build process is streamlined thanks to the included [`build.rs`](./crates/je
 
 3. **Why use Jellyswarrm instead of mounting a remote library via e.g. SMB?**  
    Jellyswarrm is built to **connect your servers with your friends’ servers** across different networks. Setting up SMB in these cases can be complicated, and performance is often worse. With Jellyswarrm, content is streamed directly from the original server, so all the heavy lifting (like transcoding) happens where the media actually lives.  
-
-### Playlists
-
-Playlists belong to one upstream server. Create, read, add, remove, reorder,
-and delete operations translate IDs for that server and preserve distinct entry
-IDs supplied by the upstream server. Every supplied track or entry
-must resolve on the playlist's server; mixed-server or unknown IDs are rejected
-with HTTP 400 before the request is forwarded. An aggregate track can be used
-when it has a version on the selected server.
-
-Deletion follows the upstream playlist's `CanDelete` permission. Sharing maps
-the requested proxy user to their upstream identity on the playlist's server.
-The recipient must have a stored, unexpired authorization session on that
-server; otherwise sharing is rejected explicitly. Upstream permissions still
-control whether the caller can delete or share a playlist.
-
-The Jellyfin 12 Docker fixture currently returns the song ID as `PlaylistItemId`
-for duplicate songs. Those copies cannot be addressed independently through
-that upstream API. The Docker test
-`saved_playlist_duplicate_songs_preserve_upstream_entry_semantics`
-compares proxy behavior with direct Jellyfin responses and verifies removal of
-all copies. The mock HTTP suite separately requires preservation of distinct
-upstream entry IDs.
-
-Jellyfin 12 may also return success when deleting a playlist share without
-removing it. The live test checks the same operation directly upstream before
-accepting this limitation, then verifies revocation through a full playlist
-update (`POST /Playlists/{id}` with `{"Users":[]}`). The proxy does not
-silently apply this workaround to DELETE requests.
