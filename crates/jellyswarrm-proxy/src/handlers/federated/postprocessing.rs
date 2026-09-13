@@ -151,7 +151,7 @@ impl FederatedItems {
         shape: ResponseShape,
     ) -> ItemsResponseVariants {
         let pagination = Pagination::from_url(url);
-        sort_items(&mut self.items, url);
+        SortPolicy::from_url(url).apply(&mut self.items);
         let total_count = self.reported_total.unwrap_or(self.items.len());
         let items = pagination.apply(self.items);
         shape.wrap(items, total_count, pagination)
@@ -164,78 +164,102 @@ struct SortCriterion {
     order: SortOrder,
 }
 
-fn sort_items(items: &mut [MediaItem], url: &url::Url) {
-    let path = url.path().trim_end_matches('/').to_ascii_lowercase();
-    if path.contains("/shows/")
-        && (path.ends_with("/seasons") || path.ends_with("/episodes"))
-        && query_list::<ItemSortBy>(url, "SortBy").is_empty()
-    {
-        let episodes = path.ends_with("/episodes");
-        let numeric_key = |item: &MediaItem| {
-            let number = |key: &str| {
-                item.extra
-                    .iter()
-                    .find(|(field, _)| field.eq_ignore_ascii_case(key))
-                    .and_then(|(_, value)| value.as_i64())
-                    .unwrap_or(i64::MAX)
-            };
-            (
-                if episodes {
-                    number("ParentIndexNumber")
-                } else {
-                    0
-                },
-                number("IndexNumber"),
-            )
-        };
-        items.sort_by(|left, right| {
-            numeric_key(left)
-                .cmp(&numeric_key(right))
-                .then_with(|| left.id.cmp(&right.id))
-        });
-        return;
-    }
-    let criteria = sort_criteria(url);
-    items.sort_by(|left, right| {
-        criteria
-            .iter()
-            .find_map(|criterion| {
-                let ordering = left.cmp_by(right, criterion.field);
-                (!ordering.is_eq()).then(|| match criterion.order {
-                    SortOrder::Ascending => ordering,
-                    SortOrder::Descending => ordering.reverse(),
-                })
-            })
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+#[derive(Debug)]
+enum SortPolicy {
+    PreserveUpstream,
+    SeasonOrder,
+    EpisodeOrder,
+    Fields(Vec<SortCriterion>),
 }
 
-fn sort_criteria(url: &url::Url) -> Vec<SortCriterion> {
-    let mut fields = query_list::<ItemSortBy>(url, "SortBy");
-    let mut orders = query_list::<SortOrder>(url, "SortOrder");
-
-    if fields.is_empty() {
-        let path = url.path().to_ascii_lowercase();
-        if path.ends_with("/latest") {
-            fields.push(ItemSortBy::DateCreated);
-            orders = vec![SortOrder::Descending];
-        } else if path.ends_with("/resume") {
-            fields.push(ItemSortBy::DatePlayed);
-            orders = vec![SortOrder::Descending];
-        } else {
-            fields.push(ItemSortBy::SortName);
+impl SortPolicy {
+    fn from_url(url: &url::Url) -> Self {
+        let path = url.path().trim_end_matches('/').to_ascii_lowercase();
+        if path.ends_with("/shows/nextup") {
+            // Jellyfin ranks Next Up using the previously watched episode's date,
+            // which cannot be reconstructed from the returned episode's metadata.
+            return Self::PreserveUpstream;
         }
+
+        let mut fields = query_list::<ItemSortBy>(url, "SortBy");
+        let mut orders = query_list::<SortOrder>(url, "SortOrder");
+        if fields.is_empty() {
+            if path.contains("/shows/") {
+                if path.ends_with("/seasons") {
+                    return Self::SeasonOrder;
+                }
+                if path.ends_with("/episodes") {
+                    return Self::EpisodeOrder;
+                }
+            }
+
+            let path = url.path().to_ascii_lowercase();
+            if path.ends_with("/latest") {
+                fields.push(ItemSortBy::DateCreated);
+                orders = vec![SortOrder::Descending];
+            } else if path.ends_with("/resume") {
+                fields.push(ItemSortBy::DatePlayed);
+                orders = vec![SortOrder::Descending];
+            } else {
+                fields.push(ItemSortBy::SortName);
+            }
+        }
+
+        let default_order = orders.first().copied().unwrap_or_default();
+        Self::Fields(
+            fields
+                .into_iter()
+                .enumerate()
+                .map(|(index, field)| SortCriterion {
+                    field,
+                    order: orders.get(index).copied().unwrap_or(default_order),
+                })
+                .collect(),
+        )
     }
 
-    let default_order = orders.first().copied().unwrap_or_default();
-    fields
-        .into_iter()
-        .enumerate()
-        .map(|(index, field)| SortCriterion {
-            field,
-            order: orders.get(index).copied().unwrap_or(default_order),
-        })
-        .collect()
+    fn apply(&self, items: &mut [MediaItem]) {
+        match self {
+            Self::PreserveUpstream => {}
+            Self::SeasonOrder | Self::EpisodeOrder => {
+                let numeric_key = |item: &MediaItem| {
+                    (
+                        if matches!(self, Self::EpisodeOrder) {
+                            item_number(item, "ParentIndexNumber")
+                        } else {
+                            0
+                        },
+                        item_number(item, "IndexNumber"),
+                    )
+                };
+                items.sort_by(|left, right| {
+                    numeric_key(left)
+                        .cmp(&numeric_key(right))
+                        .then_with(|| left.id.cmp(&right.id))
+                });
+            }
+            Self::Fields(criteria) => items.sort_by(|left, right| {
+                criteria
+                    .iter()
+                    .find_map(|criterion| {
+                        let ordering = left.cmp_by(right, criterion.field);
+                        (!ordering.is_eq()).then(|| match criterion.order {
+                            SortOrder::Ascending => ordering,
+                            SortOrder::Descending => ordering.reverse(),
+                        })
+                    })
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            }),
+        }
+    }
+}
+
+fn item_number(item: &MediaItem, key: &str) -> i64 {
+    item.extra
+        .iter()
+        .find(|(field, _)| field.eq_ignore_ascii_case(key))
+        .and_then(|(_, value)| value.as_i64())
+        .unwrap_or(i64::MAX)
 }
 
 fn query_list<T>(url: &url::Url, expected_key: &str) -> Vec<T>
@@ -368,6 +392,48 @@ mod tests {
     #[test]
     fn sorting_orders_modern_resume_by_last_played_date() {
         assert_resume_items_are_sorted_by_last_played_date("http://localhost/UserItems/Resume");
+    }
+
+    #[test]
+    fn next_up_preserves_upstream_order() {
+        for endpoint in ["/Shows/NextUp", "/jellyfin/shows/nextup/"] {
+            let url = url::Url::parse(&format!("http://localhost{endpoint}")).unwrap();
+            let response = FederatedItems::interleaved(vec![ItemsResponseVariants::Bare(vec![
+                named_media_item("first", "Zulu"),
+                named_media_item("second", "Alpha"),
+                named_media_item("third", "Beta"),
+            ])])
+            .into_response(&url, ResponseShape::Counted);
+
+            assert_eq!(
+                item_ids(&response.into_items()),
+                vec!["first", "second", "third"]
+            );
+        }
+    }
+
+    #[test]
+    fn next_up_preserves_interleaved_ranks_before_pagination() {
+        let url = url::Url::parse("http://localhost/Shows/NextUp?StartIndex=1&Limit=3").unwrap();
+        let response = FederatedItems::interleaved(vec![
+            ItemsResponseVariants::Bare(vec![
+                named_media_item("a1", "Zulu"),
+                named_media_item("a2", "Alpha"),
+            ]),
+            ItemsResponseVariants::Bare(vec![
+                named_media_item("b1", "Yankee"),
+                named_media_item("b2", "Beta"),
+                named_media_item("b3", "Charlie"),
+            ]),
+        ])
+        .into_response(&url, ResponseShape::Counted);
+
+        let ItemsResponseVariants::WithCount(response) = response else {
+            panic!("expected counted response");
+        };
+        assert_eq!(item_ids(&response.items), vec!["b1", "a2", "b2"]);
+        assert_eq!(response.total_record_count, 5);
+        assert_eq!(response.start_index, 1);
     }
 
     #[test]
