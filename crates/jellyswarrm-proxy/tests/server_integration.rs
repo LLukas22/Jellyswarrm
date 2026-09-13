@@ -1,6 +1,6 @@
 #[cfg(feature = "browser-tests")]
-#[path = "browser/remote_control.rs"]
-mod remote_control;
+#[path = "browser/mod.rs"]
+mod browser;
 
 use std::{
     collections::HashSet,

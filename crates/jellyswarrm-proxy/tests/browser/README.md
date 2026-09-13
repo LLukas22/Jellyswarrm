@@ -1,9 +1,9 @@
-# Remote-control browser test
+# Browser integration tests
 
-This verifies that one Jellyfin Web client can control another through the proxy
-across two media backends: play, pause, seek, resume, and stop.
+These verify remote control across two media backends and two-client SyncPlay
+through Jellyfin Web: create/join a group, play, pause, seek, switch media across backends, leave, and rejoin during playback.
 
-The Rust Playwright test reuses the server integration fixture. Each Chrome
+The Rust Playwright tests share the server integration fixture and browser setup. Each Chrome
 instance runs in its own container; Testcontainers manages startup and cleanup.
 
 Run on Linux x86-64 with Docker, Git LFS, and the usual Rust/UI build prerequisites:
@@ -13,7 +13,8 @@ just browser-integration-test-docker
 ```
 
 CI runs the same command. Videos (`controller.webm`, `receiver.webm`), traces,
-and failure screenshots go to `target/browser-test-artifacts/` and are uploaded
+and failure screenshots go to `target/browser-test-artifacts/remote-control/`
+and `target/browser-test-artifacts/syncplay/` and are uploaded
 as `browser-test-artifacts` for seven days, including on test failure.
 
 For native Chrome debugging, use `just browser-integration-test` with
