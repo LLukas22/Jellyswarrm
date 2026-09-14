@@ -829,14 +829,45 @@ impl UserAuthorizationService {
         user_password_plain: Option<&Password>,
         admin_password_plain: Option<&Password>,
     ) -> Password {
+        if let Some(decrypted) = self.try_decrypt_server_mapping_password(
+            mapping,
+            user_password,
+            admin_password,
+            user_password_plain,
+            admin_password_plain,
+        ) {
+            return decrypted;
+        }
+
+        // If decryption fails, assume it's plaintext (legacy or fallback)
+        warn!(
+            "Failed to decrypt password for mapping {}. Assuming plaintext.",
+            mapping.id
+        );
+        mapping.mapped_password.clone().into_inner().into()
+    }
+
+    /// Decrypt a server mapping password only when one of the supported keys succeeds.
+    ///
+    /// Unlike [`Self::decrypt_server_mapping_password`], this does not fall back to treating an
+    /// unreadable value as plaintext. Callers that use a credential to create remote accounts can
+    /// therefore fail closed rather than accidentally using encrypted data as a password.
+    pub fn try_decrypt_server_mapping_password(
+        &self,
+        mapping: &ServerMapping,
+        user_password: &HashedPassword,
+        admin_password: &HashedPassword,
+        user_password_plain: Option<&Password>,
+        admin_password_plain: Option<&Password>,
+    ) -> Option<Password> {
         // Try user password first
         if let Ok(decrypted) = decrypt_password(&mapping.mapped_password, user_password) {
-            return decrypted;
+            return Some(decrypted);
         }
 
         // Try admin password
         if let Ok(decrypted) = decrypt_password(&mapping.mapped_password, admin_password) {
-            return decrypted;
+            return Some(decrypted);
         }
 
         // Backward compatibility: try raw user password key material if available
@@ -845,7 +876,7 @@ impl UserAuthorizationService {
                 &mapping.mapped_password,
                 user_password_plain.as_str(),
             ) {
-                return decrypted;
+                return Some(decrypted);
             }
         }
 
@@ -855,16 +886,11 @@ impl UserAuthorizationService {
                 &mapping.mapped_password,
                 admin_password_plain.as_str(),
             ) {
-                return decrypted;
+                return Some(decrypted);
             }
         }
 
-        // If decryption fails, assume it's plaintext (legacy or fallback)
-        warn!(
-            "Failed to decrypt password for mapping {}. Assuming plaintext.",
-            mapping.id
-        );
-        mapping.mapped_password.clone().into_inner().into()
+        None
     }
 
     /// Get server mapping
