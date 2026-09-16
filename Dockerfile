@@ -20,7 +20,7 @@ COPY ui/ ./
 COPY .git/modules/ui/ /app/.git/modules/ui/
 
 # Get and print UI version info
-RUN UI_VERSION=$(git describe --tags --abbrev=0) && \
+RUN UI_VERSION=$(node -p "require('./package.json').version") && \
     UI_COMMIT=$(git rev-parse HEAD) && \
     echo "UI_VERSION=${UI_VERSION#v}" && \
     echo "UI_COMMIT=$UI_COMMIT"
@@ -29,7 +29,7 @@ RUN UI_VERSION=$(git describe --tags --abbrev=0) && \
 RUN npm run build:production
 
 # Write ui-version.env file
-RUN UI_VERSION=$(git describe --tags --abbrev=0) && \
+RUN UI_VERSION=$(node -p "require('./package.json').version") && \
     UI_COMMIT=$(git rev-parse HEAD) && \
     printf "UI_VERSION=%s\nUI_COMMIT=%s\n" "${UI_VERSION#v}" "$UI_COMMIT" > dist/ui-version.env && \
     echo "Generated dist/ui-version.env"
