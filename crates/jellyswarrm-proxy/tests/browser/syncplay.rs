@@ -58,18 +58,7 @@ pub(super) async fn run(
     for page in [leader, member] {
         video_state(page, "v.paused && Number.isFinite(v.duration) && Math.abs(v.currentTime - v.duration / 2) < 3").await.context("group seek did not reach both players")?;
     }
-    let leader_position: f64 = leader
-        .evaluate_value("document.querySelector('video').currentTime")
-        .await?
-        .parse()?;
-    let member_position: f64 = member
-        .evaluate_value("document.querySelector('video').currentTime")
-        .await?
-        .parse()?;
-    anyhow::ensure!(
-        (leader_position - member_position).abs() < 2.0,
-        "group players differ by more than two seconds after seek"
-    );
+    wait_for_matching_positions(leader, member, "after seek").await?;
     toggle_playback(leader).await?;
     for page in [leader, member] {
         video_state(page, "!v.paused && v.currentTime > v.duration / 2 + 1").await?;
@@ -136,18 +125,7 @@ pub(super) async fn run(
     for page in [leader, member] {
         video_state(page, "v.paused && v.currentTime > 0").await?;
     }
-    let leader_position: f64 = leader
-        .evaluate_value("document.querySelector('video').currentTime")
-        .await?
-        .parse()?;
-    let member_position: f64 = member
-        .evaluate_value("document.querySelector('video').currentTime")
-        .await?
-        .parse()?;
-    anyhow::ensure!(
-        (leader_position - member_position).abs() < 2.0,
-        "rejoined player did not synchronize its position"
-    );
+    wait_for_matching_positions(leader, member, "after rejoining").await?;
     toggle_playback(leader).await?;
     for page in [leader, member] {
         video_state(page, "!v.paused").await?;
@@ -280,4 +258,27 @@ async fn show_controls(page: &Page) -> Result<()> {
     page.mouse().move_to(700.0, 400.0, None).await?;
     page.mouse().move_to(710.0, 410.0, None).await?;
     Ok(())
+}
+
+async fn wait_for_matching_positions(leader: &Page, member: &Page, stage: &str) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let leader_position: f64 = leader
+            .evaluate_value("document.querySelector('video').currentTime")
+            .await?
+            .parse()?;
+        let member_position: f64 = member
+            .evaluate_value("document.querySelector('video').currentTime")
+            .await?
+            .parse()?;
+        if (leader_position - member_position).abs() < 2.0 {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "group players differ by more than two seconds {stage}: leader={leader_position:.2}s, member={member_position:.2}s"
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
