@@ -1,0 +1,31 @@
+{% if let Some(error) = error_message %}
+<div class="alert alert-error" role="alert">User sync failed: {{ error }}</div>
+{% else %}
+<article class="sync-report" aria-live="polite">
+    <strong>User sync completed: {{ created }} created, {{ mapped }} mapped, {{ already_mapped }} already mapped, {{ skipped }} skipped, {{ failed }} failed.</strong>
+    {% if !results.is_empty() %}
+    <ul>
+        {% for result in results %}
+        <li>
+            {{ result.username }}:
+            {% match result.status %}
+                {% when crate::federated_users::UserSyncStatus::Created %}
+                    <span class="badge success">Created</span>
+                {% when crate::federated_users::UserSyncStatus::MappedExisting %}
+                    <span class="badge success">Mapped existing</span>
+                {% when crate::federated_users::UserSyncStatus::AlreadyMapped %}
+                    <span class="badge secondary">Already mapped</span>
+                {% when crate::federated_users::UserSyncStatus::ExistsWithDifferentPassword %}
+                    <span class="badge warning">Password mismatch</span>
+                {% when crate::federated_users::UserSyncStatus::NoReusableCredentials %}
+                    <span class="badge secondary">Skipped</span>
+                {% when crate::federated_users::UserSyncStatus::Failed %}
+                    <span class="badge danger">Failed</span>
+            {% endmatch %}
+            {% if let Some(message) = result.message %}<small>({{ message }})</small>{% endif %}
+        </li>
+        {% endfor %}
+    </ul>
+    {% endif %}
+</article>
+{% endif %}

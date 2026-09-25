@@ -1,3 +1,5 @@
+<div id="server-sync-result"></div>
+
 {% if servers.is_empty() %}
     <article>
         <header><h4>No servers configured</h4></header>
@@ -103,6 +105,14 @@
                     </article>
                 </dialog>
                 {% else %}
+                <button type="button" class="icon-btn"
+                        hx-post="/{{ ui_route }}/servers/{{ item.server.id }}/sync-users"
+                        hx-confirm="Sync existing Jellyswarrm users to '{{ item.server.name }}'?"
+                        hx-target="#server-sync-result" hx-swap="innerHTML"
+                        hx-disabled-elt="this"
+                        title="Sync users">
+                    <i class="fas fa-users" aria-hidden="true"></i><span class="sr-only" style="position:absolute;left:-9999px;">Sync users</span>
+                </button>
                 <button type="button" class="icon-btn danger"
                         hx-delete="/{{ ui_route }}/servers/{{ item.server.id }}/admin"
                         hx-confirm="Remove admin credentials for '{{ item.server.name }}'?"

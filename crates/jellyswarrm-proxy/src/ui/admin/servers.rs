@@ -11,6 +11,7 @@ use tracing::{error, info};
 use crate::{
     config::MediaStreamingMode,
     encryption::{encrypt_password, Password},
+    federated_users::{UserSyncResult, UserSyncStatus},
     server_id::ServerId,
     server_storage::Server,
     AppState,
@@ -34,6 +35,58 @@ pub struct ServerWithAdmin {
 pub struct ServerListTemplate {
     pub servers: Vec<ServerWithAdmin>,
     pub ui_route: String,
+}
+
+#[derive(Template)]
+#[template(path = "admin/server_sync_result.html")]
+pub struct ServerSyncResultTemplate {
+    pub results: Vec<UserSyncResult>,
+    pub created: usize,
+    pub mapped: usize,
+    pub already_mapped: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    pub error_message: Option<String>,
+}
+
+impl ServerSyncResultTemplate {
+    fn success(results: Vec<UserSyncResult>) -> Self {
+        let created = count_status(&results, UserSyncStatus::Created);
+        let mapped = count_status(&results, UserSyncStatus::MappedExisting);
+        let already_mapped = count_status(&results, UserSyncStatus::AlreadyMapped);
+        let skipped = count_status(&results, UserSyncStatus::ExistsWithDifferentPassword)
+            + count_status(&results, UserSyncStatus::NoReusableCredentials);
+        let failed = count_status(&results, UserSyncStatus::Failed);
+
+        Self {
+            results,
+            created,
+            mapped,
+            already_mapped,
+            skipped,
+            failed,
+            error_message: None,
+        }
+    }
+
+    fn error(message: String) -> Self {
+        Self {
+            results: Vec::new(),
+            created: 0,
+            mapped: 0,
+            already_mapped: 0,
+            skipped: 0,
+            failed: 0,
+            error_message: Some(message),
+        }
+    }
+}
+
+fn count_status(results: &[UserSyncResult], status: UserSyncStatus) -> usize {
+    results
+        .iter()
+        .filter(|result| result.status == status)
+        .count()
 }
 
 #[derive(Deserialize)]
@@ -471,6 +524,39 @@ pub async fn delete_server_admin(
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Html("<div class=\"alert alert-error\">Failed to delete admin</div>"),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Synchronize existing Jellyswarrm users to one managed server.
+pub async fn sync_users(
+    State(state): State<AppState>,
+    Path(server_id): Path<ServerId>,
+) -> Response {
+    let template = match state
+        .federated_users
+        .sync_all_users_to_server(server_id)
+        .await
+    {
+        Ok(results) => ServerSyncResultTemplate::success(results),
+        Err(error) => {
+            error!(
+                "Could not synchronize users to server {}: {}",
+                server_id, error
+            );
+            ServerSyncResultTemplate::error(error.to_string())
+        }
+    };
+
+    match template.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(error) => {
+            error!("Failed to render server user sync result: {}", error);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("<div class=\"alert alert-error\">Could not render sync results</div>"),
             )
                 .into_response()
         }

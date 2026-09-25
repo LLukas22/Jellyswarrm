@@ -132,6 +132,7 @@ pub fn ui_routes() -> axum::Router<AppState> {
             "/servers/{id}/admin",
             axum::routing::delete(admin::servers::delete_server_admin),
         )
+        .route("/servers/{id}/sync-users", post(admin::servers::sync_users))
         .route("/libraries", get(admin::libraries::libraries_page))
         .route(
             "/libraries/list",
