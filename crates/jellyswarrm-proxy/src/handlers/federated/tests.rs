@@ -12,7 +12,10 @@ use crate::{
     DataContext, ProxyProcessors,
 };
 use serde_json::{json, Value};
-use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+use wiremock::{
+    matchers::{method, path, query_param},
+    Mock, MockServer, ResponseTemplate,
+};
 
 async fn setup() -> (
     AppState,
@@ -116,6 +119,219 @@ fn latest_items() -> Value {
         {"Id":"series", "Name":"Show", "Type":"Series", "ProviderIds":{"Tmdb":"42"}, "DateCreated":"2026-02-01T00:00:00Z"},
         {"Id":"unknown", "Name":"Unidentified", "Type":"Movie", "DateCreated":"2025-01-01T00:00:00Z"}
     ])
+}
+
+#[tokio::test]
+async fn series_tv_schedule_only_queries_the_series_server() {
+    let (state, _pool, sessions, upstreams) = setup().await;
+    let mapping = state
+        .media_storage
+        .get_or_create_media_mapping("upstream-series", &sessions[1].1)
+        .await
+        .unwrap();
+    let url = url::Url::parse(&format!(
+        "http://localhost/LiveTv/Programs?LibrarySeriesId={}",
+        mapping.virtual_media_id
+    ))
+    .unwrap();
+    let scope =
+        VirtualLibraryAccessScope::new("viewer", sessions.iter().map(|(_, server)| server.id));
+    let server = state
+        .processors
+        .url_processor
+        .server_from_client_url(&url, Some(&scope))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(server.id, sessions[1].1.id);
+
+    Mock::given(method("GET"))
+        .and(path("/LiveTv/Programs"))
+        .and(query_param("LibrarySeriesId", "upstream-series"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "Items": [{"Id": "matching-program", "Type": "Program"}],
+            "TotalRecordCount": 1,
+            "StartIndex": 0
+        })))
+        .expect(1)
+        .mount(&upstreams[1])
+        .await;
+
+    let mut preprocessed = request(
+        &format!("{}?{}", url.path(), url.query().unwrap()),
+        &sessions,
+    );
+    preprocessed.server = server.clone();
+    preprocessed.session = Some(sessions[1].0.clone());
+    crate::request_preprocessing::apply_to_request(
+        &mut preprocessed.request,
+        &server,
+        &preprocessed.session,
+        &None,
+        &state,
+        preprocessed.access_scope.as_ref(),
+    )
+    .await;
+    let Json(response) = get_live_tv_programs(State(state), Preprocessed(preprocessed))
+        .await
+        .unwrap();
+    assert_eq!(response["Items"].as_array().unwrap().len(), 1);
+    assert!(upstreams[0].received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn channel_tv_schedule_only_queries_the_channel_server() {
+    let (state, _pool, sessions, upstreams) = setup().await;
+    let mapping = state
+        .media_storage
+        .get_or_create_media_mapping("upstream-channel", &sessions[1].1)
+        .await
+        .unwrap();
+    let url = url::Url::parse(&format!(
+        "http://localhost/LiveTv/Programs?ChannelIds={}",
+        mapping.virtual_media_id
+    ))
+    .unwrap();
+    let scope =
+        VirtualLibraryAccessScope::new("viewer", sessions.iter().map(|(_, server)| server.id));
+    let server = state
+        .processors
+        .url_processor
+        .server_from_client_url(&url, Some(&scope))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(server.id, sessions[1].1.id);
+
+    Mock::given(method("GET"))
+        .and(path("/LiveTv/Programs"))
+        .and(query_param("ChannelIds", "upstream-channel"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "Items": [{"Id": "channel-program", "Type": "Program"}],
+            "TotalRecordCount": 1,
+            "StartIndex": 0
+        })))
+        .expect(1)
+        .mount(&upstreams[1])
+        .await;
+
+    let mut preprocessed = request(
+        &format!("{}?{}", url.path(), url.query().unwrap()),
+        &sessions,
+    );
+    preprocessed.server = server.clone();
+    preprocessed.session = Some(sessions[1].0.clone());
+    crate::request_preprocessing::apply_to_request(
+        &mut preprocessed.request,
+        &server,
+        &preprocessed.session,
+        &None,
+        &state,
+        preprocessed.access_scope.as_ref(),
+    )
+    .await;
+    let Json(response) = get_live_tv_programs(State(state), Preprocessed(preprocessed))
+        .await
+        .unwrap();
+    assert_eq!(response["Items"].as_array().unwrap().len(), 1);
+    assert!(upstreams[0].received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn guide_programs_remap_channel_ids_on_each_server() {
+    let (state, _pool, sessions, upstreams) = setup().await;
+    let mut channel_ids = Vec::new();
+    let mut timer_ids = Vec::new();
+    for (index, (_, server)) in sessions.iter().enumerate() {
+        let original_id = format!("channel-{index}");
+        let mapping = state
+            .media_storage
+            .get_or_create_media_mapping(&original_id, server)
+            .await
+            .unwrap();
+        channel_ids.push(mapping.virtual_media_id);
+        timer_ids.push(
+            state
+                .media_storage
+                .get_or_create_media_mapping(&format!("timer-{index}"), server)
+                .await
+                .unwrap()
+                .virtual_media_id,
+        );
+        Mock::given(method("GET"))
+            .and(path("/LiveTv/Programs"))
+            .respond_with(move |request: &wiremock::Request| {
+                let ids = request
+                    .url
+                    .query_pairs()
+                    .find(|(key, _)| key.eq_ignore_ascii_case("ChannelIds"))
+                    .map(|(_, value)| value.into_owned())
+                    .unwrap_or_default();
+                if !ids.split(',').any(|id| id == original_id) {
+                    return ResponseTemplate::new(400);
+                }
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "Items": [{"Id": format!("program-{index}"), "Type": "Program", "ChannelId": original_id,
+                        "SeriesTimerId": format!("timer-{index}")}],
+                    "TotalRecordCount": 1,
+                    "StartIndex": 0
+                }))
+            })
+            .expect(1)
+            .mount(&upstreams[index])
+            .await;
+    }
+    let path = format!("/LiveTv/Programs?ChannelIds={}", channel_ids.join(","));
+    let Json(response) = get_live_tv_programs(
+        State(state.clone()),
+        Preprocessed(request(&path, &sessions)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(response["Items"].as_array().unwrap().len(), 2);
+    let returned_channels = response["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|program| program["ChannelId"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    for channel_id in &channel_ids {
+        assert!(returned_channels.contains(&channel_id.as_str()));
+    }
+    let returned_timers = response["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|program| program["SeriesTimerId"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    for (index, timer_id) in timer_ids.iter().enumerate() {
+        assert!(returned_timers.contains(&timer_id.as_str()));
+        let mut timer_url = url::Url::parse(&format!(
+            "http://localhost/LiveTv/Timers?SeriesTimerId={timer_id}"
+        ))
+        .unwrap();
+        let server = state
+            .processors
+            .url_processor
+            .server_from_client_url(&timer_url, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(server.id, sessions[index].1.id);
+        state
+            .processors
+            .url_processor
+            .client_to_server_url(&mut timer_url, &None, None, Some(server.id))
+            .await;
+        assert_eq!(
+            timer_url
+                .query_pairs()
+                .find(|(key, _)| key == "SeriesTimerId")
+                .unwrap()
+                .1,
+            format!("timer-{index}")
+        );
+    }
 }
 
 #[tokio::test]

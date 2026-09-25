@@ -24,6 +24,24 @@ use postprocessing::{FederatedItems, Pagination, ResponseShape};
 use request_policy::has_query_key;
 use upstream::{fetch_catalog, FetchMode, FetchedCatalog};
 
+/// Series detail and single-channel/genre guides identify one upstream item.
+/// Query only its owning server so unrelated programs cannot enter the result.
+pub async fn get_live_tv_programs(
+    State(state): State<AppState>,
+    Preprocessed(preprocessed): Preprocessed,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let url = preprocessed.original_request.url();
+    let single_scoped_id = url.query_pairs().any(|(key, value)| {
+        (key.eq_ignore_ascii_case("ChannelIds") || key.eq_ignore_ascii_case("GenreIds"))
+            && value.split(',').filter(|id| !id.trim().is_empty()).count() == 1
+    });
+    if has_query_key(url, &["LibrarySeriesId"]) || single_scoped_id {
+        get_items(State(state), Preprocessed(preprocessed)).await
+    } else {
+        get_items_from_all_servers_preprocessed(&state, preprocessed).await
+    }
+}
+
 async fn is_aggregate_id(state: &AppState, url: &url::Url) -> bool {
     let series_id = url.query_pairs().find_map(|(key, value)| {
         (key.eq_ignore_ascii_case("SeriesId") || key.eq_ignore_ascii_case("SeasonId"))
