@@ -183,6 +183,14 @@ impl SortPolicy {
 
         let mut fields = query_list::<ItemSortBy>(url, "SortBy");
         let mut orders = query_list::<SortOrder>(url, "SortOrder");
+        if matches!(
+            fields.first(),
+            Some(ItemSortBy::Random | ItemSortBy::DateLastContentAdded)
+        ) {
+            // Neither ranking can be reconstructed from BaseItemDto. Keep each
+            // upstream server's ranking rather than applying a tie-breaker.
+            return Self::PreserveUpstream;
+        }
         if fields.is_empty() {
             if path.contains("/shows/") {
                 if path.ends_with("/seasons") {
@@ -368,6 +376,106 @@ mod tests {
         let response = FederatedItems::new(items).into_response(&url, ResponseShape::Bare);
 
         assert_eq!(item_ids(&response.into_items()), vec!["b", "a"]);
+    }
+
+    #[test]
+    fn album_sorts_use_requested_field_and_direction() {
+        let albums = vec![
+            album_item("a", "Zulu", "alpha", "Beta", "2026-01-01T01:00:00+01:00"),
+            album_item("b", "Alpha", "zulu", "Alpha", "2025-12-31T23:30:00Z"),
+            album_item("c", "Beta", "beta", "Alpha", "2026-01-01T01:30:00Z"),
+        ];
+
+        for (field, ascending) in [
+            ("Name", vec!["b", "c", "a"]),
+            ("SortName", vec!["a", "c", "b"]),
+            ("AlbumArtist,SortName", vec!["c", "b", "a"]),
+            ("DateCreated,SortName", vec!["b", "a", "c"]),
+        ] {
+            for (order, expected) in [
+                ("Ascending", ascending.clone()),
+                ("Descending", ascending.into_iter().rev().collect()),
+            ] {
+                let url = url::Url::parse(&format!(
+                    "http://localhost/Users/u/Items?IncludeItemTypes=MusicAlbum&SortBy={field}&SortOrder={order}"
+                ))
+                .unwrap();
+                let response =
+                    FederatedItems::new(albums.clone()).into_response(&url, ResponseShape::Bare);
+                assert_eq!(
+                    item_ids(&response.into_items()),
+                    expected,
+                    "{field} {order}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn song_sorts_cover_album_artist_and_release_date_tiebreakers() {
+        let songs = vec![
+            song_item("a", "Zulu", "Same", "Beta", "Charlie", 2025),
+            song_item("b", "Alpha", "Same", "Alpha", "Beta", 2025),
+            song_item("c", "Beta", "Zulu", "Alpha", "Alpha", 2024),
+        ];
+
+        for (fields, ascending) in [
+            ("Name", vec!["b", "c", "a"]),
+            ("Album,AlbumArtist,SortName", vec!["b", "a", "c"]),
+            ("AlbumArtist,Album,SortName", vec!["b", "c", "a"]),
+            ("Artist,Album,SortName", vec!["c", "b", "a"]),
+            (
+                "ProductionYear,PremiereDate,AlbumArtist,Album,SortName",
+                vec!["c", "b", "a"],
+            ),
+        ] {
+            for (order, expected) in [
+                ("Ascending", ascending.clone()),
+                ("Descending", ascending.into_iter().rev().collect()),
+            ] {
+                let url = url::Url::parse(&format!(
+                    "http://localhost/Users/u/Items?IncludeItemTypes=Audio&SortBy={fields}&SortOrder={order}"
+                ))
+                .unwrap();
+                let response =
+                    FederatedItems::new(songs.clone()).into_response(&url, ResponseShape::Bare);
+                assert_eq!(
+                    item_ids(&response.into_items()),
+                    expected,
+                    "{fields} {order}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn playlist_updated_sort_preserves_upstream_ranking() {
+        let url = url::Url::parse(
+            "http://localhost/Users/u/Items?IncludeItemTypes=Playlist&SortBy=DateLastContentAdded,SortName&SortOrder=Descending",
+        )
+        .unwrap();
+        let response = FederatedItems::interleaved(vec![ItemsResponseVariants::Bare(vec![
+            named_media_item("newer", "Alpha"),
+            named_media_item("older", "Zulu"),
+        ])])
+        .into_response(&url, ResponseShape::Bare);
+
+        assert_eq!(item_ids(&response.into_items()), vec!["newer", "older"]);
+    }
+
+    #[test]
+    fn legacy_random_with_sort_name_tiebreaker_preserves_upstream_ranking() {
+        let url = url::Url::parse(
+            "http://localhost/Users/u/Items?IncludeItemTypes=MusicAlbum&SortBy=Random,SortName",
+        )
+        .unwrap();
+        let response = FederatedItems::interleaved(vec![ItemsResponseVariants::Bare(vec![
+            named_media_item("first", "Zulu"),
+            named_media_item("second", "Alpha"),
+        ])])
+        .into_response(&url, ResponseShape::Bare);
+
+        assert_eq!(item_ids(&response.into_items()), vec!["first", "second"]);
     }
 
     #[test]
@@ -702,6 +810,45 @@ mod tests {
             "Name": name,
             "SortName": name,
             "Type": "Movie",
+        }))
+        .unwrap()
+    }
+
+    fn album_item(
+        id: &str,
+        name: &str,
+        sort_name: &str,
+        album_artist: &str,
+        date_created: &str,
+    ) -> MediaItem {
+        serde_json::from_value(json!({
+            "Id": id,
+            "Name": name,
+            "SortName": sort_name,
+            "AlbumArtist": album_artist,
+            "DateCreated": date_created,
+            "Type": "MusicAlbum",
+        }))
+        .unwrap()
+    }
+
+    fn song_item(
+        id: &str,
+        name: &str,
+        album: &str,
+        album_artist: &str,
+        artist: &str,
+        year: i32,
+    ) -> MediaItem {
+        serde_json::from_value(json!({
+            "Id": id,
+            "Name": name,
+            "SortName": name,
+            "Album": album,
+            "AlbumArtist": album_artist,
+            "Artists": [artist],
+            "ProductionYear": year,
+            "Type": "Audio",
         }))
         .unwrap()
     }
