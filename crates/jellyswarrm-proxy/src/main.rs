@@ -35,6 +35,7 @@ mod extractors;
 mod federated_users;
 mod handlers;
 mod legacy_server_identity;
+mod mapping_auth;
 mod media_catalog;
 mod media_identity;
 mod media_storage_service;

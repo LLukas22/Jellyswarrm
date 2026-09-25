@@ -4,6 +4,7 @@ use crate::models::{
 };
 use reqwest::{header, Client, StatusCode};
 use serde::de::DeserializeOwned;
+use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::RwLock;
 use tracing::info;
@@ -33,6 +34,14 @@ pub struct JellyfinClient {
     client_info: ClientInfo,
     http_client: Client,
     auth_token: RwLock<Option<String>>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct QuickConnectState {
+    pub authenticated: bool,
+    pub secret: String,
+    pub code: String,
 }
 
 impl PartialEq for JellyfinClient {
@@ -218,6 +227,44 @@ impl JellyfinClient {
         Ok(response.user)
     }
 
+    pub async fn quick_connect_enabled(&self) -> Result<bool, Error> {
+        self.request(reqwest::Method::GET, "QuickConnect/Enabled", None)
+            .await
+    }
+
+    pub async fn initiate_quick_connect(&self) -> Result<QuickConnectState, Error> {
+        self.request(reqwest::Method::POST, "QuickConnect/Initiate", None)
+            .await
+    }
+
+    pub async fn quick_connect_state(&self, secret: &str) -> Result<QuickConnectState, Error> {
+        let mut url = self.base_url.join("QuickConnect/Connect")?;
+        url.query_pairs_mut().append_pair("Secret", secret);
+        let response = self
+            .http_client
+            .get(url)
+            .header(header::AUTHORIZATION, self.build_auth_header().await)
+            .send()
+            .await?;
+        Self::parse_response(response).await
+    }
+
+    pub async fn authenticate_with_quick_connect<T: DeserializeOwned>(
+        &self,
+        secret: &str,
+    ) -> Result<T, Error> {
+        self.request(
+            reqwest::Method::POST,
+            "Users/AuthenticateWithQuickConnect",
+            Some(&json!({ "Secret": secret })),
+        )
+        .await
+    }
+
+    pub async fn get_me_typed<T: DeserializeOwned>(&self) -> Result<T, Error> {
+        self.request(reqwest::Method::GET, "Users/Me", None).await
+    }
+
     pub async fn logout(&self) -> Result<(), Error> {
         self.request_no_content(reqwest::Method::POST, "Sessions/Logout", None)
             .await?;
@@ -386,6 +433,54 @@ mod tests {
 
         assert_eq!(user.name, "test_user");
         assert_eq!(client.get_token().await.as_deref(), Some("test_token"));
+    }
+
+    #[tokio::test]
+    async fn quick_connect_client_exchanges_secret_for_access_token() {
+        let backend = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/QuickConnect/Enabled"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(true))
+            .mount(&backend)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/QuickConnect/Initiate"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Secret": "private-secret", "Code": "123456", "Authenticated": false,
+            })))
+            .mount(&backend)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/QuickConnect/Connect"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Secret": "private-secret", "Code": "123456", "Authenticated": true,
+            })))
+            .mount(&backend)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/Users/AuthenticateWithQuickConnect"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "AccessToken": "durable-token", "User": { "Id": "remote-id", "Name": "Remote" },
+            })))
+            .mount(&backend)
+            .await;
+        let client = JellyfinClient::new(&backend.uri(), ClientInfo::default()).unwrap();
+        assert!(client.quick_connect_enabled().await.unwrap());
+        let state = client.initiate_quick_connect().await.unwrap();
+        assert_eq!(state.code, "123456");
+        assert!(
+            client
+                .quick_connect_state(&state.secret)
+                .await
+                .unwrap()
+                .authenticated
+        );
+        let auth: AuthResponse = client
+            .authenticate_with_quick_connect(&state.secret)
+            .await
+            .unwrap();
+        assert_eq!(auth.access_token, "durable-token");
+        assert_eq!(auth.user.id, "remote-id");
     }
 
     #[tokio::test]

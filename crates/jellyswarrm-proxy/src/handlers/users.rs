@@ -11,7 +11,7 @@ use crate::{
     handlers::common::execute_json_request,
     models::{AuthenticateRequest, AuthenticateResponse, Authorization, SyncPlayUserAccessType},
     url_helper::join_server_url,
-    user_authorization_service::LocalCredential,
+    user_authorization_service::{LocalCredential, MappingAuth},
     AppState,
 };
 
@@ -301,20 +301,22 @@ async fn persist_successful_auths(
     let mapping_key = user.local_credential.mapping_key();
 
     for successful in successful_auths {
-        state
-            .user_authorization
-            .add_server_mapping(
-                &user.id,
-                &successful.server,
-                &successful.final_username,
-                &successful.final_password,
-                Some(&mapping_key),
-            )
-            .await
-            .map_err(|e| {
-                tracing::error!("Error updating server mapping after authentication: {}", e);
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+        if let Some(final_password) = &successful.final_password {
+            state
+                .user_authorization
+                .add_server_mapping(
+                    &user.id,
+                    &successful.server,
+                    &successful.final_username,
+                    final_password,
+                    Some(&mapping_key),
+                )
+                .await
+                .map_err(|e| {
+                    tracing::error!("Error updating server mapping after authentication: {}", e);
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?;
+        }
 
         let mut auth_to_store = login_authorization.clone();
         auth_to_store.token = Some(successful.auth_response.access_token.clone());
@@ -449,9 +451,44 @@ async fn authenticate_on_server(
     let given_password = payload.password.clone();
     let user_mapping_key = LocalCredential::from_password(&given_password).mapping_key();
 
+    if let Some(mapping) = &server_mapping {
+        if matches!(mapping.auth, MappingAuth::QuickConnect { .. }) {
+            let local_user = state
+                .user_authorization
+                .get_user_by_username(&payload.username)
+                .await
+                .map_err(|_| AuthError::InternalError)?
+                .ok_or(AuthError::InvalidCredentials)?;
+            let (token, remote_user) = crate::mapping_auth::validated_quick_connect_token(
+                &state,
+                &local_user,
+                &server,
+                mapping,
+            )
+            .await
+            .map_err(|_| AuthError::InvalidCredentials)?;
+            let server_id = state.config.read().await.server_id.clone();
+            return Ok(SuccessfulServerAuth {
+                server,
+                auth_response: AuthenticateResponse {
+                    user: remote_user,
+                    session_info: crate::models::SessionInfo {
+                        user_id: local_user.id,
+                        user_name: payload.username.clone(),
+                        server_id: server_id.clone(),
+                        extra: Default::default(),
+                    },
+                    access_token: token,
+                    server_id,
+                },
+                final_username: mapping.auth.username().to_string(),
+                final_password: None,
+            });
+        }
+    }
     let (final_username, final_password) = if let Some(mapping) = &server_mapping {
         (
-            mapping.mapped_username.clone(),
+            mapping.auth.username().to_string(),
             state.user_authorization.decrypt_server_mapping_password(
                 mapping,
                 &user_mapping_key,
@@ -534,7 +571,7 @@ async fn authenticate_on_server(
         server,
         auth_response,
         final_username,
-        final_password,
+        final_password: Some(final_password),
     })
 }
 
@@ -590,5 +627,5 @@ struct SuccessfulServerAuth {
     server: crate::server_storage::Server,
     auth_response: AuthenticateResponse,
     final_username: String,
-    final_password: crate::encryption::Password,
+    final_password: Option<crate::encryption::Password>,
 }

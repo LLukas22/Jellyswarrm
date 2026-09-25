@@ -94,6 +94,8 @@ To manually link a user to additional server accounts (e.g. if they have differe
 4. Enter the **username** and **password** for the Jellyfin account on that server.
 5. Click **Add** to save the mapping.
 
+Users can also link their own accounts from **Connected Servers** in the Jellyswarrm UI. For an available server, choose **Connect** to enter credentials or **Quick Connect** to approve a code in an already signed-in Jellyfin client on that *backend* server. Quick Connect must be enabled there. The code is temporary; Jellyswarrm saves the resulting backend access token for future logins. If that token is revoked, use **Reconnect with Quick Connect** on the connected server. Jellyfin does not provide a refresh token for this flow. Existing Jellyfin app sessions may need to sign in to Jellyswarrm again to pick up a newly linked server.
+
 ---
 
 ### Removing Users or Mappings

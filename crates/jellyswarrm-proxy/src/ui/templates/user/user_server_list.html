@@ -42,6 +42,9 @@
                     </span>
                 </td>
                 <td>
+                    <button type="button" class="outline" onclick="openQuickConnect('{{ server.id }}', '{{ server.name }}')" style="padding: 0.25rem 0.5rem; font-size: 0.8em;">
+                        Reconnect with Quick Connect
+                    </button>
                     <button 
                         hx-delete="/{{ ui_route }}/user/servers/{{ server.id }}"
                         hx-confirm="Are you sure you want to disconnect from {{ server.name }}?"
@@ -59,7 +62,7 @@
 {% if !unmapped_servers.is_empty() %}
     <hr>
     <h2>Available Servers</h2>
-    <p>Connect to these servers by providing your credentials.</p>
+    <p>Connect with your credentials or approve a Quick Connect code on the selected Jellyfin server.</p>
     
     <table role="grid">
         <thead>
@@ -97,11 +100,15 @@
                         style="padding: 0.25rem 0.5rem; font-size: 0.8em;">
                         Connect
                     </button>
+                    <button type="button" class="outline" onclick="openQuickConnect('{{ server.id }}', '{{ server.name }}')">
+                        Quick Connect
+                    </button>
                 </td>
             </tr>
         {% endfor %}
         </tbody>
     </table>
+{% endif %}
 
     <dialog id="connect_modal">
         <article>
@@ -133,6 +140,17 @@
         </article>
     </dialog>
 
+    <dialog id="quick_connect_modal">
+        <article>
+            <header><button aria-label="Close" rel="prev" onclick="closeQuickConnect()"></button>
+                <h3>Connect to <span id="quick_connect_server"></span></h3></header>
+            <p>Enter this code in the Quick Connect settings of an account already signed in to this Jellyfin server:</p>
+            <p><strong id="quick_connect_code"></strong></p>
+            <p id="quick_connect_status" role="status"></p>
+            <button type="button" class="secondary" onclick="closeQuickConnect()">Cancel</button>
+        </article>
+    </dialog>
+
     <script>
         (function() {
             const modal = document.getElementById('connect_modal');
@@ -153,6 +171,44 @@
             window.closeConnectModal = function() {
                 modal.close();
             }
+
+            let quickConnectTimer;
+            const quickConnectModal = document.getElementById('quick_connect_modal');
+            const quickConnectStatus = document.getElementById('quick_connect_status');
+            window.closeQuickConnect = function() {
+                clearTimeout(quickConnectTimer);
+                quickConnectModal.close();
+            };
+            quickConnectModal.addEventListener('close', () => clearTimeout(quickConnectTimer));
+            window.openQuickConnect = async function(id, name) {
+                clearTimeout(quickConnectTimer);
+                document.getElementById('quick_connect_server').textContent = name;
+                document.getElementById('quick_connect_code').textContent = '';
+                quickConnectStatus.textContent = 'Requesting a code…';
+                quickConnectModal.showModal();
+                try {
+                    const base = '/' + uiRoute + '/user/servers/' + encodeURIComponent(id) + '/quick-connect';
+                    const response = await fetch(base, { method: 'POST' });
+                    if (!response.ok) throw new Error(response.status === 409 ? 'Quick Connect is disabled on this server.' : 'Could not start Quick Connect.');
+                    const result = await response.json();
+                    if (!quickConnectModal.open) return;
+                    document.getElementById('quick_connect_code').textContent = result.code;
+                    quickConnectStatus.textContent = 'Waiting for approval…';
+                    const poll = async () => {
+                        if (!quickConnectModal.open) return;
+                        try {
+                            const status = await fetch(base + '/' + encodeURIComponent(result.request_id), { method: 'POST' });
+                            if (!status.ok) throw new Error('Approval expired or the server could not be reached. Please try again.');
+                            const progress = await status.json();
+                            if (progress.status === 'connected') {
+                                window.location.reload();
+                                return;
+                            }
+                            quickConnectTimer = setTimeout(poll, 5000);
+                        } catch (error) { quickConnectStatus.textContent = error.message; }
+                    };
+                    quickConnectTimer = setTimeout(poll, 5000);
+                } catch (error) { quickConnectStatus.textContent = error.message; }
+            };
         })();
     </script>
-{% endif %}

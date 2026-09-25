@@ -111,26 +111,74 @@ pub struct VirtualUserApiKey {
 }
 
 #[derive(Debug, Clone)]
+pub enum MappingAuth {
+    Password {
+        username: String,
+        password: EncryptedPassword,
+    },
+    QuickConnect {
+        username: String,
+        backend_user_id: String,
+        token: EncryptedPassword,
+    },
+}
+
+impl MappingAuth {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Password { .. } => "Username and password",
+            Self::QuickConnect { .. } => "Quick Connect",
+        }
+    }
+
+    pub fn username(&self) -> &str {
+        match self {
+            Self::Password { username, .. } | Self::QuickConnect { username, .. } => username,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct ServerMapping {
     pub id: i64,
     pub user_id: String,
     pub server_id: ServerId,
     pub server_url: String,
-    pub mapped_username: String,
-    pub mapped_password: EncryptedPassword,
+    pub auth: MappingAuth,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl<'r> sqlx::FromRow<'r, SqliteRow> for ServerMapping {
     fn from_row(row: &SqliteRow) -> Result<Self, sqlx::Error> {
+        let username: String = row.try_get("mapped_username")?;
+        let auth = match row.try_get::<String, _>("auth_method")?.as_str() {
+            "password" => MappingAuth::Password {
+                username,
+                password: row.try_get("mapped_password")?,
+            },
+            "quick_connect" => MappingAuth::QuickConnect {
+                username,
+                backend_user_id: row
+                    .try_get::<Option<String>, _>("backend_user_id")?
+                    .ok_or_else(|| sqlx::Error::Decode("missing backend user id".into()))?,
+                token: EncryptedPassword::from_raw(
+                    row.try_get::<Option<String>, _>("encrypted_token")?
+                        .ok_or_else(|| sqlx::Error::Decode("missing mapping token".into()))?,
+                ),
+            },
+            kind => {
+                return Err(sqlx::Error::Decode(
+                    format!("unknown mapping auth: {kind}").into(),
+                ))
+            }
+        };
         Ok(Self {
             id: row.try_get("id")?,
             user_id: row.try_get("user_id")?,
             server_id: ServerId::new(row.try_get("server_id")?),
             server_url: row.try_get("server_url")?,
-            mapped_username: row.try_get("mapped_username")?,
-            mapped_password: row.try_get("mapped_password")?,
+            auth,
             created_at: row.try_get("created_at")?,
             updated_at: row.try_get("updated_at")?,
         })
@@ -407,23 +455,20 @@ impl UserAuthorizationService {
         mapped_password: &Password,
         master_password: Option<&HashedPassword>,
     ) -> bool {
-        if !existing_mapping
-            .mapped_username
-            .trim()
-            .eq_ignore_ascii_case(mapped_username.trim())
-        {
+        let MappingAuth::Password { username, password } = &existing_mapping.auth else {
+            return true;
+        };
+        if !username.trim().eq_ignore_ascii_case(mapped_username.trim()) {
             return true;
         }
 
         if let Some(master_password) = master_password {
-            if let Ok(existing_password) =
-                decrypt_password(&existing_mapping.mapped_password, master_password)
-            {
+            if let Ok(existing_password) = decrypt_password(password, master_password) {
                 return existing_password != *mapped_password;
             }
         }
 
-        existing_mapping.mapped_password.as_str() != mapped_password.as_str()
+        password.as_str() != mapped_password.as_str()
     }
 
     #[cfg(test)]
@@ -778,12 +823,15 @@ impl UserAuthorizationService {
         let mapping_id = sqlx::query_scalar::<_, i64>(
             r#"
             INSERT INTO server_mappings
-            (user_id, server_id, server_url, mapped_username, mapped_password, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (user_id, server_id, server_url, mapped_username, mapped_password, auth_method, backend_user_id, encrypted_token, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, 'password', NULL, NULL, ?, ?)
             ON CONFLICT(user_id, server_id) DO UPDATE SET
                 server_url = excluded.server_url,
                 mapped_username = excluded.mapped_username,
                 mapped_password = excluded.mapped_password,
+                auth_method = 'password',
+                backend_user_id = NULL,
+                encrypted_token = NULL,
                 updated_at = excluded.updated_at
             RETURNING id
             "#,
@@ -820,6 +868,67 @@ impl UserAuthorizationService {
         Ok(mapping_id)
     }
 
+    /// Persist a Quick Connect credential independently of client-device sessions.
+    /// Re-linking invalidates sessions that may refer to another upstream account.
+    pub async fn add_quick_connect_mapping(
+        &self,
+        user_id: &str,
+        server: &Server,
+        username: &str,
+        backend_user_id: &str,
+        token: &str,
+        encryption_key: &HashedPassword,
+    ) -> Result<i64, sqlx::Error> {
+        let encrypted = encrypt_password(&Password::from(token), encryption_key)
+            .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+        let mut tx = self.pool.begin().await?;
+        let id = sqlx::query_scalar::<_, i64>(
+            r#"INSERT INTO server_mappings
+            (user_id, server_id, server_url, mapped_username, mapped_password, auth_method, backend_user_id, encrypted_token)
+            VALUES (?, ?, ?, ?, '', 'quick_connect', ?, ?)
+            ON CONFLICT(user_id, server_id) DO UPDATE SET
+                server_url = excluded.server_url,
+                mapped_username = excluded.mapped_username,
+                mapped_password = '',
+                auth_method = 'quick_connect',
+                backend_user_id = excluded.backend_user_id,
+                encrypted_token = excluded.encrypted_token,
+                updated_at = CURRENT_TIMESTAMP
+            RETURNING id"#,
+        )
+        .bind(user_id)
+        .bind(server.id.as_i64())
+        .bind(server.url.as_str())
+        .bind(username)
+        .bind(backend_user_id)
+        .bind(encrypted.as_str())
+        .fetch_one(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM authorization_sessions WHERE mapping_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(id)
+    }
+
+    pub fn decrypt_mapping_token(
+        &self,
+        mapping: &ServerMapping,
+        user_key: &HashedPassword,
+        admin_key: &HashedPassword,
+    ) -> Result<String, String> {
+        let MappingAuth::QuickConnect { token, .. } = &mapping.auth else {
+            return Err("not a Quick Connect mapping".into());
+        };
+        // New Quick Connect links use the admin key. Try that first so routine
+        // validation does not log an expected failed user-key decryption.
+        decrypt_password(token, admin_key)
+            .or_else(|_| decrypt_password(token, user_key))
+            .map(Password::into_inner)
+            .map_err(|_| "Unable to decrypt Quick Connect token".into())
+    }
+
     /// Decrypt a server mapping password
     pub fn decrypt_server_mapping_password(
         &self,
@@ -829,32 +938,33 @@ impl UserAuthorizationService {
         user_password_plain: Option<&Password>,
         admin_password_plain: Option<&Password>,
     ) -> Password {
+        let MappingAuth::Password { password, .. } = &mapping.auth else {
+            return Password::from("");
+        };
         // Try user password first
-        if let Ok(decrypted) = decrypt_password(&mapping.mapped_password, user_password) {
+        if let Ok(decrypted) = decrypt_password(password, user_password) {
             return decrypted;
         }
 
         // Try admin password
-        if let Ok(decrypted) = decrypt_password(&mapping.mapped_password, admin_password) {
+        if let Ok(decrypted) = decrypt_password(password, admin_password) {
             return decrypted;
         }
 
         // Backward compatibility: try raw user password key material if available
         if let Some(user_password_plain) = user_password_plain {
-            if let Ok(decrypted) = decrypt_password_with_key_material(
-                &mapping.mapped_password,
-                user_password_plain.as_str(),
-            ) {
+            if let Ok(decrypted) =
+                decrypt_password_with_key_material(password, user_password_plain.as_str())
+            {
                 return decrypted;
             }
         }
 
         // Backward compatibility: try raw admin password key material if available
         if let Some(admin_password_plain) = admin_password_plain {
-            if let Ok(decrypted) = decrypt_password_with_key_material(
-                &mapping.mapped_password,
-                admin_password_plain.as_str(),
-            ) {
+            if let Ok(decrypted) =
+                decrypt_password_with_key_material(password, admin_password_plain.as_str())
+            {
                 return decrypted;
             }
         }
@@ -864,7 +974,7 @@ impl UserAuthorizationService {
             "Failed to decrypt password for mapping {}. Assuming plaintext.",
             mapping.id
         );
-        mapping.mapped_password.clone().into_inner().into()
+        password.clone().into_inner().into()
     }
 
     /// Get server mapping
@@ -884,7 +994,7 @@ impl UserAuthorizationService {
     ) -> Result<Option<ServerMapping>, sqlx::Error> {
         let mapping = sqlx::query_as::<_, ServerMapping>(
             r#"
-            SELECT id, user_id, server_id, server_url, mapped_username, mapped_password, created_at, updated_at
+            SELECT id, user_id, server_id, server_url, mapped_username, mapped_password, auth_method, backend_user_id, encrypted_token, created_at, updated_at
             FROM server_mappings
             WHERE user_id = ? AND server_id = ?
             "#,
@@ -904,7 +1014,7 @@ impl UserAuthorizationService {
     ) -> Result<Vec<ServerMapping>, sqlx::Error> {
         let mappings = sqlx::query_as::<_, ServerMapping>(
             r#"
-            SELECT id, user_id, server_id, server_url, mapped_username, mapped_password, created_at, updated_at
+            SELECT id, user_id, server_id, server_url, mapped_username, mapped_password, auth_method, backend_user_id, encrypted_token, created_at, updated_at
             FROM server_mappings
             WHERE user_id = ?
             ORDER BY server_url
@@ -1366,7 +1476,7 @@ impl UserAuthorizationService {
         // 2. Re-encrypt all server mappings
         let mappings = sqlx::query_as::<_, ServerMapping>(
             r#"
-            SELECT id, user_id, server_id, server_url, mapped_username, mapped_password, created_at, updated_at
+            SELECT id, user_id, server_id, server_url, mapped_username, mapped_password, auth_method, backend_user_id, encrypted_token, created_at, updated_at
             FROM server_mappings
             WHERE user_id = ?
             "#,
@@ -1379,6 +1489,18 @@ impl UserAuthorizationService {
         let admin_password_hash = admin_password.into();
 
         for mapping in mappings {
+            if let MappingAuth::QuickConnect { token, .. } = &mapping.auth {
+                // An admin-owned mapping need not be re-keyed; user-owned tokens must
+                // survive a local password change.
+                if let Ok(plaintext) = decrypt_password(token, &old_password_hash) {
+                    let encrypted = encrypt_password(&plaintext, &local_credential.mapping_key())
+                        .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+                    sqlx::query("UPDATE server_mappings SET encrypted_token = ?, updated_at = ? WHERE id = ?")
+                        .bind(encrypted.as_str()).bind(now).bind(mapping.id)
+                        .execute(&mut *transaction).await?;
+                }
+                continue;
+            }
             // Decrypt with old credentials
             let decrypted_password = self.decrypt_server_mapping_password(
                 &mapping,
@@ -1525,6 +1647,145 @@ mod tests {
         MIGRATOR.run(&pool).await.unwrap();
         let service = UserAuthorizationService::new(pool.clone());
         (pool, service)
+    }
+
+    #[tokio::test]
+    async fn quick_connect_mapping_rekeys_and_switches_to_password() {
+        let (pool, service) = setup_service().await;
+        let server_id = insert_test_server(&pool, "Backend", "http://localhost:8096").await;
+        let user = service.create_user("local", &"old".into()).await.unwrap();
+        let server = Server::from_row(
+            sqlx::query("SELECT * FROM servers WHERE id = ?")
+                .bind(server_id.as_i64())
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        service
+            .add_quick_connect_mapping(
+                &user.id,
+                &server,
+                "Remote",
+                "backend-id",
+                "bearer-secret",
+                &user.local_credential.mapping_key(),
+            )
+            .await
+            .unwrap();
+        let mapping = service
+            .get_server_mapping(&user.id, &server)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(&mapping.auth, MappingAuth::QuickConnect { backend_user_id, .. } if backend_user_id == "backend-id")
+        );
+        assert_eq!(
+            service
+                .decrypt_mapping_token(
+                    &mapping,
+                    &user.local_credential.mapping_key(),
+                    &HashedPassword::from_password("admin")
+                )
+                .unwrap(),
+            "bearer-secret"
+        );
+        assert!(!mapping.auth.username().is_empty());
+
+        service
+            .update_user_password(&user.id, &"old".into(), &"new".into(), &"admin".into())
+            .await
+            .unwrap();
+        let mapping = service
+            .get_server_mapping(&user.id, &server)
+            .await
+            .unwrap()
+            .unwrap();
+        let new_key = LocalCredential::from_password(&"new".into()).mapping_key();
+        assert_eq!(
+            service
+                .decrypt_mapping_token(&mapping, &new_key, &HashedPassword::from_password("admin"))
+                .unwrap(),
+            "bearer-secret"
+        );
+        assert!(service
+            .decrypt_mapping_token(
+                &mapping,
+                &user.local_credential.mapping_key(),
+                &HashedPassword::from_password("admin")
+            )
+            .is_err());
+
+        service
+            .add_server_mapping(
+                &user.id,
+                &server,
+                "Remote",
+                &"password".into(),
+                Some(&new_key),
+            )
+            .await
+            .unwrap();
+        let mapping = service
+            .get_server_mapping(&user.id, &server)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(mapping.auth, MappingAuth::Password { .. }));
+        let persisted: Option<String> =
+            sqlx::query_scalar("SELECT encrypted_token FROM server_mappings WHERE id = ?")
+                .bind(mapping.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(persisted.is_none());
+    }
+
+    #[tokio::test]
+    async fn admin_encrypted_quick_connect_mapping_survives_local_password_change() {
+        let (pool, service) = setup_service().await;
+        let server_id = insert_test_server(&pool, "Backend", "http://localhost:8096").await;
+        let server = Server::from_row(
+            sqlx::query("SELECT * FROM servers WHERE id = ?")
+                .bind(server_id.as_i64())
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let user = service
+            .create_user("local", &"before".into())
+            .await
+            .unwrap();
+        let admin_key = HashedPassword::from_password("admin");
+        service
+            .add_quick_connect_mapping(
+                &user.id,
+                &server,
+                "Remote",
+                "remote-id",
+                "token",
+                &admin_key,
+            )
+            .await
+            .unwrap();
+        service
+            .update_user_password(&user.id, &"before".into(), &"after".into(), &"admin".into())
+            .await
+            .unwrap();
+        let mapping = service
+            .get_server_mapping(&user.id, &server)
+            .await
+            .unwrap()
+            .unwrap();
+        let user_key = LocalCredential::from_password(&"after".into()).mapping_key();
+        assert_eq!(
+            service
+                .decrypt_mapping_token(&mapping, &user_key, &admin_key)
+                .unwrap(),
+            "token"
+        );
     }
 
     #[tokio::test]
@@ -1808,8 +2069,14 @@ mod tests {
             .unwrap();
         let passwordless_key = passwordless.local_credential.mapping_key();
         assert_eq!(
-            decrypt_password(&mapping.mapped_password, &passwordless_key)
-                .unwrap()
+            service
+                .decrypt_server_mapping_password(
+                    &mapping,
+                    &passwordless_key,
+                    &passwordless_key,
+                    None,
+                    None,
+                )
                 .as_str(),
             "mapped-secret"
         );
@@ -1837,12 +2104,15 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(
-            decrypt_password(
-                &mapping.mapped_password,
-                &protected.local_credential.mapping_key(),
-            )
-            .unwrap()
-            .as_str(),
+            service
+                .decrypt_server_mapping_password(
+                    &mapping,
+                    &protected.local_credential.mapping_key(),
+                    &protected.local_credential.mapping_key(),
+                    None,
+                    None,
+                )
+                .as_str(),
             "mapped-secret"
         );
     }

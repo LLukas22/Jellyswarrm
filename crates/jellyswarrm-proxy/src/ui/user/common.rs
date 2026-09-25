@@ -3,7 +3,10 @@ use std::sync::Arc;
 use jellyfin_api::JellyfinClient;
 use tracing::info;
 
-use crate::{config::CLIENT_STORAGE, encryption::HashedPassword, server_storage::Server, AppState};
+use crate::{
+    config::CLIENT_STORAGE, encryption::HashedPassword, server_storage::Server,
+    user_authorization_service::MappingAuth, AppState,
+};
 
 pub async fn authenticate_user_on_server(
     state: &AppState,
@@ -51,6 +54,47 @@ pub async fn authenticate_user_on_server(
     let admin_password_hash: HashedPassword = (&admin_password).into();
 
     let mapping_key = user.local_credential.mapping_key();
+    if let MappingAuth::QuickConnect {
+        backend_user_id, ..
+    } = &mapping.auth
+    {
+        let local_user = state
+            .user_authorization
+            .get_user_by_id(&user.id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or("Local user not found")?;
+        let (token, remote_user) = crate::mapping_auth::validated_quick_connect_token(
+            state,
+            &local_user,
+            server,
+            &mapping,
+        )
+        .await?;
+        // Use a fresh client: the shared cache evicts by calling Logout, which
+        // would revoke this mapping's persistent credential.
+        let qc_client = Arc::new(
+            JellyfinClient::new(
+                server.url.as_str(),
+                jellyfin_api::ClientInfo {
+                    device_id: crate::mapping_auth::mapping_device_id(server, &user.id),
+                    ..crate::config::CLIENT_INFO.clone()
+                },
+            )
+            .map_err(|e| e.to_string())?,
+        );
+        qc_client.with_token(token).await;
+        return Ok((
+            qc_client,
+            jellyfin_api::models::User {
+                id: backend_user_id.clone(),
+                name: remote_user.name,
+                server_id: Some(remote_user.server_id),
+                policy: None,
+            },
+            public_info,
+        ));
+    }
     let password = state.user_authorization.decrypt_server_mapping_password(
         &mapping,
         &mapping_key,
@@ -82,7 +126,7 @@ pub async fn authenticate_user_on_server(
     );
 
     match client
-        .authenticate_by_name(&mapping.mapped_username, password.as_str())
+        .authenticate_by_name(mapping.auth.username(), password.as_str())
         .await
     {
         Ok(jellyfin_user) => Ok((client, jellyfin_user, public_info)),
