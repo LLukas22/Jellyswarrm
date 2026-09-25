@@ -233,6 +233,7 @@ pub enum ItemSortBy {
     CommunityRating,
     CriticRating,
     DateCreated,
+    DateLastContentAdded,
     DatePlayed,
     EpisodeOrder,
     InheritedParentalRating,

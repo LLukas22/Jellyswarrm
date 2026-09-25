@@ -323,6 +323,9 @@ impl ItemsResponseVariants {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MediaItem {
     pub name: Option<String>,
+    pub album: Option<String>,
+    pub album_artist: Option<String>,
+    pub artists: Option<Vec<String>>,
     pub server_id: Option<String>,
     pub id: String,
     pub item_id: Option<String>,
@@ -382,7 +385,7 @@ impl MediaItem {
         use std::cmp::Ordering;
 
         match sort_by {
-            ItemSortBy::SortName | ItemSortBy::Name => {
+            ItemSortBy::SortName => {
                 let left = self
                     .sort_name
                     .as_deref()
@@ -393,8 +396,32 @@ impl MediaItem {
                     .as_deref()
                     .or(other.name.as_deref())
                     .unwrap_or("");
-                left.cmp(right)
+                left.to_lowercase().cmp(&right.to_lowercase())
             }
+            ItemSortBy::Name => self
+                .name
+                .as_deref()
+                .unwrap_or("")
+                .to_lowercase()
+                .cmp(&other.name.as_deref().unwrap_or("").to_lowercase()),
+            ItemSortBy::AlbumArtist => self
+                .album_artist
+                .as_deref()
+                .unwrap_or("")
+                .to_lowercase()
+                .cmp(&other.album_artist.as_deref().unwrap_or("").to_lowercase()),
+            ItemSortBy::Album => compare_text(self.album.as_deref(), other.album.as_deref()),
+            ItemSortBy::Artist => compare_text(
+                self.artists
+                    .as_ref()
+                    .and_then(|artists| artists.first())
+                    .map(String::as_str),
+                other
+                    .artists
+                    .as_ref()
+                    .and_then(|artists| artists.first())
+                    .map(String::as_str),
+            ),
             ItemSortBy::ProductionYear => self.production_year.cmp(&other.production_year),
             ItemSortBy::Runtime => self.run_time_ticks.cmp(&other.run_time_ticks),
             ItemSortBy::CommunityRating => {
@@ -408,8 +435,13 @@ impl MediaItem {
                 left.partial_cmp(&right).unwrap_or(Ordering::Equal)
             }
             ItemSortBy::OfficialRating => self.official_rating.cmp(&other.official_rating),
-            ItemSortBy::PremiereDate => self.premiere_date.cmp(&other.premiere_date),
-            ItemSortBy::DateCreated => self.date_created.cmp(&other.date_created),
+            ItemSortBy::PremiereDate => compare_dates(
+                self.premiere_date.as_deref(),
+                other.premiere_date.as_deref(),
+            ),
+            ItemSortBy::DateCreated => {
+                compare_dates(self.date_created.as_deref(), other.date_created.as_deref())
+            }
             ItemSortBy::PlayCount => {
                 let left = self.user_data.as_ref().map(|u| u.play_count).unwrap_or(0);
                 let right = other.user_data.as_ref().map(|u| u.play_count).unwrap_or(0);
@@ -419,17 +451,34 @@ impl MediaItem {
                 let left = self
                     .user_data
                     .as_ref()
-                    .and_then(|u| u.last_played_date.as_deref())
-                    .unwrap_or("");
+                    .and_then(|u| u.last_played_date.as_deref());
                 let right = other
                     .user_data
                     .as_ref()
-                    .and_then(|u| u.last_played_date.as_deref())
-                    .unwrap_or("");
-                left.cmp(right)
+                    .and_then(|u| u.last_played_date.as_deref());
+                compare_dates(left, right)
             }
             _ => Ordering::Equal,
         }
+    }
+}
+
+fn compare_text(left: Option<&str>, right: Option<&str>) -> std::cmp::Ordering {
+    left.unwrap_or("")
+        .to_lowercase()
+        .cmp(&right.unwrap_or("").to_lowercase())
+}
+
+fn compare_dates(left: Option<&str>, right: Option<&str>) -> std::cmp::Ordering {
+    match (left, right) {
+        (Some(left), Some(right)) => match (
+            chrono::DateTime::parse_from_rfc3339(left),
+            chrono::DateTime::parse_from_rfc3339(right),
+        ) {
+            (Ok(left_date), Ok(right_date)) => left_date.cmp(&right_date),
+            _ => left.cmp(right),
+        },
+        _ => left.cmp(&right),
     }
 }
 
