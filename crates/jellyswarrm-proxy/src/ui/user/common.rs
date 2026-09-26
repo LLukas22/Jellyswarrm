@@ -5,11 +5,70 @@ use tracing::info;
 
 use crate::{
     config::CLIENT_STORAGE,
-    encryption::HashedPassword,
+    encryption::{HashedPassword, Password},
     server_storage::Server,
     user_authorization_service::{CredentialFormat, MappingAuth},
     AppState,
 };
+
+/// Validate ambiguous legacy values before the local password transaction.
+/// Do not accept a cached token as proof of the saved password's correctness.
+pub async fn prepare_mappings_for_password_change(
+    state: &AppState,
+    user: &crate::ui::auth::User,
+    verified_password: &Password,
+) -> Result<(), String> {
+    let admin_password = state.get_admin_password().await;
+    let mappings = state
+        .user_authorization
+        .upgrade_mappings_with_verified_password(&user.id, verified_password, Some(&admin_password))
+        .await
+        .map_err(|e| e.to_string())?;
+    for mapping in mappings {
+        if mapping.credential_format != CredentialFormat::Legacy {
+            continue;
+        }
+        let password = state.user_authorization.decrypt_server_mapping_password(
+            &mapping,
+            &user.local_credential.mapping_key(),
+            &(&admin_password).into(),
+            Some(verified_password),
+            Some(&admin_password),
+        )?;
+        let server = state
+            .server_storage
+            .get_server_by_id(mapping.server_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or("Mapped server no longer exists")?;
+        let client = JellyfinClient::new_with_client(
+            server.url.as_str(),
+            jellyfin_api::ClientInfo {
+                device_id: format!("jellyswarrm-validation-{}", uuid::Uuid::new_v4()),
+                ..crate::config::CLIENT_INFO.clone()
+            },
+            state.reqwest_client.clone(),
+        )
+        .map_err(|e| e.to_string())?;
+        client
+            .authenticate_by_name(mapping.auth.username(), password.as_str())
+            .await
+            .map_err(|_| {
+                format!(
+                    "Legacy credentials could not be validated on {}",
+                    server.name
+                )
+            })?;
+        // This client is used only for validation, never for a saved session.
+        let _ = client.logout().await;
+        state
+            .user_authorization
+            .upgrade_validated_password_mapping(&mapping, &password)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
 
 pub async fn authenticate_user_on_server(
     state: &AppState,
@@ -136,13 +195,7 @@ pub async fn authenticate_user_on_server(
             if mapping.credential_format == CredentialFormat::Legacy {
                 state
                     .user_authorization
-                    .add_server_mapping(
-                        &user.id,
-                        server,
-                        mapping.auth.username(),
-                        &password,
-                        Some(&mapping_key),
-                    )
+                    .upgrade_validated_password_mapping(&mapping, &password)
                     .await
                     .map_err(|e| e.to_string())?;
             }

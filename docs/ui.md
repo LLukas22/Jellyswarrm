@@ -98,6 +98,8 @@ Users can also link their own accounts from **Connected Servers** in the Jellysw
 
 Mapping credentials and backend tokens in per-client authorization sessions are encrypted using separate purpose-specific keys derived from the persistent `session_key` in `jellyswarrm.toml`. Back up that configuration file together with the database: losing or changing `session_key` makes encrypted mappings and sessions unreadable. Existing session tokens are encrypted on startup; existing mappings are upgraded when they can be decrypted, or after successful backend authentication if a legacy plaintext password resembles encrypted data. New local user passwords are stored with salted Argon2id hashes. Existing SHA-256 login hashes are upgraded after a successful login, once their legacy mappings have been safely re-encrypted. The admin password is still held in the administrator's configuration: protect that file and check permissions on existing installations (newly saved files use owner-only permissions on Unix).
 
+Login-time migration also supports legacy mappings encrypted with the original raw password. Password hashing and verification run on blocking workers with bounded concurrency. Before changing a local password, Jellyswarrm validates any remaining ambiguous legacy password mappings directly with their backend servers. If validation fails, the local password stays unchanged and the UI asks you to check server connectivity or reconnect the affected accounts from **Connected Servers**, then retry.
+
 ---
 
 ### Removing Users or Mappings

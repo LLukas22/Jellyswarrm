@@ -182,16 +182,10 @@ impl EncryptedPassword {
     }
 }
 
-/// Legacy rows with no AEAD nonce and tag may have been written as plaintext.
-/// A syntactically valid encrypted blob must contain 12 nonce + 16 tag bytes.
+/// Identify legacy values that cannot be complete encrypted blobs. A false
+/// result is ambiguous: generated plaintext passwords can also be valid Base64
+/// containing at least 12 nonce + 16 tag bytes. Validate those with the backend.
 pub fn is_legacy_plaintext(value: &EncryptedPassword) -> bool {
-    // Legacy plaintext often includes generated hexadecimal passwords. Such
-    // strings are also valid Base64 and can decode to a full AEAD-sized blob.
-    // An actual Base64-encoded ciphertext this long consisting solely of hex
-    // characters is extraordinarily unlikely; do not strand these mappings.
-    if value.as_str().len() >= 38 && value.as_str().bytes().all(|b| b.is_ascii_hexdigit()) {
-        return true;
-    }
     general_purpose::STANDARD
         .decode(value.as_str())
         .map_or(true, |bytes| bytes.len() < 28)
@@ -401,8 +395,8 @@ mod tests {
     }
 
     #[test]
-    fn legacy_hexadecimal_plaintext_is_not_mistaken_for_ciphertext() {
-        assert!(is_legacy_plaintext(&EncryptedPassword::from_raw(
+    fn legacy_hexadecimal_password_requires_validation() {
+        assert!(!is_legacy_plaintext(&EncryptedPassword::from_raw(
             "0123456789abcdef0123456789abcdef01234567".into()
         )));
     }

@@ -6,7 +6,7 @@ use hyper::{HeaderMap, StatusCode};
 use tracing::{debug, error, info, warn};
 
 use crate::{
-    encryption::Password,
+    encryption::{HashedPassword, Password},
     extractors::{RequireUser, RequireUserSession},
     handlers::common::execute_json_request,
     models::{AuthenticateRequest, AuthenticateResponse, Authorization, SyncPlayUserAccessType},
@@ -141,7 +141,10 @@ pub async fn handle_authenticate_by_name(
     if !local_credential_allows_login(
         existing_user.as_ref().map(|user| &user.local_credential),
         &payload.password,
-    ) {
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    {
         warn!(
             "Rejecting login for existing local user '{}' with invalid credentials",
             payload.username
@@ -269,11 +272,14 @@ pub async fn handle_authenticate_by_name(
     }
 }
 
-fn local_credential_allows_login(
+async fn local_credential_allows_login(
     local_credential: Option<&LocalCredential>,
     password: &Password,
-) -> bool {
-    local_credential.is_none_or(|credential| credential.verify(password))
+) -> Result<bool, sqlx::Error> {
+    match local_credential {
+        Some(credential) => credential.verify_async(password).await,
+        None => Ok(true),
+    }
 }
 
 async fn resolve_or_create_login_user(
@@ -401,31 +407,36 @@ mod tests {
         assert!(!is_seerr_client(&authorization("Jellyfin Web", "Seerr")));
     }
 
-    #[test]
-    fn existing_local_credential_must_match_before_upstream_login() {
+    #[tokio::test]
+    async fn existing_local_credential_must_match_before_upstream_login() {
         let passwordless = LocalCredential::Passwordless;
-        assert!(local_credential_allows_login(
-            Some(&passwordless),
-            &Password::from("")
-        ));
-        assert!(!local_credential_allows_login(
-            Some(&passwordless),
-            &Password::from("anything")
-        ));
+        assert!(
+            local_credential_allows_login(Some(&passwordless), &Password::from(""))
+                .await
+                .unwrap()
+        );
+        assert!(
+            !local_credential_allows_login(Some(&passwordless), &Password::from("anything"))
+                .await
+                .unwrap()
+        );
 
         let protected = LocalCredential::Password(HashedPassword::from_password("correct"));
-        assert!(local_credential_allows_login(
-            Some(&protected),
-            &Password::from("correct")
-        ));
-        assert!(!local_credential_allows_login(
-            Some(&protected),
-            &Password::from("wrong")
-        ));
-        assert!(local_credential_allows_login(
-            None,
-            &Password::from("upstream-password")
-        ));
+        assert!(
+            local_credential_allows_login(Some(&protected), &Password::from("correct"))
+                .await
+                .unwrap()
+        );
+        assert!(
+            !local_credential_allows_login(Some(&protected), &Password::from("wrong"))
+                .await
+                .unwrap()
+        );
+        assert!(
+            local_credential_allows_login(None, &Password::from("upstream-password"))
+                .await
+                .unwrap()
+        );
     }
 }
 
@@ -449,7 +460,9 @@ async fn authenticate_on_server(
     let admin_password = &config.password;
 
     let given_password = payload.password.clone();
-    let user_mapping_key = LocalCredential::from_password(&given_password).mapping_key();
+    // Only old mappings use a password-derived key; modern mappings use the
+    // persistent server secret. Never generate a salted verifier here.
+    let user_mapping_key = HashedPassword::from_password(given_password.as_str());
 
     if let Some(mapping) = &server_mapping {
         if matches!(mapping.auth, MappingAuth::QuickConnect { .. }) {
