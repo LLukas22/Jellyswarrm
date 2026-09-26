@@ -32,13 +32,20 @@ pub static MEDIA_ID_PATH_TAGS: &[&str] = &[
     "UserPlayedItems",
 ];
 
-// Image `Tag` query values are opaque cache tokens and must not be remapped.
+// Keep ID-valued client query parameters here: this list controls both server
+// selection and translation to upstream IDs. Image `Tag` values are opaque
+// cache tokens and must not be remapped.
 pub static MEDIA_ID_QUERY_TAGS: &[&str] = &[
     "AlbumId",
     "AlbumIds",
     "ParentId",
     "ItemId",
     "SeriesId",
+    "LibrarySeriesId",
+    "ChannelIds",
+    "GenreIds",
+    "ExcludeItemIds",
+    "SeriesTimerId",
     "MediaSourceId",
     "SeasonId",
     "startItemId",

@@ -710,7 +710,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .route("/Channels/{item_id}", get(handlers::items::get_item))
                     .route(
                         "/Programs",
-                        get(handlers::federated::get_items_from_all_servers),
+                        get(handlers::federated::get_live_tv_programs),
                     )
                     .route(
                         "/Programs/Recommended",
