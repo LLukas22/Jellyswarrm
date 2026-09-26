@@ -626,13 +626,16 @@ async fn authenticate_with_mapping_on_server(
     let admin_password_hash: HashedPassword = (&admin_password).into();
     let user_mapping_key = user.local_credential.mapping_key();
 
-    let mapped_password = state.user_authorization.decrypt_server_mapping_password(
-        &server_mapping,
-        &user_mapping_key,
-        &admin_password_hash,
-        None,
-        Some(&admin_password),
-    );
+    let mapped_password = state
+        .user_authorization
+        .decrypt_server_mapping_password(
+            &server_mapping,
+            &user_mapping_key,
+            &admin_password_hash,
+            None,
+            Some(&admin_password),
+        )
+        .map_err(QuickConnectAuthError::Internal)?;
 
     let client_info = ClientInfo {
         client: authorization.client.clone(),

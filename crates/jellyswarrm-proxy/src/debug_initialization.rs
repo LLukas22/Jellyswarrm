@@ -107,6 +107,7 @@ mod tests {
                         None,
                         None,
                     )
+                    .unwrap()
                     .into_inner()
             })
             .collect::<Vec<_>>();

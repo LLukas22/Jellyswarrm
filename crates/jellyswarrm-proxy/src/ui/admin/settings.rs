@@ -111,12 +111,26 @@ pub async fn save_settings(State(state): State<AppState>, Form(form): Form<SaveF
 }
 
 pub async fn reload_config(State(state): State<AppState>) -> impl IntoResponse {
-    let new_cfg = crate::config::load_config();
+    let current_key = state.config.read().await.session_key.clone();
+    let new_cfg = match crate::config::load_config_with_session_key(Some(&current_key)) {
+        Ok(cfg) => cfg,
+        Err(error) => {
+            error!("Failed to reload config: {error}");
+            return (
+                StatusCode::BAD_REQUEST,
+                Html("<div class=\"alert alert-error\">Invalid configuration</div>"),
+            )
+                .into_response();
+        }
+    };
     {
         let mut cfg = state.config.write().await;
+        if cfg.session_key != new_cfg.session_key {
+            return (StatusCode::CONFLICT, Html("<div class=\"alert alert-error\">session_key cannot be changed while running</div>")).into_response();
+        }
         *cfg = new_cfg;
     }
-    Html("<div class=\"alert\">Configuration reloaded</div>")
+    Html("<div class=\"alert\">Configuration reloaded</div>").into_response()
 }
 
 #[cfg(test)]

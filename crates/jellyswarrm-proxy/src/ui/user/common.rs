@@ -101,7 +101,7 @@ pub async fn authenticate_user_on_server(
         &admin_password_hash,
         None,
         Some(&admin_password),
-    );
+    )?;
 
     if client.get_token().await.is_some() {
         // Try to validate existing session

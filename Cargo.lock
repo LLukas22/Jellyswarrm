@@ -1887,6 +1887,7 @@ dependencies = [
  "fs_extra",
  "futures-util",
  "hex",
+ "hkdf",
  "http-body-util",
  "hyper",
  "jellyfin-api",

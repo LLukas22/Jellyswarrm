@@ -34,6 +34,7 @@ sqlx = { workspace = true }
 sha2 = { workspace = true }
 sha1 = { workspace = true }
 hex = { workspace = true }
+hkdf = { workspace = true }
 chrono = { workspace = true }
 rand = { workspace = true }
 moka = { workspace = true }

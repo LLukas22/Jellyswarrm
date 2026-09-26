@@ -489,13 +489,16 @@ async fn authenticate_on_server(
     let (final_username, final_password) = if let Some(mapping) = &server_mapping {
         (
             mapping.auth.username().to_string(),
-            state.user_authorization.decrypt_server_mapping_password(
-                mapping,
-                &user_mapping_key,
-                &admin_password.into(),
-                Some(&given_password),
-                Some(admin_password),
-            ),
+            state
+                .user_authorization
+                .decrypt_server_mapping_password(
+                    mapping,
+                    &user_mapping_key,
+                    &admin_password.into(),
+                    Some(&given_password),
+                    Some(admin_password),
+                )
+                .map_err(|_| AuthError::InvalidCredentials)?,
         )
     } else {
         (payload.username.clone(), payload.password.clone())
