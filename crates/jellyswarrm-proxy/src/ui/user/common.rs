@@ -4,8 +4,11 @@ use jellyfin_api::JellyfinClient;
 use tracing::info;
 
 use crate::{
-    config::CLIENT_STORAGE, encryption::HashedPassword, server_storage::Server,
-    user_authorization_service::MappingAuth, AppState,
+    config::CLIENT_STORAGE,
+    encryption::HashedPassword,
+    server_storage::Server,
+    user_authorization_service::{CredentialFormat, MappingAuth},
+    AppState,
 };
 
 pub async fn authenticate_user_on_server(
@@ -129,7 +132,22 @@ pub async fn authenticate_user_on_server(
         .authenticate_by_name(mapping.auth.username(), password.as_str())
         .await
     {
-        Ok(jellyfin_user) => Ok((client, jellyfin_user, public_info)),
+        Ok(jellyfin_user) => {
+            if mapping.credential_format == CredentialFormat::Legacy {
+                state
+                    .user_authorization
+                    .add_server_mapping(
+                        &user.id,
+                        server,
+                        mapping.auth.username(),
+                        &password,
+                        Some(&mapping_key),
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok((client, jellyfin_user, public_info))
+        }
         Err(e) => {
             // Auth failed, log it but continue to check existing session
             tracing::warn!(

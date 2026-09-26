@@ -35,6 +35,7 @@ sha2 = { workspace = true }
 sha1 = { workspace = true }
 hex = { workspace = true }
 hkdf = { workspace = true }
+argon2 = { workspace = true }
 chrono = { workspace = true }
 rand = { workspace = true }
 moka = { workspace = true }

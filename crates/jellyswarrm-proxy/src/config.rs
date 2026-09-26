@@ -448,7 +448,19 @@ pub fn save_config(cfg: &AppConfig) -> std::io::Result<()> {
     let path = config_path();
     let temp_path = path.with_extension(format!("toml.tmp-{}", std::process::id()));
     let write_result = (|| {
-        let mut file = fs::File::create(&temp_path)?;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temp_path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
         file.write_all(toml_str.as_bytes())?;
         file.sync_all()?;
         fs::rename(&temp_path, &path)

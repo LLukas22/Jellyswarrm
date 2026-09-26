@@ -118,6 +118,14 @@ impl std::fmt::Debug for MappingEncryptionKey {
 
 impl MappingEncryptionKey {
     pub fn from_session_key(session_key: &[u8]) -> Result<Self, EncryptionError> {
+        Self::derive(session_key, b"jellyswarrm/server-mapping/v1")
+    }
+
+    pub fn for_authorization_sessions(session_key: &[u8]) -> Result<Self, EncryptionError> {
+        Self::derive(session_key, b"jellyswarrm/authorization-session/v1")
+    }
+
+    fn derive(session_key: &[u8], purpose: &[u8]) -> Result<Self, EncryptionError> {
         if session_key.len() < 32 {
             return Err(EncryptionError::EncryptionFailed(
                 "session key is too short".into(),
@@ -125,7 +133,7 @@ impl MappingEncryptionKey {
         }
         let mut key = [0u8; 32];
         Hkdf::<Sha256>::new(None, session_key)
-            .expand(b"jellyswarrm/server-mapping/v1", &mut key)
+            .expand(purpose, &mut key)
             .map_err(|_| {
                 EncryptionError::EncryptionFailed("mapping key derivation failed".into())
             })?;
@@ -177,6 +185,13 @@ impl EncryptedPassword {
 /// Legacy rows with no AEAD nonce and tag may have been written as plaintext.
 /// A syntactically valid encrypted blob must contain 12 nonce + 16 tag bytes.
 pub fn is_legacy_plaintext(value: &EncryptedPassword) -> bool {
+    // Legacy plaintext often includes generated hexadecimal passwords. Such
+    // strings are also valid Base64 and can decode to a full AEAD-sized blob.
+    // An actual Base64-encoded ciphertext this long consisting solely of hex
+    // characters is extraordinarily unlikely; do not strand these mappings.
+    if value.as_str().len() >= 38 && value.as_str().bytes().all(|b| b.is_ascii_hexdigit()) {
+        return true;
+    }
     general_purpose::STANDARD
         .decode(value.as_str())
         .map_or(true, |bytes| bytes.len() < 28)
@@ -383,5 +398,12 @@ mod tests {
             .is_err());
         assert!(decrypt_password(&ciphertext, &HashedPassword::from_password("password")).is_err());
         assert!(MappingEncryptionKey::from_session_key(&[0u8; 31]).is_err());
+    }
+
+    #[test]
+    fn legacy_hexadecimal_plaintext_is_not_mistaken_for_ciphertext() {
+        assert!(is_legacy_plaintext(&EncryptedPassword::from_raw(
+            "0123456789abcdef0123456789abcdef01234567".into()
+        )));
     }
 }

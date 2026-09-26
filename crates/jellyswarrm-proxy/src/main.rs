@@ -392,11 +392,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize user authorization service
     let mapping_key =
         crate::encryption::MappingEncryptionKey::from_session_key(&loaded_config.session_key)?;
-    let user_authorization = UserAuthorizationService::with_mapping_key(
+    let mut user_authorization = UserAuthorizationService::with_mapping_key(
         pool.clone(),
         mapping_key,
         (&loaded_config.password).into(),
     );
+    user_authorization
+        .enable_session_encryption(&loaded_config.session_key)
+        .await?;
 
     // Initialize server storage service
     let server_storage = ServerStorageService::new(pool.clone());

@@ -42,7 +42,7 @@
                     </span>
                 </td>
                 <td>
-                    <button type="button" class="outline" onclick="openQuickConnect('{{ server.id }}', '{{ server.name }}')" style="padding: 0.25rem 0.5rem; font-size: 0.8em;">
+                    <button type="button" class="outline quick-connect-button" data-server-id="{{ server.id }}" data-server-name="{{ server.name }}" style="padding: 0.25rem 0.5rem; font-size: 0.8em;">
                         Reconnect with Quick Connect
                     </button>
                     <button 
@@ -95,12 +95,12 @@
                 </td>
                 <td>
                     <button 
-                        onclick="openConnectModal('{{ server.id }}', '{{ server.name }}')"
-                        class="contrast outline"
+                        class="contrast outline connect-button"
+                        data-server-id="{{ server.id }}" data-server-name="{{ server.name }}"
                         style="padding: 0.25rem 0.5rem; font-size: 0.8em;">
                         Connect
                     </button>
-                    <button type="button" class="outline" onclick="openQuickConnect('{{ server.id }}', '{{ server.name }}')">
+                    <button type="button" class="outline quick-connect-button" data-server-id="{{ server.id }}" data-server-name="{{ server.name }}">
                         Quick Connect
                     </button>
                 </td>
@@ -158,6 +158,13 @@
             const serverNameSpan = document.getElementById('modal_server_name');
             const errorDiv = document.getElementById('connect_error');
             const uiRoute = "{{ ui_route }}";
+
+            document.querySelectorAll('.connect-button').forEach(button => {
+                button.addEventListener('click', () => openConnectModal(button.dataset.serverId, button.dataset.serverName));
+            });
+            document.querySelectorAll('.quick-connect-button').forEach(button => {
+                button.addEventListener('click', () => openQuickConnect(button.dataset.serverId, button.dataset.serverName));
+            });
 
             window.openConnectModal = function(id, name) {
                 serverNameSpan.innerText = name;
