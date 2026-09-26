@@ -10,7 +10,8 @@
         <p>You are not currently connected to any Jellyfin servers.</p>
     </div>
 {% else %}
-    <table role="grid">
+    <div class="server-table-scroll">
+    <table class="user-server-table">
         <thead>
             <tr>
                 <th scope="col">Name</th>
@@ -42,29 +43,34 @@
                     </span>
                 </td>
                 <td>
-                    <button type="button" class="outline quick-connect-button" data-server-id="{{ server.id }}" data-server-name="{{ server.name }}" style="padding: 0.25rem 0.5rem; font-size: 0.8em;">
-                        Reconnect with Quick Connect
-                    </button>
-                    <button 
+                    <div class="server-actions">
+                    <button type="button"
                         hx-delete="/{{ ui_route }}/user/servers/{{ server.id }}"
                         hx-confirm="Are you sure you want to disconnect from {{ server.name }}?"
-                        class="outline secondary"
-                        style="padding: 0.25rem 0.5rem; font-size: 0.8em;">
+                        class="outline secondary server-action">
                         Disconnect
                     </button>
+                    <button type="button" class="outline secondary server-action server-action-icon connect-button"
+                        data-server-id="{{ server.id }}" data-server-name="{{ server.name }}" data-reconnect="true"
+                        title="Reconnect to {{ server.name }}" aria-label="Reconnect to {{ server.name }}">
+                        <i class="fas fa-sync-alt" aria-hidden="true"></i>
+                    </button>
+                    </div>
                 </td>
             </tr>
         {% endfor %}
         </tbody>
     </table>
+    </div>
 {% endif %}
 
 {% if !unmapped_servers.is_empty() %}
     <hr>
     <h2>Available Servers</h2>
-    <p>Connect with your credentials or approve a Quick Connect code on the selected Jellyfin server.</p>
+    <p class="server-list-description">Choose a server to connect with a password or Quick Connect.</p>
     
-    <table role="grid">
+    <div class="server-table-scroll">
+    <table class="user-server-table">
         <thead>
             <tr>
                 <th scope="col">Name</th>
@@ -94,33 +100,42 @@
                     </span>
                 </td>
                 <td>
-                    <button 
-                        class="contrast outline connect-button"
-                        data-server-id="{{ server.id }}" data-server-name="{{ server.name }}"
-                        style="padding: 0.25rem 0.5rem; font-size: 0.8em;">
-                        Connect
+                    <div class="server-actions">
+                    <button type="button"
+                        class="outline server-action connect-button"
+                        data-server-id="{{ server.id }}" data-server-name="{{ server.name }}">
+                        <i class="fas fa-link" aria-hidden="true"></i> Connect
                     </button>
-                    <button type="button" class="outline quick-connect-button" data-server-id="{{ server.id }}" data-server-name="{{ server.name }}">
-                        Quick Connect
-                    </button>
+                    </div>
                 </td>
             </tr>
         {% endfor %}
         </tbody>
     </table>
+    </div>
 {% endif %}
 
-    <dialog id="connect_modal">
+    <dialog id="connect_modal" class="server-connect-dialog" aria-labelledby="connect_title" aria-describedby="connect_description">
         <article>
             <header>
-                <button aria-label="Close" rel="prev" onclick="closeConnectModal()"></button>
-                <h3>Connect to <span id="modal_server_name"></span></h3>
+                <button type="button" aria-label="Close connection dialog" rel="prev" onclick="closeConnectModal()"></button>
+                <h3 id="connect_title"><span id="connect_action">Connect to</span> <span id="modal_server_name"></span></h3>
             </header>
-            <div id="connect_error"></div>
+            <p id="connect_description" class="server-connect-description">Choose how to sign in to this Jellyfin server.</p>
+            <div class="connection-methods" role="group" aria-label="Connection method">
+                <button type="button" id="password_method" class="outline" aria-pressed="true" aria-controls="connect_form">
+                    <i class="fas fa-key" aria-hidden="true"></i> Password
+                </button>
+                <button type="button" id="quick_connect_method" class="outline" aria-pressed="false" aria-controls="quick_connect_panel">
+                    <i class="fas fa-mobile-alt" aria-hidden="true"></i> Quick Connect
+                </button>
+            </div>
+            <div id="connect_error" role="status" aria-live="polite"></div>
             <form id="connect_form" method="post" hx-post="" hx-target="#connect_error" hx-swap="innerHTML">
+                <p class="connection-help">Use your account on this server, which may differ from your Jellyswarrm login.</p>
                 <label>
                     Username
-                    <input type="text" name="username" required>
+                    <input type="text" name="username" autocomplete="username" required>
                 </label>
                 <label>
                     Password
@@ -130,24 +145,28 @@
                     {% let pw_input_required = false %}
                     {% include "components/password_input.html" %}
                 </label>
-                <footer>
-                    <div class="grid">
-                        <button type="button" class="secondary" onclick="closeConnectModal()">Cancel</button>
-                        <button type="submit">Connect</button>
-                    </div>
+                <footer class="connection-footer">
+                    <button type="button" class="secondary outline" onclick="closeConnectModal()">Cancel</button>
+                    <button type="submit">Connect</button>
                 </footer>
             </form>
-        </article>
-    </dialog>
-
-    <dialog id="quick_connect_modal">
-        <article>
-            <header><button aria-label="Close" rel="prev" onclick="closeQuickConnect()"></button>
-                <h3>Connect to <span id="quick_connect_server"></span></h3></header>
-            <p>Enter this code in the Quick Connect settings of an account already signed in to this Jellyfin server:</p>
-            <p><strong id="quick_connect_code"></strong></p>
-            <p id="quick_connect_status" role="status"></p>
-            <button type="button" class="secondary" onclick="closeQuickConnect()">Cancel</button>
+            <section id="quick_connect_panel" hidden aria-label="Connect using a code">
+                <p class="connection-help">Already signed in on another device? Approve this connection without entering your password here.</p>
+                <div id="quick_connect_code_box" class="quick-connect-code-box" aria-busy="false">
+                    <span class="quick-connect-code-label">Your connection code</span>
+                    <strong id="quick_connect_code" class="quick-connect-code" aria-label="Connection code"></strong>
+                </div>
+                <p id="quick_connect_status" class="quick-connect-status" role="status" aria-live="polite"></p>
+                <ol class="quick-connect-steps">
+                    <li>Open a Jellyfin app signed in to <strong id="quick_connect_server"></strong>.</li>
+                    <li>Go to <strong>Settings → Quick Connect</strong> and enter the code above.</li>
+                </ol>
+                <p class="connection-help">This page will connect automatically after approval. Quick Connect must be enabled on that server.</p>
+                <footer class="connection-footer">
+                    <button type="button" class="secondary outline" onclick="closeConnectModal()">Cancel</button>
+                    <button type="button" id="quick_connect_retry" hidden>Try again</button>
+                </footer>
+            </section>
         </article>
     </dialog>
 
@@ -158,64 +177,116 @@
             const serverNameSpan = document.getElementById('modal_server_name');
             const errorDiv = document.getElementById('connect_error');
             const uiRoute = "{{ ui_route }}";
+            const passwordMethod = document.getElementById('password_method');
+            const quickConnectMethod = document.getElementById('quick_connect_method');
+            const quickConnectPanel = document.getElementById('quick_connect_panel');
+            const quickConnectStatus = document.getElementById('quick_connect_status');
+            const quickConnectCode = document.getElementById('quick_connect_code');
+            const quickConnectCodeBox = document.getElementById('quick_connect_code_box');
+            const retry = document.getElementById('quick_connect_retry');
+            let serverId;
+            let quickConnectTimer;
+            let quickConnectController;
 
             document.querySelectorAll('.connect-button').forEach(button => {
-                button.addEventListener('click', () => openConnectModal(button.dataset.serverId, button.dataset.serverName));
-            });
-            document.querySelectorAll('.quick-connect-button').forEach(button => {
-                button.addEventListener('click', () => openQuickConnect(button.dataset.serverId, button.dataset.serverName));
+                button.addEventListener('click', () => openConnectModal(button.dataset.serverId, button.dataset.serverName, button.dataset.reconnect === 'true'));
             });
 
-            window.openConnectModal = function(id, name) {
+            window.openConnectModal = function(id, name, reconnect = false) {
+                serverId = id;
                 serverNameSpan.innerText = name;
+                document.getElementById('quick_connect_server').textContent = name;
+                document.getElementById('connect_action').textContent = reconnect ? 'Reconnect to' : 'Connect to';
+                document.getElementById('connect_description').textContent = reconnect
+                    ? 'Sign in again to replace your saved connection to this server.'
+                    : 'Choose how to sign in to this Jellyfin server.';
                 form.setAttribute('hx-post', '/' + uiRoute + '/user/servers/' + id + '/connect');
                 htmx.process(form);
                 errorDiv.innerHTML = '';
                 form.reset();
                 modal.showModal();
+                selectMethod('password');
             }
 
             window.closeConnectModal = function() {
+                stopQuickConnect();
                 modal.close();
             }
 
-            let quickConnectTimer;
-            const quickConnectModal = document.getElementById('quick_connect_modal');
-            const quickConnectStatus = document.getElementById('quick_connect_status');
-            window.closeQuickConnect = function() {
+            function stopQuickConnect() {
                 clearTimeout(quickConnectTimer);
-                quickConnectModal.close();
-            };
-            quickConnectModal.addEventListener('close', () => clearTimeout(quickConnectTimer));
-            window.openQuickConnect = async function(id, name) {
-                clearTimeout(quickConnectTimer);
-                document.getElementById('quick_connect_server').textContent = name;
-                document.getElementById('quick_connect_code').textContent = '';
+                quickConnectController?.abort();
+                quickConnectController = null;
+            }
+
+            function selectMethod(method) {
+                stopQuickConnect();
+                const password = method === 'password';
+                passwordMethod.setAttribute('aria-pressed', String(password));
+                quickConnectMethod.setAttribute('aria-pressed', String(!password));
+                form.hidden = !password;
+                errorDiv.hidden = !password;
+                quickConnectPanel.hidden = password;
+                if (password) form.querySelector('[name="username"]').focus();
+                else startQuickConnect();
+            }
+
+            passwordMethod.addEventListener('click', () => selectMethod('password'));
+            quickConnectMethod.addEventListener('click', () => {
+                if (quickConnectPanel.hidden) selectMethod('quick-connect');
+            });
+            retry.addEventListener('click', startQuickConnect);
+            modal.addEventListener('cancel', stopQuickConnect);
+            modal.addEventListener('close', () => { if (!modal.open) stopQuickConnect(); });
+
+            async function startQuickConnect() {
+                stopQuickConnect();
+                const controller = new AbortController();
+                quickConnectController = controller;
+                const signal = controller.signal;
+                retry.hidden = true;
+                quickConnectCode.textContent = '—';
+                quickConnectCodeBox.setAttribute('aria-busy', 'true');
+                quickConnectStatus.classList.remove('connection-error');
                 quickConnectStatus.textContent = 'Requesting a code…';
-                quickConnectModal.showModal();
+                const showError = error => {
+                    if (signal.aborted) return;
+                    quickConnectCodeBox.setAttribute('aria-busy', 'false');
+                    quickConnectCode.textContent = '—';
+                    quickConnectStatus.classList.add('connection-error');
+                    quickConnectStatus.textContent = error.message;
+                    retry.hidden = false;
+                };
                 try {
-                    const base = '/' + uiRoute + '/user/servers/' + encodeURIComponent(id) + '/quick-connect';
-                    const response = await fetch(base, { method: 'POST' });
-                    if (!response.ok) throw new Error(response.status === 409 ? 'Quick Connect is disabled on this server.' : 'Could not start Quick Connect.');
+                    const base = '/' + uiRoute + '/user/servers/' + encodeURIComponent(serverId) + '/quick-connect';
+                    const response = await fetch(base, { method: 'POST', signal });
+                    if (!response.ok) throw new Error(response.status === 409
+                        ? 'Quick Connect is disabled on this server. Enable it in Jellyfin or use Password instead.'
+                        : 'Could not reach this server. Check your connection and try again.');
                     const result = await response.json();
-                    if (!quickConnectModal.open) return;
-                    document.getElementById('quick_connect_code').textContent = result.code;
+                    if (signal.aborted) return;
+                    quickConnectCodeBox.setAttribute('aria-busy', 'false');
+                    quickConnectCode.textContent = result.code;
                     quickConnectStatus.textContent = 'Waiting for approval…';
                     const poll = async () => {
-                        if (!quickConnectModal.open) return;
+                        if (signal.aborted || !modal.open) return;
                         try {
-                            const status = await fetch(base + '/' + encodeURIComponent(result.request_id), { method: 'POST' });
-                            if (!status.ok) throw new Error('Approval expired or the server could not be reached. Please try again.');
+                            const status = await fetch(base + '/' + encodeURIComponent(result.request_id), { method: 'POST', signal });
+                            if (!status.ok) throw new Error(status.status === 404
+                                ? 'This code has expired. Try again to request a new one.'
+                                : 'Could not check approval. Check the server connection and try again.');
                             const progress = await status.json();
+                            if (signal.aborted) return;
                             if (progress.status === 'connected') {
+                                quickConnectStatus.textContent = 'Connected! Refreshing…';
                                 window.location.reload();
                                 return;
                             }
                             quickConnectTimer = setTimeout(poll, 5000);
-                        } catch (error) { quickConnectStatus.textContent = error.message; }
+                        } catch (error) { showError(error); }
                     };
                     quickConnectTimer = setTimeout(poll, 5000);
-                } catch (error) { quickConnectStatus.textContent = error.message; }
+                } catch (error) { showError(error); }
             };
         })();
     </script>

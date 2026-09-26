@@ -88,13 +88,14 @@ async fn run_mapping_scenario(name: &str, quick_connect: bool) -> Result<()> {
             create_local_user(&page, &fixture.proxy_url).await?;
             login_to_ui(&page, &fixture.proxy_url, LOCAL_USERNAME, LOCAL_PASSWORD).await?;
             page.wait_for_function(
-                "() => typeof window.openQuickConnect === 'function' && !!document.querySelector('#main-content #connect_modal') && !!document.querySelector('#main-content tr button[onclick^=\"openQuickConnect\"]')",
+                "() => typeof window.openConnectModal === 'function' && !!document.querySelector('#main-content #connect_modal') && !!document.querySelector('#main-content tr .connect-button')",
                 None,
             )
             .await?;
             let row = page.locator("#main-content tr:has(th:has-text('Movies 1'))");
+            row.locator(".connect-button").click(None).await?;
             if quick_connect {
-                row.locator("button[onclick^='openQuickConnect']")
+                page.locator("#quick_connect_method")
                     .click(None)
                     .await?;
                 page.wait_for_function(
@@ -115,9 +116,6 @@ async fn run_mapping_scenario(name: &str, quick_connect: bool) -> Result<()> {
                 let approved = success_json(response).await?;
                 anyhow::ensure!(approved == true, "backend did not approve code: {approved}");
             } else {
-                row.locator("button[onclick^='openConnectModal']")
-                    .click(None)
-                    .await?;
                 page.locator("#connect_form input[name=username]")
                     .fill(USERNAME, None)
                     .await?;

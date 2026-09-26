@@ -2,6 +2,163 @@
 
 /* --- Components --- */
 
+/* Connected / available servers */
+.server-table-scroll {
+  overflow-x: auto;
+}
+
+.user-server-table th,
+.user-server-table td {
+  vertical-align: middle;
+}
+
+.server-list-description,
+.server-connect-description,
+.connection-help {
+  color: var(--pico-muted-color);
+}
+
+.server-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.server-actions .server-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  width: auto;
+  min-height: 2rem;
+  margin: 0;
+  padding: 0.35rem 0.7rem;
+  font-size: 0.8rem;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+.server-actions .server-action-icon {
+  width: 2rem;
+  padding: 0.35rem;
+  border-color: transparent;
+  color: var(--pico-muted-color);
+}
+
+.server-actions .server-action-icon:hover {
+  border-color: var(--pico-muted-border-color);
+  color: var(--pico-color);
+}
+
+.server-connect-dialog article {
+  width: min(100%, 28rem);
+}
+
+.server-connect-dialog h3 {
+  margin-bottom: 0;
+  overflow-wrap: anywhere;
+}
+
+.server-connect-dialog [hidden] {
+  display: none !important;
+}
+
+.server-connect-description,
+.connection-help,
+.quick-connect-steps,
+.quick-connect-status {
+  font-size: 0.85rem;
+}
+
+.connection-methods {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.3rem;
+  padding: 0.3rem;
+  margin-bottom: 1rem;
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+}
+
+.connection-methods button {
+  margin: 0;
+  padding: 0.55rem 0.3rem;
+  border-color: transparent;
+  color: var(--pico-muted-color);
+  font-size: 0.85rem;
+}
+
+.connection-methods button i {
+  margin-right: 0.25rem;
+}
+
+.connection-methods button[aria-pressed="true"] {
+  background: var(--pico-primary-background);
+  color: var(--pico-primary-inverse);
+}
+
+.connection-methods button[aria-pressed="false"]:hover {
+  color: var(--pico-primary);
+  background: var(--pico-card-sectioning-background-color);
+}
+
+.quick-connect-code-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 1rem;
+  border: 1px dashed var(--pico-primary-border);
+  border-radius: var(--pico-border-radius);
+  background: var(--pico-card-sectioning-background-color);
+}
+
+.quick-connect-code-label {
+  font-size: 0.75rem;
+  color: var(--pico-muted-color);
+}
+
+.quick-connect-code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: clamp(1.8rem, 8vw, 2.5rem);
+  line-height: 1.2;
+  letter-spacing: 0.15em;
+  padding-left: 0.15em;
+  color: var(--pico-primary);
+}
+
+.quick-connect-status {
+  margin: 0.75rem 0 1rem;
+  text-align: center;
+  color: var(--pico-muted-color);
+}
+
+.quick-connect-status.connection-error {
+  color: var(--pico-del-color);
+}
+
+.quick-connect-steps {
+  padding-left: 1.25rem;
+}
+
+.quick-connect-steps li {
+  margin-bottom: 0.5rem;
+}
+
+.connection-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.server-connect-dialog footer button {
+  width: auto;
+  margin-bottom: 0;
+  padding: 0.5rem 0.8rem;
+  font-size: 0.85rem;
+}
+
 .dashboard-brand {
   display: flex;
   align-items: center;
