@@ -95,6 +95,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a23eb6b1614318a8071c9b2521f36b424b2c83db5eb3a0fead4a6c0809af6e61"
 
 [[package]]
+name = "argon2"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c3610892ee6e0cbce8ae2700349fcf8f98adb0dbfbee85aec3c9179d29cc072"
+dependencies = [
+ "base64ct",
+ "blake2",
+ "cpufeatures 0.2.17",
+ "password-hash",
+]
+
+[[package]]
 name = "arraydeque"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -394,6 +406,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b8e56985ec62d17e9c1001dc89c88ecd7dc08e47eba5ec7c29c7b5eeecde967"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "blake2"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46502ad458c9a52b69d4d4d32775c788b7a1b85e8bc9d482d92250fc0e3f8efe"
+dependencies = [
+ "digest 0.10.7",
 ]
 
 [[package]]
@@ -1839,7 +1860,7 @@ checksum = "4a5f13b858c8d314ee3e8f639011f7ccefe71f97f96e50151fb991f267928e2c"
 
 [[package]]
 name = "jellyfin-api"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "moka",
  "reqwest",
@@ -1855,7 +1876,7 @@ dependencies = [
 
 [[package]]
 name = "jellyswarrm-macros"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "axum",
  "quote",
@@ -1871,10 +1892,11 @@ dependencies = [
 
 [[package]]
 name = "jellyswarrm-proxy"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aes-gcm",
  "anyhow",
+ "argon2",
  "askama",
  "async-recursion",
  "async-trait",
@@ -1887,6 +1909,7 @@ dependencies = [
  "fs_extra",
  "futures-util",
  "hex",
+ "hkdf",
  "http-body-util",
  "hyper",
  "jellyfin-api",
@@ -2348,6 +2371,17 @@ dependencies = [
  "regex-syntax",
  "structmeta",
  "syn 2.0.111",
+]
+
+[[package]]
+name = "password-hash"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "346f04948ba92c43e8469c1ee6736c7563d71012b17d40745260fe106aac2166"
+dependencies = [
+ "base64ct",
+ "rand_core 0.6.4",
+ "subtle",
 ]
 
 [[package]]

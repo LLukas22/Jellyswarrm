@@ -2,12 +2,18 @@ use askama::Template;
 use axum::{
     extract::{Path, State},
     response::{Html, IntoResponse},
-    Form,
+    Form, Json,
 };
+use chrono::{DateTime, Duration, Utc};
 use hyper::{header::HeaderValue, StatusCode};
 use jellyfin_api::JellyfinClient;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::HashMap,
+    sync::{LazyLock, Mutex},
+};
 use tracing::{error, info};
+use uuid::Uuid;
 
 use crate::{
     encryption::Password,
@@ -30,6 +36,162 @@ pub struct UserServerListTemplate {
 pub struct ConnectServerForm {
     pub username: String,
     pub password: Password,
+}
+
+struct PendingConnect {
+    user_id: String,
+    server_id: ServerId,
+    secret: String,
+    created_at: DateTime<Utc>,
+}
+
+static PENDING_CONNECTS: LazyLock<Mutex<HashMap<String, PendingConnect>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[derive(Serialize)]
+pub struct QuickConnectProgress {
+    status: &'static str,
+    code: Option<String>,
+    request_id: Option<String>,
+}
+
+pub async fn initiate_quick_connect(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Path(server_id): Path<ServerId>,
+) -> Result<Json<QuickConnectProgress>, StatusCode> {
+    // Admins do not have a row in the local user table and cannot own mappings.
+    if state
+        .user_authorization
+        .get_user_by_id(&user.id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .is_none()
+    {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let server = state
+        .server_storage
+        .get_server_by_id(server_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let client = JellyfinClient::new(
+        server.url.as_str(),
+        jellyfin_api::ClientInfo {
+            device_id: crate::mapping_auth::mapping_device_id(&server, &user.id),
+            ..crate::config::CLIENT_INFO.clone()
+        },
+    )
+    .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    if !client
+        .quick_connect_enabled()
+        .await
+        .map_err(|_| StatusCode::BAD_GATEWAY)?
+    {
+        return Err(StatusCode::CONFLICT);
+    }
+    let result = client
+        .initiate_quick_connect()
+        .await
+        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    let request_id = Uuid::new_v4().to_string();
+    let mut pending = PENDING_CONNECTS.lock().unwrap_or_else(|e| e.into_inner());
+    pending.retain(|_, p| Utc::now() - p.created_at < Duration::minutes(10));
+    pending.insert(
+        request_id.clone(),
+        PendingConnect {
+            user_id: user.id,
+            server_id,
+            secret: result.secret,
+            created_at: Utc::now(),
+        },
+    );
+    Ok(Json(QuickConnectProgress {
+        status: "pending",
+        code: Some(result.code),
+        request_id: Some(request_id),
+    }))
+}
+
+pub async fn finish_quick_connect(
+    State(state): State<AppState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Path((server_id, request_id)): Path<(ServerId, String)>,
+) -> Result<Json<QuickConnectProgress>, StatusCode> {
+    let secret = {
+        let mut pending = PENDING_CONNECTS.lock().unwrap_or_else(|e| e.into_inner());
+        pending.retain(|_, p| Utc::now() - p.created_at < Duration::minutes(10));
+        let p = pending.get(&request_id).ok_or(StatusCode::NOT_FOUND)?;
+        if p.user_id != user.id || p.server_id != server_id {
+            return Err(StatusCode::NOT_FOUND);
+        }
+        p.secret.clone()
+    };
+    let server = state
+        .server_storage
+        .get_server_by_id(server_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let client = JellyfinClient::new(
+        server.url.as_str(),
+        jellyfin_api::ClientInfo {
+            device_id: crate::mapping_auth::mapping_device_id(&server, &user.id),
+            ..crate::config::CLIENT_INFO.clone()
+        },
+    )
+    .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    let progress = client
+        .quick_connect_state(&secret)
+        .await
+        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    if !progress.authenticated {
+        return Ok(Json(QuickConnectProgress {
+            status: "pending",
+            code: None,
+            request_id: None,
+        }));
+    }
+    // The request ID is one-use, including when redemption fails. Retrying requires
+    // a new approval rather than racing two token writes for the same mapping.
+    if PENDING_CONNECTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&request_id)
+        .is_none()
+    {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let auth: jellyfin_api::models::AuthResponse = client
+        .authenticate_with_quick_connect(&secret)
+        .await
+        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    if auth.access_token.is_empty() || auth.user.id.is_empty() {
+        return Err(StatusCode::BAD_GATEWAY);
+    }
+    let encryption_key: crate::encryption::HashedPassword =
+        (&state.get_admin_password().await).into();
+    state
+        .user_authorization
+        .add_quick_connect_mapping(
+            &user.id,
+            &server,
+            &auth.user.name,
+            &auth.user.id,
+            &auth.access_token,
+            &encryption_key,
+        )
+        .await
+        .map_err(|e| {
+            error!("Failed to save Quick Connect mapping: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    Ok(Json(QuickConnectProgress {
+        status: "connected",
+        code: None,
+        request_id: None,
+    }))
 }
 
 #[derive(Template)]

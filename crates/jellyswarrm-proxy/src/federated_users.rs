@@ -5,7 +5,7 @@ use tracing::{error, info, warn};
 use crate::{
     encryption::{decrypt_password, HashedPassword, Password},
     server_storage::ServerStorageService,
-    user_authorization_service::{LocalCredential, UserAuthorizationService},
+    user_authorization_service::UserAuthorizationService,
     AppState,
 };
 use jellyfin_api::JellyfinClient;
@@ -76,7 +76,7 @@ impl FederatedUserService {
 
         let config = self.config.read().await;
         let admin_password: HashedPassword = config.password.clone().into();
-        let mapping_key = LocalCredential::from_password(password).mapping_key();
+        let mapping_key = HashedPassword::from_password(password.as_str());
 
         drop(config);
 

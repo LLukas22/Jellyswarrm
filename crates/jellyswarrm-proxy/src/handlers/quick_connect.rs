@@ -1,6 +1,7 @@
 use crate::{
     encryption::HashedPassword,
     models::{AuthenticateResponse, Authorization, SyncPlayUserAccessType},
+    user_authorization_service::MappingAuth,
     AppState,
 };
 use axum::{
@@ -578,17 +579,63 @@ async fn authenticate_with_mapping_on_server(
     server: crate::server_storage::Server,
     server_mapping: crate::user_authorization_service::ServerMapping,
 ) -> Result<AuthenticateResponse, QuickConnectAuthError> {
+    if matches!(server_mapping.auth, MappingAuth::QuickConnect { .. }) {
+        let (auth_token, remote_user) = crate::mapping_auth::validated_quick_connect_token(
+            &state,
+            &user,
+            &server,
+            &server_mapping,
+        )
+        .await
+        .map_err(QuickConnectAuthError::Internal)?;
+        let original_user_id = remote_user.id.clone();
+        let server_id = state.config.read().await.server_id.clone();
+        let mut auth_response = AuthenticateResponse {
+            user: remote_user,
+            session_info: crate::models::SessionInfo {
+                user_id: user.id.clone(),
+                user_name: user.original_username.clone(),
+                server_id: server_id.clone(),
+                extra: Default::default(),
+            },
+            access_token: user.virtual_key.clone(),
+            server_id: server_id.clone(),
+        };
+        auth_response.user.id = user.id.clone();
+        auth_response.user.name = user.original_username.clone();
+        auth_response.user.server_id = server_id;
+        auth_response.user.policy.is_administrator = false;
+        auth_response.user.policy.sync_play_access = SyncPlayUserAccessType::CreateAndJoinGroups;
+        crate::sessions::decorate_authentication(&state, &user, &authorization, &mut auth_response)
+            .await;
+        state
+            .user_authorization
+            .store_authorization_session(
+                &user.id,
+                &server,
+                &authorization,
+                auth_token,
+                original_user_id,
+                None,
+            )
+            .await
+            .map_err(|e| QuickConnectAuthError::Internal(e.to_string()))?;
+        return Ok(auth_response);
+    }
     let admin_password = state.get_admin_password().await;
     let admin_password_hash: HashedPassword = (&admin_password).into();
     let user_mapping_key = user.local_credential.mapping_key();
 
-    let mapped_password = state.user_authorization.decrypt_server_mapping_password(
-        &server_mapping,
-        &user_mapping_key,
-        &admin_password_hash,
-        None,
-        Some(&admin_password),
-    );
+    let mapped_password = state
+        .user_authorization
+        .decrypt_server_mapping_password(
+            &server_mapping,
+            &user_mapping_key,
+            &admin_password_hash,
+            None,
+            Some(&admin_password),
+        )
+        .map_err(QuickConnectAuthError::Internal)?;
 
     let client_info = ClientInfo {
         client: authorization.client.clone(),
@@ -605,10 +652,7 @@ async fn authenticate_with_mapping_on_server(
     .map_err(|e| QuickConnectAuthError::Internal(e.to_string()))?;
 
     let mut auth_response: AuthenticateResponse = jellyfin_client
-        .authenticate_by_name_typed(
-            server_mapping.mapped_username.as_str(),
-            mapped_password.as_str(),
-        )
+        .authenticate_by_name_typed(server_mapping.auth.username(), mapped_password.as_str())
         .await
         .map_err(map_jellyfin_auth_error)?;
 
@@ -617,7 +661,7 @@ async fn authenticate_with_mapping_on_server(
         .add_server_mapping(
             &user.id,
             &server,
-            &server_mapping.mapped_username,
+            server_mapping.auth.username(),
             &mapped_password,
             Some(&user_mapping_key),
         )

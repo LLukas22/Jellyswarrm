@@ -94,6 +94,12 @@ To manually link a user to additional server accounts (e.g. if they have differe
 4. Enter the **username** and **password** for the Jellyfin account on that server.
 5. Click **Add** to save the mapping.
 
+Users can also link their own accounts from **Connected Servers** in the Jellyswarrm UI. For an available server, choose **Connect**, then select **Password** or **Quick Connect** in the dialog. Quick Connect displays a code to approve in an already signed-in Jellyfin client on that *backend* server, where Quick Connect must be enabled. The code is temporary; Jellyswarrm saves the resulting backend access token for future logins. If the token is revoked, choose **Reconnect** on the connected server and select either sign-in method. Expired codes or connection errors can be retried from the dialog. Jellyfin does not provide a refresh token for this flow. Existing Jellyfin app sessions may need to sign in to Jellyswarrm again to pick up a newly linked server.
+
+Mapping credentials and backend tokens in per-client authorization sessions are encrypted using separate purpose-specific keys derived from the persistent `session_key` in `jellyswarrm.toml`. Back up that configuration file together with the database: losing or changing `session_key` makes encrypted mappings and sessions unreadable. Existing session tokens are encrypted on startup; existing mappings are upgraded when they can be decrypted, or after successful backend authentication if a legacy plaintext password resembles encrypted data. New local user passwords are stored with salted Argon2id hashes. Existing SHA-256 login hashes are upgraded after a successful login, once their legacy mappings have been safely re-encrypted. The admin password is still held in the administrator's configuration: protect that file and check permissions on existing installations (newly saved files use owner-only permissions on Unix).
+
+Login-time migration also supports legacy mappings encrypted with the original raw password. Password hashing and verification run on blocking workers with bounded concurrency. Before changing a local password, Jellyswarrm validates any remaining ambiguous legacy password mappings directly with their backend servers. If validation fails, the local password stays unchanged and the UI asks you to check server connectivity or reconnect the affected accounts from **Connected Servers**, then retry.
+
 ---
 
 ### Removing Users or Mappings

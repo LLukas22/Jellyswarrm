@@ -8,6 +8,7 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use base64::{engine::general_purpose, Engine as _};
+use hkdf::Hkdf;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -104,6 +105,69 @@ impl From<&Password> for HashedPassword {
 #[sqlx(transparent)]
 pub struct EncryptedPassword(String);
 
+/// A purpose-separated key derived from the persistent UI session secret.
+/// It is not a password verifier and must never be saved in the database.
+#[derive(Clone)]
+pub struct MappingEncryptionKey([u8; 32]);
+
+impl std::fmt::Debug for MappingEncryptionKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("MappingEncryptionKey([redacted])")
+    }
+}
+
+impl MappingEncryptionKey {
+    pub fn from_session_key(session_key: &[u8]) -> Result<Self, EncryptionError> {
+        Self::derive(session_key, b"jellyswarrm/server-mapping/v1")
+    }
+
+    pub fn for_authorization_sessions(session_key: &[u8]) -> Result<Self, EncryptionError> {
+        Self::derive(session_key, b"jellyswarrm/authorization-session/v1")
+    }
+
+    fn derive(session_key: &[u8], purpose: &[u8]) -> Result<Self, EncryptionError> {
+        if session_key.len() < 32 {
+            return Err(EncryptionError::EncryptionFailed(
+                "session key is too short".into(),
+            ));
+        }
+        let mut key = [0u8; 32];
+        Hkdf::<Sha256>::new(None, session_key)
+            .expand(purpose, &mut key)
+            .map_err(|_| {
+                EncryptionError::EncryptionFailed("mapping key derivation failed".into())
+            })?;
+        Ok(Self(key))
+    }
+
+    pub fn encrypt(&self, value: &Password) -> Result<EncryptedPassword, EncryptionError> {
+        let cipher = Aes256Gcm::new(&self.0.into());
+        let mut nonce_bytes = [0u8; 12];
+        rand::rng().fill_bytes(&mut nonce_bytes);
+        let ciphertext = cipher
+            .encrypt(Nonce::from_slice(&nonce_bytes), value.as_str().as_bytes())
+            .map_err(|e| EncryptionError::EncryptionFailed(e.to_string()))?;
+        let mut result = Vec::with_capacity(nonce_bytes.len() + ciphertext.len());
+        result.extend_from_slice(&nonce_bytes);
+        result.extend_from_slice(&ciphertext);
+        Ok(EncryptedPassword(general_purpose::STANDARD.encode(result)))
+    }
+
+    pub fn decrypt(&self, value: &EncryptedPassword) -> Result<Password, EncryptionError> {
+        let data = general_purpose::STANDARD.decode(value.as_str())?;
+        if data.len() < 28 {
+            return Err(EncryptionError::InvalidNonceSize);
+        }
+        let (nonce, ciphertext) = data.split_at(12);
+        let plaintext = Aes256Gcm::new(&self.0.into())
+            .decrypt(Nonce::from_slice(nonce), ciphertext)
+            .map_err(|_| EncryptionError::PasswordDecryptionFailed)?;
+        String::from_utf8(plaintext)
+            .map(Password)
+            .map_err(|e| EncryptionError::DecryptionFailed(e.to_string()))
+    }
+}
+
 impl EncryptedPassword {
     pub fn as_str(&self) -> &str {
         &self.0
@@ -116,6 +180,15 @@ impl EncryptedPassword {
     pub fn from_raw(raw: String) -> Self {
         Self(raw)
     }
+}
+
+/// Identify legacy values that cannot be complete encrypted blobs. A false
+/// result is ambiguous: generated plaintext passwords can also be valid Base64
+/// containing at least 12 nonce + 16 tag bytes. Validate those with the backend.
+pub fn is_legacy_plaintext(value: &EncryptedPassword) -> bool {
+    general_purpose::STANDARD
+        .decode(value.as_str())
+        .map_or(true, |bytes| bytes.len() < 28)
 }
 
 /// Custom error type for encryption/decryption operations
@@ -300,5 +373,31 @@ mod tests {
         let decrypted = decrypt_password(&encrypted, &master_password).unwrap();
 
         assert_eq!(password, decrypted);
+    }
+
+    #[test]
+    fn mapping_key_is_stable_but_not_interchangeable_with_legacy_keys() {
+        let secret = [7u8; 64];
+        let mapping_key = MappingEncryptionKey::from_session_key(&secret).unwrap();
+        let ciphertext = mapping_key
+            .encrypt(&Password::from("backend-secret"))
+            .unwrap();
+        assert_eq!(
+            mapping_key.decrypt(&ciphertext).unwrap().as_str(),
+            "backend-secret"
+        );
+        assert!(MappingEncryptionKey::from_session_key(&[8u8; 64])
+            .unwrap()
+            .decrypt(&ciphertext)
+            .is_err());
+        assert!(decrypt_password(&ciphertext, &HashedPassword::from_password("password")).is_err());
+        assert!(MappingEncryptionKey::from_session_key(&[0u8; 31]).is_err());
+    }
+
+    #[test]
+    fn legacy_hexadecimal_password_requires_validation() {
+        assert!(!is_legacy_plaintext(&EncryptedPassword::from_raw(
+            "0123456789abcdef0123456789abcdef01234567".into()
+        )));
     }
 }

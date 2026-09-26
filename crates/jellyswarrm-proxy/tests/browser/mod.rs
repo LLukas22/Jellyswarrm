@@ -8,6 +8,7 @@ use playwright_rs::{
 };
 
 mod remote_control;
+mod server_mapping;
 mod syncplay;
 
 enum Scenario {

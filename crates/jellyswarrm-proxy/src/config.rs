@@ -388,7 +388,13 @@ fn dev_config_path() -> PathBuf {
 }
 
 /// Load configuration from known files and environment. Falls back to defaults.
-pub fn load_config() -> AppConfig {
+pub fn load_config() -> anyhow::Result<AppConfig> {
+    load_config_with_session_key(None)
+}
+
+/// On hot reload, preserve the key held by the active session middleware if
+/// an old config omitted it. Do not persist a different key and orphan data.
+pub fn load_config_with_session_key(existing_key: Option<&[u8]>) -> anyhow::Result<AppConfig> {
     let path = config_path();
     let builder = if cfg!(debug_assertions) {
         // In debug mode, also load a dev-specific config file if it exists.
@@ -409,22 +415,31 @@ pub fn load_config() -> AppConfig {
             .add_source(config::Environment::with_prefix("JELLYSWARRM").separator("_"))
     };
 
-    let config = match builder.build() {
-        Ok(c) => c.try_deserialize().unwrap_or_default(),
-        Err(e) => {
-            let config = AppConfig::default();
-            eprintln!("Failed to load config using defaults: {e}");
-            config
-        }
-    };
-
-    if !path.exists() {
-        if let Err(e) = save_config(&config) {
-            eprintln!("Failed to save default config to {path:?}: {e}");
+    let source = builder.build()?;
+    let had_session_key = source.get_string("session_key").is_ok();
+    let mut config: AppConfig = source.try_deserialize()?;
+    if let Some(existing_key) = existing_key {
+        if had_session_key {
+            anyhow::ensure!(
+                config.session_key == existing_key,
+                "session_key cannot be changed while running"
+            );
+        } else {
+            config.session_key = existing_key.to_vec();
         }
     }
+    anyhow::ensure!(
+        config.session_key.len() >= 64,
+        "session_key must contain at least 64 bytes"
+    );
 
-    config
+    // An older config may omit this field. Never use a freshly generated
+    // key for durable credentials without persisting it first.
+    if !path.exists() || !had_session_key {
+        save_config(&config)?;
+    }
+
+    Ok(config)
 }
 
 /// Persist configuration to the first existing file or the primary default file.
@@ -433,7 +448,19 @@ pub fn save_config(cfg: &AppConfig) -> std::io::Result<()> {
     let path = config_path();
     let temp_path = path.with_extension(format!("toml.tmp-{}", std::process::id()));
     let write_result = (|| {
-        let mut file = fs::File::create(&temp_path)?;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temp_path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
         file.write_all(toml_str.as_bytes())?;
         file.sync_all()?;
         fs::rename(&temp_path, &path)

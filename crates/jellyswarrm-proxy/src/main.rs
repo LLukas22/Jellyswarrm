@@ -35,6 +35,7 @@ mod extractors;
 mod federated_users;
 mod handlers;
 mod legacy_server_identity;
+mod mapping_auth;
 mod media_catalog;
 mod media_identity;
 mod media_storage_service;
@@ -324,7 +325,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stdout))
         .init();
 
-    let loaded_config = crate::config::load_config();
+    let loaded_config = crate::config::load_config()?;
     info!("Loaded configuration: {:?}", loaded_config);
 
     // Resolve database path inside DATA_DIR
@@ -389,7 +390,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
 
     // Initialize user authorization service
-    let user_authorization = UserAuthorizationService::new(pool.clone());
+    let mapping_key =
+        crate::encryption::MappingEncryptionKey::from_session_key(&loaded_config.session_key)?;
+    let mut user_authorization = UserAuthorizationService::with_mapping_key(
+        pool.clone(),
+        mapping_key,
+        (&loaded_config.password).into(),
+    );
+    user_authorization
+        .enable_session_encryption(&loaded_config.session_key)
+        .await?;
 
     // Initialize server storage service
     let server_storage = ServerStorageService::new(pool.clone());

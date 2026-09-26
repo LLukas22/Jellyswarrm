@@ -12,7 +12,8 @@
             <div>
                 <strong title="{{ server.url }}">{{ server.name }}</strong>
                 <div><small>{{ server.url }}</small></div>
-                <div><small>Mapped user: {{ mapping.mapped_username }}</small></div>
+                <div><small>Mapped user: {{ mapping.auth.username() }}</small></div>
+                <div><small>Authentication: {{ mapping.auth.label() }}</small></div>
                 <div><small>Sessions: {{ scount }}</small></div>
             </div>
             <button

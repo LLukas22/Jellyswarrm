@@ -37,7 +37,7 @@ pub async fn initialize_debug_user(
 mod tests {
     use crate::{
         config::{DebugUser, MediaStreamingMode, MIGRATOR},
-        encryption::{decrypt_password, Password},
+        encryption::Password,
         server_storage::ServerStorageService,
         user_authorization_service::UserAuthorizationService,
     };
@@ -99,12 +99,16 @@ mod tests {
         let mapped_passwords = mappings
             .iter()
             .map(|mapping| {
-                decrypt_password(
-                    &mapping.mapped_password,
-                    &user.local_credential.mapping_key(),
-                )
-                .unwrap()
-                .into_inner()
+                user_authorization
+                    .decrypt_server_mapping_password(
+                        mapping,
+                        &user.local_credential.mapping_key(),
+                        &user.local_credential.mapping_key(),
+                        None,
+                        None,
+                    )
+                    .unwrap()
+                    .into_inner()
             })
             .collect::<Vec<_>>();
 
