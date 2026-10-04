@@ -121,6 +121,173 @@ fn latest_items() -> Value {
     ])
 }
 
+// Exercise the production HTTP handler and preprocessing, not just cmp_by.
+// Jellyfin only includes SortName and DateCreated when requested in Fields.
+async fn check_web_album_sorting(sort_by: &str, ascending_names: &[&str]) {
+    let (state, _pool, sessions, upstreams) = setup().await;
+    let user = state
+        .user_authorization
+        .create_user("album-viewer", &"password".into())
+        .await
+        .unwrap();
+    let authorization = crate::models::Authorization {
+        client: "album-test".into(),
+        device: "test".into(),
+        device_id: "album-test".into(),
+        version: "1".into(),
+        token: None,
+    };
+    let albums = [
+        json!([
+            {"Id":"a", "Type":"MusicAlbum", "Name":"The Zebra", "SortName":"aardvark", "AlbumArtist":"Shared artist", "DateCreated":"2026-01-01T00:00:00Z"},
+            {"Id":"c", "Type":"MusicAlbum", "Name":"Omega", "SortName":"omega", "AlbumArtist":"Z artist", "DateCreated":"2026-03-01T00:00:00Z"}
+        ]),
+        json!([
+            {"Id":"b", "Type":"MusicAlbum", "Name":"Alpha", "SortName":"zulu", "AlbumArtist":"Shared artist", "DateCreated":"2026-01-01T00:00:00Z"},
+            {"Id":"d", "Type":"MusicAlbum", "Name":"Beta", "SortName":"beta", "AlbumArtist":"A artist", "DateCreated":"2026-02-01T00:00:00Z"}
+        ]),
+    ];
+    for (index, (_, server)) in sessions.iter().enumerate() {
+        state
+            .user_authorization
+            .add_server_mapping(&user.id, server, "album-viewer", &"password".into(), None)
+            .await
+            .unwrap();
+        state
+            .user_authorization
+            .store_authorization_session(
+                &user.id,
+                server,
+                &authorization,
+                "upstream-token".into(),
+                "backend-user".into(),
+                None,
+            )
+            .await
+            .unwrap();
+        Mock::given(method("GET"))
+            .and(path("/System/Info/Public"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ServerName":"Test"})))
+            .mount(&upstreams[index])
+            .await;
+        let albums = albums[index].as_array().unwrap().clone();
+        Mock::given(method("GET"))
+            .and(path("/Items"))
+            .respond_with(move |request: &wiremock::Request| {
+                let fields = request
+                    .url
+                    .query_pairs()
+                    .filter(|(key, _)| key.eq_ignore_ascii_case("Fields"))
+                    .flat_map(|(_, value)| value.split(',').map(str::to_owned).collect::<Vec<_>>())
+                    .collect::<Vec<_>>();
+                let mut items = albums.clone();
+                for item in &mut items {
+                    for field in ["SortName", "DateCreated"] {
+                        if !fields
+                            .iter()
+                            .any(|requested| requested.eq_ignore_ascii_case(field))
+                        {
+                            item.as_object_mut().unwrap().remove(field);
+                        }
+                    }
+                }
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "Items":items, "TotalRecordCount":items.len(), "StartIndex":0
+                }))
+            })
+            .mount(&upstreams[index])
+            .await;
+    }
+    state.server_storage.check_servers_health().await;
+    let app = axum::Router::new()
+        .route(
+            "/Items",
+            axum::routing::get(get_items_from_all_servers_if_not_restricted),
+        )
+        .with_state(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    // Modern web requests use camelCase and don't request SortName. Also cover
+    // legacy PascalCase requests and pagination after the global sort.
+    for (sort_key, order_key, fields_key) in [
+        ("sortBy", "sortOrder", "fields"),
+        ("SortBy", "SortOrder", "Fields"),
+    ] {
+        for order in ["Ascending", "Descending"] {
+            let mut expected = ascending_names.to_vec();
+            if order == "Descending" {
+                expected.reverse();
+            }
+            for (start, limit) in [(0, 4), (1, 2)] {
+                let mut request = state.reqwest_client.get(format!("{base_url}/Items"))
+                    .header("Authorization", format!("MediaBrowser Client=\"album-test\", Device=\"test\", DeviceId=\"album-test\", Version=\"1\", Token=\"{}\"", user.virtual_key))
+                    .query(&[
+                        ("userId", user.id.as_str()), ("includeItemTypes", "MusicAlbum"),
+                        ("recursive", "true"), (order_key, order),
+                        (fields_key, if sort_key == "sortBy" { "PrimaryImageAspectRatio" } else { "PrimaryImageAspectRatio,SortName" }),
+                        ("startIndex", &start.to_string()), ("limit", &limit.to_string()),
+                    ]);
+                if sort_key == "sortBy" {
+                    // The Jellyfin SDK encodes array-valued sorts as repeated keys.
+                    for field in sort_by.split(',') {
+                        request = request.query(&[(sort_key, field)]);
+                    }
+                } else {
+                    request = request.query(&[(sort_key, sort_by)]);
+                }
+                let response = request.send().await.unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                let response: Value = response.json().await.unwrap();
+                let names = response["Items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|item| {
+                        item["Name"]
+                            .as_str()
+                            .unwrap()
+                            .split(" [Server ")
+                            .next()
+                            .unwrap()
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    names,
+                    expected[start..start + limit],
+                    "{sort_by} {order}, start={start}: {response}"
+                );
+                assert_eq!(response["TotalRecordCount"], 4);
+                assert_eq!(response["StartIndex"], start);
+            }
+        }
+    }
+    task.abort();
+}
+
+#[tokio::test]
+async fn web_album_name_sorting_http_integration() {
+    check_web_album_sorting("SortName", &["The Zebra", "Beta", "Omega", "Alpha"]).await;
+}
+
+#[tokio::test]
+async fn web_album_date_added_sorting_http_integration() {
+    check_web_album_sorting(
+        "DateCreated,SortName",
+        &["The Zebra", "Alpha", "Beta", "Omega"],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn web_album_artist_sorting_http_integration() {
+    check_web_album_sorting(
+        "AlbumArtist,SortName",
+        &["Beta", "The Zebra", "Alpha", "Omega"],
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn series_tv_schedule_only_queries_the_series_server() {
     let (state, _pool, sessions, upstreams) = setup().await;
@@ -597,14 +764,16 @@ async fn latest_virtual_parent_reuses_browse_scope_and_member_routes() {
                 }
                 let mut values = fields[0].1.split(',').collect::<Vec<_>>();
                 values.sort_unstable();
-                if values
-                    != [
-                        "DateCreated",
-                        "Path",
-                        "PrimaryImageAspectRatio",
-                        "ProviderIds",
-                    ]
-                {
+                let mut expected = vec![
+                    "DateCreated",
+                    "Path",
+                    "PrimaryImageAspectRatio",
+                    "ProviderIds",
+                ];
+                if request.url.path().eq_ignore_ascii_case("/Items") {
+                    expected.push("SortName");
+                }
+                if values != expected {
                     return ResponseTemplate::new(400);
                 }
                 let mut items = latest_items();

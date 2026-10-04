@@ -84,7 +84,7 @@ pub static MEDIA_ID_ARRAY_FIELDS: LazyLock<FieldMatcher> =
 /// `CreatePlaylistDto { Ids: [...] }`). Array items carry the index as key,
 /// so they cannot be matched via `ID_FIELDS` and need parent-path matching.
 pub static MEDIA_ID_LIST_PARENT_FIELDS: LazyLock<FieldMatcher> =
-    LazyLock::new(|| FieldMatcher::new(&["Ids", "EntryIds", "PlaylistItemIds"]));
+    LazyLock::new(|| FieldMatcher::new(&["Ids", "ItemIds", "EntryIds", "PlaylistItemIds"]));
 
 pub static MEDIA_ID_MAP_VALUE_FIELDS: LazyLock<FieldMatcher> =
     LazyLock::new(|| FieldMatcher::new(&["ImageTags"]));

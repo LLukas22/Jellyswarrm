@@ -274,13 +274,16 @@ fn query_list<T>(url: &url::Url, expected_key: &str) -> Vec<T>
 where
     T: FromStr,
 {
+    // SDK clients send repeated keys; legacy clients send comma-separated
+    // lists. Both encodings must preserve every criterion and its order.
     let mut values = Vec::new();
     for (key, value) in url.query_pairs() {
         if key.eq_ignore_ascii_case(expected_key) {
-            values = value
-                .split(',')
-                .filter_map(|value| value.trim().parse().ok())
-                .collect();
+            values.extend(
+                value
+                    .split(',')
+                    .filter_map(|value| value.trim().parse().ok()),
+            );
         }
     }
     values
@@ -324,6 +327,33 @@ fn to_i32(value: usize) -> i32 {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn repeated_sort_fields_and_orders_preserve_all_criteria() {
+        let url = url::Url::parse(
+            "http://localhost/Items?sortBy=AlbumArtist&SortBy=DateCreated,%20SortName&sortOrder=Ascending&SortOrder=Descending,Ascending",
+        ).unwrap();
+        let SortPolicy::Fields(criteria) = SortPolicy::from_url(&url) else {
+            panic!("expected field sorting");
+        };
+        assert_eq!(
+            criteria,
+            vec![
+                SortCriterion {
+                    field: ItemSortBy::AlbumArtist,
+                    order: SortOrder::Ascending
+                },
+                SortCriterion {
+                    field: ItemSortBy::DateCreated,
+                    order: SortOrder::Descending
+                },
+                SortCriterion {
+                    field: ItemSortBy::SortName,
+                    order: SortOrder::Ascending
+                },
+            ]
+        );
+    }
 
     #[test]
     fn pagination_from_url_defaults_when_absent() {

@@ -351,7 +351,7 @@ mod tests {
             (format!("/Items/{playlist}"), "/Items/playlist"),
         ] {
             let mut url = url::Url::parse(&format!("http://localhost{path}")).unwrap();
-            urls.validate_playlist_url(&url, &None, None, server.id)
+            urls.validate_container_request(&url, &None, None, server.id, &[])
                 .await
                 .unwrap();
             urls.client_to_server_url(&mut url, &None, None, Some(server.id))
@@ -388,7 +388,7 @@ mod tests {
             ] {
                 let url = url::Url::parse(&format!("http://localhost{path}")).unwrap();
                 assert!(urls
-                    .validate_playlist_url(&url, &None, None, server.id)
+                    .validate_container_request(&url, &None, None, server.id, &[])
                     .await
                     .unwrap_err()
                     .to_string()
