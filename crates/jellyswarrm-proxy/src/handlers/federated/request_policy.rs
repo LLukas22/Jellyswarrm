@@ -122,15 +122,37 @@ pub(super) fn ensure_duplicate_identity_field(url: &mut url::Url) {
 }
 
 pub(super) fn ensure_global_sort_fields(url: &mut url::Url) {
-    let sorts_by_date_created = url.query_pairs().any(|(key, value)| {
-        key.eq_ignore_ascii_case("SortBy")
-            && value
+    let sort_fields = url
+        .query_pairs()
+        .filter(|(key, _)| key.eq_ignore_ascii_case("SortBy"))
+        .flat_map(|(_, value)| {
+            value
                 .split(',')
-                .map(str::trim)
-                .any(|field| field.eq_ignore_ascii_case("DateCreated"))
-    });
-    if url.path().to_ascii_lowercase().ends_with("/latest") || sorts_by_date_created {
+                .map(|field| field.trim().to_owned())
+                .collect::<Vec<_>>()
+        })
+        .filter(|field| !field.is_empty())
+        .collect::<Vec<_>>();
+    let path = url.path().trim_end_matches('/').to_ascii_lowercase();
+    let is_latest = path.ends_with("/latest");
+    if is_latest
+        || sort_fields
+            .iter()
+            .any(|field| field.eq_ignore_ascii_case("DateCreated"))
+    {
         ensure_item_fields(url, &["DateCreated"]);
+    }
+    // SortName is opt-in in BaseItemDto. Fetch it even when the client only
+    // needs display fields, including when it is a secondary sort criterion.
+    if sort_fields
+        .iter()
+        .any(|field| field.eq_ignore_ascii_case("SortName"))
+        || (sort_fields.is_empty()
+            && !is_latest
+            && !path.ends_with("/resume")
+            && !path.contains("/shows/"))
+    {
+        ensure_item_fields(url, &["SortName"]);
     }
 }
 
@@ -406,6 +428,50 @@ mod tests {
                     "Fields".to_string(),
                     "PrimaryImageAspectRatio,Path,DateCreated".to_string(),
                 ),
+            ]
+        );
+    }
+
+    #[test]
+    fn global_sort_fields_include_optional_metadata_from_repeated_sort_keys() {
+        let mut url = url::Url::parse(
+            "http://localhost/Items?sortBy=DateCreated&sortBy=AlbumArtist,SortName&fields=PrimaryImageAspectRatio&fields=sortname&Limit=10",
+        ).unwrap();
+        ensure_global_sort_fields(&mut url);
+        ensure_global_sort_fields(&mut url);
+
+        let fields = url
+            .query_pairs()
+            .filter(|(key, _)| key == "Fields")
+            .map(|(_, value)| value.into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(fields, vec!["PrimaryImageAspectRatio,sortname,DateCreated"]);
+        assert_eq!(
+            url.query_pairs().filter(|(key, _)| key == "sortBy").count(),
+            2
+        );
+        assert!(url
+            .query_pairs()
+            .any(|(key, value)| key == "Limit" && value == "10"));
+    }
+
+    #[test]
+    fn default_catalog_sort_fetches_sort_name_but_explicit_name_sort_does_not() {
+        let mut default = url::Url::parse("http://localhost/Items?Fields=Genres").unwrap();
+        ensure_global_sort_fields(&mut default);
+        assert_eq!(
+            query_pairs(&default),
+            vec![("Fields".into(), "Genres,SortName".into())]
+        );
+
+        let mut explicit =
+            url::Url::parse("http://localhost/Items?SortBy=Name&Fields=Genres").unwrap();
+        ensure_global_sort_fields(&mut explicit);
+        assert_eq!(
+            query_pairs(&explicit),
+            vec![
+                ("SortBy".into(), "Name".into()),
+                ("Fields".into(), "Genres".into()),
             ]
         );
     }

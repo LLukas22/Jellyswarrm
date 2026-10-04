@@ -5,7 +5,7 @@ use crate::{
     media_storage_service::{MediaMapping, MediaVersionMember},
     server_id::ServerId,
     server_storage::Server,
-    url_helper::{contains_id, is_id_like, replace_id},
+    url_helper::{contains_id, decoded_path_segments, is_id_like, replace_id},
     user_authorization_service::AuthorizationSession,
     virtual_library_service::compare_virtual_library_routes,
     virtual_library_service::{VirtualLibraryAccessScope, VirtualLibraryResolution},
@@ -18,6 +18,7 @@ pub static MEDIA_ID_PATH_TAGS: &[&str] = &[
     "Shows",
     "Videos",
     "Playlists",
+    "Collections",
     "PlayedItems",
     "FavoriteItems",
     "MediaSegments",
@@ -215,18 +216,41 @@ impl UrlProcessor {
             .ok_or_else(|| anyhow::anyhow!("Requested user has no mapping on the selected server"))
     }
 
-    pub async fn validate_playlist_url(
+    pub async fn validate_container_request(
         &self,
         url: &url::Url,
         session: &Option<AuthorizationSession>,
         scope: Option<&VirtualLibraryAccessScope>,
         server_id: ServerId,
+        body_media_ids: &[String],
     ) -> Result<()> {
-        if !url
-            .path_segments()
-            .is_some_and(|mut parts| parts.any(|p| p.eq_ignore_ascii_case("Playlists")))
-        {
+        let segments = decoded_path_segments(url.path());
+        let is_playlist = segments
+            .iter()
+            .any(|part| part.eq_ignore_ascii_case("Playlists"));
+        let is_collection = segments
+            .iter()
+            .any(|part| part.eq_ignore_ascii_case("Collections"));
+        if !is_playlist && !is_collection {
             return Ok(());
+        }
+        let unavailable = if is_playlist {
+            "Playlist track or entry is unavailable on the selected server; mixed-server playlists are unsupported"
+        } else {
+            "Collection item is unavailable on the selected server; mixed-server collections are unsupported"
+        };
+        // Check container IDs even when they are malformed, since contains_id
+        // intentionally only matches UUID-like path segments.
+        for pair in segments.windows(2) {
+            if (pair[0].eq_ignore_ascii_case("Playlists")
+                || pair[0].eq_ignore_ascii_case("Collections"))
+                && self
+                    .client_media_mapping(&pair[1], scope, Some(server_id))
+                    .await
+                    .is_none()
+            {
+                anyhow::bail!(unavailable);
+            }
         }
         for tag in MEDIA_ID_PATH_TAGS {
             if let Some(id) = contains_id(url, tag) {
@@ -235,7 +259,7 @@ impl UrlProcessor {
                     .await
                     .is_none()
                 {
-                    anyhow::bail!("Playlist ID is unavailable on the selected server; mixed-server playlists are unsupported");
+                    anyhow::bail!(unavailable);
                 }
             }
         }
@@ -250,19 +274,27 @@ impl UrlProcessor {
                         .await
                         .is_none()
                     {
-                        anyhow::bail!("Playlist track or entry is unavailable on the selected server; mixed-server playlists are unsupported");
+                        anyhow::bail!(unavailable);
                     }
                 }
             }
         }
+        for id in body_media_ids {
+            if self
+                .client_media_mapping(id, scope, Some(server_id))
+                .await
+                .is_none()
+            {
+                anyhow::bail!(unavailable);
+            }
+        }
         // Validate even malformed recipient IDs: contains_id deliberately skips
         // non-UUID path values, which must not bypass sharing validation.
-        let segments: Vec<_> = url.path_segments().into_iter().flatten().collect();
         if let Some(pair) = segments
             .windows(2)
             .find(|pair| pair[0].eq_ignore_ascii_case("Users"))
         {
-            self.upstream_user_id(pair[1], session, server_id).await?;
+            self.upstream_user_id(&pair[1], session, server_id).await?;
         }
         Ok(())
     }

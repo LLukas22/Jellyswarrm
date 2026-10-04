@@ -28,45 +28,35 @@ pub fn join_server_url(server_url: &Url, request_path: &str) -> Url {
     new_url
 }
 
+pub fn decoded_path_segments(path: &str) -> Vec<String> {
+    let decoded = percent_encoding::percent_decode_str(path).decode_utf8_lossy();
+    decoded
+        .strip_prefix('/')
+        .unwrap_or(&decoded)
+        .split('/')
+        .map(str::to_owned)
+        .collect()
+}
+
 pub fn contains_id(url: &Url, name: &str) -> Option<String> {
-    let segments: Vec<&str> = match url.path_segments() {
-        Some(segments) => segments.collect(),
-        None => Vec::new(),
-    };
-
-    let mut i = 0;
-
-    while i < segments.len() {
-        if i + 1 < segments.len() {
-            let current = segments[i];
-            let next = segments[i + 1];
-
-            if current.eq_ignore_ascii_case(name) && is_id_like(next) {
-                return Some(next.to_string());
-            }
-        }
-        i += 1;
-    }
-    None
+    decoded_path_segments(url.path())
+        .windows(2)
+        .find(|pair| pair[0].eq_ignore_ascii_case(name) && is_id_like(&pair[1]))
+        .map(|pair| pair[1].clone())
 }
 
 pub fn replace_id(url: Url, original: &str, replacement: &str) -> Url {
     let mut url = url;
-    let Some(segments) = url.path_segments() else {
-        return url;
-    };
-
-    let replaced_segments = segments
-        .map(|segment| {
+    let segments = decoded_path_segments(url.path());
+    if let Ok(mut path) = url.path_segments_mut() {
+        path.clear().extend(segments.iter().map(|segment| {
             if segment == original {
                 replacement
             } else {
-                segment
+                segment.as_str()
             }
-        })
-        .collect::<Vec<_>>();
-
-    url.set_path(&replaced_segments.join("/"));
+        }));
+    }
     url
 }
 
@@ -110,6 +100,20 @@ pub fn ensure_query_list_value(url: &mut Url, expected_key: &str, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn encoded_id_lookup_and_replacement_preserve_other_path_encoding() {
+        let id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let url = Url::parse(&format!(
+            "http://localhost/%50laylists/%61{}/%55sers/name%252Fvalue/?keep=%2F",
+            &id[1..]
+        ))
+        .unwrap();
+        assert_eq!(contains_id(&url, "Playlists"), Some(id.into()));
+        let rewritten = replace_id(url, id, "backend");
+        assert_eq!(rewritten.path(), "/Playlists/backend/Users/name%252Fvalue/");
+        assert_eq!(rewritten.query(), Some("keep=%2F"));
+    }
 
     #[test]
     fn test_join_server_url() {

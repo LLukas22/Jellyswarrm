@@ -22,6 +22,16 @@ pub struct ResponseProcessor {
     url_processor: UrlProcessor,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum PlaylistResponseError {
+    #[error("Playlist sharing cannot be represented completely by local users")]
+    IncompleteSharing,
+    #[error("Invalid playlist sharing response")]
+    InvalidSharing,
+    #[error(transparent)]
+    Database(#[from] sqlx::Error),
+}
+
 impl ResponseProcessor {
     pub fn new(data_context: DataContext) -> Self {
         Self {
@@ -37,6 +47,83 @@ impl ResponseProcessor {
             .await
             .map(|mapping| mapping.virtual_media_id)
             .map_err(|e| format!("failed to create media mapping for {id}: {e}"))
+    }
+
+    // Never return a partial permission list that a client could save back as
+    // a replacement. Either every recipient is translated or the read fails.
+    pub(crate) async fn remap_playlist_users(
+        &self,
+        payload: &mut Value,
+        server: &Server,
+    ) -> Result<bool, PlaylistResponseError> {
+        if let Value::Array(permissions) = payload {
+            return self
+                .remap_playlist_permission_list(permissions, server)
+                .await;
+        }
+        let mut modified = false;
+        let mut has_permission_list = false;
+        let object = payload
+            .as_object_mut()
+            .ok_or(PlaylistResponseError::InvalidSharing)?;
+        for (key, value) in object.iter_mut() {
+            if key.eq_ignore_ascii_case("Shares") || key.eq_ignore_ascii_case("Users") {
+                has_permission_list = true;
+                let permissions = value
+                    .as_array_mut()
+                    .ok_or(PlaylistResponseError::InvalidSharing)?;
+                modified |= self
+                    .remap_playlist_permission_list(permissions, server)
+                    .await?;
+            }
+        }
+        if payload
+            .as_object()
+            .is_some_and(|object| object.keys().any(|key| key.eq_ignore_ascii_case("UserId")))
+        {
+            modified |= self.remap_playlist_permission(payload, server).await?;
+        } else if !has_permission_list {
+            return Err(PlaylistResponseError::InvalidSharing);
+        }
+        Ok(modified)
+    }
+
+    async fn remap_playlist_permission_list(
+        &self,
+        permissions: &mut [Value],
+        server: &Server,
+    ) -> Result<bool, PlaylistResponseError> {
+        let mut modified = false;
+        for permission in permissions {
+            modified |= self.remap_playlist_permission(permission, server).await?;
+        }
+        Ok(modified)
+    }
+
+    async fn remap_playlist_permission(
+        &self,
+        permission: &mut Value,
+        server: &Server,
+    ) -> Result<bool, PlaylistResponseError> {
+        let (_, value) = permission
+            .as_object_mut()
+            .and_then(|object| {
+                object
+                    .iter_mut()
+                    .find(|(key, _)| key.eq_ignore_ascii_case("UserId"))
+            })
+            .ok_or(PlaylistResponseError::InvalidSharing)?;
+        let original_id = value
+            .as_str()
+            .ok_or(PlaylistResponseError::InvalidSharing)?;
+        let virtual_id = self
+            .data_context
+            .user_authorization
+            .virtual_user_id_for_backend(server.id, original_id)
+            .await?
+            .ok_or(PlaylistResponseError::IncompleteSharing)?;
+        *value = Value::String(virtual_id);
+        Ok(true)
     }
 
     async fn remap_delivery_url(
@@ -64,14 +151,39 @@ pub struct ResponseProcessingContext {
 pub enum ResponseProcessingProfile {
     Media,
     BestEffortMedia,
+    PlaylistPermissions,
     Disabled,
+}
+
+impl ResponseProcessingProfile {
+    pub fn for_proxy_request(method: &hyper::Method, path: &str) -> Self {
+        let segments = crate::url_helper::decoded_path_segments(path.trim_end_matches('/'));
+        let permission_read = match segments.as_slice() {
+            [tag, _] => tag.eq_ignore_ascii_case("Playlists"),
+            [tag, _, users] | [tag, _, users, _] => {
+                tag.eq_ignore_ascii_case("Playlists") && users.eq_ignore_ascii_case("Users")
+            }
+            _ => false,
+        };
+        if method == hyper::Method::GET && permission_read {
+            Self::PlaylistPermissions
+        } else {
+            Self::BestEffortMedia
+        }
+    }
+
+    pub fn requires_json(self) -> bool {
+        matches!(self, Self::PlaylistPermissions)
+    }
 }
 
 impl ResponseProcessingContext {
     fn rewrites_media_fields(&self) -> bool {
         matches!(
             self.profile,
-            ResponseProcessingProfile::Media | ResponseProcessingProfile::BestEffortMedia
+            ResponseProcessingProfile::Media
+                | ResponseProcessingProfile::BestEffortMedia
+                | ResponseProcessingProfile::PlaylistPermissions
         )
     }
 }
@@ -276,4 +388,33 @@ fn path_segments(path: &str) -> impl Iterator<Item = &str> {
 
 fn strip_array_index(segment: &str) -> &str {
     segment.split('[').next().unwrap_or(segment)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_playlist_permission_reads_require_complete_json_processing() {
+        for path in [
+            "/Playlists/id",
+            "/Playlists/id/Users",
+            "/Playlists/id/Users/user/",
+            "/%50laylists/id/%55sers",
+        ] {
+            let profile = ResponseProcessingProfile::for_proxy_request(&hyper::Method::GET, path);
+            assert_eq!(profile, ResponseProcessingProfile::PlaylistPermissions);
+            assert!(profile.requires_json());
+        }
+        for (method, path) in [
+            (hyper::Method::POST, "/Playlists/id"),
+            (hyper::Method::GET, "/Playlists/id/Items"),
+            (hyper::Method::GET, "/Playlists/id/InstantMix"),
+            (hyper::Method::GET, "/Collections/id"),
+        ] {
+            let profile = ResponseProcessingProfile::for_proxy_request(&method, path);
+            assert_eq!(profile, ResponseProcessingProfile::BestEffortMedia);
+            assert!(!profile.requires_json());
+        }
+    }
 }

@@ -138,6 +138,8 @@ services:
       <<: *music-init-environment
       URL: http://jellyfin-music:8096
       SERVER_NAME: Music 1
+      PLAYLIST_NAME: Music 1 Test Playlist
+      PLAYLIST_TRACK_COUNT: 4
     depends_on:
       jellyfin-music:
         condition: service_healthy
@@ -210,6 +212,8 @@ services:
       <<: *music-init-environment
       URL: http://jellyfin-music-2:8096
       SERVER_NAME: Music 2
+      PLAYLIST_NAME: Music 2 Test Playlist
+      PLAYLIST_TRACK_COUNT: 2
     depends_on:
       jellyfin-music-2:
         condition: service_healthy

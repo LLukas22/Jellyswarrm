@@ -283,6 +283,23 @@ impl ProxyProcessors {
         payload: &mut serde_json::Value,
         context: &ResponseProcessingContext,
     ) -> Result<bool, StatusCode> {
+        let permissions_modified =
+            if context.profile == ResponseProcessingProfile::PlaylistPermissions {
+                self.response_processor
+                    .remap_playlist_users(payload, &context.server)
+                    .await
+                    .map_err(|error| {
+                        use processors::response_processor::PlaylistResponseError;
+                        error!("Failed to process playlist sharing response: {error}");
+                        match error {
+                            PlaylistResponseError::IncompleteSharing => StatusCode::CONFLICT,
+                            PlaylistResponseError::InvalidSharing => StatusCode::BAD_GATEWAY,
+                            PlaylistResponseError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
+                        }
+                    })?
+            } else {
+                false
+            };
         let processed = processors::process_json(payload, &self.response_processor, context)
             .await
             .map_err(|e| {
@@ -290,7 +307,7 @@ impl ProxyProcessors {
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
 
-        Ok(processed.was_modified)
+        Ok(permissions_modified || processed.was_modified)
     }
 }
 
@@ -957,6 +974,8 @@ fn client_request_error(error: &anyhow::Error) -> &'static str {
     let message = error.to_string();
     if message.contains("mixed-server playlists are unsupported") {
         "Playlist track or entry is unavailable on the selected server; mixed-server playlists are unsupported"
+    } else if message.contains("mixed-server collections are unsupported") {
+        "Collection item is unavailable on the selected server; mixed-server collections are unsupported"
     } else if message.contains("Requested user has no mapping on the selected server") {
         "Requested user has no mapping on the selected server"
     } else {
@@ -972,6 +991,8 @@ async fn proxy_handler(
     // Session/control routes never fall through, including encoded or mixed-case paths.
     let path_without_prefix = state.remove_prefix_from_path(req.uri().path()).await;
     let decoded = percent_decode_str(path_without_prefix).decode_utf8_lossy();
+    let response_profile =
+        ResponseProcessingProfile::for_proxy_request(req.method(), path_without_prefix);
     let is_session_path = decoded
         .split('/')
         .find(|part| !part.is_empty())
@@ -1060,6 +1081,12 @@ async fn proxy_handler(
         StatusCode::BAD_GATEWAY
     })?;
 
+    if status.is_success()
+        && response_profile.requires_json()
+        && (!is_json_response(&headers) || body_bytes.is_empty())
+    {
+        return Err(StatusCode::BAD_GATEWAY);
+    }
     if is_json_response(&headers) && !body_bytes.is_empty() {
         match serde_json::from_slice::<serde_json::Value>(&body_bytes) {
             Ok(mut json_value) => {
@@ -1067,7 +1094,11 @@ async fn proxy_handler(
                     .process_response_json(
                         &mut json_value,
                         &response_server,
-                        ResponseProcessingProfile::BestEffortMedia,
+                        if status.is_success() {
+                            response_profile
+                        } else {
+                            ResponseProcessingProfile::BestEffortMedia
+                        },
                         false,
                         response_proxy_api_key.as_deref(),
                     )
@@ -1093,6 +1124,10 @@ async fn proxy_handler(
                 }
             }
             Err(e) => {
+                if status.is_success() && response_profile.requires_json() {
+                    error!("Invalid JSON response for {}: {}", request_url, e);
+                    return Err(StatusCode::BAD_GATEWAY);
+                }
                 warn!(
                     "Skipping JSON response processing for {} because body parsing failed: {}",
                     request_url, e

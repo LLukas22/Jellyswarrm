@@ -11,6 +11,7 @@ use wiremock::{
 
 struct Fixture {
     state: AppState,
+    pool: sqlx::SqlitePool,
     upstreams: Vec<MockServer>,
     servers: Vec<Server>,
     caller: User,
@@ -48,7 +49,11 @@ impl Fixture {
             user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
             server_storage: Arc::new(servers.clone()),
             media_storage: Arc::new(media.clone()),
-            virtual_library_service: Arc::new(VirtualLibraryService::new(pool, servers, media)),
+            virtual_library_service: Arc::new(VirtualLibraryService::new(
+                pool.clone(),
+                servers,
+                media,
+            )),
             play_sessions: Arc::new(SessionStorage::new()),
             config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
         };
@@ -107,6 +112,7 @@ impl Fixture {
         });
         Self {
             state,
+            pool,
             upstreams,
             servers,
             caller,
@@ -152,11 +158,15 @@ impl Fixture {
 
     // Discover virtual track IDs through HTTP response translation, not pre-created mappings.
     async fn song(&self, index: usize) -> String {
+        self.media(index, &format!("song-{index}"), "Audio").await
+    }
+
+    async fn media(&self, index: usize, original_id: &str, kind: &str) -> String {
         Mock::given(method("GET"))
             .and(path(format!("/TestSongs{index}")))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(json!({"Ids":[format!("song-{index}")]})),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Ids":[original_id], "Items":[{"Id":original_id, "Type":kind}]
+            })))
             .expect(1)
             .mount(&self.upstreams[index])
             .await;
@@ -219,6 +229,619 @@ impl Fixture {
         }
         count
     }
+}
+
+#[tokio::test]
+async fn collection_membership_writes_translate_owner_and_movie_ids() {
+    let f = Fixture::new().await;
+    let movie = f.media(1, "movie", "Movie").await;
+    let collection = f
+        .state
+        .media_storage
+        .get_or_create_media_mapping("collection", &f.servers[1])
+        .await
+        .unwrap();
+    for method in [Method::POST, Method::DELETE] {
+        Mock::given(wiremock::matchers::method(method.as_str()))
+            .and(path("/Collections/collection/Items"))
+            .and(query_param("Ids", "movie"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&f.upstreams[1])
+            .await;
+        assert_eq!(
+            f.request(
+                method,
+                &format!(
+                    "/Collections/{}/Items?Ids={movie}",
+                    collection.virtual_media_id
+                ),
+                None
+            )
+            .await
+            .status(),
+            StatusCode::NO_CONTENT
+        );
+    }
+    assert!(f.upstreams[0]
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .all(|request| request.method == "GET"));
+}
+
+#[tokio::test]
+async fn collection_writes_reject_foreign_unknown_and_malformed_ids_before_forwarding() {
+    let f = Fixture::new().await;
+    let local = f.media(0, "movie", "Movie").await;
+    let foreign = f.media(1, "series", "Series").await;
+    let collection = f
+        .state
+        .media_storage
+        .get_or_create_media_mapping("collection", &f.servers[0])
+        .await
+        .unwrap();
+    for invalid in [
+        &foreign,
+        "ffffffff-ffff-ffff-ffff-fffffffffffe",
+        "malformed",
+    ] {
+        for (url, body) in [
+            (format!("/Collections?Ids={local},{invalid}"), None),
+            (format!("/Collections?ids={local}&ids={invalid}"), None),
+            ("/Collections".into(), Some(json!({"Ids":[local, invalid]}))),
+            (
+                format!(
+                    "/Collections/{}/Items?Ids={invalid}",
+                    collection.virtual_media_id
+                ),
+                None,
+            ),
+        ] {
+            let before = f.mutation_count().await;
+            let response = f.request(Method::POST, &url, body).await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{url}");
+            assert!(response
+                .text()
+                .await
+                .unwrap()
+                .contains("mixed-server collections are unsupported"));
+            assert_eq!(f.mutation_count().await, before);
+        }
+    }
+    let response = f
+        .request(
+            Method::POST,
+            &format!("/Collections/malformed/Items?Ids={local}"),
+            None,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(f.mutation_count().await, 0);
+}
+
+#[tokio::test]
+async fn playlist_detail_and_sharing_reads_translate_complete_permissions() {
+    let f = Fixture::new().await;
+    let song = f.song(0).await;
+    let playlist = f.create(&song).await;
+    let recipient = f
+        .state
+        .user_authorization
+        .create_user("recipient", &"password".into())
+        .await
+        .unwrap();
+    Fixture::map_user(&f.state, &recipient, &f.servers[0], "recipient-backend").await;
+    let other = f
+        .state
+        .user_authorization
+        .create_user("other", &"password".into())
+        .await
+        .unwrap();
+    Fixture::map_user(&f.state, &other, &f.servers[1], "recipient-backend").await;
+    Mock::given(method("GET"))
+        .and(path("/Playlists/playlist"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "OpenAccess":false, "ItemIds":["song-0", "song-0"], "Shares":[
+                {"UserId":"caller-0", "CanEdit":true},
+                {"UserId":"recipient-backend", "CanEdit":false}
+            ]
+        })))
+        .expect(1)
+        .mount(&f.upstreams[0])
+        .await;
+    let response = f
+        .request(Method::GET, &format!("/Playlists/{playlist}"), None)
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let details: Value = response.json().await.unwrap();
+    assert_eq!(details["ItemIds"], json!([song, song]));
+    assert_eq!(
+        details["Shares"],
+        json!([
+            {"UserId":f.caller.id, "CanEdit":true}, {"UserId":recipient.id, "CanEdit":false}
+        ])
+    );
+    Mock::given(method("GET"))
+        .and(path("/Playlists/playlist/Users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"userId":"recipient-backend", "canEdit":false}
+        ])))
+        .expect(1)
+        .mount(&f.upstreams[0])
+        .await;
+    let response = f
+        .request(Method::GET, &format!("/Playlists/{playlist}/Users"), None)
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.json::<Value>().await.unwrap(),
+        json!([{ "userId":recipient.id, "canEdit":false }])
+    );
+    Mock::given(method("GET"))
+        .and(path("/Playlists/playlist/Users/recipient-backend"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"UserId":"recipient-backend", "CanEdit":false})),
+        )
+        .expect(1)
+        .mount(&f.upstreams[0])
+        .await;
+    let response = f
+        .request(
+            Method::GET,
+            &format!("/Playlists/{playlist}/Users/{}", recipient.id),
+            None,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.json::<Value>().await.unwrap()["UserId"],
+        recipient.id
+    );
+}
+
+#[tokio::test]
+async fn playlist_sharing_reads_do_not_choose_between_ambiguous_account_aliases() {
+    let f = Fixture::new().await;
+    let song = f.song(0).await;
+    let playlist = f.create(&song).await;
+    let alias = f
+        .state
+        .user_authorization
+        .create_user("alias", &"password".into())
+        .await
+        .unwrap();
+    Fixture::map_user(&f.state, &alias, &f.servers[0], "caller-0").await;
+    Mock::given(method("GET"))
+        .and(path("/Playlists/playlist/Users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"UserId":"caller-0", "CanEdit":true}
+        ])))
+        .expect(1)
+        .mount(&f.upstreams[0])
+        .await;
+    let response = f
+        .request(Method::GET, &format!("/Playlists/{playlist}/Users"), None)
+        .await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn incomplete_playlist_sharing_reads_fail_instead_of_returning_partial_lists() {
+    let f = Fixture::new().await;
+    let song = f.song(0).await;
+    let playlist = f.create(&song).await;
+    for (suffix, body) in [
+        (
+            "",
+            json!({"ItemIds":["song-0"], "Shares":[
+                {"UserId":"caller-0", "CanEdit":true}, {"UserId":"unmapped", "CanEdit":false}
+            ]}),
+        ),
+        (
+            "/Users",
+            json!([
+                {"UserId":"caller-0", "CanEdit":true}, {"UserId":"unmapped", "CanEdit":false}
+            ]),
+        ),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(format!("/Playlists/playlist{suffix}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .expect(1)
+            .mount(&f.upstreams[0])
+            .await;
+        let response = f
+            .request(Method::GET, &format!("/Playlists/{playlist}{suffix}"), None)
+            .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(!response.text().await.unwrap().contains("unmapped"));
+    }
+}
+
+#[tokio::test]
+async fn encoded_container_paths_use_the_same_owner_for_validation_and_translation() {
+    let f = Fixture::new().await;
+    let movie = f.media(1, "movie", "Movie").await;
+    let encoded = |id: &str| {
+        id.bytes()
+            .map(|byte| format!("%{byte:02X}"))
+            .collect::<String>()
+    };
+    for (tag, backend) in [("Collections", "collection"), ("Playlists", "playlist")] {
+        let mapping = f
+            .state
+            .media_storage
+            .get_or_create_media_mapping(backend, &f.servers[1])
+            .await
+            .unwrap();
+        Mock::given(method("POST"))
+            .and(path(format!("/{tag}/{backend}/Items")))
+            .and(query_param("Ids", "movie"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&f.upstreams[1])
+            .await;
+        let response = f
+            .request(
+                Method::POST,
+                &format!(
+                    "/{}/{}/%49tems?Ids={movie}",
+                    encoded(tag),
+                    encoded(&mapping.virtual_media_id)
+                ),
+                None,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT, "{tag}");
+        if tag == "Playlists" {
+            Mock::given(method("GET"))
+                .and(path("/Playlists/playlist/Users"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                    {"UserId":"caller-1", "CanEdit":true}
+                ])))
+                .expect(1)
+                .mount(&f.upstreams[1])
+                .await;
+            let response = f
+                .request(
+                    Method::GET,
+                    &format!(
+                        "/{}/{}/%55sers",
+                        encoded(tag),
+                        encoded(&mapping.virtual_media_id)
+                    ),
+                    None,
+                )
+                .await;
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response.json::<Value>().await.unwrap()[0]["UserId"],
+                f.caller.id
+            );
+        }
+    }
+    assert!(f.upstreams[0]
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .all(|request| request.method == "GET"));
+}
+
+#[tokio::test]
+async fn invalid_playlist_sharing_responses_return_bad_gateway_not_mapping_conflicts() {
+    let mut responses = [
+        json!([{"CanEdit":true}]),
+        json!([{"UserId":42}]),
+        json!(null),
+        json!({"Shares":"invalid"}),
+    ]
+    .into_iter()
+    .map(|body| ResponseTemplate::new(200).set_body_json(body))
+    .collect::<Vec<_>>();
+    responses.extend([
+        ResponseTemplate::new(200)
+            .set_body_string("invalid json")
+            .insert_header("Content-Type", "application/json"),
+        ResponseTemplate::new(200).insert_header("Content-Type", "application/json"),
+        ResponseTemplate::new(200).set_body_string("upstream HTML"),
+    ]);
+    for response in responses {
+        let f = Fixture::new().await;
+        let song = f.song(0).await;
+        let playlist = f.create(&song).await;
+        Mock::given(method("GET"))
+            .and(path("/Playlists/playlist/Users"))
+            .respond_with(response)
+            .expect(1)
+            .mount(&f.upstreams[0])
+            .await;
+        assert_eq!(
+            f.request(Method::GET, &format!("/Playlists/{playlist}/Users"), None)
+                .await
+                .status(),
+            StatusCode::BAD_GATEWAY
+        );
+    }
+}
+
+#[tokio::test]
+async fn playlist_mapping_database_failures_are_internal_errors() {
+    let f = Fixture::new().await;
+    f.pool.close().await;
+    let mut permissions = json!([{"UserId":"caller-0", "CanEdit":true}]);
+    assert_eq!(
+        f.state
+            .process_response_json(
+                &mut permissions,
+                &f.servers[0],
+                ResponseProcessingProfile::PlaylistPermissions,
+                false,
+                None
+            )
+            .await
+            .unwrap_err(),
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+}
+
+#[tokio::test]
+async fn complete_playlist_sharing_can_be_saved_back_without_losing_recipients() {
+    let f = Fixture::new().await;
+    let song = f.song(0).await;
+    let playlist = f.create(&song).await;
+    let recipient = f
+        .state
+        .user_authorization
+        .create_user("recipient", &"password".into())
+        .await
+        .unwrap();
+    Fixture::map_user(&f.state, &recipient, &f.servers[0], "recipient-backend").await;
+    let shares = json!([
+        {"UserId":"caller-0", "CanEdit":true}, {"UserId":"recipient-backend", "CanEdit":false}
+    ]);
+    Mock::given(method("GET"))
+        .and(path("/Playlists/playlist"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"ItemIds":["song-0"], "Shares":shares})),
+        )
+        .expect(1)
+        .mount(&f.upstreams[0])
+        .await;
+    let response = f
+        .request(Method::GET, &format!("/Playlists/{playlist}"), None)
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let read: Value = response.json().await.unwrap();
+    Mock::given(method("POST"))
+        .and(path("/Playlists/playlist"))
+        .and(body_json(json!({"Ids":["song-0"], "Users":shares})))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&f.upstreams[0])
+        .await;
+    assert_eq!(
+        f.request(
+            Method::POST,
+            &format!("/Playlists/{playlist}"),
+            Some(json!({
+                "Ids":read["ItemIds"], "Users":read["Shares"]
+            }))
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+}
+
+#[tokio::test]
+async fn collection_responses_continue_to_disable_deletion() {
+    let f = Fixture::new().await;
+    let anchor = f.media(0, "movie", "Movie").await;
+    Mock::given(method("GET"))
+        .and(path("/TestCollections"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "Items":[{"Id":"collection", "Name":"Collection", "Type":"BoxSet", "CanDelete":true}]
+        })))
+        .expect(1)
+        .mount(&f.upstreams[0])
+        .await;
+    let response = f
+        .request(
+            Method::GET,
+            &format!("/TestCollections?ParentId={anchor}"),
+            None,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.json::<Value>().await.unwrap()["Items"][0]["CanDelete"],
+        false
+    );
+}
+
+#[tokio::test]
+async fn movie_series_and_episode_playlists_route_to_their_owner() {
+    let f = Fixture::new().await;
+    let anchor = f.song(1).await;
+    Mock::given(method("GET"))
+        .and(path("/TestVideoItems"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Items":[
+            {"Id":"movie", "Name":"Movie", "Type":"Movie"},
+            {"Id":"series", "Name":"Series", "Type":"Series"},
+            {"Id":"episode", "Name":"Episode", "Type":"Episode"}
+        ]})))
+        .mount(&f.upstreams[1])
+        .await;
+    let response = f
+        .request(
+            Method::GET,
+            &format!("/TestVideoItems?ParentId={anchor}"),
+            None,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let media: Value = response.json().await.unwrap();
+    let ids = media["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["Id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    Mock::given(method("POST"))
+        .and(path("/Playlists"))
+        .and(body_json(json!({"Name":"Video", "Ids":["movie","series","episode"], "UserId":"caller-1", "MediaType":"Video"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Id":"video-playlist"})))
+        .expect(1).mount(&f.upstreams[1]).await;
+    let response = f
+        .request(
+            Method::POST,
+            "/Playlists",
+            Some(json!({
+                "Name":"Video", "Ids":ids, "UserId":f.caller.id, "MediaType":"Video"
+            })),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let created: Value = response.json().await.unwrap();
+    let playlist = created["Id"].as_str().unwrap();
+
+    Mock::given(method("POST"))
+        .and(path("/Playlists/video-playlist"))
+        .and(body_json(
+            json!({"Name":"Renamed video", "Ids":["episode","movie"], "IsPublic":false}),
+        ))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&f.upstreams[1])
+        .await;
+    assert_eq!(
+        f.request(
+            Method::POST,
+            &format!("/Playlists/{playlist}"),
+            Some(json!({
+                "Name":"Renamed video", "Ids":[ids[2],ids[0]], "IsPublic":false
+            }))
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+
+    Mock::given(method("GET"))
+        .and(path("/Playlists/video-playlist/Items"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "Items":[{"Id":"movie", "Type":"Movie", "PlaylistItemId":"video-entry"},
+                {"Id":"episode", "Type":"Episode", "PlaylistItemId":"episode-entry"}],
+            "TotalRecordCount":2, "StartIndex":0
+        })))
+        .expect(1)
+        .mount(&f.upstreams[1])
+        .await;
+    let response = f
+        .request(Method::GET, &format!("/Playlists/{playlist}/Items"), None)
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let items: Value = response.json().await.unwrap();
+    assert_eq!(items["Items"][0]["Id"], ids[0]);
+    assert_eq!(items["Items"][1]["Id"], ids[2]);
+    let entry = items["Items"][0]["PlaylistItemId"].as_str().unwrap();
+    Mock::given(method("POST"))
+        .and(path("/Playlists/video-playlist/Items/video-entry/Move/1"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&f.upstreams[1])
+        .await;
+    assert_eq!(
+        f.request(
+            Method::POST,
+            &format!("/Playlists/{playlist}/Items/{entry}/Move/1"),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        f.upstreams[0]
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|request| request.method != "GET")
+            .count(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn collection_creation_item_lookup_and_deletion_translate_ids() {
+    let f = Fixture::new().await;
+    let movie = f.media(1, "movie", "Movie").await;
+    Mock::given(method("POST"))
+        .and(path("/Collections"))
+        .and(query_param("Ids", "movie"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Id":"collection"})))
+        .expect(1)
+        .mount(&f.upstreams[1])
+        .await;
+    let response = f
+        .request(
+            Method::POST,
+            &format!("/Collections?Name=Test&Ids={movie}"),
+            None,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let created: Value = response.json().await.unwrap();
+    let collection = created["Id"].as_str().unwrap();
+    assert_ne!(collection, "collection");
+    Mock::given(method("GET"))
+        .and(path("/Items/movie/Collections"))
+        .and(query_param("UserId", "caller-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "Items":[{"Id":"collection", "Name":"Test", "Type":"BoxSet"}],
+            "TotalRecordCount":1, "StartIndex":0
+        })))
+        .expect(1)
+        .mount(&f.upstreams[1])
+        .await;
+    let response = f
+        .request(
+            Method::GET,
+            &format!("/Items/{movie}/Collections?UserId={}", f.caller.id),
+            None,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let memberships: Value = response.json().await.unwrap();
+    assert_eq!(memberships["Items"][0]["Id"], collection);
+    Mock::given(method("DELETE"))
+        .and(path("/Items/collection"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&f.upstreams[1])
+        .await;
+    assert_eq!(
+        f.request(Method::DELETE, &format!("/Items/{collection}"), None)
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        f.upstreams[0]
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|request| request.method != "GET")
+            .count(),
+        0
+    );
 }
 
 #[tokio::test]

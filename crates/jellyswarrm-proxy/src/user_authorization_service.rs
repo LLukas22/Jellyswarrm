@@ -1568,6 +1568,28 @@ impl UserAuthorizationService {
         Ok(Some((user, sessions)))
     }
 
+    /// Resolve a backend account only when it identifies one virtual user on
+    /// this server. Multiple devices are fine; ambiguous account aliases aren't.
+    pub async fn virtual_user_id_for_backend(
+        &self,
+        server_id: crate::server_id::ServerId,
+        original_user_id: &str,
+    ) -> Result<Option<String>, sqlx::Error> {
+        let ids: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT auth.user_id FROM authorization_sessions auth \
+             JOIN server_mappings sm ON auth.mapping_id = sm.id \
+             JOIN users u ON auth.user_id = u.id \
+             WHERE sm.server_id = ? AND auth.original_user_id = ? \
+             AND (auth.expires_at IS NULL OR auth.expires_at > ?) LIMIT 2",
+        )
+        .bind(server_id.as_i64())
+        .bind(original_user_id)
+        .bind(chrono::Utc::now())
+        .fetch_all(&self.pool)
+        .await?;
+        Ok((ids.len() == 1).then(|| ids[0].clone()))
+    }
+
     ///Get authorization sessions with servers for a user
     pub async fn get_user_sessions(
         &self,

@@ -29,6 +29,8 @@ JELLYSWARRM_PASSWORD = os.environ.get("JELLYSWARRM_PASSWORD", "test")
 COLLECTION_NAME = os.environ.get("COLLECTION_NAME", "Movies")
 COLLECTION_PATH = os.environ.get("COLLECTION_PATH", "/media/movies")
 COLLECTION_TYPE = os.environ.get("COLLECTION_TYPE", "movies")
+PLAYLIST_NAME = os.environ.get("PLAYLIST_NAME", "")
+PLAYLIST_TRACK_COUNT = int(os.environ.get("PLAYLIST_TRACK_COUNT", "1"))
 
 
 def wait_for_startup_user(client: httpx.Client) -> httpx.Response | None:
@@ -167,6 +169,70 @@ def create_library(client: JellyfinClient):
     client.jellyfin.refresh_library()
 
 
+def seed_playlist():
+    if not PLAYLIST_NAME:
+        return
+
+    # Create as the regular user so the playlist is owned by the account used
+    # in Jellyswarrm, rather than by the initializer's administrator account.
+    with httpx.Client(headers=AUTHORIZATION, base_url=SERVER_URL) as client:
+        response = client.post(
+            "/Users/AuthenticateByName",
+            json={"Username": JELLYSWARRM_USERNAME, "Pw": JELLYSWARRM_PASSWORD},
+        )
+        response.raise_for_status()
+        authentication = response.json()
+        user_id = authentication["User"]["Id"]
+        client.headers["Authorization"] = (
+            f'{AUTHORIZATION_HEADER}, Token="{authentication["AccessToken"]}"'
+        )
+
+        response = client.get(
+            "/Items",
+            params={"UserId": user_id, "Recursive": True, "IncludeItemTypes": "Playlist"},
+        )
+        response.raise_for_status()
+        if any(item["Name"] == PLAYLIST_NAME for item in response.json()["Items"]):
+            print(f"ℹ️  Playlist '{PLAYLIST_NAME}' already exists, leaving it untouched")
+            return
+
+        deadline = time.monotonic() + 180
+        while True:
+            response = client.get(
+                "/Items",
+                params={
+                    "UserId": user_id,
+                    "Recursive": True,
+                    "IncludeItemTypes": "Audio",
+                    "SortBy": "SortName",
+                    "SortOrder": "Ascending",
+                },
+            )
+            response.raise_for_status()
+            tracks = response.json()["Items"]
+            if len(tracks) >= PLAYLIST_TRACK_COUNT:
+                break
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"Timed out waiting for {PLAYLIST_TRACK_COUNT} tracks for '{PLAYLIST_NAME}'"
+                )
+            print(f"Waiting for music scan ({len(tracks)}/{PLAYLIST_TRACK_COUNT} tracks)")
+            time.sleep(2)
+
+        response = client.post(
+            "/Playlists",
+            json={
+                "Name": PLAYLIST_NAME,
+                "Ids": [track["Id"] for track in tracks],
+                "UserId": user_id,
+                "MediaType": "Audio",
+                "IsPublic": False,
+            },
+        )
+        response.raise_for_status()
+        print(f"✅ Created playlist '{PLAYLIST_NAME}' with {len(tracks)} tracks")
+
+
 if __name__ == "__main__":
     initialize_server()
     client = JellyfinClient()
@@ -178,3 +244,4 @@ if __name__ == "__main__":
     set_server_name(client)
     configure_jellyswarrm_user(client)
     create_library(client)
+    seed_playlist()

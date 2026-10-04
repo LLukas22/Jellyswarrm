@@ -1298,6 +1298,46 @@ async fn direct_playlist(client: &Client, upstream: &str) -> Result<(String, Str
     ))
 }
 
+fn virtual_playlist_users(users: &Value, mappings: &[(&str, &str)]) -> Result<Value> {
+    let mut users = users.clone();
+    for share in users
+        .as_array_mut()
+        .context("playlist users must be an array")?
+    {
+        let original_id = required_string(share, "/UserId")?;
+        let virtual_id = mappings
+            .iter()
+            .find(|(original, _)| *original == original_id)
+            .map(|(_, virtual_id)| *virtual_id)
+            .with_context(|| format!("unexpected upstream playlist recipient {original_id}"))?;
+        share["UserId"] = json!(virtual_id);
+    }
+    Ok(users)
+}
+
+#[test]
+fn playlist_user_comparisons_translate_ids_without_masking_permission_changes() -> Result<()> {
+    let upstream = json!([
+        {"UserId":"backend-recipient", "CanEdit":true},
+        {"UserId":"backend-owner", "CanEdit":false}
+    ]);
+    let mappings = [
+        ("backend-recipient", "virtual-recipient"),
+        ("backend-owner", "virtual-owner"),
+    ];
+    assert_eq!(
+        virtual_playlist_users(&upstream, &mappings)?,
+        json!([
+            {"UserId":"virtual-recipient", "CanEdit":true},
+            {"UserId":"virtual-owner", "CanEdit":false}
+        ])
+    );
+    assert!(
+        virtual_playlist_users(&json!([{"UserId":"unknown", "CanEdit":true}]), &mappings).is_err()
+    );
+    Ok(())
+}
+
 // Exercise persisted Jellyfin state as well as proxy translation. The fixture
 // puts Aria on Music 1 and Death Valley Waltz on Music 2.
 async fn verify_saved_playlist(
@@ -1487,6 +1527,14 @@ async fn verify_saved_playlist(
     )
     .await?;
     let shared = success_json(authenticated(client.get(&users_url), token).send().await?).await?;
+    assert!(
+        shared
+            .as_array()
+            .context("playlist users must be an array")?
+            .iter()
+            .any(|share| share["UserId"] == recipient_id && share["CanEdit"] == true),
+        "sharing reads must expose the recipient's virtual user ID: {shared}"
+    );
     assert_eq!(
         shared
             .as_array()
@@ -1510,6 +1558,32 @@ async fn verify_saved_playlist(
         // A proxy regression must still fail when the same DELETE works
         // directly. Jellyfin 12's share-object equality bug also fails directly.
         let (upstream_token, original_playlist) = direct_playlist(client, music_upstream).await?;
+        let direct_recipient = success_json(
+            login_as(
+                client,
+                music_upstream,
+                "admin",
+                "password",
+                DIRECT_AUTHORIZATION,
+            )
+            .await?,
+        )
+        .await?;
+        let original_recipient = required_string(&direct_recipient, "/User/Id")?;
+        let direct_owner = success_json(
+            direct_authenticated(
+                client.get(format!("{music_upstream}/Users/Me")),
+                &upstream_token,
+            )
+            .send()
+            .await?,
+        )
+        .await?;
+        let original_owner = required_string(&direct_owner, "/Id")?;
+        let user_mappings = [
+            (original_recipient, recipient_id),
+            (original_owner, user_id),
+        ];
         let direct_users_url = format!("{music_upstream}/Playlists/{original_playlist}/Users");
         let direct_before = success_json(
             direct_authenticated(client.get(&direct_users_url), &upstream_token)
@@ -1517,8 +1591,11 @@ async fn verify_saved_playlist(
                 .await?,
         )
         .await?;
-        assert_eq!(direct_before, unshared);
-        let original_recipient = required_string(&direct_before, "/0/UserId")?;
+        assert_eq!(
+            virtual_playlist_users(&direct_before, &user_mappings)?,
+            unshared,
+            "proxy sharing reads must match upstream permissions after user ID translation"
+        );
         success_text(
             direct_authenticated(
                 client.delete(format!("{direct_users_url}/{original_recipient}")),
@@ -1535,7 +1612,8 @@ async fn verify_saved_playlist(
         )
         .await?;
         assert_eq!(
-            unshared, direct_after,
+            unshared,
+            virtual_playlist_users(&direct_after, &user_mappings)?,
             "proxy DELETE failed even though direct upstream DELETE removed the recipient"
         );
         // The full playlist update is a working upstream API for revocation.

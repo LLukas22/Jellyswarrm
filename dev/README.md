@@ -53,6 +53,24 @@ The exact Jellyfin and Seerr releases are set through `JELLYFIN_VERSION` and
 Every server has the regular Jellyswarrm account `test` / `test`, with access
 to its complete library. The administrator account remains `admin` / `password`.
 
+The music initializers also create **Music 1 Test Playlist** (four Goldberg
+Variations tracks) and **Music 2 Test Playlist** (two Ghost Solos tracks), owned
+by `test`. Log into Jellyswarrm as `test` / `test` and open **Music → Playlists**
+to browse, play, reorder, or edit them. Each playlist contains tracks from one
+server, matching Jellyfin's playlist ownership requirements.
+
+To add these playlists to an already-running development stack without resetting
+any data, rerun the music initializers:
+
+```bash
+docker compose --file dev/docker-compose.yml run --rm jellyfin-music-init
+docker compose --file dev/docker-compose.yml run --rm jellyfin-music-2-init
+```
+
+Initialization waits for the music scan and skips playlists whose names already
+exist, preserving manual edits. The isolated Docker integration stack seeds the
+same playlists automatically.
+
 Caddy is available at <http://localhost:8000> and exposes `/movies/`,
 `/shows/`, `/music/`, `/movies-2/`, `/shows-2/`, and `/music-2/`.
 
