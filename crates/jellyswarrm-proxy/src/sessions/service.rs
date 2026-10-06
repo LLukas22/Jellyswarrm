@@ -10,7 +10,6 @@ use uuid::Uuid;
 const SESSION_TTL_SECONDS: i64 = 30 * 60;
 const JELLYFIN_MIN_DATE: &str = "0001-01-01T00:00:00.0000000Z";
 
-
 // Never derive Debug/Serialize: the credential is private and only used for local revocation checks.
 #[derive(Clone)]
 pub struct ClientSession {
