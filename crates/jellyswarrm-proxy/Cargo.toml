@@ -79,3 +79,4 @@ wiremock = { workspace = true }
 
 [build-dependencies]
 fs_extra = { workspace = true }
+serde_json = { workspace = true }

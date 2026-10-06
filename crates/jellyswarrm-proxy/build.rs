@@ -77,18 +77,15 @@ fn main() {
 fn generate_ui_version_file(workspace_root: &std::path::Path) {
     let ui_dir = workspace_root.join("ui");
 
-    // Get UI version
-    let version_output = Command::new("git")
-        .args([
-            "-C",
-            ui_dir.to_str().unwrap(),
-            "describe",
-            "--tags",
-            "--abbrev=0",
-        ])
-        .output()
-        .expect("Failed to get UI version");
-    let ui_version = String::from_utf8_lossy(&version_output.stdout)
+    // Get UI version from package.json, not the git tag: the tag is two-part ("v12.1"),
+    // which native clients built on jellyfin-sdk-kotlin reject. Matches the Dockerfile.
+    let package_json =
+        fs::read_to_string(ui_dir.join("package.json")).expect("Failed to read ui/package.json");
+    let package: serde_json::Value =
+        serde_json::from_str(&package_json).expect("Failed to parse ui/package.json");
+    let ui_version = package["version"]
+        .as_str()
+        .expect("ui/package.json has no version")
         .trim()
         .trim_start_matches('v')
         .to_string();
