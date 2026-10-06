@@ -8,6 +8,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 const SESSION_TTL_SECONDS: i64 = 30 * 60;
+const JELLYFIN_MIN_DATE: &str = "0001-01-01T00:00:00.0000000Z";
 
 // Never derive Debug/Serialize: the credential is private and only used for local revocation checks.
 #[derive(Clone)]
@@ -30,17 +31,21 @@ impl ClientSession {
     pub fn dto(&self, server_id: &str, transport: &ConnectionHub) -> Value {
         let connected = transport.is_connected(&self.id);
         let controllable = connected && self.capabilities.supports_media_control;
+        let last_playback = self
+            .last_playback
+            .map_or_else(|| json!(JELLYFIN_MIN_DATE), |d| json!(d));
         json!({
             "Id": self.id, "UserId": self.user_id, "UserName": self.user_name,
             "ServerId": server_id, "DeviceId": self.device.device_id,
             "DeviceName": self.device.device, "Client": self.device.client,
             "ApplicationVersion": self.device.version, "LastActivityDate": self.last_activity,
-            "LastPlaybackCheckIn": self.last_playback, "IsActive": connected,
+            "LastPlaybackCheckIn": last_playback, "IsActive": connected,
             "SupportsMediaControl": controllable, "SupportsRemoteControl": controllable,
             "Capabilities": self.capabilities, "PlayableMediaTypes": self.capabilities.playable_media_types,
             "SupportedCommands": self.capabilities.supported_commands, "AdditionalUsers": [],
             "PlayState": self.play_state, "NowPlayingItem": self.now_playing,
-            "NowViewingItem": self.now_viewing, "NowPlayingQueue": self.queue
+            "NowViewingItem": self.now_viewing, "NowPlayingQueue": self.queue,
+            "HasCustomDeviceName": false
         })
     }
 }
