@@ -1,5 +1,6 @@
 use axum::Json;
 use hyper::StatusCode;
+use std::collections::BTreeSet;
 use tracing::error;
 
 use crate::{
@@ -19,6 +20,50 @@ use super::{
         estimate_merged_library_total, fetch_catalog, fetch_show_catalog, FetchMode, FetchedCatalog,
     },
 };
+
+async fn season_catalog_aliases(
+    state: &AppState,
+    items: &[crate::models::MediaItem],
+    viewer: &str,
+    series_group: Option<&str>,
+) -> Result<Vec<BTreeSet<MediaAlias>>, StatusCode> {
+    let mut parents = std::collections::HashMap::new();
+    let mut result = Vec::with_capacity(items.len());
+    for item in items {
+        let mut aliases = MediaAlias::from_item(item);
+        if item.item_type == crate::models::enums::BaseItemKind::Season {
+            let group = if let Some(group) = series_group {
+                Some(group.to_string())
+            } else if let Some(parent) = item.series_id.as_ref().or(item.parent_id.as_ref()) {
+                if !parents.contains_key(parent) {
+                    let group = state
+                        .media_storage
+                        .get_media_parent_group_id(parent, viewer)
+                        .await
+                        .map_err(|error| {
+                            error!("Failed to resolve season parent identity: {error}");
+                            StatusCode::INTERNAL_SERVER_ERROR
+                        })?;
+                    parents.insert(parent.clone(), group);
+                }
+                parents[parent].clone()
+            } else {
+                None
+            };
+            if let Some(alias) = group
+                .as_deref()
+                .and_then(|group| MediaAlias::for_season(item, group))
+            {
+                // Some backends reuse the show's IDs on every season. Once
+                // the parent and number are known, do not bridge different
+                // season numbers via those unreliable IDs.
+                aliases = BTreeSet::from([alias]);
+            }
+        }
+        result.push(aliases);
+    }
+    Ok(result)
+}
 
 pub(super) async fn get_virtual_library_items(
     state: &AppState,
@@ -62,6 +107,69 @@ pub(super) async fn get_virtual_library_items(
     let authoritative_inventory = is_authoritative_media_inventory_request(original_request.url());
     let mut snapshots = Vec::new();
     let mut tagged_items = Vec::new();
+    let viewer = preprocessed
+        .access_scope
+        .as_ref()
+        .map(|scope| scope.user_id().to_string())
+        .unwrap_or_else(|| "anonymous".to_string());
+    let mut catalog_aliases = Vec::new();
+    // A cold recursive listing can contain both the parent series and its
+    // seasons. Publish provider-matched parents before deriving season aliases,
+    // rather than requiring another request to establish the parent identity.
+    // This additive pass shares the request generation and never prunes an
+    // inventory; the full snapshots below remain authoritative for removals.
+    if deduplicate_media
+        && server_items.iter().any(|fetch| {
+            fetch
+                .server_items
+                .response
+                .items()
+                .iter()
+                .any(|item| item.item_type == crate::models::enums::BaseItemKind::Season)
+        })
+    {
+        let parents = server_items
+            .iter()
+            .map(|fetch| MediaCatalogSnapshot {
+                source_key: format!(
+                    "{}:{}",
+                    fetch.server_items.server.id,
+                    fetch.source_parent_id.as_deref().unwrap_or_default()
+                ),
+                server_id: fetch.server_items.server.id,
+                complete: false,
+                observations: fetch
+                    .server_items
+                    .response
+                    .items()
+                    .iter()
+                    .filter(|item| item.item_type == crate::models::enums::BaseItemKind::Series)
+                    .map(|item| MediaObservation {
+                        virtual_media_id: item.id.clone(),
+                        aliases: MediaAlias::from_item(item),
+                    })
+                    .collect(),
+            })
+            .collect::<Vec<_>>();
+        if parents
+            .iter()
+            .any(|snapshot| !snapshot.observations.is_empty())
+        {
+            state
+                .media_storage
+                .reconcile_media_catalog(
+                    &catalog_scope_key,
+                    reconciliation_generation.expect("enabled reconciliation has a generation"),
+                    &parents,
+                    false,
+                )
+                .await
+                .map_err(|error| {
+                    error!("Failed to reconcile parent series identities: {error}");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?;
+        }
+    }
     for fetch in server_items {
         if let Some(total) = fetch.upstream_total {
             upstream_total_sum += total.max(0);
@@ -70,6 +178,7 @@ pub(super) async fn get_virtual_library_items(
         let ServerItems { response, server } = fetch.server_items;
         let items = response.into_items();
         if deduplicate_media {
+            let aliases = season_catalog_aliases(state, &items, &viewer, None).await?;
             snapshots.push(MediaCatalogSnapshot {
                 source_key: format!(
                     "{}:{}",
@@ -80,13 +189,15 @@ pub(super) async fn get_virtual_library_items(
                 complete: fetch.fully_fetched && authoritative_inventory,
                 observations: items
                     .iter()
-                    .filter(|item| MediaKind::from_item_kind(&item.item_type).is_some())
-                    .map(|item| MediaObservation {
+                    .zip(&aliases)
+                    .filter(|(item, _)| MediaKind::from_item_kind(&item.item_type).is_some())
+                    .map(|(item, aliases)| MediaObservation {
                         virtual_media_id: item.id.clone(),
-                        aliases: MediaAlias::from_item(item),
+                        aliases: aliases.clone(),
                     })
                     .collect(),
             });
+            catalog_aliases.extend(aliases);
         }
         tagged_items.extend(items.into_iter().map(|item| TaggedMediaItem {
             item,
@@ -95,7 +206,7 @@ pub(super) async fn get_virtual_library_items(
     }
 
     let items = if deduplicate_media {
-        let plan = MediaDedupPlan::new(tagged_items);
+        let plan = MediaDedupPlan::with_aliases(tagged_items, catalog_aliases);
         let stable_group_ids = state
             .media_storage
             .reconcile_media_catalog(
@@ -109,7 +220,12 @@ pub(super) async fn get_virtual_library_items(
                 error!("Failed to reconcile media version groups: {error}");
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
-        FederatedItems::from_merged_items(plan.collapse(&stable_group_ids))
+        let mut merged_items = plan.collapse(&stable_group_ids);
+        for item in &mut merged_items {
+            crate::handlers::media_versions::preserve_media_parent_groups(state, item, &viewer)
+                .await?;
+        }
+        FederatedItems::from_merged_items(merged_items)
     } else {
         FederatedItems::from_tagged_items(tagged_items)
     };
@@ -125,9 +241,8 @@ pub(super) async fn get_virtual_library_items(
 
 /// Federates `/Shows/{aggregateId}/Seasons|Episodes` across the member
 /// series of a collapsed show. Seasons and (Jellyfin v12+) episodes merge
-/// with the same provider-ID reconciliation used for movies at the library
-/// level; the scope is keyed by the aggregate so season/episode numbers never
-/// collide across different shows.
+/// using provider identities, with seasons identified by their matched parent
+/// series and season number when available.
 pub(super) async fn get_aggregate_show_items(
     state: &AppState,
     preprocessed: PreprocessedRequest,
@@ -167,6 +282,7 @@ pub(super) async fn get_aggregate_show_items(
     let mut all_fully_fetched = true;
     let mut snapshots = Vec::new();
     let mut tagged_items = Vec::new();
+    let mut catalog_aliases = Vec::new();
     for fetch in server_items {
         if let Some(total) = fetch.upstream_total {
             upstream_total_sum += total.max(0);
@@ -175,6 +291,8 @@ pub(super) async fn get_aggregate_show_items(
         let ServerItems { response, server } = fetch.server_items;
         let items = response.into_items();
         if deduplicate {
+            let aliases =
+                season_catalog_aliases(state, &items, &viewer, Some(&aggregate_id)).await?;
             snapshots.push(MediaCatalogSnapshot {
                 source_key: format!(
                     "{}:{}",
@@ -187,13 +305,15 @@ pub(super) async fn get_aggregate_show_items(
                 complete: false,
                 observations: items
                     .iter()
-                    .filter(|item| MediaKind::from_item_kind(&item.item_type).is_some())
-                    .map(|item| MediaObservation {
+                    .zip(&aliases)
+                    .filter(|(item, _)| MediaKind::from_item_kind(&item.item_type).is_some())
+                    .map(|(item, aliases)| MediaObservation {
                         virtual_media_id: item.id.clone(),
-                        aliases: MediaAlias::from_item(item),
+                        aliases: aliases.clone(),
                     })
                     .collect(),
             });
+            catalog_aliases.extend(aliases);
         }
         tagged_items.extend(items.into_iter().map(|item| TaggedMediaItem {
             item,
@@ -221,7 +341,7 @@ pub(super) async fn get_aggregate_show_items(
     }
 
     let items = if deduplicate {
-        let plan = MediaDedupPlan::new(tagged_items);
+        let plan = MediaDedupPlan::with_aliases(tagged_items, catalog_aliases);
         let stable_group_ids = state
             .media_storage
             .reconcile_media_catalog(

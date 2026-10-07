@@ -27,11 +27,20 @@ pub struct MediaDedupPlan {
 }
 
 impl MediaDedupPlan {
+    #[cfg(test)]
     pub fn new(items: Vec<TaggedMediaItem>) -> Self {
         let aliases = items
             .iter()
             .map(|tagged| MediaAlias::from_item(&tagged.item))
             .collect::<Vec<_>>();
+        Self::with_aliases(items, aliases)
+    }
+
+    pub fn with_aliases(
+        items: Vec<TaggedMediaItem>,
+        aliases: Vec<std::collections::BTreeSet<MediaAlias>>,
+    ) -> Self {
+        assert_eq!(items.len(), aliases.len());
         let mut parents = (0..items.len()).collect::<Vec<_>>();
         let mut alias_owners = HashMap::new();
         let mut fallback_owners = HashMap::new();
