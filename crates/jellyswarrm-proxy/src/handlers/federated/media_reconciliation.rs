@@ -113,6 +113,63 @@ pub(super) async fn get_virtual_library_items(
         .map(|scope| scope.user_id().to_string())
         .unwrap_or_else(|| "anonymous".to_string());
     let mut catalog_aliases = Vec::new();
+    // A cold recursive listing can contain both the parent series and its
+    // seasons. Publish provider-matched parents before deriving season aliases,
+    // rather than requiring another request to establish the parent identity.
+    // This additive pass shares the request generation and never prunes an
+    // inventory; the full snapshots below remain authoritative for removals.
+    if deduplicate_media
+        && server_items.iter().any(|fetch| {
+            fetch
+                .server_items
+                .response
+                .items()
+                .iter()
+                .any(|item| item.item_type == crate::models::enums::BaseItemKind::Season)
+        })
+    {
+        let parents = server_items
+            .iter()
+            .map(|fetch| MediaCatalogSnapshot {
+                source_key: format!(
+                    "{}:{}",
+                    fetch.server_items.server.id,
+                    fetch.source_parent_id.as_deref().unwrap_or_default()
+                ),
+                server_id: fetch.server_items.server.id,
+                complete: false,
+                observations: fetch
+                    .server_items
+                    .response
+                    .items()
+                    .iter()
+                    .filter(|item| item.item_type == crate::models::enums::BaseItemKind::Series)
+                    .map(|item| MediaObservation {
+                        virtual_media_id: item.id.clone(),
+                        aliases: MediaAlias::from_item(item),
+                    })
+                    .collect(),
+            })
+            .collect::<Vec<_>>();
+        if parents
+            .iter()
+            .any(|snapshot| !snapshot.observations.is_empty())
+        {
+            state
+                .media_storage
+                .reconcile_media_catalog(
+                    &catalog_scope_key,
+                    reconciliation_generation.expect("enabled reconciliation has a generation"),
+                    &parents,
+                    false,
+                )
+                .await
+                .map_err(|error| {
+                    error!("Failed to reconcile parent series identities: {error}");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?;
+        }
+    }
     for fetch in server_items {
         if let Some(total) = fetch.upstream_total {
             upstream_total_sum += total.max(0);
@@ -163,7 +220,12 @@ pub(super) async fn get_virtual_library_items(
                 error!("Failed to reconcile media version groups: {error}");
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
-        FederatedItems::from_merged_items(plan.collapse(&stable_group_ids))
+        let mut merged_items = plan.collapse(&stable_group_ids);
+        for item in &mut merged_items {
+            crate::handlers::media_versions::preserve_media_parent_groups(state, item, &viewer)
+                .await?;
+        }
+        FederatedItems::from_merged_items(merged_items)
     } else {
         FederatedItems::from_tagged_items(tagged_items)
     };

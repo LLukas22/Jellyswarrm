@@ -301,6 +301,13 @@ pub enum ItemsResponseVariants {
 }
 
 impl ItemsResponseVariants {
+    pub fn items(&self) -> &[MediaItem] {
+        match self {
+            ItemsResponseVariants::WithCount(response) => &response.items,
+            ItemsResponseVariants::Bare(items) => items,
+        }
+    }
+
     /// Return number of items contained in either variant.
     pub fn len(&self) -> usize {
         match self {

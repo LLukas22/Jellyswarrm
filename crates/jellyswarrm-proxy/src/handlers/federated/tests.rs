@@ -507,6 +507,144 @@ async fn show_navigation_preserves_parents_and_skips_servers_without_the_season(
 }
 
 #[tokio::test]
+async fn merged_library_show_routes_merge_localized_seasons_and_keep_navigation() {
+    let (state, _pool, sessions, upstreams) = setup().await;
+    let library = state
+        .virtual_library_service
+        .create_group("Shows")
+        .await
+        .unwrap();
+    for (index, (_, server)) in sessions.iter().enumerate() {
+        state
+            .virtual_library_service
+            .add_member(
+                &library.virtual_id,
+                server.id,
+                &format!("library-{index}"),
+                "Shows",
+                "tvshows",
+            )
+            .await
+            .unwrap();
+        Mock::given(method("GET"))
+            .and(path("/Items"))
+            .and(query_param("ParentId", format!("library-{index}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Items": [{"Id": format!("series-{index}"), "Type": "Series", "Name": "Death Note",
+                    "ProviderIds": if index == 0 { json!({"Imdb": "tt0877057", "Tmdb": "13916"}) }
+                                   else { json!({"Imdb": "tt0877057"}) }}],
+                "TotalRecordCount": 1, "StartIndex": 0
+            })))
+            .mount(&upstreams[index])
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/Shows/series-{index}/Seasons")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Items": [{"Id": format!("season-{index}"), "Type": "Season",
+                    "SeriesId": format!("series-{index}"), "ParentId": format!("series-{index}"),
+                    "Name": if index == 0 { "Season 1" } else { "Staffel 1" }, "IndexNumber": 1}],
+                "TotalRecordCount": 1, "StartIndex": 0
+            })))
+            .mount(&upstreams[index])
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/Items"))
+            .and(query_param("ParentId", format!("series-{index}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Items": [{"Id": format!("season-{index}"), "Type": "Season",
+                    "SeriesId": format!("series-{index}"), "ParentId": format!("series-{index}"),
+                    "Name": if index == 0 { "Season 1" } else { "Staffel 1" }, "IndexNumber": 1}],
+                "TotalRecordCount": 1, "StartIndex": 0
+            })))
+            .mount(&upstreams[index])
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/Shows/series-{index}/Episodes")))
+            .and(query_param("SeasonId", format!("season-{index}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Items": [{"Id": format!("episode-{index}"), "Type": "Episode",
+                    "SeriesId": format!("series-{index}"), "SeasonId": format!("season-{index}"),
+                    "ParentId": format!("season-{index}"), "ParentIndexNumber": 1, "IndexNumber": 1,
+                    "ProviderIds": {"Imdb": "tt0967942"}}],
+                "TotalRecordCount": 1, "StartIndex": 0
+            })))
+            .mount(&upstreams[index])
+            .await;
+    }
+    let Json(shows) = get_items_from_all_servers_preprocessed(
+        &state,
+        request(
+            &format!(
+                "/Items?ParentId={}&IncludeItemTypes=Series",
+                library.virtual_id
+            ),
+            &sessions,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(shows["Items"].as_array().unwrap().len(), 1);
+    let series_id = shows["Items"][0]["Id"].as_str().unwrap();
+    let path = format!("/Shows/{series_id}/Seasons?UserId=viewer&Fields=ItemCounts,PrimaryImageAspectRatio,CanDelete,MediaSourceCount");
+    let mut season_id = String::new();
+    for _ in 0..2 {
+        let Json(seasons) = get_show_children_from_all_servers(
+            State(state.clone()),
+            Preprocessed(request(&path, &sessions)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(seasons["TotalRecordCount"], 1);
+        assert_eq!(seasons["Items"].as_array().unwrap().len(), 1);
+        let season = &seasons["Items"][0];
+        assert_eq!(season["SeriesId"], series_id);
+        assert_eq!(season["ParentId"], series_id);
+        assert_eq!(season["IndexNumber"], 1);
+        let id = season["Id"].as_str().unwrap();
+        if !season_id.is_empty() {
+            assert_eq!(id, season_id);
+        }
+        season_id = id.to_string();
+        assert_eq!(
+            state
+                .media_storage
+                .get_media_version_members_by_virtual_id(id)
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+    let Json(items_seasons) = get_items_from_all_servers_preprocessed(
+        &state,
+        request(
+            &format!("/Items?ParentId={series_id}&IncludeItemTypes=Season"),
+            &sessions,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(items_seasons["Items"].as_array().unwrap().len(), 1);
+    assert_eq!(items_seasons["Items"][0]["Id"], season_id);
+    assert_eq!(items_seasons["Items"][0]["SeriesId"], series_id);
+    assert_eq!(items_seasons["Items"][0]["ParentId"], series_id);
+    let Json(episodes) = get_show_children_from_all_servers(
+        State(state.clone()),
+        Preprocessed(request(
+            &format!("/Shows/{series_id}/Episodes?SeasonId={season_id}"),
+            &sessions,
+        )),
+    )
+    .await
+    .unwrap();
+    assert_eq!(episodes["Items"].as_array().unwrap().len(), 1);
+    assert_eq!(episodes["Items"][0]["SeasonId"], season_id);
+    assert_eq!(episodes["Items"][0]["ParentId"], season_id);
+    assert_eq!(episodes["Items"][0]["SeriesId"], series_id);
+    assert_eq!(episodes["Items"][0]["MediaSourceCount"], 2);
+}
+
+#[tokio::test]
 async fn item_catalog_seasons_use_their_provider_matched_series_parent() {
     use super::{
         library_resolution::CatalogFetchTarget, media_reconciliation::get_virtual_library_items,
@@ -580,6 +718,151 @@ async fn item_catalog_seasons_use_their_provider_matched_series_parent() {
             .await
             .unwrap();
         assert_eq!(members.len(), 2);
+    }
+}
+
+#[tokio::test]
+async fn first_recursive_catalog_merges_series_and_numbered_seasons_together() {
+    use super::{
+        library_resolution::CatalogFetchTarget, media_reconciliation::get_virtual_library_items,
+    };
+    let (state, _pool, sessions, upstreams) = setup().await;
+    for (index, upstream) in upstreams.iter().enumerate() {
+        Mock::given(method("GET")).and(path("/Items"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Items": [
+                    {"Id": format!("series-{index}"), "Type": "Series", "ProviderIds": {"Tmdb": "13916"}},
+                    {"Id": format!("season-{index}"), "Type": "Season", "SeriesId": format!("series-{index}"),
+                     "ParentId": format!("series-{index}"), "IndexNumber": 1,
+                     "Name": if index == 0 { "Season 1" } else { "Staffel 1" }}
+                ], "TotalRecordCount": 2, "StartIndex": 0
+            }))).mount(upstream).await;
+    }
+    let mut previous_ids = None;
+    for _ in 0..2 {
+        let targets = sessions
+            .iter()
+            .map(|(session, server)| CatalogFetchTarget {
+                session: session.clone(),
+                server: server.clone(),
+                parent_id: None,
+                resolved_parent_id: None,
+            })
+            .collect();
+        let Json(response) = get_virtual_library_items(
+            &state,
+            request("/Items?Recursive=true", &sessions),
+            "configured:shows:viewer".into(),
+            targets,
+            0,
+        )
+        .await
+        .unwrap();
+        let items = response["Items"].as_array().unwrap();
+        assert_eq!(
+            items.len(),
+            2,
+            "the first response must merge both series and season"
+        );
+        let show = items.iter().find(|item| item["Type"] == "Series").unwrap();
+        let season = items.iter().find(|item| item["Type"] == "Season").unwrap();
+        assert_eq!(season["SeriesId"], show["Id"]);
+        assert_eq!(season["ParentId"], show["Id"]);
+        let ids = (show["Id"].clone(), season["Id"].clone());
+        if let Some(previous) = &previous_ids {
+            assert_eq!(&ids, previous);
+        }
+        previous_ids = Some(ids);
+    }
+    // The additive parent pass must not prevent the final complete inventory
+    // from removing a season that has disappeared from both backends.
+    for (index, upstream) in upstreams.iter().enumerate() {
+        upstream.reset().await;
+        Mock::given(method("GET")).and(path("/Items"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Items": [
+                    {"Id": format!("series-{index}"), "Type": "Series", "ProviderIds": {"Tmdb": "13916"}},
+                    {"Id": format!("new-season-{index}"), "Type": "Season", "SeriesId": format!("series-{index}"),
+                     "IndexNumber": 2, "Name": "Season 2"}
+                ], "TotalRecordCount": 2, "StartIndex": 0
+            }))).mount(upstream).await;
+    }
+    let targets = sessions
+        .iter()
+        .map(|(session, server)| CatalogFetchTarget {
+            session: session.clone(),
+            server: server.clone(),
+            parent_id: None,
+            resolved_parent_id: None,
+        })
+        .collect();
+    let Json(response) = get_virtual_library_items(
+        &state,
+        request("/Items?Recursive=true", &sessions),
+        "configured:shows:viewer".into(),
+        targets,
+        0,
+    )
+    .await
+    .unwrap();
+    assert_eq!(response["Items"].as_array().unwrap().len(), 2);
+    let removed_season = previous_ids.unwrap().1;
+    assert!(state
+        .media_storage
+        .get_media_version_members_by_virtual_id(removed_season.as_str().unwrap())
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn numbered_seasons_with_same_server_duplicates_are_not_hidden() {
+    use super::{
+        library_resolution::CatalogFetchTarget, media_reconciliation::get_aggregate_show_items,
+    };
+    let (state, _pool, sessions, upstreams) = setup().await;
+    let aggregate = "00000000000000000000000000000100";
+    for (index, upstream) in upstreams.iter().enumerate() {
+        let mut seasons =
+            vec![json!({"Id": "season", "Type": "Season", "IndexNumber": 1, "Name": "Season 1"})];
+        if index == 0 {
+            seasons.push(json!({"Id": "duplicate", "Type": "Season", "IndexNumber": 1, "Name": "Season 1 copy"}));
+        }
+        Mock::given(method("GET"))
+            .and(path("/Shows/series/Seasons"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "TotalRecordCount": seasons.len(), "StartIndex": 0, "Items": seasons
+            })))
+            .mount(upstream)
+            .await;
+    }
+    let targets = sessions
+        .iter()
+        .map(|(session, server)| CatalogFetchTarget {
+            session: session.clone(),
+            server: server.clone(),
+            parent_id: Some("series".into()),
+            resolved_parent_id: Some(aggregate.into()),
+        })
+        .collect();
+    let Json(response) = get_aggregate_show_items(
+        &state,
+        request(&format!("/Shows/{aggregate}/Seasons"), &sessions),
+        aggregate.into(),
+        targets,
+        0,
+    )
+    .await
+    .unwrap();
+    let seasons = response["Items"].as_array().unwrap();
+    assert_eq!(seasons.len(), 3);
+    for season in seasons {
+        assert!(state
+            .media_storage
+            .get_media_version_group(season["Id"].as_str().unwrap())
+            .await
+            .unwrap()
+            .is_none());
     }
 }
 
