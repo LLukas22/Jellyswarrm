@@ -263,10 +263,20 @@ async fn wait_for_session(
 }
 
 async fn video_state(page: &Page, predicate: &str) -> Result<()> {
-    page.wait_for_function(
-        &format!("() => [...document.querySelectorAll('video')].some(v => {predicate})"),
-        None,
-    )
-    .await?;
+    let result = page
+        .wait_for_function(
+            &format!("() => [...document.querySelectorAll('video')].some(v => {predicate})"),
+            None,
+        )
+        .await;
+    if let Err(error) = result {
+        // Preserve the original failure even if the page has already closed.
+        let state = page.evaluate_value(
+            "JSON.stringify({ url: location.href, videos: [...document.querySelectorAll('video')].map(v => ({ src: v.currentSrc, paused: v.paused, currentTime: v.currentTime, duration: v.duration, readyState: v.readyState, networkState: v.networkState, seeking: v.seeking, ended: v.ended, error: v.error && { code: v.error.code, message: v.error.message }, buffered: Array.from({ length: v.buffered.length }, (_, i) => [v.buffered.start(i), v.buffered.end(i)]) })) })",
+        ).await.unwrap_or_else(|error| format!("could not inspect video state: {error}"));
+        return Err(anyhow::Error::from(error).context(format!(
+            "video predicate `{predicate}` was not reached; state: {state}"
+        )));
+    }
     Ok(())
 }

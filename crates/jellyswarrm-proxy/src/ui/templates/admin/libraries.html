@@ -38,6 +38,66 @@
         let draggedLibrary = null;
         let blockedLibraryDrag = null;
 
+        // Keep filters and the current page when assignment responses replace the board.
+        const filters = { search: '', server: '', assignment: '', page: 0 };
+        const pageSize = 20;
+        const updateLibraryList = () => {
+            const board = document.querySelector('[data-library-board]');
+            if (!board) return;
+            const cards = [...board.querySelectorAll('[data-library-card]')];
+            const matches = cards.filter((card) =>
+                (!filters.server || card.dataset.serverId === filters.server)
+                && (!filters.assignment || card.dataset.assignment === filters.assignment)
+                && card.querySelector('.library-source-copy').textContent.toLocaleLowerCase().includes(filters.search.toLocaleLowerCase().trim())
+            );
+            const pages = Math.max(1, Math.ceil(matches.length / pageSize));
+            filters.page = Math.min(filters.page, pages - 1);
+            cards.forEach((card) => { card.hidden = true; });
+            matches.slice(filters.page * pageSize, (filters.page + 1) * pageSize).forEach((card) => { card.hidden = false; });
+            const pagination = board.querySelector('[data-library-pagination]');
+            if (!pagination) return;
+            pagination.hidden = false;
+            board.querySelector('[data-library-filter-empty]').hidden = matches.length > 0;
+            board.querySelector('[data-library-page-status]').textContent = `${matches.length} of ${cards.length} libraries · Page ${filters.page + 1} of ${pages}`;
+            board.querySelector('[data-library-page="previous"]').disabled = filters.page === 0;
+            board.querySelector('[data-library-page="next"]').disabled = filters.page >= pages - 1;
+        };
+        const initializeLibraryList = () => {
+            const board = document.querySelector('[data-library-board]');
+            const serverSelect = board?.querySelector('[data-library-server-filter]');
+            if (!serverSelect) return;
+            const servers = new Map([...board.querySelectorAll('[data-library-card]')].map((card) => [card.dataset.serverId, card.dataset.serverName]));
+            serverSelect.replaceChildren(new Option('All servers', ''));
+            servers.forEach((name, id) => serverSelect.add(new Option(name, id)));
+            if (!servers.has(filters.server)) filters.server = '';
+            serverSelect.value = filters.server;
+            board.querySelector('[data-library-search]').value = filters.search;
+            board.querySelector('[data-library-assignment-filter]').value = filters.assignment;
+            updateLibraryList();
+        };
+        document.body.addEventListener('input', (event) => {
+            if (!event.target.matches('[data-library-search]')) return;
+            filters.search = event.target.value;
+            filters.page = 0;
+            updateLibraryList();
+        }, options);
+        document.body.addEventListener('change', (event) => {
+            if (event.target.matches('[data-library-server-filter]')) filters.server = event.target.value;
+            else if (event.target.matches('[data-library-assignment-filter]')) filters.assignment = event.target.value;
+            else return;
+            filters.page = 0;
+            updateLibraryList();
+        }, options);
+        document.body.addEventListener('click', (event) => {
+            const button = event.target.closest('[data-library-page]');
+            if (!button || button.disabled) return;
+            filters.page += button.dataset.libraryPage === 'next' ? 1 : -1;
+            popovers().forEach((popover) => closePopover(popover));
+            updateLibraryList();
+        }, options);
+        document.body.addEventListener('htmx:afterSwap', initializeLibraryList, options);
+        initializeLibraryList();
+
         const popovers = () => document.querySelectorAll('[data-library-popover][open]');
 
         const closePopover = (popover, restoreFocus = false) => {

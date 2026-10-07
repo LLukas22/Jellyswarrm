@@ -84,6 +84,8 @@ Once the container is running, open:
 
 For advanced configuration options, check out the [ui](./docs/ui.md) and [configuration](./docs/config.md) documentation.
 
+For `/health`, `/ready`, and Docker health check details, see the [health monitoring documentation](./docs/health-monitoring.md).
+
 ---
 
 

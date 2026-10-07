@@ -50,18 +50,36 @@ pub(super) async fn run(
     )
     .await?;
     eprintln!("Checking group pause, seek and resume");
-    toggle_playback(leader).await?;
-    for page in [leader, member] {
-        video_state(page, "v.paused && v.currentTime > 0").await?;
+    toggle_playback(leader)
+        .await
+        .context("pause group through leader UI")?;
+    for (role, page) in [("leader", leader), ("member", member)] {
+        video_state(page, "v.paused && v.currentTime > 0")
+            .await
+            .with_context(|| format!("{role} did not pause before seek"))?;
     }
-    leader.evaluate_expression("(() => { const s = document.querySelector('.osdPositionSlider'); s.value = '50'; s.dispatchEvent(new Event('change', { bubbles: true })); })()").await?;
-    for page in [leader, member] {
-        video_state(page, "v.paused && Number.isFinite(v.duration) && Math.abs(v.currentTime - v.duration / 2) < 3").await.context("group seek did not reach both players")?;
+    eprintln!("Seeking the paused group to 50% through leader UI");
+    // Jellyfin's digit shortcuts call seekPercent through the same playback
+    // manager as the slider, without depending on the auto-hiding OSD.
+    leader
+        .locator("body")
+        .press("5", None)
+        .await
+        .context("seek group through leader UI")?;
+    for (role, page) in [("leader", leader), ("member", member)] {
+        video_state(page, "v.paused && Number.isFinite(v.duration) && Math.abs(v.currentTime - v.duration / 2) < 3")
+            .await
+            .with_context(|| format!("{role} did not reach the paused seek position"))?;
     }
     wait_for_matching_positions(leader, member, "after seek").await?;
-    toggle_playback(leader).await?;
-    for page in [leader, member] {
-        video_state(page, "!v.paused && v.currentTime > v.duration / 2 + 1").await?;
+    eprintln!("Resuming the group through leader UI");
+    toggle_playback(leader)
+        .await
+        .context("resume group through leader UI")?;
+    for (role, page) in [("leader", leader), ("member", member)] {
+        video_state(page, "!v.paused && v.currentTime > v.duration / 2 + 1")
+            .await
+            .with_context(|| format!("{role} did not resume after seek"))?;
     }
 
     eprintln!("Switching the group to media on another backend");
@@ -121,14 +139,22 @@ pub(super) async fn run(
         "Night of the Living Dead",
     )
     .await?;
-    toggle_playback(leader).await?;
-    for page in [leader, member] {
-        video_state(page, "v.paused && v.currentTime > 0").await?;
+    toggle_playback(leader)
+        .await
+        .context("pause group after rejoining")?;
+    for (role, page) in [("leader", leader), ("member", member)] {
+        video_state(page, "v.paused && v.currentTime > 0")
+            .await
+            .with_context(|| format!("{role} did not pause after rejoining"))?;
     }
     wait_for_matching_positions(leader, member, "after rejoining").await?;
-    toggle_playback(leader).await?;
-    for page in [leader, member] {
-        video_state(page, "!v.paused").await?;
+    toggle_playback(leader)
+        .await
+        .context("resume group after rejoining")?;
+    for (role, page) in [("leader", leader), ("member", member)] {
+        video_state(page, "!v.paused")
+            .await
+            .with_context(|| format!("{role} did not resume after rejoining"))?;
     }
 
     eprintln!("Leaving SyncPlay from both clients");
@@ -210,8 +236,10 @@ async fn open_menu(page: &Page) -> Result<()> {
 }
 
 async fn toggle_playback(page: &Page) -> Result<()> {
-    show_controls(page).await?;
-    page.locator(".btnPause:visible").click(None).await?;
+    // Use Jellyfin's UI shortcut, not video.play()/pause(): SyncPlay must still
+    // receive the action. A click can miss the OSD's three-second visibility
+    // window on a busy CI runner, and retrying a toggle would undo the action.
+    page.locator("body").press("k", None).await?;
     Ok(())
 }
 
