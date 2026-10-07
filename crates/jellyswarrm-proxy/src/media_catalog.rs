@@ -27,6 +27,7 @@ pub struct MediaDedupPlan {
 }
 
 impl MediaDedupPlan {
+    #[cfg(test)]
     pub fn new(items: Vec<TaggedMediaItem>) -> Self {
         let aliases = items
             .iter()
