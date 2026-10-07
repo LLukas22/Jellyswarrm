@@ -34,6 +34,7 @@ mod encryption;
 mod extractors;
 mod federated_users;
 mod handlers;
+mod health;
 mod legacy_server_identity;
 mod mapping_auth;
 mod media_catalog;
@@ -519,7 +520,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     quick_connect::QuickConnectStorage::start_cleanup_task(app_state.quick_connect.clone());
 
-    let session_store = SqliteStore::new(pool);
+    let session_store = SqliteStore::new(pool.clone());
     session_store.migrate().await?;
 
     let deletion_task = tokio::task::spawn(
@@ -878,6 +879,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         app
     };
+
+    // Keep monitoring outside the URL prefix and authentication/session middleware.
+    let app = app.merge(health::router(pool));
 
     // Start the server
     let listener = match tokio::net::TcpListener::bind(addr).await {
