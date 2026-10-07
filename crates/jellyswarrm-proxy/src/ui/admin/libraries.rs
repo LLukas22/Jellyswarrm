@@ -771,6 +771,17 @@ mod tests {
     }
 
     #[test]
+    fn library_board_offers_search_filters_and_pagination() {
+        let html = render_library_board();
+        assert!(html.contains("data-library-search"));
+        assert!(html.contains("data-library-server-filter"));
+        assert!(html.contains("data-library-assignment-filter"));
+        assert!(html.contains("data-assignment=\"assigned\""));
+        assert!(html.contains("data-library-page=\"next\""));
+        assert!(html.contains("data-library-page-status role=\"status\""));
+    }
+
+    #[test]
     fn untyped_virtual_library_accepts_any_collection_type() {
         assert!(accepts_collection_type(None, "movies"));
     }

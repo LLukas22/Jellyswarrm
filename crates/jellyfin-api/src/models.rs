@@ -40,6 +40,8 @@ pub struct MediaFolder {
 pub struct MediaFoldersResponse {
     #[serde(rename = "Items")]
     pub items: Vec<MediaFolder>,
+    #[serde(rename = "TotalRecordCount", default)]
+    pub total_record_count: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -14,12 +14,32 @@
             <p>Connect a user or configure server admin access.</p>
         </div>
         {% else %}
+        <div class="library-filters">
+            <label for="library-search">Search libraries
+                <input id="library-search" type="search" placeholder="Library, server or virtual library" data-library-search>
+            </label>
+            <div class="library-filter-row">
+                <label for="library-server-filter">Server
+                    <select id="library-server-filter" data-library-server-filter><option value="">All servers</option></select>
+                </label>
+                <label for="library-assignment-filter">Assignment
+                    <select id="library-assignment-filter" data-library-assignment-filter>
+                        <option value="">All libraries</option>
+                        <option value="unassigned">Unassigned</option>
+                        <option value="assigned">Assigned</option>
+                    </select>
+                </label>
+            </div>
+        </div>
         <div class="library-source-list">
             {% for library in discovered_libraries %}
             <article class="library-source-card"
                      data-library-card
                      data-library-key="{{ library.server_id }}:{{ library.library_id }}"
-                     data-library-name="{{ library.library_name }}"
+                      data-library-name="{{ library.library_name }}"
+                      data-server-id="{{ library.server_id }}"
+                      data-server-name="{{ library.server_name }}"
+                      data-assignment="{% if library.assigned_group.is_some() %}assigned{% else %}unassigned{% endif %}"
                      data-collection-type="{{ library.collection_type }}"
                      data-can-drag="{% if library.assignable_groups.is_empty() %}false{% else %}true{% endif %}"
                      draggable="{% if library.assignable_groups.is_empty() %}false{% else %}true{% endif %}"
@@ -72,6 +92,12 @@
                 {% endif %}
             </article>
             {% endfor %}
+        </div>
+        <p class="library-filter-empty" data-library-filter-empty hidden>No libraries match these filters.</p>
+        <div class="library-pagination" data-library-pagination hidden>
+            <button type="button" class="secondary" data-library-page="previous" aria-label="Previous library page">Previous</button>
+            <span data-library-page-status role="status"></span>
+            <button type="button" class="secondary" data-library-page="next" aria-label="Next library page">Next</button>
         </div>
         {% endif %}
     </section>
