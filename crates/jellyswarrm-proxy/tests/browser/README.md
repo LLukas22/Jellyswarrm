@@ -6,6 +6,12 @@ through Jellyfin Web: create/join a group, play, pause, seek, switch media acros
 The Rust Playwright tests share the server integration fixture and browser setup. Each Chrome
 instance runs in its own container; Testcontainers manages startup and cleanup.
 
+SyncPlay pause/resume and seeking use Jellyfin's keyboard shortcuts (`K` and `5`)
+so the test does not race the playback controls' auto-hide timer. These still
+exercise the UI playback manager and SyncPlay, rather than directly controlling
+the video element. Failed playback waits report the expected condition and each
+video's position, duration, buffering, and error state alongside the saved trace.
+
 Run on Linux x86-64 with Docker, Git LFS, and the usual Rust/UI build prerequisites:
 
 ```sh
