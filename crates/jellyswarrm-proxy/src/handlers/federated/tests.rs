@@ -503,6 +503,92 @@ async fn guide_programs_remap_channel_ids_on_each_server() {
 
 #[tokio::test]
 async fn show_navigation_preserves_parents_and_skips_servers_without_the_season() {
+    check_show_season_navigation(false).await;
+}
+
+#[tokio::test]
+async fn item_catalog_seasons_use_their_provider_matched_series_parent() {
+    use super::{
+        library_resolution::CatalogFetchTarget, media_reconciliation::get_virtual_library_items,
+    };
+
+    let (state, _pool, sessions, upstreams) = setup().await;
+    let targets = || {
+        sessions
+            .iter()
+            .map(|(session, server)| CatalogFetchTarget {
+                session: session.clone(),
+                server: server.clone(),
+                parent_id: None,
+                resolved_parent_id: None,
+            })
+            .collect()
+    };
+    for upstream in &upstreams {
+        Mock::given(method("GET"))
+            .and(path("/Items"))
+            .and(query_param("IncludeItemTypes", "Series"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Items": [{"Id": "series", "Type": "Series", "ProviderIds": {"Imdb": "tt0877057"}}],
+                "TotalRecordCount": 1, "StartIndex": 0
+            })))
+            .mount(upstream)
+            .await;
+    }
+    let Json(series) = get_virtual_library_items(
+        &state,
+        request("/Items?IncludeItemTypes=Series", &sessions),
+        "configured:shows:viewer".into(),
+        targets(),
+        0,
+    )
+    .await
+    .unwrap();
+    assert_eq!(series["Items"].as_array().unwrap().len(), 1);
+
+    for (index, upstream) in upstreams.iter().enumerate() {
+        Mock::given(method("GET"))
+            .and(path("/Items"))
+            .and(query_param("IncludeItemTypes", "Season"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Items": [
+                    {"Id": "specials", "Type": "Season", "SeriesId": "series", "IndexNumber": 0,
+                     "Name": if index == 0 { "Specials" } else { "Extras" }},
+                    {"Id": "season", "Type": "Season", "SeriesId": "series", "IndexNumber": 1,
+                     "Name": if index == 0 { "Season 1" } else { "Staffel 1" }}
+                ],
+                "TotalRecordCount": 2, "StartIndex": 0
+            })))
+            .mount(upstream)
+            .await;
+    }
+    let Json(seasons) = get_virtual_library_items(
+        &state,
+        request("/Items?IncludeItemTypes=Season", &sessions),
+        "configured:shows:viewer".into(),
+        targets(),
+        0,
+    )
+    .await
+    .unwrap();
+    let seasons = seasons["Items"].as_array().unwrap();
+    assert_eq!(seasons.len(), 2);
+    for season in seasons {
+        let members = state
+            .media_storage
+            .get_media_version_members_by_virtual_id(season["Id"].as_str().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(members.len(), 2);
+    }
+}
+
+#[tokio::test]
+async fn show_seasons_with_reused_or_conflicting_provider_ids_merge_by_number() {
+    check_show_season_navigation(true).await;
+}
+
+async fn check_show_season_navigation(with_provider_ids: bool) {
     use super::{
         library_resolution::CatalogFetchTarget, media_reconciliation::get_aggregate_show_items,
     };
@@ -510,16 +596,21 @@ async fn show_navigation_preserves_parents_and_skips_servers_without_the_season(
 
     let (state, _pool, sessions, upstreams) = setup().await;
     let aggregate = "00000000000000000000000000000100";
-    for (upstream, available_seasons) in [
+    for (server_index, (upstream, available_seasons)) in [
         (&upstreams[0], &[(1, "season-one"), (2, "season-two")][..]),
         (&upstreams[1], &[(1, "season-one")][..]),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let seasons = available_seasons
             .iter()
             .map(|&(number, id)| {
                 json!({
                     "Id": id, "Type": "Season", "SeriesId": "series",
-                    "IndexNumber": number, "ProviderIds": {"Tmdb": format!("10{number}")}
+                    "Name": if server_index == 0 { format!("Season {number}") } else { format!("Staffel {number}") },
+                    "IndexNumber": number,
+                    "ProviderIds": if with_provider_ids { json!({"Tmdb": format!("show-{server_index}")}) } else { json!({}) }
                 })
             })
             .collect::<Vec<_>>();

@@ -7,6 +7,8 @@ pub enum MediaProvider {
     Tmdb,
     Imdb,
     Tvdb,
+    /// Internal identity derived from a provider-matched parent series.
+    SeriesGroup,
 }
 
 impl MediaProvider {
@@ -15,6 +17,7 @@ impl MediaProvider {
             Self::Tmdb => "tmdb",
             Self::Imdb => "imdb",
             Self::Tvdb => "tvdb",
+            Self::SeriesGroup => "series-group",
         }
     }
 
@@ -23,6 +26,7 @@ impl MediaProvider {
             "tmdb" => Some(Self::Tmdb),
             "imdb" => Some(Self::Imdb),
             "tvdb" => Some(Self::Tvdb),
+            "series-group" => Some(Self::SeriesGroup),
             _ => None,
         }
     }
@@ -75,8 +79,9 @@ impl MediaKind {
     }
 }
 
-/// Conservative cross-server identity. Only authoritative provider IDs
-/// (Tmdb/Imdb/Tvdb) are accepted; collection IDs and title/year guesses are
+/// Conservative cross-server identity. Authoritative provider IDs
+/// (Tmdb/Imdb/Tvdb), or numbered seasons of a provider-matched series, are
+/// accepted; collection IDs and title/year guesses are
 /// intentionally not safe enough to hide items or authorize playback
 /// substitution. Applies to movies as well as shows (series, seasons and
 /// episodes — Jellyfin v12 supports multi-versions for episodes).
@@ -108,7 +113,7 @@ impl MediaAlias {
                 (key.eq_ignore_ascii_case(expected_key) && !provider_id.is_empty()).then(|| {
                     let provider_id = match provider {
                         MediaProvider::Imdb => provider_id.to_ascii_lowercase(),
-                        MediaProvider::Tmdb | MediaProvider::Tvdb => provider_id.to_string(),
+                        _ => provider_id.to_string(),
                     };
                     Self {
                         provider,
@@ -119,6 +124,28 @@ impl MediaAlias {
             })
         })
         .collect()
+    }
+
+    /// A numbered season belongs to its matched series regardless of its
+    /// localized title or missing/inconsistent season-level provider metadata.
+    /// Missing numbers must not be confused with season zero (specials).
+    pub fn for_season(item: &MediaItem, series_group_id: &str) -> Option<Self> {
+        if item.item_type != BaseItemKind::Season {
+            return None;
+        }
+        let number = item
+            .extra
+            .get("IndexNumber")
+            .or_else(|| item.extra.get("indexNumber"))?
+            .as_i64()?;
+        if number < 0 {
+            return None;
+        }
+        Some(Self {
+            provider: MediaProvider::SeriesGroup,
+            kind: MediaKind::Season,
+            provider_id: format!("{series_group_id}:season:{number}"),
+        })
     }
 }
 
@@ -161,4 +188,62 @@ pub struct StableMediaGroup {
     pub active_member_count: usize,
     pub ambiguous: bool,
     pub published: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn season_identity_uses_parent_and_number_not_name_or_provider_ids() {
+        let season = |name, number, ids| {
+            serde_json::from_value::<MediaItem>(json!({
+                "Id": name, "Type": "Season", "Name": name,
+                "IndexNumber": number, "ProviderIds": ids
+            }))
+            .unwrap()
+        };
+        let english = season("Season 1", 1, json!({"Tmdb": "100"}));
+        let german = season("Staffel 1", 1, json!({"Imdb": "tt200"}));
+        let alias = MediaAlias::for_season(&english, "show-a").unwrap();
+        assert_eq!(
+            Some(alias.clone()),
+            MediaAlias::for_season(&german, "show-a")
+        );
+        assert_ne!(
+            Some(alias.clone()),
+            MediaAlias::for_season(&german, "show-b")
+        );
+        assert_ne!(
+            Some(alias.clone()),
+            MediaAlias::for_season(&season("Season 2", 2, json!({"Tmdb": "100"})), "show-a")
+        );
+        assert_eq!(
+            MediaAlias::parse_storage(&alias.storage_provider(), &alias.provider_id),
+            Some(alias)
+        );
+    }
+
+    #[test]
+    fn unknown_or_invalid_season_numbers_are_not_specials() {
+        for number in [json!(null), json!(-1), json!("1"), json!(1.5)] {
+            let item = serde_json::from_value(json!({
+                "Id": "season", "Type": "Season", "IndexNumber": number
+            }))
+            .unwrap();
+            assert_eq!(MediaAlias::for_season(&item, "show"), None);
+        }
+        let missing = serde_json::from_value(json!({"Id": "season", "Type": "Season"})).unwrap();
+        assert_eq!(MediaAlias::for_season(&missing, "show"), None);
+        let specials =
+            serde_json::from_value(json!({"Id": "season", "Type": "Season", "indexNumber": 0}))
+                .unwrap();
+        assert_eq!(
+            MediaAlias::for_season(&specials, "show")
+                .unwrap()
+                .provider_id,
+            "show:season:0"
+        );
+    }
 }
