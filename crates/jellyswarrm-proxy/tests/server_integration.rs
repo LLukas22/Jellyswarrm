@@ -265,24 +265,15 @@ async fn merged_shows_preserve_season_navigation_versions_and_latest_identity() 
         "merged episode must advertise one version per server"
     );
 
-    let show_seasons = success_json(
-        authenticated(
-            client
-                .get(format!("{proxy_url}/Shows/{series_id}/Seasons"))
-                .query(&[
-                    ("userId", user_id),
-                    (
-                        "Fields",
-                        "ItemCounts,PrimaryImageAspectRatio,CanDelete,MediaSourceCount",
-                    ),
-                ]),
-            token,
-        )
-        .send()
-        .await?,
-    )
-    .await?;
-    assert_eq!(show_seasons["TotalRecordCount"], 3);
+    // Readiness of /Users/{id}/Items does not imply that Jellyfin's dedicated
+    // show endpoint is ready too. It may still return a partial season list
+    // while the fresh backend libraries are scanning.
+    let show_seasons = wait_for_show_seasons(client, proxy_url, user_id, token, &series_id).await?;
+    assert_eq!(
+        show_seasons["TotalRecordCount"],
+        3,
+        "show {series_id} must retain all seasons across endpoint aliases; response: {show_seasons}"
+    );
     let season_items = items(&show_seasons)?;
     assert_eq!(
         season_items
@@ -989,6 +980,117 @@ async fn wait_for_merged_seasons(
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
+}
+
+fn show_seasons_ready(response: &Value) -> bool {
+    let Ok(seasons) = items(response) else {
+        return false;
+    };
+    response["TotalRecordCount"].as_u64() == Some(3)
+        && seasons.len() == 3
+        && seasons
+            .iter()
+            .map(|season| season["IndexNumber"].as_i64())
+            .collect::<Vec<_>>()
+            == vec![Some(1), Some(2), Some(3)]
+}
+
+async fn wait_for_show_seasons(
+    client: &Client,
+    base_url: &str,
+    user_id: &str,
+    token: &str,
+    series_id: &str,
+) -> Result<Value> {
+    let deadline = Instant::now() + CATALOG_TIMEOUT;
+    let mut previous_observation = String::new();
+    loop {
+        let response = authenticated(
+            client
+                .get(format!("{base_url}/Shows/{series_id}/Seasons"))
+                .query(&[
+                    ("userId", user_id),
+                    (
+                        "Fields",
+                        "ItemCounts,PrimaryImageAspectRatio,CanDelete,MediaSourceCount",
+                    ),
+                ]),
+            token,
+        )
+        .send()
+        .await?;
+        let status = response.status();
+        let body = response.text().await?;
+        if status.is_success() {
+            let seasons: Value =
+                serde_json::from_str(&body).context("invalid show seasons response")?;
+            if show_seasons_ready(&seasons) {
+                return Ok(seasons);
+            }
+        } else if !status.is_server_error() && status != StatusCode::NOT_FOUND {
+            bail!("Shows/{series_id}/Seasons returned {status}: {body}");
+        }
+        let observation = format!("{status}: {body}");
+        if observation != previous_observation {
+            eprintln!("Waiting for show {series_id} seasons [1, 2, 3]: {observation}");
+            previous_observation = observation;
+        }
+        if Instant::now() >= deadline {
+            bail!("Shows/{series_id}/Seasons did not return exactly seasons [1, 2, 3] within {CATALOG_TIMEOUT:?}; last response: {previous_observation}");
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+#[test]
+fn show_season_readiness_rejects_partial_duplicate_and_inconsistent_lists() {
+    let response = |count, numbers: &[i64]| {
+        json!({
+            "TotalRecordCount": count,
+            "Items": numbers.iter().map(|number| json!({"IndexNumber": number})).collect::<Vec<_>>()
+        })
+    };
+    assert!(show_seasons_ready(&response(3, &[1, 2, 3])));
+    assert!(!show_seasons_ready(&response(2, &[1, 2])));
+    assert!(!show_seasons_ready(&response(3, &[1, 1, 3])));
+    assert!(!show_seasons_ready(&response(3, &[1, 2])));
+    assert!(!show_seasons_ready(&response(2, &[1, 2, 3])));
+    assert!(!show_seasons_ready(&json!({"TotalRecordCount": 3})));
+}
+
+#[tokio::test]
+async fn show_season_readiness_waits_for_the_dedicated_endpoint() -> Result<()> {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use wiremock::{
+        matchers::{method, path, query_param},
+        Mock, MockServer, ResponseTemplate,
+    };
+
+    let upstream = MockServer::start().await;
+    let requests = Arc::new(AtomicUsize::new(0));
+    let observed = requests.clone();
+    Mock::given(method("GET"))
+        .and(path("/Shows/series/Seasons"))
+        .and(query_param("userId", "viewer"))
+        .and(query_param("Fields", "ItemCounts,PrimaryImageAspectRatio,CanDelete,MediaSourceCount"))
+        .respond_with(move |_: &wiremock::Request| {
+            let count = if observed.fetch_add(1, Ordering::SeqCst) == 0 { 2 } else { 3 };
+            ResponseTemplate::new(200).set_body_json(json!({
+                "TotalRecordCount": count,
+                "Items": (1..=count).map(|number| json!({"IndexNumber": number})).collect::<Vec<_>>()
+            }))
+        })
+        .expect(2)
+        .mount(&upstream)
+        .await;
+    let seasons =
+        wait_for_show_seasons(&Client::new(), &upstream.uri(), "viewer", "token", "series").await?;
+    assert!(show_seasons_ready(&seasons));
+    assert_eq!(requests.load(Ordering::SeqCst), 2);
+    Ok(())
 }
 
 async fn wait_for_merged_episode(
