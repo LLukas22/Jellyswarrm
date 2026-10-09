@@ -55,8 +55,9 @@ to all its libraries. The administrator account remains `admin` / `password`.
 
 ### Many-library pagination fixture (issue #202)
 
-Both the local and isolated integration stacks seed **25 libraries per server**
-by default: the original media library plus 24 empty libraries named, for example,
+Both the local and isolated integration stacks default to **one media library per
+server**. Set `JELLYFIN_LIBRARY_COUNT=25` to enable the pagination fixture:
+the original media library plus 24 empty libraries named, for example,
 `Movies 1 Pagination 01` through `Movies 1 Pagination 24`. There are **150 real
 libraries** across the six servers. The extra names are server-specific so they
 also remain distinct when automatic library merging is enabled. Empty libraries
@@ -66,7 +67,7 @@ playback and deduplication fixtures.
 For an already-running local stack, add the libraries without resetting any data:
 
 ```bash
-just seed-libraries
+JELLYFIN_LIBRARY_COUNT=25 just seed-libraries
 ```
 
 Start your debug Jellyswarrm build and log in as `test` / `test`. Open the admin
@@ -148,7 +149,7 @@ just status   # Show all containers, including one-shot initializers
 just logs     # Follow logs from the complete stack
 just media    # Fetch media fixtures from Git LFS
 just check    # Validate Compose and the initializer
-just seed-libraries # Add many-library fixtures to existing servers without resetting
+just seed-libraries # Rerun library initialization without resetting state
 just reset    # Recreate Jellyfin state; preserve media and Seerr state
 ```
 
