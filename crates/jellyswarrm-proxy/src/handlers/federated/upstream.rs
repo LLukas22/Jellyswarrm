@@ -18,7 +18,7 @@ use crate::{
 
 use super::{
     item_policy::presentable_library_collection_type,
-    library_resolution::CatalogFetchTarget,
+    library_resolution::{is_library_root_request, CatalogFetchTarget},
     postprocessing::{Pagination, ResponseShape, ServerItems},
     request_policy::{
         ensure_duplicate_identity_field, ensure_global_sort_fields,
@@ -539,6 +539,7 @@ async fn fetch_windowed_raw_items_from_server(
     } else {
         ItemsResponseVariants::Bare(all_items)
     };
+    track_discovered_libraries(&state, &server, &response).await;
 
     Ok(WindowedItems {
         response,
@@ -612,8 +613,92 @@ async fn fetch_raw_items_from_server(
     server: Server,
     pagination: Pagination,
 ) -> Result<ServerItems, StatusCode> {
+    // Library discovery must cover the whole inventory, independently of the
+    // client's display page. Some upstreams cap even an unbounded request.
+    if is_library_root_request(request.url(), state.get_url_prefix().await.as_deref()) {
+        return fetch_library_inventory(index, state, request, session, server).await;
+    }
     normalize_upstream_pagination(request.url_mut(), pagination);
-    execute_raw_items_request(index, state, request, session, server).await
+    let items = execute_raw_items_request(index, state.clone(), request, session, server).await?;
+    track_discovered_libraries(&state, &items.server, &items.response).await;
+    Ok(items)
+}
+
+async fn fetch_library_inventory(
+    index: usize,
+    state: AppState,
+    mut request: reqwest::Request,
+    session: AuthorizationSession,
+    server: Server,
+) -> Result<ServerItems, StatusCode> {
+    // Keep the first request unpaginated for ordinary Jellyfin user Views.
+    normalize_upstream_pagination(request.url_mut(), Pagination::unbounded());
+    let first = execute_raw_items_request(
+        index,
+        state.clone(),
+        request
+            .try_clone()
+            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?,
+        session.clone(),
+        server.clone(),
+    )
+    .await?;
+    let total = match &first.response {
+        ItemsResponseVariants::WithCount(response) => {
+            Some(response.total_record_count.max(0) as usize)
+        }
+        ItemsResponseVariants::Bare(_) => None,
+    };
+    let mut items = first.response.into_items();
+    let mut seen = HashSet::new();
+    if items.iter().any(|item| !seen.insert(item.id.clone())) {
+        return Err(StatusCode::BAD_GATEWAY);
+    }
+    while total.is_some_and(|total| items.len() < total) {
+        let mut page_request = request
+            .try_clone()
+            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+        // Advance by the actual number received, not our requested page size.
+        set_upstream_page(page_request.url_mut(), items.len(), UPSTREAM_PAGE_SIZE);
+        let page = execute_raw_items_request(
+            index,
+            state.clone(),
+            page_request,
+            session.clone(),
+            server.clone(),
+        )
+        .await?;
+        if let ItemsResponseVariants::WithCount(response) = &page.response {
+            if total != Some(response.total_record_count.max(0) as usize) {
+                warn!(
+                    "Library inventory changed while paging server '{}'",
+                    server.name
+                );
+                return Err(StatusCode::BAD_GATEWAY);
+            }
+        }
+        let next = page.response.into_items();
+        if next.is_empty() || next.iter().any(|item| !seen.insert(item.id.clone())) {
+            warn!(
+                "Incomplete library inventory from server '{}': pagination made no progress",
+                server.name
+            );
+            return Err(StatusCode::BAD_GATEWAY);
+        }
+        items.extend(next);
+    }
+    let response = match total {
+        Some(_) => ItemsResponseVariants::WithCount(ItemsResponseWithCount {
+            total_record_count: items.len() as i32,
+            start_index: 0,
+            items,
+        }),
+        None => ItemsResponseVariants::Bare(items),
+    };
+    // Commit discoveries only after all pages succeeded. A failed continuation
+    // must not make a partial inventory look authoritative.
+    track_discovered_libraries(&state, &server, &response).await;
+    Ok(ServerItems { response, server })
 }
 
 async fn execute_raw_items_request(
@@ -641,7 +726,6 @@ async fn execute_raw_items_request(
         })?;
 
     let items_response: ItemsResponseVariants = response_json_to_payload(response)?;
-    track_discovered_libraries(&state, &server, &items_response).await;
     debug!(
         "Fetched {} raw items from server '{}' at index {}",
         items_response.len(),

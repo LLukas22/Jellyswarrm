@@ -298,7 +298,7 @@ async fn is_single_server_parent(state: &AppState, parent_id: &str) -> bool {
         .is_some()
 }
 
-fn is_library_root_request(url: &url::Url, url_prefix: Option<&str>) -> bool {
+pub(super) fn is_library_root_request(url: &url::Url, url_prefix: Option<&str>) -> bool {
     let prefixed_path;
     let path = if let Some(url_prefix) = url_prefix {
         prefixed_path = format!("/{url_prefix}");

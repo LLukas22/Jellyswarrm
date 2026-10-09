@@ -286,27 +286,32 @@ impl JellyfinClient {
             "Library/MediaFolders".to_string()
         };
 
-        // User views are not paginated by Jellyfin, unlike Library/MediaFolders.
-        if user_id.is_some() {
-            let response: MediaFoldersResponse =
-                self.request(reqwest::Method::GET, &path, None).await?;
-            return Ok(response.items);
-        }
-
         const PAGE_SIZE: usize = 100;
         let mut folders = Vec::new();
         let mut seen = std::collections::HashSet::new();
         let mut start_index = 0;
+        let mut expected_total = None;
         loop {
-            let page_path = format!("{path}?StartIndex={start_index}&Limit={PAGE_SIZE}");
+            // Jellyfin Views normally returns everything without paging. Only
+            // request a continuation when the response advertises missing items.
+            let page_path = if user_id.is_some() && start_index == 0 {
+                path.clone()
+            } else {
+                format!("{path}?StartIndex={start_index}&Limit={PAGE_SIZE}")
+            };
             let response: MediaFoldersResponse =
                 self.request(reqwest::Method::GET, &page_path, None).await?;
+            if let (Some(previous), Some(current)) = (expected_total, response.total_record_count) {
+                if previous != current {
+                    return Err(Error::InvalidResponse(
+                        "Library inventory changed while fetching its pages".into(),
+                    ));
+                }
+            }
+            expected_total = response.total_record_count.or(expected_total);
             let page_len = response.items.len();
             if page_len == 0 {
-                if response
-                    .total_record_count
-                    .is_some_and(|total| start_index < total)
-                {
+                if expected_total.is_some_and(|total| start_index < total) {
                     return Err(Error::InvalidResponse(
                         "Library pagination ended before all libraries were returned".into(),
                     ));
@@ -325,10 +330,9 @@ impl JellyfinClient {
             }
             start_index += page_len;
             folders.extend(response.items);
-            if response
-                .total_record_count
-                .map_or(page_len < PAGE_SIZE, |total| start_index >= total)
-            {
+            if expected_total.map_or(user_id.is_some() || page_len < PAGE_SIZE, |total| {
+                start_index >= total
+            }) {
                 break;
             }
         }
@@ -653,6 +657,47 @@ mod tests {
             .url
             .query()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn user_views_fetch_continuation_when_upstream_caps_results() {
+        use wiremock::matchers::query_param;
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/Users/user-id/Views"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Items": (0..20).map(|id| json!({"Id":format!("library-{id}"),"Name":"Movies"})).collect::<Vec<_>>(),
+                "TotalRecordCount": 25
+            }))).with_priority(10).expect(1).mount(&server).await;
+        Mock::given(method("GET")).and(path("/Users/user-id/Views"))
+            .and(query_param("StartIndex", "20")).and(query_param("Limit", "100"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Items": (20..25).map(|id| json!({"Id":format!("library-{id}"),"Name":"Movies"})).collect::<Vec<_>>(),
+                "TotalRecordCount": 25
+            }))).expect(1).mount(&server).await;
+        let client = JellyfinClient::new(&server.uri(), ClientInfo::default()).unwrap();
+        assert_eq!(
+            client
+                .get_media_folders(Some("user-id"))
+                .await
+                .unwrap()
+                .len(),
+            25
+        );
+    }
+
+    #[tokio::test]
+    async fn user_views_reject_incomplete_repeated_pages() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/Users/user-id/Views"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Items": [{"Id":"same","Name":"Movies"}], "TotalRecordCount": 2
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let client = JellyfinClient::new(&server.uri(), ClientInfo::default()).unwrap();
+        assert!(client.get_media_folders(Some("user-id")).await.is_err());
     }
 
     #[tokio::test]

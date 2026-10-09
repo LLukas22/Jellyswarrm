@@ -1,3 +1,6 @@
+{% for error in discovery_errors %}
+<div class="alert alert-error" role="alert">{{ error }}</div>
+{% endfor %}
 <div class="library-board" data-library-board>
     <p class="sr-only" aria-live="polite" data-library-board-status></p>
 
