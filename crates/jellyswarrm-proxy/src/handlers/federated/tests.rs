@@ -283,6 +283,7 @@ async fn admin_library_page_discovers_mapped_users_without_prior_catalog_request
     assert_eq!(html.matches("data-library-card").count(), 25, "{html}");
     assert!(html.contains("Library 24"));
     assert!(!html.contains("role=\"alert\""), "{html}");
+    assert!(html.contains("id=\"library-discovery-errors\""));
     assert_eq!(
         state
             .virtual_library_service
@@ -293,7 +294,73 @@ async fn admin_library_page_discovers_mapped_users_without_prior_catalog_request
         25
     );
 
-    // An outage must retain the completed inventory and make the failure visible.
+    // Editing groups uses the completed cache, not another upstream discovery.
+    use crate::ui::admin::libraries::{
+        assign_library, create_group, delete_group, remove_member, rename_group, AssignLibraryForm,
+        CreateGroupForm, RemoveMemberForm, RenameGroupForm,
+    };
+    let request_count = upstreams[0].received_requests().await.unwrap().len();
+    let mut responses = vec![
+        create_group(
+            State(state.clone()),
+            axum::Form(CreateGroupForm {
+                name: "Test group".into(),
+            }),
+        )
+        .await,
+    ];
+    let group_id = state.virtual_library_service.list_groups().await.unwrap()[0]
+        .virtual_id
+        .clone();
+    responses.push(
+        assign_library(
+            State(state.clone()),
+            axum::Form(AssignLibraryForm {
+                group_virtual_id: group_id.clone(),
+                server_id: server.id.as_i64(),
+                library_id: "library-24".into(),
+            }),
+        )
+        .await,
+    );
+    responses.push(
+        rename_group(
+            State(state.clone()),
+            axum::extract::Path(group_id.clone()),
+            axum::Form(RenameGroupForm {
+                name: "Renamed group".into(),
+            }),
+        )
+        .await,
+    );
+    responses.push(
+        remove_member(
+            State(state.clone()),
+            axum::extract::Path(group_id.clone()),
+            axum::Form(RemoveMemberForm {
+                server_id: server.id.as_i64(),
+                library_id: "library-24".into(),
+            }),
+        )
+        .await,
+    );
+    responses.push(delete_group(State(state.clone()), axum::extract::Path(group_id)).await);
+    for response in responses {
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert_eq!(html.matches("data-library-card").count(), 25);
+        assert!(html.contains("Library 24"));
+        assert!(!html.contains("id=\"library-discovery-errors\""));
+    }
+    assert_eq!(
+        upstreams[0].received_requests().await.unwrap().len(),
+        request_count
+    );
+
+    // An explicit refresh still contacts upstreams and reports failures.
     upstreams[0].reset().await;
     let response = crate::ui::admin::libraries::library_groups_list(State(state.clone()))
         .await

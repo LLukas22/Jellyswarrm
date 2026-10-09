@@ -288,10 +288,9 @@ impl JellyfinClient {
 
         const PAGE_SIZE: usize = 100;
         let mut folders = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-        let mut start_index = 0;
-        let mut expected_total = None;
+        let mut pagination = crate::library_pagination::LibraryPagination::default();
         loop {
+            let start_index = pagination.fetched_count();
             // Jellyfin Views normally returns everything without paging. Only
             // request a continuation when the response advertises missing items.
             let page_path = if user_id.is_some() && start_index == 0 {
@@ -301,38 +300,14 @@ impl JellyfinClient {
             };
             let response: MediaFoldersResponse =
                 self.request(reqwest::Method::GET, &page_path, None).await?;
-            if let (Some(previous), Some(current)) = (expected_total, response.total_record_count) {
-                if previous != current {
-                    return Err(Error::InvalidResponse(
-                        "Library inventory changed while fetching its pages".into(),
-                    ));
-                }
-            }
-            expected_total = response.total_record_count.or(expected_total);
-            let page_len = response.items.len();
-            if page_len == 0 {
-                if expected_total.is_some_and(|total| start_index < total) {
-                    return Err(Error::InvalidResponse(
-                        "Library pagination ended before all libraries were returned".into(),
-                    ));
-                }
-                break;
-            }
-            // Fail rather than cache an incomplete list if an upstream ignores StartIndex.
-            if response
-                .items
-                .iter()
-                .any(|folder| !seen.insert(folder.id.clone()))
-            {
-                return Err(Error::InvalidResponse(
-                    "Library pagination returned duplicate libraries".into(),
-                ));
-            }
-            start_index += page_len;
+            let complete = pagination
+                .accept_page(
+                    response.total_record_count,
+                    response.items.iter().map(|folder| folder.id.as_str()),
+                )?
+                .unwrap_or(user_id.is_some() || response.items.len() < PAGE_SIZE);
             folders.extend(response.items);
-            if expected_total.map_or(user_id.is_some() || page_len < PAGE_SIZE, |total| {
-                start_index >= total
-            }) {
+            if complete {
                 break;
             }
         }

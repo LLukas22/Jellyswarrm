@@ -633,33 +633,21 @@ async fn fetch_library_inventory(
 ) -> Result<ServerItems, StatusCode> {
     // Keep the first request unpaginated for ordinary Jellyfin user Views.
     normalize_upstream_pagination(request.url_mut(), Pagination::unbounded());
-    let first = execute_raw_items_request(
-        index,
-        state.clone(),
-        request
-            .try_clone()
-            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?,
-        session.clone(),
-        server.clone(),
-    )
-    .await?;
-    let total = match &first.response {
-        ItemsResponseVariants::WithCount(response) => {
-            Some(response.total_record_count.max(0) as usize)
-        }
-        ItemsResponseVariants::Bare(_) => None,
-    };
-    let mut items = first.response.into_items();
-    let mut seen = HashSet::new();
-    if items.iter().any(|item| !seen.insert(item.id.clone())) {
-        return Err(StatusCode::BAD_GATEWAY);
-    }
-    while total.is_some_and(|total| items.len() < total) {
+    let mut pagination = jellyfin_api::library_pagination::LibraryPagination::default();
+    let mut items = Vec::new();
+    let mut counted = false;
+    loop {
         let mut page_request = request
             .try_clone()
             .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
         // Advance by the actual number received, not our requested page size.
-        set_upstream_page(page_request.url_mut(), items.len(), UPSTREAM_PAGE_SIZE);
+        if pagination.fetched_count() > 0 {
+            set_upstream_page(
+                page_request.url_mut(),
+                pagination.fetched_count(),
+                UPSTREAM_PAGE_SIZE,
+            );
+        }
         let page = execute_raw_items_request(
             index,
             state.clone(),
@@ -668,32 +656,37 @@ async fn fetch_library_inventory(
             server.clone(),
         )
         .await?;
-        if let ItemsResponseVariants::WithCount(response) = &page.response {
-            if total != Some(response.total_record_count.max(0) as usize) {
+        let total = match &page.response {
+            ItemsResponseVariants::WithCount(response) => {
+                Some(response.total_record_count.max(0) as usize)
+            }
+            ItemsResponseVariants::Bare(_) => None,
+        };
+        counted |= total.is_some();
+        let next = page.response.into_items();
+        let complete = pagination
+            .accept_page(total, next.iter().map(|item| item.id.as_str()))
+            .map_err(|error| {
                 warn!(
-                    "Library inventory changed while paging server '{}'",
+                    "Incomplete library inventory from server '{}': {error}",
                     server.name
                 );
-                return Err(StatusCode::BAD_GATEWAY);
-            }
-        }
-        let next = page.response.into_items();
-        if next.is_empty() || next.iter().any(|item| !seen.insert(item.id.clone())) {
-            warn!(
-                "Incomplete library inventory from server '{}': pagination made no progress",
-                server.name
-            );
-            return Err(StatusCode::BAD_GATEWAY);
-        }
+                StatusCode::BAD_GATEWAY
+            })?
+            .unwrap_or(true);
         items.extend(next);
+        if complete {
+            break;
+        }
     }
-    let response = match total {
-        Some(_) => ItemsResponseVariants::WithCount(ItemsResponseWithCount {
+    let response = if counted {
+        ItemsResponseVariants::WithCount(ItemsResponseWithCount {
             total_record_count: items.len() as i32,
             start_index: 0,
             items,
-        }),
-        None => ItemsResponseVariants::Bare(items),
+        })
+    } else {
+        ItemsResponseVariants::Bare(items)
     };
     // Commit discoveries only after all pages succeeded. A failed continuation
     // must not make a partial inventory look authoritative.

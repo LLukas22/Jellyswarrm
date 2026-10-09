@@ -79,6 +79,8 @@ Opening the admin Libraries tab discovers libraries through mapped user accounts
 even if nobody has browsed the Jellyfin Web catalog yet. **Refresh libraries**
 reruns discovery. Failed refreshes show warnings and retain cached libraries
 rather than silently treating an incomplete inventory as complete.
+Assigning libraries or editing virtual groups uses the cached inventory and does
+not refetch the upstream servers.
 
 `JELLYFIN_LIBRARY_COUNT` in `dev/.env` controls the total seeded libraries per
 server (minimum 1, including the original media library). Initializers are
