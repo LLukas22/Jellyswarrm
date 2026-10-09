@@ -51,7 +51,41 @@ The exact Jellyfin and Seerr releases are set through `JELLYFIN_VERSION` and
 | Seerr | <http://localhost:5055> |
 
 Every server has the regular Jellyswarrm account `test` / `test`, with access
-to its complete library. The administrator account remains `admin` / `password`.
+to all its libraries. The administrator account remains `admin` / `password`.
+
+### Many-library pagination fixture (issue #202)
+
+Both the local and isolated integration stacks seed **25 libraries per server**
+by default: the original media library plus 24 empty libraries named, for example,
+`Movies 1 Pagination 01` through `Movies 1 Pagination 24`. There are **150 real
+libraries** across the six servers. The extra names are server-specific so they
+also remain distinct when automatic library merging is enabled. Empty libraries
+appear in Jellyfin's user views without duplicating media or changing the existing
+playback and deduplication fixtures.
+
+For an already-running local stack, add the libraries without resetting any data:
+
+```bash
+just seed-libraries
+```
+
+Start your debug Jellyswarrm build and log in as `test` / `test`. Open the admin
+**Libraries** tab and check that real libraries beyond the first 20 are available
+for assignment to virtual libraries, including the `Pagination 24` entries.
+The default setup exercises regular-user mappings and automatic merging. To
+compare federated access, connect the test servers using `admin` / `password`.
+
+Opening the admin Libraries tab discovers libraries through mapped user accounts
+even if nobody has browsed the Jellyfin Web catalog yet. **Refresh libraries**
+reruns discovery. Failed refreshes show warnings and retain cached libraries
+rather than silently treating an incomplete inventory as complete.
+
+`JELLYFIN_LIBRARY_COUNT` in `dev/.env` controls the total seeded libraries per
+server (minimum 1, including the original media library). Initializers are
+idempotent and preserve existing libraries and playlists. Lowering the count
+does not delete previously seeded libraries; use a fresh integration stack for
+a smaller fixture, or `just reset` only if you intend to discard local Jellyfin
+state.
 
 The music initializers also create **Music 1 Test Playlist** (four Goldberg
 Variations tracks) and **Music 2 Test Playlist** (two Ghost Solos tracks), owned
@@ -112,6 +146,7 @@ just status   # Show all containers, including one-shot initializers
 just logs     # Follow logs from the complete stack
 just media    # Fetch media fixtures from Git LFS
 just check    # Validate Compose and the initializer
+just seed-libraries # Add many-library fixtures to existing servers without resetting
 just reset    # Recreate Jellyfin state; preserve media and Seerr state
 ```
 

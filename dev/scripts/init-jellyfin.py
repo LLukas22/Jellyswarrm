@@ -29,6 +29,9 @@ JELLYSWARRM_PASSWORD = os.environ.get("JELLYSWARRM_PASSWORD", "test")
 COLLECTION_NAME = os.environ.get("COLLECTION_NAME", "Movies")
 COLLECTION_PATH = os.environ.get("COLLECTION_PATH", "/media/movies")
 COLLECTION_TYPE = os.environ.get("COLLECTION_TYPE", "movies")
+LIBRARY_COUNT = int(os.environ.get("LIBRARY_COUNT", "1"))
+if LIBRARY_COUNT < 1:
+    raise ValueError("LIBRARY_COUNT must be at least 1")
 PLAYLIST_NAME = os.environ.get("PLAYLIST_NAME", "")
 PLAYLIST_TRACK_COUNT = int(os.environ.get("PLAYLIST_TRACK_COUNT", "1"))
 
@@ -149,19 +152,27 @@ def set_server_name(client: JellyfinClient):
 
 def create_library(client: JellyfinClient):
     try:
-        folders = client.jellyfin.get_media_folders()
-        library_exists = any(
-            folder["Name"] == COLLECTION_NAME for folder in folders["Items"]
+        # VirtualFolders returns the complete configuration, not a paged Items
+        # response. Keep seeding idempotent even beyond the pagination boundary.
+        folders = client.jellyfin._get("Library/VirtualFolders")
+        existing_names = {folder["Name"] for folder in folders}
+        libraries = [(COLLECTION_NAME, [COLLECTION_PATH])]
+        libraries.extend(
+            (f"{SERVER_NAME} Pagination {index:02d}", [])
+            for index in range(1, LIBRARY_COUNT)
         )
-        if library_exists:
-            print(f"Library '{COLLECTION_NAME}' already exists, refreshing it")
-        else:
+        for name, paths in libraries:
+            if name in existing_names:
+                print(f"Library '{name}' already exists, leaving it untouched")
+                continue
+            # Empty libraries still appear in user views. They exercise library
+            # paging without duplicating media or changing playback fixtures.
             client.jellyfin.add_media_library(
-                name=COLLECTION_NAME,
+                name=name,
                 collectionType=COLLECTION_TYPE,
-                paths=[COLLECTION_PATH],
+                paths=paths,
             )
-            print(f"✅ Created library '{COLLECTION_NAME}'")
+            print(f"✅ Created library '{name}'")
     except Exception as e:
         print(f"❌ Failed to create library: {e}")
         raise

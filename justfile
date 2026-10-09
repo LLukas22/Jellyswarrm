@@ -21,6 +21,10 @@ up: doctor
     {{compose}} up --detach --remove-orphans --wait --wait-timeout 1800 caddy seerr
     @just urls
 
+# Rerun all initializers to add pagination libraries without resetting state.
+seed-libraries: doctor
+    @for service in jellyfin-movies-init jellyfin-tvshows-init jellyfin-music-init jellyfin-movies-2-init jellyfin-tvshows-2-init jellyfin-music-2-init; do {{compose}} run --rm "$service" || exit 1; done
+
 # Stop and remove the development containers while preserving all data.
 down:
     {{compose}} down --remove-orphans
