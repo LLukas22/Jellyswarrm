@@ -69,6 +69,10 @@ impl VirtualLibraryAccessScope {
     pub(crate) fn allows(&self, server_id: ServerId) -> bool {
         self.server_ids.contains(&server_id)
     }
+
+    pub(crate) fn server_ids(&self) -> &[ServerId] {
+        &self.server_ids
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -194,11 +198,12 @@ impl VirtualLibraryService {
             return Ok(resolution(
                 group.name,
                 members,
-                format!(
-                    "configured:{}:{}",
-                    normalize_library_id(&group.virtual_id),
-                    viewer
-                ),
+                crate::media_scope::MediaCatalogScope {
+                    kind: crate::media_scope::MediaScopeKind::Configured,
+                    viewer,
+                    resource_id: &normalize_library_id(&group.virtual_id),
+                }
+                .to_string(),
             ));
         }
 
@@ -212,11 +217,12 @@ impl VirtualLibraryService {
             return Ok(resolution(
                 library.name,
                 members,
-                format!(
-                    "automatic:{}:{}",
-                    normalize_library_id(&library.virtual_id),
-                    access_scope.user_id()
-                ),
+                crate::media_scope::MediaCatalogScope {
+                    kind: crate::media_scope::MediaScopeKind::Automatic,
+                    viewer: access_scope.user_id(),
+                    resource_id: &normalize_library_id(&library.virtual_id),
+                }
+                .to_string(),
             ));
         }
 

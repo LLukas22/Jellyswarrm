@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
     media_identity::{MediaAlias, MediaKind, StableMediaGroup},
+    media_presentation::{CatalogItem, ItemPresentation},
     models::{enums::BaseItemKind, MediaItem},
     server_storage::Server,
     virtual_library_service::compare_virtual_library_routes,
@@ -21,6 +22,7 @@ struct CatalogGroup {
 
 /// Pure catalog plan. Database-backed stable group IDs are applied only after
 /// all observations have been reconciled.
+/// Inputs carry translated IDs but original, undecorated upstream titles.
 #[derive(Debug)]
 pub struct MediaDedupPlan {
     groups: Vec<CatalogGroup>,
@@ -77,7 +79,7 @@ impl MediaDedupPlan {
         Self { groups }
     }
 
-    pub fn collapse(self, stable_groups: &HashMap<String, StableMediaGroup>) -> Vec<MediaItem> {
+    pub fn collapse(self, stable_groups: &HashMap<String, StableMediaGroup>) -> Vec<CatalogItem> {
         let mut groups: Vec<CatalogGroup> = Vec::new();
         let mut stable_indexes = HashMap::new();
         for group in self.groups {
@@ -118,7 +120,11 @@ impl MediaDedupPlan {
                     .iter()
                     .map(|member| member.server.id)
                     .collect::<HashSet<_>>();
-                let is_unambiguous_group = distinct_servers.len() == group.members.len();
+                let is_unambiguous_group = distinct_servers.len() == group.members.len()
+                    || group
+                        .members
+                        .iter()
+                        .all(|member| member.item.item_type == BaseItemKind::Episode);
 
                 let stable_group = group
                     .members
@@ -133,10 +139,9 @@ impl MediaDedupPlan {
                     (true, Some(stable_group))
                         if stable_group.published && !stable_group.ambiguous =>
                     {
-                        vec![merge_media_group(
-                            group.members,
-                            &stable_group.virtual_media_id,
-                        )]
+                        vec![
+                            merge_media_group(group.members, &stable_group.virtual_media_id).into(),
+                        ]
                     }
                     _ => label_duplicate_group(group.members),
                 }
@@ -199,7 +204,7 @@ fn merge_media_group(members: Vec<TaggedMediaItem>, group_id: &str) -> MediaItem
     best.item
 }
 
-pub fn label_duplicates(items: Vec<TaggedMediaItem>) -> Vec<MediaItem> {
+pub fn label_duplicates(items: Vec<TaggedMediaItem>) -> Vec<CatalogItem> {
     let mut group_indexes: HashMap<String, usize> = HashMap::new();
     let mut groups: Vec<Vec<TaggedMediaItem>> = Vec::new();
     for tagged in items {
@@ -215,12 +220,18 @@ pub fn label_duplicates(items: Vec<TaggedMediaItem>) -> Vec<MediaItem> {
     groups.into_iter().flat_map(label_duplicate_group).collect()
 }
 
-fn label_duplicate_group(group: Vec<TaggedMediaItem>) -> Vec<MediaItem> {
+fn label_duplicate_group(group: Vec<TaggedMediaItem>) -> Vec<CatalogItem> {
     if group.len() == 1 {
-        return group.into_iter().map(|tagged| tagged.item).collect();
+        return group.into_iter().map(|tagged| tagged.item.into()).collect();
     }
 
-    group.into_iter().map(item_with_server_suffix).collect()
+    group
+        .into_iter()
+        .map(|tagged| CatalogItem {
+            item: tagged.item,
+            presentation: ItemPresentation::Duplicate(tagged.server.name),
+        })
+        .collect()
 }
 
 fn duplicate_key(item: &MediaItem) -> String {
@@ -244,13 +255,6 @@ fn duplicate_key(item: &MediaItem) -> String {
         })
         .unwrap_or_default();
     format!("content:title:{name}:{year}:{:?}", item.item_type)
-}
-
-fn item_with_server_suffix(mut tagged: TaggedMediaItem) -> MediaItem {
-    if let Some(name) = tagged.item.name.as_mut() {
-        *name = format!("{name} [{}]", tagged.server.name);
-    }
-    tagged.item
 }
 
 fn episode_duplicate_key(item: &MediaItem) -> String {
@@ -323,11 +327,6 @@ fn normalized_name(item: &MediaItem) -> String {
 
 fn normalize_title(value: &str) -> String {
     let value = value.trim();
-    let value = value
-        .rsplit_once('[')
-        .filter(|(_, suffix)| suffix.ends_with(']'))
-        .map(|(prefix, _)| prefix.trim_end())
-        .unwrap_or(value);
 
     value
         .to_ascii_lowercase()
@@ -400,6 +399,20 @@ mod tests {
     }
 
     #[test]
+    fn merging_preserves_original_titles_even_when_they_look_like_server_labels() {
+        let members = vec![
+            tagged(1, 100, "Title [Server 1]", "42"),
+            tagged(2, 50, "Title [Extended]", "42"),
+        ];
+        let merged = MediaDedupPlan::new(members).collapse(&assignments(
+            &["1-Title [Server 1]", "2-Title [Extended]"],
+            2,
+        ));
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].name.as_deref(), Some("Title [Server 1]"));
+    }
+
+    #[test]
     fn duplicates_are_kept_and_labeled_with_their_server() {
         let less: MediaItem = serde_json::from_value(serde_json::json!({
             "Id": "left",
@@ -427,6 +440,13 @@ mod tests {
                 server: tagged(2, 50, "x", "abc").server,
             },
         ]);
+        assert!(result
+            .iter()
+            .all(|item| item.name.as_deref() == Some("Wistoria")));
+        let result = result
+            .into_iter()
+            .map(CatalogItem::present)
+            .collect::<Vec<_>>();
         assert_eq!(
             result
                 .iter()
@@ -480,6 +500,13 @@ mod tests {
         second.item.item_type = BaseItemKind::Episode;
 
         let result = label_duplicates(vec![first, second]);
+        assert!(result
+            .iter()
+            .all(|item| item.name.as_deref() == Some("Pilot")));
+        let result = result
+            .into_iter()
+            .map(CatalogItem::present)
+            .collect::<Vec<_>>();
 
         assert_eq!(
             result

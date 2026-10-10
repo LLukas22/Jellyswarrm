@@ -7,7 +7,8 @@ use tracing::{error, warn};
 
 use crate::{
     handlers::common::response_json_to_payload,
-    models::{ItemsResponseVariants, MediaItem},
+    media_presentation::{CatalogItem, ItemNamePolicy},
+    models::MediaItem,
     processors::response_processor::ResponseProcessingProfile,
     request_preprocessing::PreprocessedRequest,
     server_id::ServerId,
@@ -25,17 +26,18 @@ use super::{
         automatic_library_key, is_live_tv_user_view, presentable_library_collection_type,
     },
     library_resolution::CatalogFetchTarget,
-    postprocessing::{FederatedItems, ServerItems},
-    upstream::{fetch_catalog, FetchMode, FetchedCatalog, FetchedServerItems},
+    postprocessing::FederatedItems,
+    request_policy::CatalogRequestPolicy,
+    upstream::{fetch_inventory, FetchedCatalog, FetchedServerItems, RawServerItems},
 };
 
 struct AutomaticGroupPresentation {
-    items: Vec<MediaItem>,
+    items: Vec<CatalogItem>,
     discovered_members: Vec<(String, ServerId, String)>,
 }
 
 struct BuiltVirtualLibrary {
-    item: MediaItem,
+    item: CatalogItem,
     members: Vec<(ServerId, String)>,
 }
 
@@ -48,7 +50,7 @@ struct NamedMediaItemGroup {
 struct LibraryRootInventory {
     configured_groups: HashMap<String, NamedMediaItemGroup>,
     unassigned_libraries: Vec<ServerMediaItem>,
-    non_library_per_server: Vec<ServerItems>,
+    non_library_per_server: Vec<Vec<CatalogItem>>,
 }
 
 #[derive(Clone)]
@@ -60,10 +62,13 @@ struct ServerMediaItem {
 async fn process_library_group_individually(
     state: &AppState,
     group: Vec<ServerMediaItem>,
-) -> Result<Vec<MediaItem>, StatusCode> {
+) -> Result<Vec<CatalogItem>, StatusCode> {
     let mut items = Vec::with_capacity(group.len());
     for ServerMediaItem { item, server } in group {
-        items.push(process_media_item_for_server(item, state, &server, true).await?);
+        items.push(
+            process_media_item_for_server(item, state, &server, ItemNamePolicy::IncludeServerName)
+                .await?,
+        );
     }
     Ok(items)
 }
@@ -73,57 +78,41 @@ async fn present_automatic_library_group(
     key: String,
     group: Vec<ServerMediaItem>,
     access_scope: &VirtualLibraryAccessScope,
-    complete_refresh: bool,
 ) -> Result<AutomaticGroupPresentation, StatusCode> {
     if group.len() == 1 {
-        if !complete_refresh {
-            if let Some(automatic) = state
-                .virtual_library_service
-                .get_automatic_library_by_collection_type(&key)
-                .await
-                .map_err(|error| {
-                    error!("Failed to load automatic library: {error}");
-                    StatusCode::INTERNAL_SERVER_ERROR
-                })?
-            {
-                let has_accessible_members = matches!(
-                    state
-                        .virtual_library_service
-                        .resolve(&automatic.virtual_id, Some(access_scope))
-                        .await
-                        .map_err(|error| {
-                            error!("Failed to resolve automatic library snapshot: {error}");
-                            StatusCode::INTERNAL_SERVER_ERROR
-                        })?,
-                    VirtualLibraryResolution::Resolved(_)
-                );
-                if has_accessible_members {
-                    let display_name = group
-                        .first()
-                        .and_then(|source| source.item.name.clone())
-                        .unwrap_or_else(|| key.clone());
-                    let built = build_virtual_library_item(
-                        state,
-                        group,
-                        display_name,
-                        automatic.virtual_id.clone(),
-                    )
-                    .await?;
-                    let discovered_members = built
+        // Keep a published library's ID and reachable memberships when another
+        // backend disappears. A singleton refresh must not delete the survivor.
+        if let Some(automatic) = state
+            .virtual_library_service
+            .get_automatic_library_by_collection_type(&key)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        {
+            if matches!(
+                state
+                    .virtual_library_service
+                    .resolve(&automatic.virtual_id, Some(access_scope))
+                    .await
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+                VirtualLibraryResolution::Resolved(_)
+            ) {
+                let built = build_virtual_library_item(
+                    state,
+                    group,
+                    automatic.name,
+                    automatic.virtual_id.clone(),
+                )
+                .await?;
+                return Ok(AutomaticGroupPresentation {
+                    items: vec![built.item],
+                    discovered_members: built
                         .members
                         .into_iter()
-                        .map(|(server_id, member_id)| {
-                            (automatic.virtual_id.clone(), server_id, member_id)
-                        })
-                        .collect();
-                    return Ok(AutomaticGroupPresentation {
-                        items: vec![built.item],
-                        discovered_members,
-                    });
-                }
+                        .map(|(server, member)| (automatic.virtual_id.clone(), server, member))
+                        .collect(),
+                });
             }
         }
-
         return Ok(AutomaticGroupPresentation {
             items: process_library_group_individually(state, group).await?,
             discovered_members: Vec::new(),
@@ -168,7 +157,7 @@ async fn present_automatic_library_group(
 
 async fn partition_library_root_inventory(
     state: &AppState,
-    server_items: Vec<FetchedServerItems>,
+    server_items: Vec<FetchedServerItems<RawServerItems>>,
 ) -> Result<LibraryRootInventory, StatusCode> {
     let assignments = state
         .virtual_library_service
@@ -184,7 +173,7 @@ async fn partition_library_root_inventory(
     let mut live_tv_seen = false;
 
     for fetched in server_items {
-        let ServerItems { response, server } = fetched.server_items;
+        let RawServerItems { response, server } = fetched.server_items;
         let mut non_library_items = Vec::new();
 
         for item in response.into_items() {
@@ -240,13 +229,15 @@ async fn partition_library_root_inventory(
         }
 
         if !non_library_items.is_empty() {
-            let processed =
-                process_media_items_for_server(non_library_items, state, &server, true).await?;
+            let processed = process_media_items_for_server(
+                non_library_items,
+                state,
+                &server,
+                ItemNamePolicy::IncludeServerName,
+            )
+            .await?;
             if !processed.is_empty() {
-                non_library_per_server.push(ServerItems {
-                    response: ItemsResponseVariants::Bare(processed),
-                    server,
-                });
+                non_library_per_server.push(processed);
             }
         }
     }
@@ -268,6 +259,7 @@ pub(super) async fn get_automatic_library_root(
         access_scope,
         ..
     } = preprocessed;
+    let policy = CatalogRequestPolicy::from_url(original_request.url());
     let access_scope = access_scope.ok_or(StatusCode::UNAUTHORIZED)?;
     let refresh_generation = state
         .virtual_library_service
@@ -276,9 +268,9 @@ pub(super) async fn get_automatic_library_root(
 
     let FetchedCatalog {
         server_items,
-        failures,
         response_shape,
-    } = fetch_catalog(state, &original_request, targets, FetchMode::Inventory, 0).await?;
+        ..
+    } = fetch_inventory(state, &original_request, targets).await?;
     let refreshed_server_ids = server_items
         .iter()
         .map(|items| items.server_items.server.id)
@@ -302,8 +294,7 @@ pub(super) async fn get_automatic_library_root(
     automatic_groups.sort_by(|left, right| left.0.cmp(&right.0));
     for (key, group) in automatic_groups {
         let presentation =
-            present_automatic_library_group(state, key, group, &access_scope, failures == 0)
-                .await?;
+            present_automatic_library_group(state, key, group, &access_scope).await?;
         library_items.extend(presentation.items);
         discovered_members.extend(presentation.discovered_members);
     }
@@ -322,14 +313,15 @@ pub(super) async fn get_automatic_library_root(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    let items = FederatedItems::new(library_items).merge_interleaved(non_library_per_server);
-    finalize_items_response(items, original_request.url(), response_shape)
+    let items =
+        FederatedItems::from_merged_items(library_items).merge_interleaved(non_library_per_server);
+    finalize_items_response(state, &original_request, items, &policy, response_shape).await
 }
 
 async fn present_configured_library_groups(
     state: &AppState,
     configured_library_groups: HashMap<String, NamedMediaItemGroup>,
-) -> Result<Vec<MediaItem>, StatusCode> {
+) -> Result<Vec<CatalogItem>, StatusCode> {
     let mut group_entries = configured_library_groups.into_iter().collect::<Vec<_>>();
     group_entries.sort_by(|left, right| {
         left.1
@@ -375,11 +367,12 @@ pub(super) async fn get_configured_library_root(
     targets: Vec<CatalogFetchTarget>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let original_request = preprocessed.original_request;
+    let policy = CatalogRequestPolicy::from_url(original_request.url());
     let FetchedCatalog {
         server_items,
         response_shape,
         ..
-    } = fetch_catalog(state, &original_request, targets, FetchMode::Inventory, 0).await?;
+    } = fetch_inventory(state, &original_request, targets).await?;
     let LibraryRootInventory {
         configured_groups,
         unassigned_libraries,
@@ -398,24 +391,26 @@ pub(super) async fn get_configured_library_root(
     let mut single_groups = single_groups.into_iter().collect::<Vec<_>>();
     single_groups.sort_by(|left, right| left.0.cmp(&right.0));
     for (_key, ServerMediaItem { item, server }) in single_groups {
-        library_items.push(process_library_folder(state, item, &server, true).await?);
+        library_items.push(
+            process_library_folder(state, item, &server, ItemNamePolicy::IncludeServerName).await?,
+        );
     }
 
-    let items = FederatedItems::new(library_items).merge_interleaved(non_library_per_server);
+    let items =
+        FederatedItems::from_merged_items(library_items).merge_interleaved(non_library_per_server);
 
-    finalize_items_response(items, original_request.url(), response_shape)
+    finalize_items_response(state, &original_request, items, &policy, response_shape).await
 }
 
 async fn process_media_items_for_server(
     items: Vec<MediaItem>,
     state: &AppState,
     server: &Server,
-    should_change_name: bool,
-) -> Result<Vec<MediaItem>, StatusCode> {
+    item_name_policy: ItemNamePolicy,
+) -> Result<Vec<CatalogItem>, StatusCode> {
     let mut processed = Vec::with_capacity(items.len());
     for item in items {
-        processed
-            .push(process_media_item_for_server(item, state, server, should_change_name).await?);
+        processed.push(process_media_item_for_server(item, state, server, item_name_policy).await?);
     }
     Ok(processed)
 }
@@ -443,7 +438,8 @@ async fn build_virtual_library_item(
 
     for (index, ServerMediaItem { item, server }) in group.into_iter().enumerate() {
         total_child_count += item.child_count.unwrap_or(0);
-        let processed = process_media_item_for_server(item, state, &server, false).await?;
+        let processed =
+            process_media_item_for_server(item, state, &server, ItemNamePolicy::Preserve).await?;
         members.push((server.id, processed.id.clone()));
         if index == image_source_index {
             image_source_id = Some(processed.id.clone());
@@ -516,14 +512,14 @@ async fn process_library_folder(
     state: &AppState,
     item: MediaItem,
     server: &Server,
-    should_change_name: bool,
-) -> Result<MediaItem, StatusCode> {
+    item_name_policy: ItemNamePolicy,
+) -> Result<CatalogItem, StatusCode> {
     let primary_tag = item
         .image_tags
         .as_ref()
         .and_then(|tags| tags.get("Primary").cloned());
     let mut processed =
-        process_media_item_for_server(item, state, server, should_change_name).await?;
+        process_media_item_for_server(item, state, server, item_name_policy).await?;
     let image_source_id = processed.id.clone();
     attach_library_folder_image_source(
         &mut processed,
@@ -574,8 +570,8 @@ async fn process_media_item_for_server(
     item: MediaItem,
     state: &AppState,
     server: &Server,
-    should_change_name: bool,
-) -> Result<MediaItem, StatusCode> {
+    item_name_policy: ItemNamePolicy,
+) -> Result<CatalogItem, StatusCode> {
     let mut item_json = serde_json::to_value(item).map_err(|e| {
         error!("Failed to serialize media item JSON: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
@@ -586,12 +582,17 @@ async fn process_media_item_for_server(
             &mut item_json,
             server,
             ResponseProcessingProfile::Media,
-            should_change_name,
             None,
         )
         .await?;
 
-    response_json_to_payload(item_json)
+    let item = response_json_to_payload(item_json)?;
+    let policy = if state.config.read().await.include_server_name_in_media {
+        item_name_policy
+    } else {
+        ItemNamePolicy::Preserve
+    };
+    Ok(policy.annotate(item, &server.name))
 }
 
 #[cfg(test)]

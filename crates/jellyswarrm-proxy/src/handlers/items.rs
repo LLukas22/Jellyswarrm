@@ -94,7 +94,6 @@ async fn get_processed_item_json(
         preprocessed.request,
         &server,
         ResponseProcessingProfile::Media,
-        false,
         proxy_api_key.as_deref(),
     )
     .await?;
@@ -226,6 +225,7 @@ pub async fn post_playback_info(
 
     set_json_body(&mut request, &payload)?;
 
+    let original_item_id = contains_id(request.url(), "Items").ok_or(StatusCode::BAD_REQUEST)?;
     match execute_json_request::<PlaybackResponse>(&state.reqwest_client, request).await {
         Ok(mut response) => {
             process_playback_response(
@@ -240,6 +240,7 @@ pub async fn post_playback_info(
                 &state,
                 &requested_item_id,
                 &server,
+                &original_item_id,
                 source_generation,
                 &mut response.media_sources,
             )
@@ -252,9 +253,28 @@ pub async fn post_playback_info(
                 &state,
             )
             .await;
+            state
+                .play_sessions
+                .bind_original_item(
+                    &response.play_session_id,
+                    &session.user_id,
+                    server.id,
+                    &original_item_id,
+                )
+                .await;
 
             debug!("Requested Playback: {:?}", response);
 
+            if let Some(token) = proxy_api_key.as_deref() {
+                let payload = serde_json::to_value(&response).map_err(|error| {
+                    error!("Failed to serialize final playback response: {error}");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?;
+                state
+                    .client_sessions
+                    .cache_media_response(token, &payload)
+                    .await;
+            }
             Ok(Json(response))
         }
         Err(e) => {

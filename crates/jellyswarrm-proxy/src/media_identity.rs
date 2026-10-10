@@ -80,7 +80,7 @@ impl MediaKind {
 }
 
 /// Conservative cross-server identity. Authoritative provider IDs
-/// (Tmdb/Imdb/Tvdb), or numbered seasons of a provider-matched series, are
+/// (Tmdb/Imdb/Tvdb), or numbered children of a provider-matched series, are
 /// accepted; collection IDs and title/year guesses are
 /// intentionally not safe enough to hide items or authorize playback
 /// substitution. Applies to movies as well as shows (series, seasons and
@@ -96,6 +96,14 @@ impl MediaAlias {
     pub fn from_item(item: &MediaItem) -> BTreeSet<Self> {
         let Some(kind) = MediaKind::from_item_kind(&item.item_type) else {
             return BTreeSet::new();
+        };
+        let range_suffix = if kind == MediaKind::Episode {
+            let Some(suffix) = Self::episode_range_suffix(item) else {
+                return BTreeSet::new();
+            };
+            suffix
+        } else {
+            String::new()
         };
 
         let Some(provider_ids) = item.provider_ids.as_ref().and_then(|ids| ids.as_object()) else {
@@ -118,7 +126,7 @@ impl MediaAlias {
                     Self {
                         provider,
                         kind,
-                        provider_id,
+                        provider_id: format!("{provider_id}{range_suffix}"),
                     }
                 })
             })
@@ -145,6 +153,59 @@ impl MediaAlias {
             provider: MediaProvider::SeriesGroup,
             kind: MediaKind::Season,
             provider_id: format!("{series_group_id}:season:{number}"),
+        })
+    }
+
+    /// Episode titles and episode-level provider metadata can differ between
+    /// localized copies. Use the matched series and explicit coordinates.
+    pub fn for_episode(item: &MediaItem, series_group_id: &str) -> Option<Self> {
+        if item.item_type != BaseItemKind::Episode {
+            return None;
+        }
+        let number = |upper, lower| {
+            item.extra
+                .get(upper)
+                .or_else(|| item.extra.get(lower))?
+                .as_i64()
+        };
+        let season = number("ParentIndexNumber", "parentIndexNumber")?;
+        let episode = number("IndexNumber", "indexNumber")?;
+        if season < 0 || episode < 0 {
+            return None;
+        }
+        let range_suffix = Self::episode_range_suffix(item)?;
+        Some(Self {
+            provider: MediaProvider::SeriesGroup,
+            kind: MediaKind::Episode,
+            provider_id: format!(
+                "{series_group_id}:season:{season}:episode:{episode}{range_suffix}"
+            ),
+        })
+    }
+
+    /// A combined episode is not a playback substitute for its first episode.
+    /// Preserve legacy single-episode keys, but qualify ranges on every alias.
+    fn episode_range_suffix(item: &MediaItem) -> Option<String> {
+        let end = item
+            .extra
+            .get("IndexNumberEnd")
+            .or_else(|| item.extra.get("indexNumberEnd"));
+        let Some(end) = end.filter(|value| !value.is_null()) else {
+            return Some(String::new());
+        };
+        let end = end.as_i64()?;
+        let start = item
+            .extra
+            .get("IndexNumber")
+            .or_else(|| item.extra.get("indexNumber"))?
+            .as_i64()?;
+        if start < 0 || end < start {
+            return None;
+        }
+        Some(if end == start {
+            String::new()
+        } else {
+            format!(":range:{start}-{end}")
         })
     }
 }
@@ -194,6 +255,72 @@ pub struct StableMediaGroup {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn combined_episode_ranges_never_alias_single_episodes() {
+        let item = |end| {
+            serde_json::from_value::<MediaItem>(json!({"Id": "episode", "Type": "Episode", "ParentIndexNumber": 1, "IndexNumber": 1, "IndexNumberEnd": end, "ProviderIds": {"Tvdb": "42"}})).unwrap()
+        };
+        let single = item(json!(null));
+        assert_eq!(
+            MediaAlias::for_episode(&single, "show"),
+            MediaAlias::for_episode(&item(json!(1)), "show")
+        );
+        assert_ne!(
+            MediaAlias::for_episode(&single, "show"),
+            MediaAlias::for_episode(&item(json!(2)), "show")
+        );
+        assert!(MediaAlias::from_item(&single).is_disjoint(&MediaAlias::from_item(&item(json!(2)))));
+        assert_ne!(
+            MediaAlias::for_episode(&item(json!(2)), "show"),
+            MediaAlias::for_episode(&item(json!(3)), "show")
+        );
+        for end in [json!(0), json!(-1), json!("2"), json!(1.5)] {
+            assert!(MediaAlias::for_episode(&item(end.clone()), "show").is_none());
+            assert!(MediaAlias::from_item(&item(end)).is_empty());
+        }
+    }
+
+    #[test]
+    fn episode_identity_requires_explicit_coordinates_and_matched_series() {
+        let item = |name, season, episode| {
+            serde_json::from_value::<MediaItem>(json!({
+                "Id": name, "Type": "Episode", "Name": name,
+                "ParentIndexNumber": season, "IndexNumber": episode
+            }))
+            .unwrap()
+        };
+        let english = item("Rebirth", json!(1), json!(1));
+        let german = item("Wiedergeburt", json!(1), json!(1));
+        let alias = MediaAlias::for_episode(&english, "show").unwrap();
+        assert_eq!(
+            Some(alias.clone()),
+            MediaAlias::for_episode(&german, "show")
+        );
+        assert_ne!(
+            Some(alias.clone()),
+            MediaAlias::for_episode(&german, "other")
+        );
+        assert_ne!(
+            Some(alias.clone()),
+            MediaAlias::for_episode(&item("Next", json!(1), json!(2)), "show")
+        );
+        for invalid in [json!(null), json!(-1), json!("1"), json!(1.5)] {
+            assert_eq!(
+                MediaAlias::for_episode(&item("Invalid", invalid.clone(), json!(1)), "show"),
+                None
+            );
+            assert_eq!(
+                MediaAlias::for_episode(&item("Invalid", json!(1), invalid), "show"),
+                None
+            );
+        }
+        assert!(MediaAlias::for_episode(&item("Special", json!(0), json!(1)), "show").is_some());
+        assert_eq!(
+            MediaAlias::parse_storage(&alias.storage_provider(), &alias.provider_id),
+            Some(alias)
+        );
+    }
 
     #[test]
     fn season_identity_uses_parent_and_number_not_name_or_provider_ids() {

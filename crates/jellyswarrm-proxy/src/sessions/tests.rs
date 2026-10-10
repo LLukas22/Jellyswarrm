@@ -1,4 +1,5 @@
 //! HTTP/WebSocket integration tests with real SQLite authorization and zero-upstream assertions.
+mod pipeline;
 use super::*;
 use crate::{
     config::{AppConfig, MediaStreamingMode, MIGRATOR},
@@ -146,6 +147,12 @@ impl Fixture {
         let routes = jellyswarrm_macros::lowercase_routes! {
             Router::new().merge(router()).route("/socket", get(websocket))
                 .route("/SyncPlay/New", axum::routing::post(crate::handlers::syncplay::create_group))
+                .route("/Items", get(crate::handlers::federated::get_items_from_all_servers_if_not_restricted))
+                .route("/UserViews", get(crate::handlers::federated::get_items_from_all_servers))
+                .route("/Shows/NextUp", get(crate::handlers::federated::get_items_from_all_servers_if_not_restricted))
+                .route("/UserItems/Resume", get(crate::handlers::federated::get_items_from_all_servers))
+                .route("/Items/{item_id}/PlaybackInfo", axum::routing::post(crate::handlers::items::post_playback_info))
+                .route("/Videos/{item_id}/stream.mp4", get(crate::handlers::videos::get_stream))
                 .route("/{*path}", axum::routing::any(crate::proxy_handler))
                 .fallback(crate::proxy_handler)
         };

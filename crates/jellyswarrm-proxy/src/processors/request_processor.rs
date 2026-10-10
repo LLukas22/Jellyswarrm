@@ -292,8 +292,6 @@ mod tests {
             proxy_server_id: "proxy".into(),
             proxy_api_key: None,
             profile: ResponseProcessingProfile::Media,
-            should_change_name: false,
-            can_change_item_names: false,
         };
         let responses = ResponseProcessor::new(data.clone());
         let requests = RequestProcessor::new(data.clone());

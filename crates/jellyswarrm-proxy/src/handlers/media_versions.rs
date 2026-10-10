@@ -159,6 +159,15 @@ pub(super) async fn preserve_media_parent_groups(
     item: &mut MediaItem,
     viewer: &str,
 ) -> Result<(), StatusCode> {
+    preserve_media_parent_groups_in_scope(state, item, viewer, None).await
+}
+
+pub(super) async fn preserve_media_parent_groups_in_scope(
+    state: &AppState,
+    item: &mut MediaItem,
+    viewer: &str,
+    catalog_scope: Option<&str>,
+) -> Result<(), StatusCode> {
     if !matches!(
         item.item_type,
         crate::models::enums::BaseItemKind::Season | crate::models::enums::BaseItemKind::Episode
@@ -167,12 +176,22 @@ pub(super) async fn preserve_media_parent_groups(
     }
     for parent in [&mut item.series_id, &mut item.season_id] {
         if let Some(id) = parent.as_deref() {
-            if let Some(aggregate) = state
-                .media_storage
-                .get_media_parent_group_id(id, viewer)
-                .await
-                .map_err(storage_error)?
-            {
+            let aggregate = match catalog_scope {
+                Some(scope) => {
+                    state
+                        .media_storage
+                        .get_media_parent_group_id_for_scope(id, viewer, Some(scope))
+                        .await
+                }
+                None => {
+                    state
+                        .media_storage
+                        .get_media_parent_group_id(id, viewer)
+                        .await
+                }
+            }
+            .map_err(storage_error)?;
+            if let Some(aggregate) = aggregate {
                 if item.parent_id.as_deref() == Some(id) {
                     item.parent_id = Some(aggregate.clone());
                 }
@@ -308,7 +327,6 @@ async fn fetch_member_source(
         original_request,
         &host.server,
         ResponseProcessingProfile::Media,
-        false,
         proxy_api_key.as_deref(),
     )
     .await?;
@@ -395,6 +413,7 @@ pub(super) async fn record_playback_sources(
     state: &AppState,
     aggregate_id: &str,
     server: &Server,
+    original_item_id: &str,
     source_generation: i64,
     sources: &mut Vec<MediaSource>,
 ) -> Result<(), StatusCode> {
@@ -412,7 +431,10 @@ pub(super) async fn record_playback_sources(
         .await
         .map_err(storage_error)?
         .into_iter()
-        .find(|member| member.mapping.server_id == server.id)
+        .find(|member| {
+            member.mapping.server_id == server.id
+                && member.mapping.original_media_id == original_item_id
+        })
     else {
         return Ok(());
     };
@@ -496,7 +518,10 @@ pub(super) async fn resolve_playback_route(
         return Ok(PlaybackRouteDecision::SelectedSourceUnavailable);
     }
 
-    if route.member_mapping.server_id == preprocessed.server.id {
+    if route.member_mapping.server_id == preprocessed.server.id
+        && crate::url_helper::contains_id(preprocessed.request.url(), "Items").as_deref()
+            == Some(route.member_mapping.original_media_id.as_str())
+    {
         return Ok(PlaybackRouteDecision::Original);
     }
     let Some((session, server)) = preprocessed.sessions.as_ref().and_then(|sessions| {

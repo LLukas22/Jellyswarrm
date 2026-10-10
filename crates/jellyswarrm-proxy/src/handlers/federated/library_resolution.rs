@@ -4,6 +4,7 @@ use hyper::StatusCode;
 use tracing::{debug, error};
 
 use crate::{
+    media_scope::{MediaCatalogScope, MediaScopeKind},
     request_preprocessing::PreprocessedRequest,
     server_storage::Server,
     user_authorization_service::AuthorizationSession,
@@ -29,6 +30,19 @@ pub(super) struct CatalogFetchTarget {
     pub(super) server: Server,
     pub(super) parent_id: Option<String>,
     pub(super) resolved_parent_id: Option<String>,
+}
+
+pub(super) fn unavailable_source_count(
+    preprocessed: &PreprocessedRequest,
+    targets: &[CatalogFetchTarget],
+) -> usize {
+    preprocessed.access_scope.as_ref().map_or(0, |scope| {
+        scope
+            .server_ids()
+            .iter()
+            .filter(|id| !targets.iter().any(|target| target.server.id == **id))
+            .count()
+    })
 }
 
 pub(super) async fn resolve_catalog_plan(
@@ -129,7 +143,7 @@ pub(super) async fn resolve_catalog_plan(
         LibraryGrouping::None
     };
 
-    let targets = available_sessions(preprocessed)?
+    let targets: Vec<_> = available_sessions(preprocessed)?
         .into_iter()
         .map(|(session, server)| CatalogFetchTarget {
             session,
@@ -139,12 +153,18 @@ pub(super) async fn resolve_catalog_plan(
         })
         .collect();
 
-    if preprocessed
+    let is_search = preprocessed
         .original_request
         .url()
-        .path()
-        .to_ascii_lowercase()
-        .ends_with("/latest")
+        .query_pairs()
+        .any(|(key, _)| key.eq_ignore_ascii_case("SearchTerm"));
+    if (is_search
+        || preprocessed
+            .original_request
+            .url()
+            .path()
+            .to_ascii_lowercase()
+            .ends_with("/latest"))
         && state.deduplicate_media_enabled().await
     {
         let viewer = preprocessed
@@ -153,17 +173,23 @@ pub(super) async fn resolve_catalog_plan(
             .map(|scope| scope.user_id())
             .or_else(|| preprocessed.user.as_ref().map(|user| user.id.as_str()))
             .ok_or(StatusCode::UNAUTHORIZED)?;
-        // Latest is an additive feed, not an inventory. Keep its identity scope
-        // stable across windows, endpoint aliases and temporarily missing sessions.
+        // Latest and search are additive feeds, not inventories. Keep their
+        // identity scopes stable across windows, terms and missing sessions.
         return Ok(CatalogPlan::Virtual {
-            catalog_scope_key: format!(
-                "latest:{viewer}:{}",
-                parent_id(preprocessed.original_request.url())
+            catalog_scope_key: MediaCatalogScope {
+                kind: if is_search {
+                    MediaScopeKind::Search
+                } else {
+                    MediaScopeKind::Latest
+                },
+                viewer,
+                resource_id: &parent_id(preprocessed.original_request.url())
                     .map(|id| normalize_library_id(&id))
-                    .unwrap_or_default()
-            ),
+                    .unwrap_or_default(),
+            }
+            .to_string(),
+            skipped_targets: unavailable_source_count(preprocessed, &targets),
             targets,
-            skipped_targets: 0,
         });
     }
 
@@ -248,7 +274,6 @@ async fn resolve_aggregate_plan(
             .as_ref()
             .is_some_and(|scope| !scope.allows(member.server.id))
         {
-            skipped_targets += 1;
             continue;
         }
         let Some((session, server)) = sessions
@@ -281,7 +306,12 @@ async fn resolve_aggregate_plan(
         targets.len()
     );
     Ok(Some(CatalogPlan::Virtual {
-        catalog_scope_key: format!("aggregate:{}:{viewer}", group.virtual_media_id),
+        catalog_scope_key: MediaCatalogScope {
+            kind: MediaScopeKind::Aggregate,
+            viewer,
+            resource_id: &group.virtual_media_id,
+        }
+        .to_string(),
         targets,
         skipped_targets,
     }))
