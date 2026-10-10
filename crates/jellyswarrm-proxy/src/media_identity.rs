@@ -80,7 +80,7 @@ impl MediaKind {
 }
 
 /// Conservative cross-server identity. Authoritative provider IDs
-/// (Tmdb/Imdb/Tvdb), or numbered seasons of a provider-matched series, are
+/// (Tmdb/Imdb/Tvdb), or numbered children of a provider-matched series, are
 /// accepted; collection IDs and title/year guesses are
 /// intentionally not safe enough to hide items or authorize playback
 /// substitution. Applies to movies as well as shows (series, seasons and
@@ -147,6 +147,30 @@ impl MediaAlias {
             provider_id: format!("{series_group_id}:season:{number}"),
         })
     }
+
+    /// Episode titles and episode-level provider metadata can differ between
+    /// localized copies. Use the matched series and explicit coordinates.
+    pub fn for_episode(item: &MediaItem, series_group_id: &str) -> Option<Self> {
+        if item.item_type != BaseItemKind::Episode {
+            return None;
+        }
+        let number = |upper, lower| {
+            item.extra
+                .get(upper)
+                .or_else(|| item.extra.get(lower))?
+                .as_i64()
+        };
+        let season = number("ParentIndexNumber", "parentIndexNumber")?;
+        let episode = number("IndexNumber", "indexNumber")?;
+        if season < 0 || episode < 0 {
+            return None;
+        }
+        Some(Self {
+            provider: MediaProvider::SeriesGroup,
+            kind: MediaKind::Episode,
+            provider_id: format!("{series_group_id}:season:{season}:episode:{episode}"),
+        })
+    }
 }
 
 impl MediaAlias {
@@ -194,6 +218,47 @@ pub struct StableMediaGroup {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn episode_identity_requires_explicit_coordinates_and_matched_series() {
+        let item = |name, season, episode| {
+            serde_json::from_value::<MediaItem>(json!({
+                "Id": name, "Type": "Episode", "Name": name,
+                "ParentIndexNumber": season, "IndexNumber": episode
+            }))
+            .unwrap()
+        };
+        let english = item("Rebirth", json!(1), json!(1));
+        let german = item("Wiedergeburt", json!(1), json!(1));
+        let alias = MediaAlias::for_episode(&english, "show").unwrap();
+        assert_eq!(
+            Some(alias.clone()),
+            MediaAlias::for_episode(&german, "show")
+        );
+        assert_ne!(
+            Some(alias.clone()),
+            MediaAlias::for_episode(&german, "other")
+        );
+        assert_ne!(
+            Some(alias.clone()),
+            MediaAlias::for_episode(&item("Next", json!(1), json!(2)), "show")
+        );
+        for invalid in [json!(null), json!(-1), json!("1"), json!(1.5)] {
+            assert_eq!(
+                MediaAlias::for_episode(&item("Invalid", invalid.clone(), json!(1)), "show"),
+                None
+            );
+            assert_eq!(
+                MediaAlias::for_episode(&item("Invalid", json!(1), invalid), "show"),
+                None
+            );
+        }
+        assert!(MediaAlias::for_episode(&item("Special", json!(0), json!(1)), "show").is_some());
+        assert_eq!(
+            MediaAlias::parse_storage(&alias.storage_provider(), &alias.provider_id),
+            Some(alias)
+        );
+    }
 
     #[test]
     fn season_identity_uses_parent_and_number_not_name_or_provider_ids() {

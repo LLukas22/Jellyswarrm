@@ -21,7 +21,7 @@ use super::{
     },
 };
 
-async fn season_catalog_aliases(
+async fn show_catalog_aliases(
     state: &AppState,
     items: &[crate::models::MediaItem],
     viewer: &str,
@@ -31,17 +31,25 @@ async fn season_catalog_aliases(
     let mut result = Vec::with_capacity(items.len());
     for item in items {
         let mut aliases = MediaAlias::from_item(item);
-        if item.item_type == crate::models::enums::BaseItemKind::Season {
+        if matches!(
+            item.item_type,
+            crate::models::enums::BaseItemKind::Season
+                | crate::models::enums::BaseItemKind::Episode
+        ) {
             let group = if let Some(group) = series_group {
                 Some(group.to_string())
-            } else if let Some(parent) = item.series_id.as_ref().or(item.parent_id.as_ref()) {
+            } else if let Some(parent) = item.series_id.as_ref().or_else(|| {
+                (item.item_type == crate::models::enums::BaseItemKind::Season)
+                    .then_some(item.parent_id.as_ref())
+                    .flatten()
+            }) {
                 if !parents.contains_key(parent) {
                     let group = state
                         .media_storage
                         .get_media_parent_group_id(parent, viewer)
                         .await
                         .map_err(|error| {
-                            error!("Failed to resolve season parent identity: {error}");
+                            error!("Failed to resolve show parent identity: {error}");
                             StatusCode::INTERNAL_SERVER_ERROR
                         })?;
                     parents.insert(parent.clone(), group);
@@ -50,13 +58,12 @@ async fn season_catalog_aliases(
             } else {
                 None
             };
-            if let Some(alias) = group
-                .as_deref()
-                .and_then(|group| MediaAlias::for_season(item, group))
-            {
-                // Some backends reuse the show's IDs on every season. Once
-                // the parent and number are known, do not bridge different
-                // season numbers via those unreliable IDs.
+            if let Some(alias) = group.as_deref().and_then(|group| {
+                MediaAlias::for_season(item, group).or_else(|| MediaAlias::for_episode(item, group))
+            }) {
+                // Some backends reuse the show's IDs on its children. Once
+                // the parent and coordinates are known, do not bridge different
+                // seasons or episodes via those unreliable IDs.
                 aliases = BTreeSet::from([alias]);
             }
         }
@@ -114,18 +121,19 @@ pub(super) async fn get_virtual_library_items(
         .unwrap_or_else(|| "anonymous".to_string());
     let mut catalog_aliases = Vec::new();
     // A cold recursive listing can contain both the parent series and its
-    // seasons. Publish provider-matched parents before deriving season aliases,
+    // children. Publish provider-matched parents before deriving child aliases,
     // rather than requiring another request to establish the parent identity.
     // This additive pass shares the request generation and never prunes an
     // inventory; the full snapshots below remain authoritative for removals.
     if deduplicate_media
         && server_items.iter().any(|fetch| {
-            fetch
-                .server_items
-                .response
-                .items()
-                .iter()
-                .any(|item| item.item_type == crate::models::enums::BaseItemKind::Season)
+            fetch.server_items.response.items().iter().any(|item| {
+                matches!(
+                    item.item_type,
+                    crate::models::enums::BaseItemKind::Season
+                        | crate::models::enums::BaseItemKind::Episode
+                )
+            })
         })
     {
         let parents = server_items
@@ -178,7 +186,7 @@ pub(super) async fn get_virtual_library_items(
         let ServerItems { response, server } = fetch.server_items;
         let items = response.into_items();
         if deduplicate_media {
-            let aliases = season_catalog_aliases(state, &items, &viewer, None).await?;
+            let aliases = show_catalog_aliases(state, &items, &viewer, None).await?;
             snapshots.push(MediaCatalogSnapshot {
                 source_key: format!(
                     "{}:{}",
@@ -241,8 +249,8 @@ pub(super) async fn get_virtual_library_items(
 
 /// Federates `/Shows/{aggregateId}/Seasons|Episodes` across the member
 /// series of a collapsed show. Seasons and (Jellyfin v12+) episodes merge
-/// using provider identities, with seasons identified by their matched parent
-/// series and season number when available.
+/// using provider identities, with children identified by their matched parent
+/// series and season/episode numbers when available.
 pub(super) async fn get_aggregate_show_items(
     state: &AppState,
     preprocessed: PreprocessedRequest,
@@ -291,8 +299,7 @@ pub(super) async fn get_aggregate_show_items(
         let ServerItems { response, server } = fetch.server_items;
         let items = response.into_items();
         if deduplicate {
-            let aliases =
-                season_catalog_aliases(state, &items, &viewer, Some(&aggregate_id)).await?;
+            let aliases = show_catalog_aliases(state, &items, &viewer, Some(&aggregate_id)).await?;
             snapshots.push(MediaCatalogSnapshot {
                 source_key: format!(
                     "{}:{}",

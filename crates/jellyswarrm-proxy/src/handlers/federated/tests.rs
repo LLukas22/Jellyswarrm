@@ -770,6 +770,7 @@ async fn show_navigation_preserves_parents_and_skips_servers_without_the_season(
 #[tokio::test]
 async fn merged_library_show_routes_merge_localized_seasons_and_keep_navigation() {
     let (state, _pool, sessions, upstreams) = setup().await;
+    state.config.write().await.include_server_name_in_media = true;
     let library = state
         .virtual_library_service
         .create_group("Shows")
@@ -826,7 +827,8 @@ async fn merged_library_show_routes_merge_localized_seasons_and_keep_navigation(
                 "Items": [{"Id": format!("episode-{index}"), "Type": "Episode",
                     "SeriesId": format!("series-{index}"), "SeasonId": format!("season-{index}"),
                     "ParentId": format!("season-{index}"), "ParentIndexNumber": 1, "IndexNumber": 1,
-                    "ProviderIds": {"Imdb": "tt0967942"}}],
+                    "Name": if index == 0 { "Rebirth" } else { "Wiedergeburt" },
+                    "ProviderIds": if index == 0 { json!({"Imdb": "tt0967942"}) } else { json!({}) }}],
                 "TotalRecordCount": 1, "StartIndex": 0
             })))
             .mount(&upstreams[index])
@@ -861,6 +863,10 @@ async fn merged_library_show_routes_merge_localized_seasons_and_keep_navigation(
         assert_eq!(season["SeriesId"], series_id);
         assert_eq!(season["ParentId"], series_id);
         assert_eq!(season["IndexNumber"], 1);
+        assert!(matches!(
+            season["Name"].as_str(),
+            Some("Season 1" | "Staffel 1")
+        ));
         let id = season["Id"].as_str().unwrap();
         if !season_id.is_empty() {
             assert_eq!(id, season_id);
@@ -903,6 +909,55 @@ async fn merged_library_show_routes_merge_localized_seasons_and_keep_navigation(
     assert_eq!(episodes["Items"][0]["ParentId"], season_id);
     assert_eq!(episodes["Items"][0]["SeriesId"], series_id);
     assert_eq!(episodes["Items"][0]["MediaSourceCount"], 2);
+    assert!(matches!(
+        episodes["Items"][0]["Name"].as_str(),
+        Some("Rebirth" | "Wiedergeburt")
+    ));
+}
+
+#[tokio::test]
+async fn search_merges_movies_and_series_without_server_tags() {
+    let (state, _pool, sessions, upstreams) = setup().await;
+    state.config.write().await.include_server_name_in_media = true;
+    for (index, upstream) in upstreams.iter().enumerate() {
+        Mock::given(method("GET"))
+            .and(path("/Items"))
+            .and(query_param("SearchTerm", "Death"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Items": [
+                    {"Id": format!("movie-{index}"), "Type": "Movie", "Name": "Death Note [Live Action]", "ProviderIds": {"Tmdb": "13916"}},
+                    {"Id": format!("series-{index}"), "Type": "Series", "Name": "Death Note", "ProviderIds": {"Tmdb": "13916"}}
+                ],
+                "TotalRecordCount": 2, "StartIndex": 0
+            })))
+            .mount(upstream).await;
+    }
+    let mut ids = None;
+    for term_key in ["SearchTerm", "searchterm"] {
+        let query = format!("/Items?{term_key}=Death&Recursive=true&Limit=10");
+        let plan = resolve_catalog_plan(&state, &request(&query, &sessions))
+            .await
+            .unwrap();
+        assert!(matches!(plan, CatalogPlan::Virtual { .. }));
+    }
+    for _ in 0..2 {
+        let Json(result) = get_items_from_all_servers_preprocessed(
+            &state,
+            request("/Items?SearchTerm=Death&Recursive=true&Limit=10", &sessions),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["TotalRecordCount"], 2);
+        let items = result["Items"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["Name"], "Death Note");
+        assert_eq!(items[1]["Name"], "Death Note [Live Action]");
+        let current = (items[0]["Id"].clone(), items[1]["Id"].clone());
+        if let Some(previous) = &ids {
+            assert_eq!(previous, &current);
+        }
+        ids = Some(current);
+    }
 }
 
 #[tokio::test]

@@ -189,6 +189,7 @@ fn merge_media_group(members: Vec<TaggedMediaItem>, group_id: &str) -> MediaItem
         .expect("media group is never empty");
 
     best.item.id = group_id.to_string();
+    remove_server_suffix(&mut best.item, &best.server);
     // Movies and (Jellyfin v12+) episodes carry one MediaSource per version,
     // so the collapsed item advertises the summed count. Series/seasons have
     // no versions on the item itself — keep their original count instead of
@@ -197,6 +198,16 @@ fn merge_media_group(members: Vec<TaggedMediaItem>, group_id: &str) -> MediaItem
         best.item.media_source_count = Some(media_source_count);
     }
     best.item
+}
+
+/// Remove only the exact suffix added by the proxy, not arbitrary bracketed
+/// text that may be part of the original title.
+pub(crate) fn remove_server_suffix(item: &mut MediaItem, server: &Server) {
+    if let Some(name) = &mut item.name {
+        if let Some(title) = name.strip_suffix(&format!(" [{}]", server.name)) {
+            *name = title.to_string();
+        }
+    }
 }
 
 pub fn label_duplicates(items: Vec<TaggedMediaItem>) -> Vec<MediaItem> {
@@ -397,6 +408,19 @@ mod tests {
         ids.iter()
             .map(|id| ((*id).to_string(), stable_group(member_count)))
             .collect()
+    }
+
+    #[test]
+    fn merged_titles_drop_only_the_exact_server_suffix() {
+        let mut member = tagged(1, 100, "Title [Extended] [Server 1]", "42");
+        remove_server_suffix(&mut member.item, &member.server);
+        assert_eq!(member.item.name.as_deref(), Some("Title [Extended]"));
+        remove_server_suffix(&mut member.item, &member.server);
+        assert_eq!(member.item.name.as_deref(), Some("Title [Extended]"));
+
+        let mut member = tagged(1, 100, "Title [Server 2]", "42");
+        remove_server_suffix(&mut member.item, &member.server);
+        assert_eq!(member.item.name.as_deref(), Some("Title [Server 2]"));
     }
 
     #[test]

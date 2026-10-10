@@ -152,7 +152,7 @@ pub(super) async fn fetch_show_catalog(
                 target.session,
                 target.server,
                 Pagination::unbounded(),
-                true,
+                false,
             )
             .await
             .map(FetchedServerItems::complete);

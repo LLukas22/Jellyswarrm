@@ -118,6 +118,7 @@ pub(super) async fn merge_media_detail(
     }
     if is_aggregate {
         item.id = group.virtual_media_id.clone();
+        crate::media_catalog::remove_server_suffix(&mut item, context.base_server);
     }
 
     let sources_replaced = state
