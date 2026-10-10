@@ -6,6 +6,11 @@ through Jellyfin Web: create/join a group, play, pause, seek, switch media acros
 The Rust Playwright tests share the server integration fixture and browser setup. Each Chrome
 instance runs in its own container; Testcontainers manages startup and cleanup.
 
+A lightweight login regression test also covers an already-visible manual form,
+opening it through the button, and the automatic transition after public-user
+loading. The shared login helper checks and opens the form in one browser task,
+so it cannot wait on a manual-login button that disappeared during the transition.
+
 SyncPlay pause/resume and seeking use Jellyfin's keyboard shortcuts (`K` and `5`)
 so the test does not race the playback controls' auto-hide timer. These still
 exercise the UI playback manager and SyncPlay, rather than directly controlling

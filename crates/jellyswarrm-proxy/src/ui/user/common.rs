@@ -7,7 +7,7 @@ use crate::{
     config::CLIENT_STORAGE,
     encryption::{HashedPassword, Password},
     server_storage::Server,
-    user_authorization_service::{CredentialFormat, MappingAuth},
+    user_authorization_service::{CredentialFormat, MappingAuth, ServerMapping},
     AppState,
 };
 
@@ -82,6 +82,28 @@ pub async fn authenticate_user_on_server(
     ),
     String,
 > {
+    let mapping = state
+        .user_authorization
+        .get_server_mapping(&user.id, server)
+        .await
+        .map_err(|error| format!("Database error: {error}"))?
+        .ok_or("No mapping found for user on this server")?;
+    authenticate_user_with_mapping(state, user, server, &mapping).await
+}
+
+pub(in crate::ui) async fn authenticate_user_with_mapping(
+    state: &AppState,
+    user: &crate::ui::auth::User,
+    server: &Server,
+    mapping: &ServerMapping,
+) -> Result<
+    (
+        Arc<JellyfinClient>,
+        jellyfin_api::models::User,
+        jellyfin_api::models::PublicSystemInfo,
+    ),
+    String,
+> {
     let client_info = crate::config::CLIENT_INFO.clone();
     let server_url = server.url.clone();
 
@@ -101,17 +123,6 @@ pub async fn authenticate_user_on_server(
         Err(_) => return Err("Server offline or unreachable".to_string()),
     };
 
-    // Check for mapping and try to authenticate
-    let mapping = match state
-        .user_authorization
-        .get_server_mapping(&user.id, server)
-        .await
-    {
-        Ok(Some(m)) => m,
-        Ok(None) => return Err("No mapping found for user on this server".to_string()),
-        Err(e) => return Err(format!("Database error: {}", e)),
-    };
-
     let admin_password = state.get_admin_password().await;
     let admin_password_hash: HashedPassword = (&admin_password).into();
 
@@ -126,13 +137,9 @@ pub async fn authenticate_user_on_server(
             .await
             .map_err(|e| e.to_string())?
             .ok_or("Local user not found")?;
-        let (token, remote_user) = crate::mapping_auth::validated_quick_connect_token(
-            state,
-            &local_user,
-            server,
-            &mapping,
-        )
-        .await?;
+        let (token, remote_user) =
+            crate::mapping_auth::validated_quick_connect_token(state, &local_user, server, mapping)
+                .await?;
         // Use a fresh client: the shared cache evicts by calling Logout, which
         // would revoke this mapping's persistent credential.
         let qc_client = Arc::new(
@@ -158,7 +165,7 @@ pub async fn authenticate_user_on_server(
         ));
     }
     let password = state.user_authorization.decrypt_server_mapping_password(
-        &mapping,
+        mapping,
         &mapping_key,
         &admin_password_hash,
         None,
@@ -195,7 +202,7 @@ pub async fn authenticate_user_on_server(
             if mapping.credential_format == CredentialFormat::Legacy {
                 state
                     .user_authorization
-                    .upgrade_validated_password_mapping(&mapping, &password)
+                    .upgrade_validated_password_mapping(mapping, &password)
                     .await
                     .map_err(|e| e.to_string())?;
             }

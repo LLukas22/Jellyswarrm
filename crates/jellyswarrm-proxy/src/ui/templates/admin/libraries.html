@@ -19,6 +19,9 @@
     </form>
 </section>
 
+<div id="library-discovery-errors"></div>
+<button type="button" class="secondary" hx-get="/{{ ui_route }}/libraries/list" hx-target="#library-groups-list" hx-swap="innerHTML" hx-disabled-elt="this">Refresh libraries</button>
+
 <section id="library-groups-list" hx-get="/{{ ui_route }}/libraries/list" hx-trigger="load">
     <div class="library-board-loading" aria-live="polite">
         <i class="fas fa-circle-notch fa-spin" aria-hidden="true"></i>

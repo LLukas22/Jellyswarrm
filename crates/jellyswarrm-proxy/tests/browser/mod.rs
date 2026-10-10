@@ -7,6 +7,7 @@ use playwright_rs::{
     LaunchOptions, Playwright,
 };
 
+mod login;
 mod remote_control;
 mod server_mapping;
 mod syncplay;
@@ -93,8 +94,12 @@ async fn run_scenario(name: &str, scenario: Scenario) -> Result<()> {
             let controller_page = prepare(&controller, "controller").await?;
             let receiver_page = prepare(&receiver, "receiver").await?;
             let mut result = tokio::time::timeout(Duration::from_secs(300), async {
-                browser_login(&controller_page, &fixture.proxy_url).await?;
-                browser_login(&receiver_page, &fixture.proxy_url).await?;
+                browser_login(&controller_page, &fixture.proxy_url)
+                    .await
+                    .context("log in controller browser")?;
+                browser_login(&receiver_page, &fixture.proxy_url)
+                    .await
+                    .context("log in receiver browser")?;
                 match scenario {
                     Scenario::RemoteControl => {
                         remote_control::run(
@@ -202,19 +207,37 @@ async fn prepare(context: &BrowserContext, role: &str) -> Result<Page> {
 async fn browser_login(page: &Page, base: &str) -> Result<()> {
     page.goto(&format!("{base}/web/index.html#/login"), None)
         .await?;
-    page.wait_for_function("() => ['#txtManualName', '.btnManual'].some(s => document.querySelector(s)?.getClientRects().length)", None).await?;
-    if !page.locator("#txtManualName").is_visible().await? {
-        page.locator(".btnManual:visible").click(None).await?;
-    }
-    page.locator("#txtManualName").fill(USERNAME, None).await?;
-    page.locator("#txtManualPassword")
+    open_manual_login(page).await?;
+    page.locator("#txtManualName:visible")
+        .fill(USERNAME, None)
+        .await?;
+    page.locator("#txtManualPassword:visible")
         .fill(PASSWORD, None)
         .await?;
-    page.locator(".manualLoginForm button[type=submit]")
+    page.locator(".manualLoginForm:visible button[type=submit]")
         .click(None)
         .await?;
     page.wait_for_function(
         "() => !location.hash.includes('login') && !location.hash.includes('selectserver')",
+        None,
+    )
+    .await?;
+    Ok(())
+}
+
+async fn open_manual_login(page: &Page) -> Result<()> {
+    // Public-user loading can automatically open the form and hide btnManual.
+    // Check and open it in one browser task, rather than pinning a Playwright
+    // click to a button that can disappear while actionability is being checked.
+    page.wait_for_function(
+        r#"() => {
+            const visible = selector => [...document.querySelectorAll(selector)]
+                .find(element => element.getClientRects().length > 0
+                    && getComputedStyle(element).visibility !== 'hidden');
+            if (visible('#txtManualName')) return true;
+            visible('.btnManual')?.click();
+            return false;
+        }"#,
         None,
     )
     .await?;

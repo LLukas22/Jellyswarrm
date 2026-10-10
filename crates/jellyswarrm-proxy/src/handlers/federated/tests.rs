@@ -121,6 +121,267 @@ fn latest_items() -> Value {
     ])
 }
 
+fn library_items(count: usize) -> Vec<Value> {
+    (0..count)
+        .map(|index| {
+            json!({
+                "Id": format!("library-{index}"), "Name": format!("Library {index}"),
+                "Type": "CollectionFolder", "CollectionType": "movies"
+            })
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn library_inventory_fetches_capped_pages_before_client_pagination() {
+    for merge_libraries in [false, true] {
+        let (state, _pool, sessions, upstreams) = setup().await;
+        state.config.write().await.merge_libraries = merge_libraries;
+        let libraries = library_items(45);
+        Mock::given(method("GET"))
+            .respond_with(move |request: &wiremock::Request| {
+                let start = request
+                    .url
+                    .query_pairs()
+                    .find(|(key, _)| key.eq_ignore_ascii_case("StartIndex"))
+                    .and_then(|(_, value)| value.parse::<usize>().ok())
+                    .unwrap_or(0);
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "Items": libraries.iter().skip(start).take(20).collect::<Vec<_>>(),
+                    "TotalRecordCount": 45, "StartIndex": start
+                }))
+            })
+            .expect(3)
+            .mount(&upstreams[0])
+            .await;
+        let Json(response) = get_items_from_all_servers_preprocessed(
+            &state,
+            request("/Users/viewer/Views?StartIndex=20&Limit=1", &sessions[..1]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response["Items"].as_array().unwrap().len(), 1);
+        assert_eq!(response["TotalRecordCount"], 45);
+        let discovered = state
+            .virtual_library_service
+            .list_discovered_libraries()
+            .await
+            .unwrap();
+        assert_eq!(discovered.len(), 45);
+        assert!(discovered
+            .iter()
+            .any(|library| library.original_library_id == "library-44"));
+    }
+}
+
+#[tokio::test]
+async fn incomplete_library_inventory_is_not_cached() {
+    for failure in ["repeated", "empty", "http", "changed"] {
+        let (state, _pool, sessions, upstreams) = setup().await;
+        state.config.write().await.merge_libraries = true;
+        let libraries = library_items(20);
+        Mock::given(method("GET"))
+            .respond_with(move |request: &wiremock::Request| {
+                let continuation = request
+                    .url
+                    .query_pairs()
+                    .any(|(key, _)| key == "StartIndex");
+                if continuation && failure == "http" {
+                    return ResponseTemplate::new(500);
+                }
+                let items = if continuation && failure == "empty" {
+                    vec![]
+                } else {
+                    libraries.clone()
+                };
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "Items": items, "TotalRecordCount": if continuation && failure == "changed" { 30 } else { 25 }, "StartIndex": 0
+                }))
+            })
+            .expect(2)
+            .mount(&upstreams[0])
+            .await;
+        let result = get_items_from_all_servers_preprocessed(
+            &state,
+            request("/Users/viewer/Views", &sessions[..1]),
+        )
+        .await;
+        assert!(result.is_err(), "{failure}");
+        assert!(state
+            .virtual_library_service
+            .list_discovered_libraries()
+            .await
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[tokio::test]
+async fn admin_library_page_discovers_mapped_users_without_prior_catalog_requests() {
+    use axum::response::IntoResponse;
+    let (mut state, pool, sessions, upstreams) = setup().await;
+    state.user_authorization = Arc::new(UserAuthorizationService::with_mapping_key(
+        pool,
+        crate::encryption::MappingEncryptionKey::from_session_key(&[7; 64]).unwrap(),
+        (&state.get_admin_password().await).into(),
+    ));
+    let server = &sessions[0].1;
+    Mock::given(method("GET"))
+        .and(path("/System/Info/Public"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ServerName":"Test"})))
+        .mount(&upstreams[0])
+        .await;
+    for (index, username) in ["restricted", "complete"].into_iter().enumerate() {
+        let user = state
+            .user_authorization
+            .create_user(username, &"password".into())
+            .await
+            .unwrap();
+        state
+            .user_authorization
+            .add_server_mapping(&user.id, server, username, &"password".into(), None)
+            .await
+            .unwrap();
+        let backend_id = format!("user-{index}");
+        Mock::given(method("POST")).and(path("/Users/AuthenticateByName"))
+            .and(wiremock::matchers::body_json(json!({"Username": username, "Pw": "password"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "User": {"Id": backend_id, "Name": username}, "AccessToken": "token", "ServerId":"test"
+            }))).mount(&upstreams[0]).await;
+        let libraries = library_items(if index == 0 { 1 } else { 25 });
+        Mock::given(method("GET"))
+            .and(path(format!("/Users/{backend_id}/Views")))
+            .respond_with(move |request: &wiremock::Request| {
+                let start = request
+                    .url
+                    .query_pairs()
+                    .find(|(key, _)| key == "StartIndex")
+                    .and_then(|(_, value)| value.parse::<usize>().ok())
+                    .unwrap_or(0);
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "Items": libraries.iter().skip(start).take(20).collect::<Vec<_>>(),
+                    "TotalRecordCount": libraries.len()
+                }))
+            })
+            .mount(&upstreams[0])
+            .await;
+    }
+    assert!(state
+        .virtual_library_service
+        .list_discovered_libraries()
+        .await
+        .unwrap()
+        .is_empty());
+    let response = crate::ui::admin::libraries::library_groups_list(State(state.clone()))
+        .await
+        .into_response();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let html = String::from_utf8(body.to_vec()).unwrap();
+    assert_eq!(html.matches("data-library-card").count(), 25, "{html}");
+    assert!(html.contains("Library 24"));
+    assert!(!html.contains("role=\"alert\""), "{html}");
+    assert!(html.contains("id=\"library-discovery-errors\""));
+    assert_eq!(
+        state
+            .virtual_library_service
+            .list_discovered_libraries()
+            .await
+            .unwrap()
+            .len(),
+        25
+    );
+
+    // Editing groups uses the completed cache, not another upstream discovery.
+    use crate::ui::admin::libraries::{
+        assign_library, create_group, delete_group, remove_member, rename_group, AssignLibraryForm,
+        CreateGroupForm, RemoveMemberForm, RenameGroupForm,
+    };
+    let request_count = upstreams[0].received_requests().await.unwrap().len();
+    let mut responses = vec![
+        create_group(
+            State(state.clone()),
+            axum::Form(CreateGroupForm {
+                name: "Test group".into(),
+            }),
+        )
+        .await,
+    ];
+    let group_id = state.virtual_library_service.list_groups().await.unwrap()[0]
+        .virtual_id
+        .clone();
+    responses.push(
+        assign_library(
+            State(state.clone()),
+            axum::Form(AssignLibraryForm {
+                group_virtual_id: group_id.clone(),
+                server_id: server.id.as_i64(),
+                library_id: "library-24".into(),
+            }),
+        )
+        .await,
+    );
+    responses.push(
+        rename_group(
+            State(state.clone()),
+            axum::extract::Path(group_id.clone()),
+            axum::Form(RenameGroupForm {
+                name: "Renamed group".into(),
+            }),
+        )
+        .await,
+    );
+    responses.push(
+        remove_member(
+            State(state.clone()),
+            axum::extract::Path(group_id.clone()),
+            axum::Form(RemoveMemberForm {
+                server_id: server.id.as_i64(),
+                library_id: "library-24".into(),
+            }),
+        )
+        .await,
+    );
+    responses.push(delete_group(State(state.clone()), axum::extract::Path(group_id)).await);
+    for response in responses {
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert_eq!(html.matches("data-library-card").count(), 25);
+        assert!(html.contains("Library 24"));
+        assert!(!html.contains("id=\"library-discovery-errors\""));
+    }
+    assert_eq!(
+        upstreams[0].received_requests().await.unwrap().len(),
+        request_count
+    );
+
+    // An explicit refresh still contacts upstreams and reports failures.
+    upstreams[0].reset().await;
+    let response = crate::ui::admin::libraries::library_groups_list(State(state.clone()))
+        .await
+        .into_response();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let html = String::from_utf8(body.to_vec()).unwrap();
+    assert_eq!(html.matches("data-library-card").count(), 25);
+    assert!(html.contains("role=\"alert\""));
+    assert_eq!(
+        state
+            .virtual_library_service
+            .list_discovered_libraries()
+            .await
+            .unwrap()
+            .len(),
+        25
+    );
+}
+
 // Exercise the production HTTP handler and preprocessing, not just cmp_by.
 // Jellyfin only includes SortName and DateCreated when requested in Fields.
 async fn check_web_album_sorting(sort_by: &str, ascending_names: &[&str]) {

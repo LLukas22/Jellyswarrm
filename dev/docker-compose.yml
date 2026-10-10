@@ -21,6 +21,7 @@ x-jellyfin-init: &jellyfin-init
 x-jellyswarrm-user: &jellyswarrm-user
   JELLYSWARRM_USERNAME: test
   JELLYSWARRM_PASSWORD: test
+  LIBRARY_COUNT: ${JELLYFIN_LIBRARY_COUNT:-1}
 
 x-movies-init-environment: &movies-init-environment
   <<: *jellyswarrm-user
