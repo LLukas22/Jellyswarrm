@@ -505,7 +505,9 @@ pub async fn apply_to_request(
 ) {
     remove_hop_by_hop_headers(request.headers_mut());
 
-    apply_host_header(request, server);
+    // Let reqwest derive Host from the target URL, including its port. An explicit
+    // Host header would otherwise survive redirects to external image hosts.
+    request.headers_mut().remove(reqwest::header::HOST);
 
     apply_authorization_header(request, auth);
 
@@ -574,14 +576,6 @@ pub fn apply_authorization_header(
                 }
             }
             JellyfinAuthorization::ApiKey(_) => {}
-        }
-    }
-}
-
-pub fn apply_host_header(request: &mut reqwest::Request, server: &Server) {
-    if let Some(host) = server.url.host_str() {
-        if let Ok(value) = reqwest::header::HeaderValue::from_str(host) {
-            request.headers_mut().insert(reqwest::header::HOST, value);
         }
     }
 }
@@ -953,6 +947,10 @@ mod tests {
     use crate::{DataContext, ProxyProcessors};
     use sqlx::SqlitePool;
     use std::sync::Arc;
+    use wiremock::{
+        matchers::{header, method, path, query_param},
+        Mock, MockServer, ResponseTemplate,
+    };
 
     async fn create_test_app_state() -> AppState {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
@@ -981,6 +979,148 @@ mod tests {
             processors,
             QuickConnectStorage::new(),
         )
+    }
+
+    async fn preprocessed_image_request(
+        state: &AppState,
+        upstream: &MockServer,
+    ) -> reqwest::Request {
+        let server_id = state
+            .server_storage
+            .add_server(
+                "Images",
+                &format!("{}/jellyfin", upstream.uri()),
+                100,
+                crate::config::MediaStreamingMode::Redirect,
+            )
+            .await
+            .unwrap();
+        let server = state
+            .server_storage
+            .get_server_by_id(server_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut request = reqwest::Client::new()
+            .get("http://localhost/Items/poster/Images/Primary?fillWidth=292&tag=image-tag")
+            .header(reqwest::header::HOST, "jellyswarrm.example.com")
+            .build()
+            .unwrap();
+        let auth = Some(JellyfinAuthorization::Authorization(Authorization {
+            client: "Test".into(),
+            device: "Test".into(),
+            device_id: "test-device".into(),
+            version: "1.0.0".into(),
+            token: Some("upstream-token".into()),
+        }));
+
+        apply_to_request(&mut request, &server, &None, &auth, state, None).await;
+
+        assert!(!request.headers().contains_key(reqwest::header::HOST));
+        assert_eq!(
+            request.url().as_str(),
+            format!(
+                "{}/jellyfin/Items/poster/Images/Primary?fillWidth=292&tag=image-tag",
+                upstream.uri()
+            )
+        );
+        request
+    }
+
+    #[tokio::test]
+    async fn image_request_uses_upstream_host_and_non_default_port() {
+        let upstream = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/jellyfin/Items/poster/Images/Primary"))
+            .and(header("host", upstream.address().to_string()))
+            .and(query_param("fillWidth", "292"))
+            .and(query_param("tag", "image-tag"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"poster"))
+            .expect(1)
+            .mount(&upstream)
+            .await;
+        let state = create_test_app_state().await;
+        let request = preprocessed_image_request(&state, &upstream).await;
+
+        let response = state.reqwest_client.execute(request).await.unwrap();
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(response.bytes().await.unwrap().as_ref(), b"poster");
+    }
+
+    #[tokio::test]
+    async fn image_request_follows_cross_origin_redirects_with_destination_host() {
+        let upstream = MockServer::start().await;
+        let images = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/jellyfin/Items/poster/Images/Primary"))
+            .and(header("host", upstream.address().to_string()))
+            .respond_with(
+                ResponseTemplate::new(302)
+                    .insert_header("Location", format!("{}/poster.png", images.uri())),
+            )
+            .expect(1)
+            .mount(&upstream)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/poster.png"))
+            .and(header("host", images.address().to_string()))
+            .respond_with(ResponseTemplate::new(302).insert_header("Location", "/original.png"))
+            .expect(1)
+            .mount(&images)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/original.png"))
+            .and(header("host", images.address().to_string()))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"poster"))
+            .expect(1)
+            .mount(&images)
+            .await;
+        let state = create_test_app_state().await;
+        let request = preprocessed_image_request(&state, &upstream).await;
+
+        let response = state.reqwest_client.execute(request).await.unwrap();
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            response.url().as_str(),
+            format!("{}/original.png", images.uri())
+        );
+        assert_eq!(response.bytes().await.unwrap().as_ref(), b"poster");
+    }
+
+    #[tokio::test]
+    async fn image_request_follows_same_origin_redirects_preserving_authorization() {
+        let upstream = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/jellyfin/Items/poster/Images/Primary"))
+            .respond_with(ResponseTemplate::new(302).insert_header("Location", "/poster.png"))
+            .expect(1)
+            .mount(&upstream)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/poster.png"))
+            .and(header("host", upstream.address().to_string()))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"poster"))
+            .expect(1)
+            .mount(&upstream)
+            .await;
+        let state = create_test_app_state().await;
+        let request = preprocessed_image_request(&state, &upstream).await;
+        let authorization = request.headers()[reqwest::header::AUTHORIZATION].clone();
+
+        let response = state.reqwest_client.execute(request).await.unwrap();
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(response.bytes().await.unwrap().as_ref(), b"poster");
+        let requests = upstream.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+        for request in requests {
+            assert_eq!(
+                request.headers[reqwest::header::AUTHORIZATION],
+                authorization
+            );
+        }
     }
 
     async fn test_user(state: &AppState, name: &str) -> User {
