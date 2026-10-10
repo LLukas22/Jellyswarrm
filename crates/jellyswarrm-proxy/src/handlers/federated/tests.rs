@@ -1054,17 +1054,14 @@ async fn catalog_pagination_follows_backend_caps_and_detects_stalled_pages() {
             FetchMode::VirtualLibrary,
             0,
         )
-        .await
-        .unwrap();
-        for result in catalog.server_items {
-            assert_eq!(
-                result.server_items.response.len(),
-                if stalled { 2 } else { 5 }
-            );
-            assert_eq!(
-                result.outcome == super::scan::FetchOutcome::Complete,
-                !stalled
-            );
+        .await;
+        if stalled {
+            assert!(matches!(catalog, Err(StatusCode::SERVICE_UNAVAILABLE)));
+        } else {
+            for result in catalog.unwrap().server_items {
+                assert_eq!(result.server_items.response.len(), 5);
+                assert_eq!(result.outcome, super::scan::FetchOutcome::Complete);
+            }
         }
         let offsets = upstreams[0]
             .received_requests()
@@ -1701,15 +1698,14 @@ async fn latest_routes_collapse_before_sort_and_limit_and_retain_partial_identit
         .respond_with(ResponseTemplate::new(503))
         .mount(&upstreams[1])
         .await;
-    assert_eq!(
-        get_items_from_all_servers_preprocessed(
-            &state,
-            request("/Items/Latest?Limit=1", &sessions),
-        )
-        .await
-        .unwrap_err(),
-        StatusCode::SERVICE_UNAVAILABLE
-    );
+    let degraded = get_items_from_all_servers_preprocessed(
+        &state,
+        request("/Items/Latest?Limit=1", &sessions),
+    )
+    .await
+    .unwrap()
+    .0;
+    assert_eq!(degraded[0]["Id"], stable_ids[0]);
     for active_sessions in [&sessions[..1]] {
         let Json(response) = get_items_from_all_servers_preprocessed(
             &state,

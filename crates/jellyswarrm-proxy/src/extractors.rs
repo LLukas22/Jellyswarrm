@@ -50,7 +50,11 @@ impl FromRequest<AppState> for CatalogPreprocessed {
             .map(Self)
             .map_err(|error| {
                 error!("Failed to resolve catalog request: {error}");
-                StatusCode::BAD_REQUEST
+                if error.is::<crate::request_preprocessing::NoAvailableBackend>() {
+                    StatusCode::SERVICE_UNAVAILABLE
+                } else {
+                    StatusCode::BAD_REQUEST
+                }
             })
     }
 }
@@ -61,7 +65,11 @@ impl FromRequest<AppState> for Preprocessed {
     async fn from_request(req: Request, state: &AppState) -> Result<Self, Self::Rejection> {
         preprocess_request(req, state).await.map(Self).map_err(|e| {
             error!("Failed to preprocess request: {}", e);
-            StatusCode::BAD_REQUEST
+            if e.is::<crate::request_preprocessing::NoAvailableBackend>() {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                StatusCode::BAD_REQUEST
+            }
         })
     }
 }

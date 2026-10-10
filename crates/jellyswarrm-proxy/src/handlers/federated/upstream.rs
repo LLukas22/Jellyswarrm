@@ -31,6 +31,7 @@ use crate::url_helper::replace_path_id;
 pub(super) struct FetchedCatalog<T = ServerItems> {
     pub(super) server_items: Vec<FetchedServerItems<T>>,
     pub(super) response_shape: ResponseShape,
+    pub(super) failures: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -162,9 +163,10 @@ pub(super) async fn fetch_show_catalog(
         return Ok(FetchedCatalog {
             server_items: Vec::new(),
             response_shape: ResponseShape::Counted,
+            failures: 0,
         });
     }
-    let indexed_results = collect_federated_results(join_set, failures).await?;
+    let (indexed_results, failures) = collect_federated_results(join_set, failures).await?;
     let server_items = indexed_results
         .into_iter()
         .map(|(_, items)| items)
@@ -178,6 +180,7 @@ pub(super) async fn fetch_show_catalog(
     Ok(FetchedCatalog {
         server_items,
         response_shape,
+        failures,
     })
 }
 
@@ -195,21 +198,6 @@ impl FetchedServerItems {
             source_parent_id: None,
         }
     }
-}
-
-/// Pageable responses are all-or-nothing at the client boundary. A partial
-/// source must neither publish an exact-looking page nor replace an inventory.
-pub(super) fn require_complete_sources(sources: &[FetchedServerItems]) -> Result<(), StatusCode> {
-    for source in sources {
-        if let FetchOutcome::Partial(reason) = source.outcome {
-            warn!(
-                "Incomplete catalog from {}: {reason:?}",
-                source.server_items.server.name
-            );
-            return Err(StatusCode::BAD_GATEWAY);
-        }
-    }
-    Ok(())
 }
 
 struct PagedItems {
@@ -281,7 +269,7 @@ pub(super) async fn fetch_catalog(
         });
     }
 
-    let indexed_results = collect_federated_results(join_set, failures).await?;
+    let (indexed_results, failures) = collect_federated_results(join_set, failures).await?;
     let server_items = indexed_results
         .into_iter()
         .map(|(_, items)| items)
@@ -295,13 +283,14 @@ pub(super) async fn fetch_catalog(
     Ok(FetchedCatalog {
         server_items,
         response_shape,
+        failures,
     })
 }
 
 async fn collect_federated_results<T: Send + 'static>(
     mut join_set: JoinSet<(usize, Result<T, StatusCode>)>,
     mut failures: usize,
-) -> Result<Vec<(usize, T)>, StatusCode> {
+) -> Result<(Vec<(usize, T)>, usize), StatusCode> {
     let mut indexed_results = Vec::new();
     while let Some(result) = join_set.join_next().await {
         match result {
@@ -317,16 +306,19 @@ async fn collect_federated_results<T: Send + 'static>(
         }
     }
 
-    if failures > 0 {
-        return Err(StatusCode::SERVICE_UNAVAILABLE);
-    }
     if indexed_results.is_empty() {
         error!("All federated server requests failed");
-        return Err(StatusCode::BAD_GATEWAY);
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+    if failures > 0 {
+        warn!(
+            failures,
+            "Serving available federation sources; failed sources retain their inventories"
+        );
     }
 
     indexed_results.sort_by_key(|(index, _)| *index);
-    Ok(indexed_results)
+    Ok((indexed_results, failures))
 }
 
 pub(super) async fn fetch_inventory(
@@ -347,7 +339,7 @@ pub(super) async fn fetch_inventory(
             )
         });
     }
-    let results = collect_federated_results(tasks, 0).await?;
+    let (results, failures) = collect_federated_results(tasks, 0).await?;
     let response_shape =
         ResponseShape::from_responses(results.iter().map(|(_, items)| &items.response));
     let server_items = results
@@ -361,6 +353,7 @@ pub(super) async fn fetch_inventory(
     Ok(FetchedCatalog {
         server_items,
         response_shape,
+        failures,
     })
 }
 
@@ -411,6 +404,13 @@ async fn fetch_paged_items_from_server(
         outcome,
     } = fetch_paged_raw_items_from_server(index, state.clone(), request, session, server.clone())
         .await?;
+    if let FetchOutcome::Partial(reason) = outcome {
+        warn!(
+            "Discarding incomplete catalog from {}: {reason:?}",
+            server.name
+        );
+        return Err(StatusCode::BAD_GATEWAY);
+    }
     process_items_response_json(&mut response, &state, &server, proxy_api_key.as_deref()).await?;
     Ok(FetchedServerItems {
         server_items: ServerItems { response, server },
@@ -426,15 +426,15 @@ async fn fetch_paged_raw_items_from_server(
     session: AuthorizationSession,
     server: Server,
 ) -> Result<PagedItems, StatusCode> {
-    let deadline = tokio::time::Instant::now()
-        + Duration::from_secs(state.config.read().await.timeout.clamp(1, 300));
+    // The configured timeout bounds each page, not the size of a valid catalog.
+    let page_timeout = Duration::from_secs(state.config.read().await.timeout.clamp(1, 300));
     let request = prepare_backend_request(request, &state, &session, &server).await;
     let mut progress = ScanProgress::default();
     let mut all_items = Vec::new();
     let mut had_counted_response = false;
     let outcome = loop {
-        let page = tokio::time::timeout_at(
-            deadline,
+        let page = tokio::time::timeout(
+            page_timeout,
             fetch_upstream_page_raw(
                 index,
                 state.clone(),
@@ -525,8 +525,7 @@ async fn fetch_library_inventory(
     normalize_upstream_pagination(request.url_mut(), Pagination::unbounded());
     let request = prepare_backend_request(request, &state, &session, &server).await;
     let mut pagination = ScanProgress::default();
-    let deadline = tokio::time::Instant::now()
-        + Duration::from_secs(state.config.read().await.timeout.clamp(1, 300));
+    let page_timeout = Duration::from_secs(state.config.read().await.timeout.clamp(1, 300));
     let mut items = Vec::new();
     let mut counted = false;
     loop {
@@ -541,8 +540,8 @@ async fn fetch_library_inventory(
                 UPSTREAM_PAGE_SIZE,
             );
         }
-        let page = tokio::time::timeout_at(
-            deadline,
+        let page = tokio::time::timeout(
+            page_timeout,
             execute_raw_items_request(index, state.clone(), page_request, server.clone()),
         )
         .await

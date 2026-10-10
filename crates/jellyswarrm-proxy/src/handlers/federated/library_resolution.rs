@@ -32,6 +32,19 @@ pub(super) struct CatalogFetchTarget {
     pub(super) resolved_parent_id: Option<String>,
 }
 
+pub(super) fn unavailable_source_count(
+    preprocessed: &PreprocessedRequest,
+    targets: &[CatalogFetchTarget],
+) -> usize {
+    preprocessed.access_scope.as_ref().map_or(0, |scope| {
+        scope
+            .server_ids()
+            .iter()
+            .filter(|id| !targets.iter().any(|target| target.server.id == **id))
+            .count()
+    })
+}
+
 pub(super) async fn resolve_catalog_plan(
     state: &AppState,
     preprocessed: &PreprocessedRequest,
@@ -130,7 +143,7 @@ pub(super) async fn resolve_catalog_plan(
         LibraryGrouping::None
     };
 
-    let targets = available_sessions(preprocessed)?
+    let targets: Vec<_> = available_sessions(preprocessed)?
         .into_iter()
         .map(|(session, server)| CatalogFetchTarget {
             session,
@@ -175,8 +188,8 @@ pub(super) async fn resolve_catalog_plan(
                     .unwrap_or_default(),
             }
             .to_string(),
+            skipped_targets: unavailable_source_count(preprocessed, &targets),
             targets,
-            skipped_targets: 0,
         });
     }
 

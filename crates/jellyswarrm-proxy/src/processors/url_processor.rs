@@ -320,8 +320,40 @@ impl UrlProcessor {
         access_scope: Option<&VirtualLibraryAccessScope>,
         required_server_id: Option<ServerId>,
     ) {
+        let selected_source = url.query_pairs().find_map(|(key, value)| {
+            key.eq_ignore_ascii_case("MediaSourceId")
+                .then(|| value.into_owned())
+        });
         for &path_segment in MEDIA_ID_PATH_TAGS {
             if let Some(media_id) = contains_id(url, path_segment) {
+                if let Some(source) = selected_source.as_deref() {
+                    if let Ok(Some(group)) = self
+                        .data_context
+                        .media_storage
+                        .get_media_version_group(&media_id)
+                        .await
+                    {
+                        if let Ok(Some(route)) = self
+                            .data_context
+                            .media_storage
+                            .get_media_version_source_route(group.id, source)
+                            .await
+                        {
+                            if server_is_allowed(
+                                route.member_mapping.server_id,
+                                access_scope,
+                                required_server_id,
+                            ) {
+                                *url = replace_id(
+                                    url.clone(),
+                                    &media_id,
+                                    &route.member_mapping.original_media_id,
+                                );
+                                continue;
+                            }
+                        }
+                    }
+                }
                 if let Some(media_mapping) = self
                     .client_media_mapping(&media_id, access_scope, required_server_id)
                     .await

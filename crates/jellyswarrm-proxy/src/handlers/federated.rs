@@ -273,23 +273,23 @@ async fn get_interleaved_root_uncached(
     state: &AppState,
     preprocessed: PreprocessedRequest,
     targets: Vec<CatalogFetchTarget>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Result<snapshots::SnapshotResponse, StatusCode> {
+    let skipped_targets = library_resolution::unavailable_source_count(&preprocessed, &targets);
     let original_request = preprocessed.original_request;
     let policy = CatalogRequestPolicy::from_url(original_request.url());
     let FetchedCatalog {
         server_items,
         response_shape,
-        ..
+        failures,
     } = fetch_catalog(
         state,
         &original_request,
         &policy,
         targets,
         FetchMode::Listing,
-        0,
+        skipped_targets,
     )
     .await?;
-    upstream::require_complete_sources(&server_items)?;
     let server_count = server_items.len();
     let name_policy = if state.config.read().await.include_server_name_in_media {
         crate::media_presentation::ItemNamePolicy::IncludeServerName
@@ -306,7 +306,11 @@ async fn get_interleaved_root_uncached(
 
     debug!("Combined items from {server_count} servers");
 
-    finalize_items_response(state, &original_request, items, &policy, response_shape).await
+    Ok(snapshots::SnapshotResponse {
+        response: finalize_items_response(state, &original_request, items, &policy, response_shape)
+            .await?,
+        complete: failures == 0,
+    })
 }
 
 async fn finalize_items_response(

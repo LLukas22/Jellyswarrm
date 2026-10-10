@@ -42,7 +42,11 @@ impl ScanProgress {
         }
         self.counted = Some(counted);
         self.pages += 1;
-        if self.pages > MAX_SCAN_PAGES || self.offset().saturating_add(page.len()) > MAX_SCAN_ITEMS
+        // A stable counted response already bounds the scan. Only uncounted
+        // sources need a fixed work budget to detect an endless inventory.
+        if !counted
+            && (self.pages > MAX_SCAN_PAGES
+                || self.offset().saturating_add(page.len()) > MAX_SCAN_ITEMS)
         {
             return Err(PartialReason::Budget);
         }
@@ -135,5 +139,17 @@ mod tests {
                 .collect(),
         );
         assert_eq!(progress.accept(&oversized), Err(PartialReason::Budget));
+        // Large, counted libraries must remain browsable past the defensive
+        // limits intended for sources that provide no completion evidence.
+        let counted = ItemsResponseVariants::WithCount(crate::models::ItemsResponseWithCount {
+            total_record_count: oversized.len() as i32,
+            start_index: 0,
+            items: oversized.into_items(),
+        });
+        let mut progress = ScanProgress {
+            pages: MAX_SCAN_PAGES,
+            ..Default::default()
+        };
+        assert!(progress.accept(&counted).unwrap());
     }
 }

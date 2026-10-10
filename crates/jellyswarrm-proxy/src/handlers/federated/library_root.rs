@@ -13,7 +13,10 @@ use crate::{
     request_preprocessing::PreprocessedRequest,
     server_id::ServerId,
     server_storage::Server,
-    virtual_library_service::{compare_virtual_library_routes, normalize_library_id},
+    virtual_library_service::{
+        compare_virtual_library_routes, normalize_library_id, VirtualLibraryAccessScope,
+        VirtualLibraryResolution,
+    },
     AppState,
 };
 
@@ -74,8 +77,42 @@ async fn present_automatic_library_group(
     state: &AppState,
     key: String,
     group: Vec<ServerMediaItem>,
+    access_scope: &VirtualLibraryAccessScope,
 ) -> Result<AutomaticGroupPresentation, StatusCode> {
     if group.len() == 1 {
+        // Keep a published library's ID and reachable memberships when another
+        // backend disappears. A singleton refresh must not delete the survivor.
+        if let Some(automatic) = state
+            .virtual_library_service
+            .get_automatic_library_by_collection_type(&key)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        {
+            if matches!(
+                state
+                    .virtual_library_service
+                    .resolve(&automatic.virtual_id, Some(access_scope))
+                    .await
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+                VirtualLibraryResolution::Resolved(_)
+            ) {
+                let built = build_virtual_library_item(
+                    state,
+                    group,
+                    automatic.name,
+                    automatic.virtual_id.clone(),
+                )
+                .await?;
+                return Ok(AutomaticGroupPresentation {
+                    items: vec![built.item],
+                    discovered_members: built
+                        .members
+                        .into_iter()
+                        .map(|(server, member)| (automatic.virtual_id.clone(), server, member))
+                        .collect(),
+                });
+            }
+        }
         return Ok(AutomaticGroupPresentation {
             items: process_library_group_individually(state, group).await?,
             discovered_members: Vec::new(),
@@ -232,6 +269,7 @@ pub(super) async fn get_automatic_library_root(
     let FetchedCatalog {
         server_items,
         response_shape,
+        ..
     } = fetch_inventory(state, &original_request, targets).await?;
     let refreshed_server_ids = server_items
         .iter()
@@ -255,7 +293,8 @@ pub(super) async fn get_automatic_library_root(
     let mut automatic_groups = library_groups.into_iter().collect::<Vec<_>>();
     automatic_groups.sort_by(|left, right| left.0.cmp(&right.0));
     for (key, group) in automatic_groups {
-        let presentation = present_automatic_library_group(state, key, group).await?;
+        let presentation =
+            present_automatic_library_group(state, key, group, &access_scope).await?;
         library_items.extend(presentation.items);
         discovered_members.extend(presentation.discovered_members);
     }

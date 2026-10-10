@@ -253,6 +253,15 @@ pub async fn post_playback_info(
                 &state,
             )
             .await;
+            state
+                .play_sessions
+                .bind_original_item(
+                    &response.play_session_id,
+                    &session.user_id,
+                    server.id,
+                    &original_item_id,
+                )
+                .await;
 
             debug!("Requested Playback: {:?}", response);
 

@@ -214,6 +214,63 @@ async fn request_for_server(
     Ok(request)
 }
 
+async fn request_for_play_session(
+    state: &AppState,
+    preprocessed: PreprocessedRequest,
+    server: &Server,
+    play_session: &PlaybackSession,
+) -> Result<reqwest::Request, StatusCode> {
+    let aggregate =
+        if let Some(id) = extract_stream_item_id(preprocessed.original_request.url().path()) {
+            state
+                .media_storage
+                .get_media_version_group(id)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        } else {
+            None
+        };
+    let original_item = play_session
+        .original_item_id
+        .as_deref()
+        .filter(|_| aggregate.is_some());
+    if let (Some(group), Some(original_item)) = (&aggregate, original_item) {
+        if let Some(source) =
+            preprocessed
+                .original_request
+                .url()
+                .query_pairs()
+                .find_map(|(key, value)| {
+                    key.eq_ignore_ascii_case("MediaSourceId")
+                        .then(|| value.into_owned())
+                })
+        {
+            let route = state
+                .media_storage
+                .get_media_version_source_route(group.id, &source)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+                .ok_or(StatusCode::BAD_REQUEST)?;
+            if route.member_mapping.server_id != server.id
+                || route.member_mapping.original_media_id != original_item
+            {
+                return Err(StatusCode::BAD_REQUEST);
+            }
+        }
+    }
+    let mut request = request_for_server(state, preprocessed, server).await?;
+    if let Some(original_item) = original_item {
+        for tag in ["Videos", "Audio"] {
+            if let Some(url) = crate::url_helper::replace_path_id(request.url(), tag, original_item)
+            {
+                *request.url_mut() = url;
+                break;
+            }
+        }
+    }
+    Ok(request)
+}
+
 async fn forward_preprocessed_resource(
     state: &AppState,
     preprocessed: PreprocessedRequest,
@@ -269,7 +326,7 @@ pub async fn get_video_resource(
         id, play_session.session_id, server.name
     );
 
-    let request = request_for_server(&state, preprocessed, &server).await?;
+    let request = request_for_play_session(&state, preprocessed, &server, &play_session).await?;
     forward_media_request(&state, &server, request, "media resource").await
 }
 
@@ -295,6 +352,8 @@ pub async fn get_stream(
 
     let Some(play_session) = play_session else {
         let server = preprocessed.server.clone();
+        let original_item_id =
+            extract_stream_item_id(preprocessed.request.url().path()).map(str::to_string);
         let response =
             forward_media_request(&state, &server, preprocessed.request, "media stream").await?;
         if response.status().is_success() || response.status().is_redirection() {
@@ -307,19 +366,15 @@ pub async fn get_stream(
                         item_id,
                         user_id,
                         server_id: server.id,
+                        original_item_id,
                     })
                     .await;
             }
         }
         return Ok(response);
     };
-    if play_session.server_id == preprocessed.server.id {
-        let server = preprocessed.server;
-        return forward_media_request(&state, &server, preprocessed.request, "media stream").await;
-    }
-
     let server = resolve_play_session_server(&state, &play_session).await?;
-    let request = request_for_server(&state, preprocessed, &server).await?;
+    let request = request_for_play_session(&state, preprocessed, &server, &play_session).await?;
     forward_media_request(&state, &server, request, "media stream").await
 }
 
@@ -334,6 +389,7 @@ mod tests {
             item_id: "item-1".to_string(),
             user_id: user_id.to_string(),
             server_id: ServerId::new(server_id),
+            original_item_id: None,
         }
     }
 

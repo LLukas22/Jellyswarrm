@@ -69,6 +69,10 @@ impl VirtualLibraryAccessScope {
     pub(crate) fn allows(&self, server_id: ServerId) -> bool {
         self.server_ids.contains(&server_id)
     }
+
+    pub(crate) fn server_ids(&self) -> &[ServerId] {
+        &self.server_ids
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -76,6 +76,72 @@ async fn create_test_server_with_url(pool: &SqlitePool, url: &str) -> Server {
 }
 
 #[tokio::test]
+async fn parent_navigation_accepts_filtered_subsets_but_rejects_incomparable_groups() {
+    let (pool, service) = migrated_service().await;
+    let mut snapshots = Vec::new();
+    for index in 0..3 {
+        let server =
+            create_test_server_with_url(&pool, &format!("http://server-{index}:8096")).await;
+        let mapping = service
+            .get_or_create_media_mapping("series", &server)
+            .await
+            .unwrap();
+        snapshots.push(MediaCatalogSnapshot {
+            source_key: server.url.to_string(),
+            server_id: server.id,
+            complete: false,
+            observations: vec![MediaObservation {
+                virtual_media_id: mapping.virtual_media_id,
+                aliases: BTreeSet::from([MediaAlias {
+                    provider: crate::media_identity::MediaProvider::Tmdb,
+                    kind: crate::media_identity::MediaKind::Series,
+                    provider_id: "42".into(),
+                }]),
+            }],
+        });
+    }
+    let member = &snapshots[0].observations[0].virtual_media_id;
+    let generation = service.begin_media_reconciliation().await.unwrap();
+    service
+        .reconcile_media_catalog("search:viewer:", generation, &snapshots[..2], false)
+        .await
+        .unwrap();
+    let generation = service.begin_media_reconciliation().await.unwrap();
+    service
+        .reconcile_media_catalog(
+            "latest:viewer:",
+            generation,
+            &[snapshots[0].clone(), snapshots[2].clone()],
+            false,
+        )
+        .await
+        .unwrap();
+    assert!(service
+        .get_media_parent_group_id(member, "viewer")
+        .await
+        .unwrap()
+        .is_none());
+    let generation = service.begin_media_reconciliation().await.unwrap();
+    let groups = service
+        .reconcile_media_catalog("configured:library:viewer", generation, &snapshots, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        service
+            .get_media_parent_group_id(member, "viewer")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(groups[member].virtual_media_id.as_str())
+    );
+    assert!(service
+        .get_media_parent_group_id(member, "another-viewer")
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
 async fn test_media_storage_service() {
     let (pool, service) = migrated_service().await;
     let server = create_test_server(&pool).await;

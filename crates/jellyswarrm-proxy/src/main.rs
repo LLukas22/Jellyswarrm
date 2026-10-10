@@ -1031,6 +1031,9 @@ async fn proxy_handler(
     };
 
     let request_url = preprocessed.request.url().clone();
+    let mutation_viewer = (!matches!(*preprocessed.request.method(), Method::GET | Method::HEAD))
+        .then(|| preprocessed.user.as_ref().map(|user| user.id.clone()))
+        .flatten();
     let pending_playback_session_update = preprocessed.pending_playback_session_update.clone();
     let original_session_request = preprocessed.original_request.try_clone();
     let response_server = preprocessed.server.clone();
@@ -1062,6 +1065,9 @@ async fn proxy_handler(
 
     let status = response.status();
     if status.is_success() {
+        if let Some(viewer) = mutation_viewer {
+            state.catalog_snapshots.invalidate_viewer(&viewer);
+        }
         if let Some(original) = &original_session_request {
             sessions::observe_playback(&state, original).await;
         }

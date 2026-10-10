@@ -44,6 +44,105 @@ async fn mount_catalog(upstreams: &[wiremock::MockServer], sort: &str) {
 }
 
 #[tokio::test]
+async fn counted_scans_apply_timeout_to_each_page_instead_of_the_whole_catalog() {
+    let (state, _, sessions, upstreams) = setup().await;
+    state.config.write().await.timeout = 1;
+    for upstream in &upstreams {
+        Mock::given(method("GET")).respond_with(|request: &wiremock::Request| {
+            let start = offset(request);
+            ResponseTemplate::new(200).set_delay(std::time::Duration::from_millis(400))
+                .set_body_json(json!({"Items": [{"Id": format!("item-{start}"), "Type": "Movie"}], "StartIndex": start, "TotalRecordCount": 3}))
+        }).mount(upstream).await;
+    }
+    let response =
+        get_items_from_all_servers_preprocessed(&state, request("/Items?Limit=1", &sessions))
+            .await
+            .unwrap()
+            .0;
+    assert_eq!(response["TotalRecordCount"], 6);
+    assert_eq!(response["Items"].as_array().unwrap().len(), 1);
+    assert_eq!(upstreams[0].received_requests().await.unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn partial_search_membership_does_not_veto_recursive_catalog_parent_identity() {
+    let (state, pool, mut sessions, mut upstreams) = setup().await;
+    let third = wiremock::MockServer::start().await;
+    let row = sqlx::query("INSERT INTO servers (name, url, priority, created_at, updated_at) VALUES ('Third', ?, 100, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) RETURNING *")
+        .bind(third.uri()).fetch_one(&pool).await.unwrap();
+    let mut session = sessions[0].0.clone();
+    session.id = 2;
+    session.server_url = third.uri();
+    sessions.push((
+        session,
+        crate::server_storage::Server::from_row(row).unwrap(),
+    ));
+    upstreams.push(third);
+    for (index, upstream) in upstreams.iter().enumerate() {
+        Mock::given(path("/Items")).respond_with(move |request: &wiremock::Request| {
+            let search = request.url.query_pairs().any(|(key, _)| key == "SearchTerm");
+            let mut items = vec![json!({"Id": "series", "Type": "Series", "Name": format!("Localized {index}"), "ProviderIds": {"Tmdb": "42"}})];
+            if search && index == 2 { items.clear(); }
+            if !search {
+                items.push(json!({"Id": "season", "Type": "Season", "SeriesId": "series", "ParentId": "series", "IndexNumber": 1}));
+                items.push(json!({"Id": "episode", "Type": "Episode", "SeriesId": "series", "SeasonId": "season", "ParentId": "season", "ParentIndexNumber": 1, "IndexNumber": 1}));
+            }
+            ResponseTemplate::new(200).set_body_json(json!({"TotalRecordCount": items.len(), "StartIndex": 0, "Items": items}))
+        }).mount(upstream).await;
+    }
+    let search = get_items_from_all_servers_preprocessed(
+        &state,
+        request("/Items?SearchTerm=localized", &sessions),
+    )
+    .await
+    .unwrap()
+    .0;
+    assert_eq!(search["TotalRecordCount"], 1);
+    let mut previous = None;
+    for _ in 0..2 {
+        state.catalog_snapshots.expire();
+        let targets = sessions
+            .iter()
+            .map(|(session, server)| CatalogFetchTarget {
+                session: session.clone(),
+                server: server.clone(),
+                parent_id: None,
+                resolved_parent_id: None,
+            })
+            .collect();
+        let response = get_virtual_library_items(
+            &state,
+            request("/Items?Recursive=true", &sessions),
+            "configured:shows:viewer".into(),
+            targets,
+            0,
+        )
+        .await
+        .unwrap()
+        .0;
+        let items = response["Items"].as_array().unwrap();
+        assert_eq!(
+            items.len(),
+            3,
+            "series, numbered season and numbered episode all merge"
+        );
+        let series = items.iter().find(|item| item["Type"] == "Series").unwrap();
+        let season = items.iter().find(|item| item["Type"] == "Season").unwrap();
+        let episode = items.iter().find(|item| item["Type"] == "Episode").unwrap();
+        assert_eq!(season["SeriesId"], series["Id"]);
+        assert_eq!(season["ParentId"], series["Id"]);
+        assert_eq!(episode["SeriesId"], series["Id"]);
+        assert_eq!(episode["SeasonId"], season["Id"]);
+        assert_eq!(episode["ParentId"], season["Id"]);
+        assert_eq!(episode["MediaSourceCount"], 3);
+        if let Some(previous) = previous {
+            assert_eq!(response, previous);
+        }
+        previous = Some(response);
+    }
+}
+
+#[tokio::test]
 async fn snapshots_coalesce_builds_and_keep_random_and_tied_pages_stable() {
     for sort in ["SortName", "Random"] {
         let (state, _, sessions, upstreams) = setup().await;
@@ -133,7 +232,7 @@ async fn snapshots_are_scoped_to_viewer_token_targets_and_display_configuration(
 }
 
 #[tokio::test]
-async fn incomplete_refreshes_never_publish_pages_cache_results_or_prune_sightings() {
+async fn incomplete_sources_are_discarded_without_caching_degraded_results_or_pruning_sightings() {
     use super::{
         library_resolution::CatalogFetchTarget, media_reconciliation::get_virtual_library_items,
     };
@@ -178,10 +277,12 @@ async fn incomplete_refreshes_never_publish_pages_cache_results_or_prune_sightin
             }))
         }).mount(&upstreams[0]).await;
         for _ in 0..2 {
+            let response = fetch().await.unwrap().0;
+            assert_eq!(response["TotalRecordCount"], 6, "{failure}");
+            assert_eq!(response["Items"].as_array().unwrap().len(), 1);
             assert_eq!(
-                fetch().await.unwrap_err(),
-                StatusCode::BAD_GATEWAY,
-                "{failure}"
+                response["Items"][0]["MediaSourceCount"], 1,
+                "only the healthy source is visible"
             );
         }
         assert_eq!(
@@ -223,6 +324,15 @@ async fn incomplete_refreshes_never_publish_pages_cache_results_or_prune_sightin
         .await
         .unwrap();
     assert_eq!(count, 0);
+    state.catalog_snapshots.expire();
+    for upstream in &upstreams {
+        upstream.reset().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(upstream)
+            .await;
+    }
+    assert_eq!(fetch().await.unwrap_err(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
 #[test]

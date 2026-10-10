@@ -25,6 +25,7 @@ async fn show_catalog_aliases(
     items: &[crate::models::MediaItem],
     viewer: &str,
     series_group: Option<&str>,
+    catalog_scope: &str,
 ) -> Result<Vec<BTreeSet<MediaAlias>>, StatusCode> {
     let mut parents = std::collections::HashMap::new();
     let mut result = Vec::with_capacity(items.len());
@@ -45,7 +46,7 @@ async fn show_catalog_aliases(
                 if !parents.contains_key(parent) {
                     let group = state
                         .media_storage
-                        .get_media_parent_group_id(parent, viewer)
+                        .get_media_parent_group_id_for_scope(parent, viewer, Some(catalog_scope))
                         .await
                         .map_err(|error| {
                             error!("Failed to resolve show parent identity: {error}");
@@ -111,9 +112,6 @@ async fn get_reconciled_catalog(
     skipped_targets: usize,
     context: CatalogContext,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    if skipped_targets > 0 {
-        return Err(StatusCode::SERVICE_UNAVAILABLE);
-    }
     let snapshot = super::snapshots::SnapshotRequest::prepare(
         state,
         &mut preprocessed,
@@ -143,7 +141,7 @@ async fn get_reconciled_catalog_uncached(
     targets: Vec<CatalogFetchTarget>,
     skipped_targets: usize,
     context: CatalogContext,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Result<super::snapshots::SnapshotResponse, StatusCode> {
     let deduplicate_media = state.deduplicate_media_enabled().await;
     let reconciliation_generation = if deduplicate_media {
         Some(
@@ -165,6 +163,7 @@ async fn get_reconciled_catalog_uncached(
     let FetchedCatalog {
         server_items,
         response_shape,
+        failures,
     } = match &context {
         CatalogContext::Show { .. } => {
             fetch_show_catalog(state, &original_request, &policy, targets, skipped_targets).await?
@@ -182,7 +181,6 @@ async fn get_reconciled_catalog_uncached(
         }
     };
 
-    super::upstream::require_complete_sources(&server_items)?;
     let authoritative_inventory = series_group.is_none() && policy.authoritative_inventory;
     let mut snapshots = Vec::new();
     let mut tagged_items = Vec::new();
@@ -254,7 +252,9 @@ async fn get_reconciled_catalog_uncached(
         let ServerItems { response, server } = fetch.server_items;
         let items = response.into_items();
         if deduplicate_media {
-            let aliases = show_catalog_aliases(state, &items, &viewer, series_group).await?;
+            let aliases =
+                show_catalog_aliases(state, &items, &viewer, series_group, &catalog_scope_key)
+                    .await?;
             snapshots.push(MediaCatalogSnapshot {
                 source_key: format!(
                     "{}:{}",
@@ -290,7 +290,7 @@ async fn get_reconciled_catalog_uncached(
                 &catalog_scope_key,
                 reconciliation_generation.expect("enabled reconciliation has a generation"),
                 &snapshots,
-                authoritative_inventory,
+                authoritative_inventory && failures == 0,
             )
             .await
             .map_err(|error| {
@@ -303,8 +303,13 @@ async fn get_reconciled_catalog_uncached(
     };
     for item in items.items_mut() {
         if deduplicate_media || series_group.is_some() {
-            crate::handlers::media_versions::preserve_media_parent_groups(state, item, &viewer)
-                .await?;
+            crate::handlers::media_versions::preserve_media_parent_groups_in_scope(
+                state,
+                item,
+                &viewer,
+                Some(&catalog_scope_key),
+            )
+            .await?;
         }
         if let Some(group) = series_group {
             if matches!(
@@ -319,7 +324,11 @@ async fn get_reconciled_catalog_uncached(
             }
         }
     }
-    finalize_items_response(state, &original_request, items, &policy, response_shape).await
+    Ok(super::snapshots::SnapshotResponse {
+        response: finalize_items_response(state, &original_request, items, &policy, response_shape)
+            .await?,
+        complete: failures == 0,
+    })
 }
 
 /// Federates `/Shows/{aggregateId}/Seasons|Episodes` across the member

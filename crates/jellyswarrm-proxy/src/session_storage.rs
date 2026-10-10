@@ -15,6 +15,8 @@ pub struct PlaybackSession {
     pub item_id: String,    // ID of the media item being played
     pub user_id: String,
     pub server_id: ServerId,
+    /// Exact backend item selected by PlaybackInfo, shared by its item aliases.
+    pub original_item_id: Option<String>,
 }
 
 pub struct SessionStorage {
@@ -46,8 +48,18 @@ impl SessionStorage {
         }
     }
 
-    pub async fn add_session(&self, session: PlaybackSession) {
+    pub async fn add_session(&self, mut session: PlaybackSession) {
         let mut sessions = self.live_sessions().await;
+        if session.original_item_id.is_none() {
+            session.original_item_id = sessions
+                .iter()
+                .find(|tracked| {
+                    tracked.session.session_id == session.session_id
+                        && tracked.session.user_id == session.user_id
+                        && tracked.session.server_id == session.server_id
+                })
+                .and_then(|tracked| tracked.session.original_item_id.clone());
+        }
         let revision = SessionRevision(uuid::Uuid::new_v4());
 
         sessions.retain(|tracked| {
@@ -70,6 +82,25 @@ impl SessionStorage {
             revision,
             updated_at: Instant::now(),
         });
+    }
+
+    pub async fn bind_original_item(
+        &self,
+        session_id: &str,
+        user_id: &str,
+        server_id: ServerId,
+        original_item_id: &str,
+    ) {
+        let mut sessions = self.live_sessions().await;
+        let revision = SessionRevision(uuid::Uuid::new_v4());
+        for tracked in sessions.iter_mut().filter(|tracked| {
+            tracked.session.session_id == session_id
+                && tracked.session.user_id == user_id
+                && tracked.session.server_id == server_id
+        }) {
+            tracked.session.original_item_id = Some(original_item_id.to_string());
+            tracked.revision = revision;
+        }
     }
 
     pub async fn get_session(&self, session_id: &str) -> Option<PlaybackSession> {
@@ -222,6 +253,7 @@ mod tests {
             item_id: item_id.into(),
             user_id: user_id.into(),
             server_id: ServerId::new(server_id),
+            original_item_id: None,
         }
     }
 

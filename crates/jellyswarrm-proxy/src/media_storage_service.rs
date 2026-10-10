@@ -999,12 +999,24 @@ impl MediaStorageService {
         Ok(result)
     }
 
-    /// Navigation may use memberships (unlike selected playback routes), but
-    /// only when all applicable published groups agree on active membership.
+    /// Navigation may use a published superset of filtered observations.
+    /// Incomparable groups still cannot establish a unique parent identity.
     pub async fn get_media_parent_group_id(
         &self,
         virtual_media_id: &str,
         viewer: &str,
+    ) -> Result<Option<String>, sqlx::Error> {
+        self.get_media_parent_group_id_for_scope(virtual_media_id, viewer, None)
+            .await
+    }
+
+    /// Prefer the catalog being reconciled. Filtered search/latest scopes may
+    /// observe fewer copies; they must not veto that catalog's parent identity.
+    pub async fn get_media_parent_group_id_for_scope(
+        &self,
+        virtual_media_id: &str,
+        viewer: &str,
+        preferred_scope: Option<&str>,
     ) -> Result<Option<String>, sqlx::Error> {
         let rows = sqlx::query(
             r#"
@@ -1021,8 +1033,21 @@ impl MediaStorageService {
         .bind(Self::normalize_uuid(virtual_media_id))
         .fetch_all(&self.pool)
         .await?;
-        let mut result = None;
-        let mut active_ids = HashSet::new();
+        let mut candidates = Vec::<(String, HashSet<i64>)>::new();
+        if let Some(scope) =
+            preferred_scope.filter(|scope| MediaCatalogScope::belongs_to(scope, viewer))
+        {
+            for row in &rows {
+                if row.try_get::<String, _>("scope_key")? == scope {
+                    let members = self.get_media_version_members(row.try_get("id")?).await?;
+                    if members.iter().any(|member| {
+                        member.mapping.virtual_media_id == Self::normalize_uuid(virtual_media_id)
+                    }) {
+                        return Ok(Some(row.try_get("virtual_media_id")?));
+                    }
+                }
+            }
+        }
         for row in rows {
             let key: String = row.try_get("scope_key")?;
             if !MediaCatalogScope::belongs_to(&key, viewer) {
@@ -1035,15 +1060,19 @@ impl MediaStorageService {
                 continue;
             }
             let ids = members.iter().map(|member| member.mapping.id).collect();
-            if result.is_some() && active_ids != ids {
-                return Ok(None);
-            }
-            if result.is_none() {
-                active_ids = ids;
-                result = Some(row.try_get("virtual_media_id")?);
-            }
+            candidates.push((row.try_get("virtual_media_id")?, ids));
         }
-        Ok(result)
+        // A search containing A+B is compatible with a browse containing A+B+C.
+        // A+B and A+C alone do not agree. Inspect every candidate before deciding,
+        // as their common superset may have been published after both subsets.
+        Ok(candidates
+            .iter()
+            .find(|(_, members)| {
+                candidates
+                    .iter()
+                    .all(|(_, observed)| observed.is_subset(members))
+            })
+            .map(|(id, _)| id.clone()))
     }
 
     pub async fn get_media_version_members(

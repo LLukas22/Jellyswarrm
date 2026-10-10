@@ -371,6 +371,7 @@ async fn add_tracked_play_session(
             session_id: session_id.to_string(),
             user_id: user_id.to_string(),
             server_id: server.id,
+            original_item_id: None,
         })
         .await;
 }
