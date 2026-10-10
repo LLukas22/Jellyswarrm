@@ -94,6 +94,3 @@ pub static MEDIA_ID_MAP_KEY_FIELDS: LazyLock<FieldMatcher> =
 
 pub static MEDIA_ID_NESTED_MAP_KEY_FIELDS: LazyLock<FieldMatcher> =
     LazyLock::new(|| FieldMatcher::new(&["ImageBlurHashes"]));
-
-pub static NAME_FIELDS: LazyLock<FieldMatcher> =
-    LazyLock::new(|| FieldMatcher::new(&["Name", "SeriesName"]));

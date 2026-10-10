@@ -1,5 +1,31 @@
 use super::postprocessing::Pagination;
 
+/// One interpretation of the client query, shared by fetching and finalization.
+pub(super) struct CatalogRequestPolicy {
+    pub pagination: Pagination,
+    pub sort: super::postprocessing::SortPolicy,
+    pub authoritative_inventory: bool,
+    pub upstream_limited: bool,
+}
+
+impl CatalogRequestPolicy {
+    pub fn from_url(url: &url::Url) -> Self {
+        Self {
+            pagination: Pagination::from_url(url),
+            sort: super::postprocessing::SortPolicy::from_url(url),
+            authoritative_inventory: is_authoritative_media_inventory_request(url),
+            upstream_limited: is_upstream_limited_catalog_request(url),
+        }
+    }
+
+    pub fn prepare_upstream(&self, url: &mut url::Url, include_identity: bool) {
+        ensure_item_fields(url, &self.sort.required_fields());
+        if include_identity {
+            ensure_duplicate_identity_field(url);
+        }
+    }
+}
+
 pub(super) const UPSTREAM_PAGE_SIZE: usize = 100;
 
 /// Leave other parent references for the per-server request processor.
@@ -92,17 +118,6 @@ pub(super) fn is_authoritative_media_inventory_request(url: &url::Url) -> bool {
     safe && recursive && includes_dedup_types
 }
 
-pub(super) fn merged_library_max_pages(pagination: Pagination) -> Option<usize> {
-    pagination.limit.map(|client_limit| {
-        let window_end = pagination.start_index.saturating_add(client_limit);
-        window_end
-            .saturating_mul(3)
-            .div_ceil(2)
-            .div_ceil(UPSTREAM_PAGE_SIZE)
-            .max(1)
-    })
-}
-
 pub(super) fn set_upstream_page(url: &mut url::Url, start_index: usize, limit: usize) {
     let pairs = url
         .query_pairs()
@@ -121,39 +136,9 @@ pub(super) fn ensure_duplicate_identity_field(url: &mut url::Url) {
     ensure_item_fields(url, &["ProviderIds"]);
 }
 
-pub(super) fn ensure_global_sort_fields(url: &mut url::Url) {
-    let sort_fields = url
-        .query_pairs()
-        .filter(|(key, _)| key.eq_ignore_ascii_case("SortBy"))
-        .flat_map(|(_, value)| {
-            value
-                .split(',')
-                .map(|field| field.trim().to_owned())
-                .collect::<Vec<_>>()
-        })
-        .filter(|field| !field.is_empty())
-        .collect::<Vec<_>>();
-    let path = url.path().trim_end_matches('/').to_ascii_lowercase();
-    let is_latest = path.ends_with("/latest");
-    if is_latest
-        || sort_fields
-            .iter()
-            .any(|field| field.eq_ignore_ascii_case("DateCreated"))
-    {
-        ensure_item_fields(url, &["DateCreated"]);
-    }
-    // SortName is opt-in in BaseItemDto. Fetch it even when the client only
-    // needs display fields, including when it is a secondary sort criterion.
-    if sort_fields
-        .iter()
-        .any(|field| field.eq_ignore_ascii_case("SortName"))
-        || (sort_fields.is_empty()
-            && !is_latest
-            && !path.ends_with("/resume")
-            && !path.contains("/shows/"))
-    {
-        ensure_item_fields(url, &["SortName"]);
-    }
+#[cfg(test)]
+fn ensure_global_sort_fields(url: &mut url::Url) {
+    CatalogRequestPolicy::from_url(url).prepare_upstream(url, false);
 }
 
 fn ensure_item_fields(url: &mut url::Url, required_fields: &[&str]) {
@@ -211,32 +196,6 @@ mod tests {
         assert!(is_upstream_limited_catalog_request(&latest));
         assert!(is_upstream_limited_catalog_request(&suggestions));
         assert!(!is_upstream_limited_catalog_request(&browse));
-    }
-
-    #[test]
-    fn merged_library_page_limit_scales_with_client_window() {
-        assert_eq!(
-            merged_library_max_pages(Pagination {
-                start_index: 0,
-                limit: Some(100),
-            }),
-            Some(2)
-        );
-        assert_eq!(
-            merged_library_max_pages(Pagination {
-                start_index: 100,
-                limit: Some(100),
-            }),
-            Some(3)
-        );
-        assert_eq!(merged_library_max_pages(Pagination::unbounded()), None);
-        assert_eq!(
-            merged_library_max_pages(Pagination {
-                start_index: 1_200,
-                limit: Some(100),
-            }),
-            Some(20)
-        );
     }
 
     #[test]

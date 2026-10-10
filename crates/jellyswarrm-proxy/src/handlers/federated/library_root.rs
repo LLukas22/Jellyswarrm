@@ -7,6 +7,7 @@ use tracing::{error, warn};
 
 use crate::{
     handlers::common::response_json_to_payload,
+    media_presentation::ItemNamePolicy,
     models::{ItemsResponseVariants, MediaItem},
     processors::response_processor::ResponseProcessingProfile,
     request_preprocessing::PreprocessedRequest,
@@ -26,6 +27,7 @@ use super::{
     },
     library_resolution::CatalogFetchTarget,
     postprocessing::{FederatedItems, ServerItems},
+    request_policy::CatalogRequestPolicy,
     upstream::{fetch_catalog, FetchMode, FetchedCatalog, FetchedServerItems},
 };
 
@@ -63,7 +65,10 @@ async fn process_library_group_individually(
 ) -> Result<Vec<MediaItem>, StatusCode> {
     let mut items = Vec::with_capacity(group.len());
     for ServerMediaItem { item, server } in group {
-        items.push(process_media_item_for_server(item, state, &server, true).await?);
+        items.push(
+            process_media_item_for_server(item, state, &server, ItemNamePolicy::IncludeServerName)
+                .await?,
+        );
     }
     Ok(items)
 }
@@ -240,8 +245,13 @@ async fn partition_library_root_inventory(
         }
 
         if !non_library_items.is_empty() {
-            let processed =
-                process_media_items_for_server(non_library_items, state, &server, true).await?;
+            let processed = process_media_items_for_server(
+                non_library_items,
+                state,
+                &server,
+                ItemNamePolicy::IncludeServerName,
+            )
+            .await?;
             if !processed.is_empty() {
                 non_library_per_server.push(ServerItems {
                     response: ItemsResponseVariants::Bare(processed),
@@ -268,6 +278,7 @@ pub(super) async fn get_automatic_library_root(
         access_scope,
         ..
     } = preprocessed;
+    let policy = CatalogRequestPolicy::from_url(original_request.url());
     let access_scope = access_scope.ok_or(StatusCode::UNAUTHORIZED)?;
     let refresh_generation = state
         .virtual_library_service
@@ -278,7 +289,15 @@ pub(super) async fn get_automatic_library_root(
         server_items,
         failures,
         response_shape,
-    } = fetch_catalog(state, &original_request, targets, FetchMode::Inventory, 0).await?;
+    } = fetch_catalog(
+        state,
+        &original_request,
+        &policy,
+        targets,
+        FetchMode::Inventory,
+        0,
+    )
+    .await?;
     let refreshed_server_ids = server_items
         .iter()
         .map(|items| items.server_items.server.id)
@@ -323,7 +342,7 @@ pub(super) async fn get_automatic_library_root(
         })?;
 
     let items = FederatedItems::new(library_items).merge_interleaved(non_library_per_server);
-    finalize_items_response(items, original_request.url(), response_shape)
+    finalize_items_response(state, &original_request, items, &policy, response_shape).await
 }
 
 async fn present_configured_library_groups(
@@ -375,11 +394,20 @@ pub(super) async fn get_configured_library_root(
     targets: Vec<CatalogFetchTarget>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let original_request = preprocessed.original_request;
+    let policy = CatalogRequestPolicy::from_url(original_request.url());
     let FetchedCatalog {
         server_items,
         response_shape,
         ..
-    } = fetch_catalog(state, &original_request, targets, FetchMode::Inventory, 0).await?;
+    } = fetch_catalog(
+        state,
+        &original_request,
+        &policy,
+        targets,
+        FetchMode::Inventory,
+        0,
+    )
+    .await?;
     let LibraryRootInventory {
         configured_groups,
         unassigned_libraries,
@@ -398,24 +426,25 @@ pub(super) async fn get_configured_library_root(
     let mut single_groups = single_groups.into_iter().collect::<Vec<_>>();
     single_groups.sort_by(|left, right| left.0.cmp(&right.0));
     for (_key, ServerMediaItem { item, server }) in single_groups {
-        library_items.push(process_library_folder(state, item, &server, true).await?);
+        library_items.push(
+            process_library_folder(state, item, &server, ItemNamePolicy::IncludeServerName).await?,
+        );
     }
 
     let items = FederatedItems::new(library_items).merge_interleaved(non_library_per_server);
 
-    finalize_items_response(items, original_request.url(), response_shape)
+    finalize_items_response(state, &original_request, items, &policy, response_shape).await
 }
 
 async fn process_media_items_for_server(
     items: Vec<MediaItem>,
     state: &AppState,
     server: &Server,
-    should_change_name: bool,
+    item_name_policy: ItemNamePolicy,
 ) -> Result<Vec<MediaItem>, StatusCode> {
     let mut processed = Vec::with_capacity(items.len());
     for item in items {
-        processed
-            .push(process_media_item_for_server(item, state, server, should_change_name).await?);
+        processed.push(process_media_item_for_server(item, state, server, item_name_policy).await?);
     }
     Ok(processed)
 }
@@ -443,7 +472,8 @@ async fn build_virtual_library_item(
 
     for (index, ServerMediaItem { item, server }) in group.into_iter().enumerate() {
         total_child_count += item.child_count.unwrap_or(0);
-        let processed = process_media_item_for_server(item, state, &server, false).await?;
+        let processed =
+            process_media_item_for_server(item, state, &server, ItemNamePolicy::Preserve).await?;
         members.push((server.id, processed.id.clone()));
         if index == image_source_index {
             image_source_id = Some(processed.id.clone());
@@ -516,14 +546,14 @@ async fn process_library_folder(
     state: &AppState,
     item: MediaItem,
     server: &Server,
-    should_change_name: bool,
+    item_name_policy: ItemNamePolicy,
 ) -> Result<MediaItem, StatusCode> {
     let primary_tag = item
         .image_tags
         .as_ref()
         .and_then(|tags| tags.get("Primary").cloned());
     let mut processed =
-        process_media_item_for_server(item, state, server, should_change_name).await?;
+        process_media_item_for_server(item, state, server, item_name_policy).await?;
     let image_source_id = processed.id.clone();
     attach_library_folder_image_source(
         &mut processed,
@@ -574,7 +604,7 @@ async fn process_media_item_for_server(
     item: MediaItem,
     state: &AppState,
     server: &Server,
-    should_change_name: bool,
+    item_name_policy: ItemNamePolicy,
 ) -> Result<MediaItem, StatusCode> {
     let mut item_json = serde_json::to_value(item).map_err(|e| {
         error!("Failed to serialize media item JSON: {}", e);
@@ -586,12 +616,15 @@ async fn process_media_item_for_server(
             &mut item_json,
             server,
             ResponseProcessingProfile::Media,
-            should_change_name,
             None,
         )
         .await?;
 
-    response_json_to_payload(item_json)
+    let mut item = response_json_to_payload(item_json)?;
+    if state.config.read().await.include_server_name_in_media {
+        item_name_policy.apply(&mut item, &server.name);
+    }
+    Ok(item)
 }
 
 #[cfg(test)]

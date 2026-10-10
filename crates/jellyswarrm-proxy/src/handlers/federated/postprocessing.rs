@@ -107,6 +107,9 @@ pub(super) struct FederatedItems {
 }
 
 impl FederatedItems {
+    pub(super) fn items_mut(&mut self) -> &mut [MediaItem] {
+        &mut self.items
+    }
     pub(super) fn new(items: Vec<MediaItem>) -> Self {
         Self {
             items,
@@ -145,13 +148,25 @@ impl FederatedItems {
         self.items.len()
     }
 
+    #[cfg(test)]
     pub(super) fn into_response(
-        mut self,
+        self,
         url: &url::Url,
         shape: ResponseShape,
     ) -> ItemsResponseVariants {
-        let pagination = Pagination::from_url(url);
-        SortPolicy::from_url(url).apply(&mut self.items);
+        self.into_response_with_policy(
+            &super::request_policy::CatalogRequestPolicy::from_url(url),
+            shape,
+        )
+    }
+
+    pub(super) fn into_response_with_policy(
+        mut self,
+        policy: &super::request_policy::CatalogRequestPolicy,
+        shape: ResponseShape,
+    ) -> ItemsResponseVariants {
+        let pagination = policy.pagination;
+        policy.sort.apply(&mut self.items);
         let total_count = self.reported_total.unwrap_or(self.items.len());
         let items = pagination.apply(self.items);
         shape.wrap(items, total_count, pagination)
@@ -159,13 +174,13 @@ impl FederatedItems {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SortCriterion {
+pub(super) struct SortCriterion {
     field: ItemSortBy,
     order: SortOrder,
 }
 
 #[derive(Debug)]
-enum SortPolicy {
+pub(super) enum SortPolicy {
     PreserveUpstream,
     SeasonOrder,
     EpisodeOrder,
@@ -173,7 +188,7 @@ enum SortPolicy {
 }
 
 impl SortPolicy {
-    fn from_url(url: &url::Url) -> Self {
+    pub(super) fn from_url(url: &url::Url) -> Self {
         let path = url.path().trim_end_matches('/').to_ascii_lowercase();
         if path.ends_with("/shows/nextup") {
             // Jellyfin ranks Next Up using the previously watched episode's date,
@@ -260,6 +275,20 @@ impl SortPolicy {
             }),
         }
     }
+
+    pub(super) fn required_fields(&self) -> Vec<&'static str> {
+        let Self::Fields(criteria) = self else {
+            return Vec::new();
+        };
+        criteria
+            .iter()
+            .filter_map(|criterion| match criterion.field {
+                ItemSortBy::SortName => Some("SortName"),
+                ItemSortBy::DateCreated => Some("DateCreated"),
+                _ => None,
+            })
+            .collect()
+    }
 }
 
 fn item_number(item: &MediaItem, key: &str) -> i64 {
@@ -327,6 +356,40 @@ fn to_i32(value: usize) -> i32 {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn shared_request_policy_survives_upstream_pagination_rewrites() {
+        use super::super::request_policy::{set_upstream_page, CatalogRequestPolicy};
+        let mut url = url::Url::parse(
+            "http://localhost/Items?StartIndex=1&Limit=1&SortBy=DateCreated&SortOrder=Descending",
+        )
+        .unwrap();
+        let policy = CatalogRequestPolicy::from_url(&url);
+        policy.prepare_upstream(&mut url, true);
+        assert!(url.query_pairs().any(|(key, fields)| key == "Fields"
+            && fields.contains("DateCreated")
+            && fields.contains("ProviderIds")));
+        set_upstream_page(&mut url, 0, 100);
+        let items = [
+            ("old", "2020-01-01T00:00:00Z"),
+            ("new", "2022-01-01T00:00:00Z"),
+            ("middle", "2021-01-01T00:00:00Z"),
+        ]
+        .into_iter()
+        .map(|(id, date)| {
+            serde_json::from_value(json!({"Id": id, "Type": "Movie", "DateCreated": date})).unwrap()
+        })
+        .collect();
+        let ItemsResponseVariants::WithCount(result) =
+            FederatedItems::new(items).into_response_with_policy(&policy, ResponseShape::Counted)
+        else {
+            panic!("expected counted response");
+        };
+        assert_eq!(result.start_index, 1);
+        assert_eq!(result.total_record_count, 3);
+        assert_eq!(result.items.len(), 1);
+        assert_eq!(result.items[0].id, "middle");
+    }
 
     #[test]
     fn repeated_sort_fields_and_orders_preserve_all_criteria() {

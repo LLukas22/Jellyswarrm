@@ -14,8 +14,8 @@ use crate::{
 use super::{
     finalize_items_response,
     library_resolution::CatalogFetchTarget,
-    postprocessing::{FederatedItems, Pagination, ServerItems},
-    request_policy::is_authoritative_media_inventory_request,
+    postprocessing::{FederatedItems, ServerItems},
+    request_policy::CatalogRequestPolicy,
     upstream::{
         estimate_merged_library_total, fetch_catalog, fetch_show_catalog, FetchMode, FetchedCatalog,
     },
@@ -72,12 +72,45 @@ async fn show_catalog_aliases(
     Ok(result)
 }
 
+enum CatalogContext {
+    Library,
+    Show { series_group: String },
+}
+
+impl CatalogContext {
+    fn series_group(&self) -> Option<&str> {
+        match self {
+            Self::Library => None,
+            Self::Show { series_group } => Some(series_group),
+        }
+    }
+}
+
 pub(super) async fn get_virtual_library_items(
     state: &AppState,
     preprocessed: PreprocessedRequest,
     catalog_scope_key: String,
     targets: Vec<CatalogFetchTarget>,
     skipped_targets: usize,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    get_reconciled_catalog(
+        state,
+        preprocessed,
+        catalog_scope_key,
+        targets,
+        skipped_targets,
+        CatalogContext::Library,
+    )
+    .await
+}
+
+async fn get_reconciled_catalog(
+    state: &AppState,
+    preprocessed: PreprocessedRequest,
+    catalog_scope_key: String,
+    targets: Vec<CatalogFetchTarget>,
+    skipped_targets: usize,
+    context: CatalogContext,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let deduplicate_media = state.deduplicate_media_enabled().await;
     let reconciliation_generation = if deduplicate_media {
@@ -95,23 +128,32 @@ pub(super) async fn get_virtual_library_items(
         None
     };
     let original_request = preprocessed.original_request;
-    let pagination = Pagination::from_url(original_request.url());
+    let policy = CatalogRequestPolicy::from_url(original_request.url());
+    let series_group = context.series_group();
     let FetchedCatalog {
         server_items,
         failures,
         response_shape,
-    } = fetch_catalog(
-        state,
-        &original_request,
-        targets,
-        FetchMode::VirtualLibrary { pagination },
-        skipped_targets,
-    )
-    .await?;
+    } = match &context {
+        CatalogContext::Show { .. } => {
+            fetch_show_catalog(state, &original_request, &policy, targets, skipped_targets).await?
+        }
+        CatalogContext::Library => {
+            fetch_catalog(
+                state,
+                &original_request,
+                &policy,
+                targets,
+                FetchMode::VirtualLibrary,
+                skipped_targets,
+            )
+            .await?
+        }
+    };
 
     let mut upstream_total_sum = 0i32;
     let mut all_fully_fetched = true;
-    let authoritative_inventory = is_authoritative_media_inventory_request(original_request.url());
+    let authoritative_inventory = series_group.is_none() && policy.authoritative_inventory;
     let mut snapshots = Vec::new();
     let mut tagged_items = Vec::new();
     let viewer = preprocessed
@@ -180,13 +222,13 @@ pub(super) async fn get_virtual_library_items(
     }
     for fetch in server_items {
         if let Some(total) = fetch.upstream_total {
-            upstream_total_sum += total.max(0);
+            upstream_total_sum = upstream_total_sum.saturating_add(total.max(0));
         }
         all_fully_fetched &= fetch.fully_fetched;
         let ServerItems { response, server } = fetch.server_items;
         let items = response.into_items();
         if deduplicate_media {
-            let aliases = show_catalog_aliases(state, &items, &viewer, None).await?;
+            let aliases = show_catalog_aliases(state, &items, &viewer, series_group).await?;
             snapshots.push(MediaCatalogSnapshot {
                 source_key: format!(
                     "{}:{}",
@@ -213,7 +255,7 @@ pub(super) async fn get_virtual_library_items(
         }));
     }
 
-    let items = if deduplicate_media {
+    let mut items = if deduplicate_media {
         let plan = MediaDedupPlan::with_aliases(tagged_items, catalog_aliases);
         let stable_group_ids = state
             .media_storage
@@ -228,23 +270,39 @@ pub(super) async fn get_virtual_library_items(
                 error!("Failed to reconcile media version groups: {error}");
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
-        let mut merged_items = plan.collapse(&stable_group_ids);
-        for item in &mut merged_items {
-            crate::handlers::media_versions::preserve_media_parent_groups(state, item, &viewer)
-                .await?;
-        }
-        FederatedItems::from_merged_items(merged_items)
+        FederatedItems::from_merged_items(plan.collapse(&stable_group_ids))
     } else {
         FederatedItems::from_tagged_items(tagged_items)
     };
+    for item in items.items_mut() {
+        if deduplicate_media || series_group.is_some() {
+            crate::handlers::media_versions::preserve_media_parent_groups(state, item, &viewer)
+                .await?;
+        }
+        if let Some(group) = series_group {
+            if matches!(
+                item.item_type,
+                crate::models::enums::BaseItemKind::Season
+                    | crate::models::enums::BaseItemKind::Episode
+            ) {
+                if item.series_id.is_some() && item.parent_id == item.series_id {
+                    item.parent_id = Some(group.to_string());
+                }
+                item.series_id = Some(group.to_string());
+            }
+        }
+    }
     let total_count =
         estimate_merged_library_total(items.len(), upstream_total_sum, all_fully_fetched);
 
     finalize_items_response(
+        state,
+        &original_request,
         items.with_reported_total(total_count),
-        original_request.url(),
+        &policy,
         response_shape,
     )
+    .await
 }
 
 /// Federates `/Shows/{aggregateId}/Seasons|Episodes` across the member
@@ -258,127 +316,29 @@ pub(super) async fn get_aggregate_show_items(
     targets: Vec<CatalogFetchTarget>,
     skipped_targets: usize,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let deduplicate = state.deduplicate_media_enabled().await;
-    let reconciliation_generation = if deduplicate {
-        Some(
-            state
-                .media_storage
-                .begin_media_reconciliation()
-                .await
-                .map_err(|error| {
-                    error!("Failed to begin show reconciliation: {error}");
-                    StatusCode::INTERNAL_SERVER_ERROR
-                })?,
-        )
-    } else {
-        None
-    };
-    let original_request = preprocessed.original_request;
     let viewer = preprocessed
         .access_scope
         .as_ref()
         .map(|scope| scope.user_id().to_string())
         .unwrap_or_else(|| "anonymous".to_string());
     let catalog_scope_key = format!("aggregate:{aggregate_id}:{viewer}");
-    let FetchedCatalog {
-        server_items,
-        failures: _,
-        response_shape,
-    } = fetch_show_catalog(state, &original_request, targets, skipped_targets).await?;
-
-    let mut upstream_total_sum = 0i32;
-    let mut all_fully_fetched = true;
-    let mut snapshots = Vec::new();
-    let mut tagged_items = Vec::new();
-    let mut catalog_aliases = Vec::new();
-    for fetch in server_items {
-        if let Some(total) = fetch.upstream_total {
-            upstream_total_sum += total.max(0);
-        }
-        all_fully_fetched &= fetch.fully_fetched;
-        let ServerItems { response, server } = fetch.server_items;
-        let items = response.into_items();
-        if deduplicate {
-            let aliases = show_catalog_aliases(state, &items, &viewer, Some(&aggregate_id)).await?;
-            snapshots.push(MediaCatalogSnapshot {
-                source_key: format!(
-                    "{}:{}",
-                    server.id,
-                    fetch.source_parent_id.as_deref().unwrap_or_default()
-                ),
-                server_id: server.id,
-                // Seasons, episodes and filtered listings share this source.
-                // A show-child response cannot replace the whole inventory.
-                complete: false,
-                observations: items
-                    .iter()
-                    .zip(&aliases)
-                    .filter(|(item, _)| MediaKind::from_item_kind(&item.item_type).is_some())
-                    .map(|(item, aliases)| MediaObservation {
-                        virtual_media_id: item.id.clone(),
-                        aliases: aliases.clone(),
-                    })
-                    .collect(),
-            });
-            catalog_aliases.extend(aliases);
-        }
-        tagged_items.extend(items.into_iter().map(|item| TaggedMediaItem {
-            item,
-            server: server.clone(),
-        }));
-    }
-
-    for tagged in &mut tagged_items {
-        crate::handlers::media_versions::preserve_media_parent_groups(
-            state,
-            &mut tagged.item,
-            &viewer,
-        )
-        .await?;
-        if matches!(
-            tagged.item.item_type,
-            crate::models::enums::BaseItemKind::Season
-                | crate::models::enums::BaseItemKind::Episode
-        ) {
-            if tagged.item.series_id.is_some() && tagged.item.parent_id == tagged.item.series_id {
-                tagged.item.parent_id = Some(aggregate_id.clone());
-            }
-            tagged.item.series_id = Some(aggregate_id.clone());
-        }
-    }
-
-    let items = if deduplicate {
-        let plan = MediaDedupPlan::with_aliases(tagged_items, catalog_aliases);
-        let stable_group_ids = state
-            .media_storage
-            .reconcile_media_catalog(
-                &catalog_scope_key,
-                reconciliation_generation.expect("enabled reconciliation has a generation"),
-                &snapshots,
-                false,
-            )
-            .await
-            .map_err(|error| {
-                error!("Failed to reconcile show version groups: {error}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-        FederatedItems::from_merged_items(plan.collapse(&stable_group_ids))
-    } else {
-        FederatedItems::from_tagged_items(tagged_items)
-    };
-    let total_count =
-        estimate_merged_library_total(items.len(), upstream_total_sum, all_fully_fetched);
-
-    finalize_items_response(
-        items.with_reported_total(total_count),
-        original_request.url(),
-        response_shape,
+    get_reconciled_catalog(
+        state,
+        preprocessed,
+        catalog_scope_key,
+        targets,
+        skipped_targets,
+        CatalogContext::Show {
+            series_group: aggregate_id,
+        },
     )
+    .await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::handlers::federated::request_policy::is_authoritative_media_inventory_request;
     use crate::{
         config::MIGRATOR, media_storage_service::MediaStorageService, server_storage::Server,
     };

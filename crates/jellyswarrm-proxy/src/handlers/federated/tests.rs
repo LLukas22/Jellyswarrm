@@ -916,6 +916,249 @@ async fn merged_library_show_routes_merge_localized_seasons_and_keep_navigation(
 }
 
 #[tokio::test]
+async fn client_pages_are_applied_after_scanning_capped_catalogs() {
+    for (kind, endpoint) in [
+        ("search", "/Items?SearchTerm=movie"),
+        ("browse", "/Items?Recursive=true"),
+        ("unmerged", "/Items?Recursive=true"),
+        ("episodes", "/Shows/aggregate/Episodes?UserId=viewer"),
+        ("seasons", "/Shows/aggregate/Seasons?UserId=viewer"),
+    ] {
+        let (state, _pool, sessions, upstreams) = setup().await;
+        state.config.write().await.deduplicate_media = kind != "unmerged";
+        for (server_index, upstream) in upstreams.iter().enumerate() {
+            let upstream_path = match kind {
+                "episodes" => "/Shows/show/Episodes",
+                "seasons" => "/Shows/show/Seasons",
+                _ => "/Items",
+            };
+            Mock::given(method("GET")).and(path(upstream_path))
+                .respond_with(move |req: &wiremock::Request| {
+                    let start = req.url.query_pairs().find(|(key, _)| key == "StartIndex")
+                        .map(|(_, value)| value.parse::<usize>().unwrap()).unwrap_or(0);
+                    let items = (start..(start + 2).min(5)).map(|index| {
+                        let number = index + if kind == "unmerged" { server_index * 5 } else { 0 };
+                        json!({"Id": format!("item-{index}"), "Name": format!("Item {number:02}"),
+                            "Type": match kind { "episodes" => "Episode", "seasons" => "Season", _ => "Movie" },
+                            "IndexNumber": number, "ParentIndexNumber": 1,
+                            "ProviderIds": {"Tmdb": format!("{number}")}})
+                    }).collect::<Vec<_>>();
+                    ResponseTemplate::new(200).set_body_json(json!({"Items": items, "TotalRecordCount": 5, "StartIndex": start}))
+                }).mount(upstream).await;
+        }
+        for (start, limit) in [(3, 2), (100, 2), (0, 0)] {
+            let req = request(
+                &format!(
+                    "{}&StartIndex={start}&Limit={limit}&SortBy=Name",
+                    endpoint.replace("aggregate", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                ),
+                &sessions,
+            );
+            let targets = || {
+                sessions
+                    .iter()
+                    .map(|(session, server)| CatalogFetchTarget {
+                        session: session.clone(),
+                        server: server.clone(),
+                        parent_id: if matches!(kind, "episodes" | "seasons") {
+                            Some("show".into())
+                        } else {
+                            None
+                        },
+                        resolved_parent_id: None,
+                    })
+                    .collect()
+            };
+            let Json(result) = match kind {
+                "browse" => {
+                    get_virtual_library_items(&state, req, "test:viewer".into(), targets(), 0).await
+                }
+                "episodes" | "seasons" => {
+                    get_aggregate_show_items(
+                        &state,
+                        req,
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                        targets(),
+                        0,
+                    )
+                    .await
+                }
+                _ => get_items_from_all_servers_preprocessed(&state, req).await,
+            }
+            .unwrap_or_else(|status| panic!("{kind}: {status}"));
+            assert_eq!(
+                result["TotalRecordCount"],
+                if kind == "unmerged" { 10 } else { 5 },
+                "{kind}"
+            );
+            assert_eq!(result["StartIndex"], start, "{kind}");
+            let items = result["Items"].as_array().unwrap();
+            if start == 3 {
+                assert_eq!(items.len(), 2, "{kind}");
+                assert!(
+                    items[0]["Name"].as_str().unwrap().starts_with("Item 03"),
+                    "{kind}"
+                );
+                assert!(
+                    items[1]["Name"].as_str().unwrap().starts_with("Item 04"),
+                    "{kind}"
+                );
+            } else {
+                assert!(items.is_empty(), "{kind}");
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn catalog_pagination_follows_backend_caps_and_detects_stalled_pages() {
+    for (counted, stalled) in [(true, false), (false, false), (true, true)] {
+        let (state, _pool, sessions, upstreams) = setup().await;
+        for upstream in &upstreams {
+            Mock::given(method("GET"))
+                .and(path("/Items"))
+                .respond_with(move |req: &wiremock::Request| {
+                    let offset = if stalled { 0 } else {
+                        req.url.query_pairs().find(|(key, _)| key == "StartIndex")
+                            .unwrap().1.parse::<usize>().unwrap()
+                    };
+                    // This backend caps pages at two items regardless of Limit.
+                    let items = (offset..(offset + 2).min(5)).map(|index| json!({
+                        "Id": format!("item-{index}"), "Type": "Movie", "Name": format!("Movie {index}")
+                    })).collect::<Vec<_>>();
+                    ResponseTemplate::new(200).set_body_json(if counted {
+                        json!({"Items": items, "TotalRecordCount": 5, "StartIndex": offset})
+                    } else { json!(items) })
+                })
+                .mount(upstream).await;
+        }
+        let req = request("/Items?Recursive=true", &sessions);
+        let policy = CatalogRequestPolicy::from_url(req.original_request.url());
+        let targets = sessions
+            .iter()
+            .map(|(session, server)| CatalogFetchTarget {
+                session: session.clone(),
+                server: server.clone(),
+                parent_id: None,
+                resolved_parent_id: None,
+            })
+            .collect();
+        let catalog = fetch_catalog(
+            &state,
+            &req.original_request,
+            &policy,
+            targets,
+            FetchMode::VirtualLibrary,
+            0,
+        )
+        .await
+        .unwrap();
+        for result in catalog.server_items {
+            assert_eq!(
+                result.server_items.response.len(),
+                if stalled { 2 } else { 5 }
+            );
+            assert_eq!(result.fully_fetched, !stalled);
+        }
+        let offsets = upstreams[0]
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|req| {
+                req.url
+                    .query_pairs()
+                    .find(|(key, _)| key == "StartIndex")
+                    .unwrap()
+                    .1
+                    .parse::<usize>()
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            offsets,
+            if stalled {
+                vec![0, 2]
+            } else if counted {
+                vec![0, 2, 4]
+            } else {
+                vec![0, 2, 4, 5]
+            }
+        );
+    }
+}
+
+#[tokio::test]
+async fn catalog_cache_contains_only_final_visible_items_and_titles() {
+    let (state, _pool, sessions, upstreams) = setup().await;
+    state.config.write().await.include_server_name_in_media = true;
+    for (index, upstream) in upstreams.iter().enumerate() {
+        Mock::given(method("GET"))
+            .and(path("/Items"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Items": [
+                    {"Id": format!("first-{index}"), "Type": "Movie", "Name": "A movie", "ProviderIds": {"Tmdb": "1"}},
+                    {"Id": format!("second-{index}"), "Type": "Movie", "Name": "Z movie", "ProviderIds": {"Tmdb": "2"}}
+                ], "TotalRecordCount": 2, "StartIndex": 0
+            })))
+            .mount(upstream).await;
+    }
+    let token = "catalog-client";
+    let mut req = request("/Items?SearchTerm=movie&Limit=1", &sessions);
+    req.original_request
+        .headers_mut()
+        .insert("X-Emby-Token", token.parse().unwrap());
+    let Json(result) = get_items_from_all_servers_preprocessed(&state, req)
+        .await
+        .unwrap();
+    assert_eq!(result["Items"].as_array().unwrap().len(), 1);
+    let visible = &result["Items"][0];
+    let cached = state
+        .client_sessions
+        .media_metadata(token, visible["Id"].as_str().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(cached["Name"], "A movie");
+    for (index, (_, server)) in sessions.iter().enumerate() {
+        for prefix in ["first", "second"] {
+            let mapping = state
+                .media_storage
+                .get_or_create_media_mapping(&format!("{prefix}-{index}"), server)
+                .await
+                .unwrap();
+            assert!(state
+                .client_sessions
+                .media_metadata(token, &mapping.virtual_media_id)
+                .await
+                .is_none());
+        }
+    }
+    // An unmerged listing opts into presentation after translation. Its final
+    // display title is also the title exposed to remote controls.
+    state.config.write().await.deduplicate_media = false;
+    let mut req = request("/Items?Limit=1", &sessions);
+    req.original_request
+        .headers_mut()
+        .insert("X-Emby-Token", token.parse().unwrap());
+    let Json(result) = get_items_from_all_servers_preprocessed(&state, req)
+        .await
+        .unwrap();
+    let visible = &result["Items"][0];
+    assert!(visible["Name"]
+        .as_str()
+        .unwrap()
+        .starts_with("A movie [Server "));
+    assert_eq!(
+        state
+            .client_sessions
+            .media_metadata(token, visible["Id"].as_str().unwrap())
+            .await
+            .unwrap()["Name"],
+        visible["Name"]
+    );
+}
+
+#[tokio::test]
 async fn search_merges_movies_and_series_without_server_tags() {
     let (state, _pool, sessions, upstreams) = setup().await;
     state.config.write().await.include_server_name_in_media = true;
@@ -1466,6 +1709,13 @@ async fn latest_virtual_parent_reuses_browse_scope_and_member_routes() {
                 if values != expected {
                     return ResponseTemplate::new(400);
                 }
+                if request
+                    .url
+                    .query_pairs()
+                    .any(|(key, value)| key == "StartIndex" && value != "0")
+                {
+                    return ResponseTemplate::new(200).set_body_json(json!([]));
+                }
                 let mut items = latest_items();
                 for item in items.as_array_mut().unwrap() {
                     item["Path"] = json!(format!(
@@ -1475,7 +1725,7 @@ async fn latest_virtual_parent_reuses_browse_scope_and_member_routes() {
                 }
                 ResponseTemplate::new(200).set_body_json(items)
             })
-            .expect(3)
+            .expect(4)
             .mount(&upstreams[index])
             .await;
     }

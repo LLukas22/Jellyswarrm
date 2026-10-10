@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use serde_json::{Map, Value};
+use serde_json::Value;
 use tracing::debug;
 
 use crate::{
@@ -7,8 +7,7 @@ use crate::{
         field_matcher::{
             DELIVERY_URL_FIELDS, DISABLED_BOOL_FIELDS, MEDIA_ID_ARRAY_FIELDS,
             MEDIA_ID_LIST_PARENT_FIELDS, MEDIA_ID_MAP_KEY_FIELDS, MEDIA_ID_MAP_VALUE_FIELDS,
-            MEDIA_ID_NESTED_MAP_KEY_FIELDS, NAME_FIELDS, RESPONSE_MEDIA_ID_FIELDS,
-            SERVER_ID_FIELDS,
+            MEDIA_ID_NESTED_MAP_KEY_FIELDS, RESPONSE_MEDIA_ID_FIELDS, SERVER_ID_FIELDS,
         },
         json_processor::{JsonProcessingContext, JsonProcessingResult, JsonProcessor},
         url_processor::UrlProcessor,
@@ -143,8 +142,6 @@ pub struct ResponseProcessingContext {
     pub proxy_server_id: String,
     pub proxy_api_key: Option<String>,
     pub profile: ResponseProcessingProfile,
-    pub should_change_name: bool,
-    pub can_change_item_names: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -299,11 +296,6 @@ impl JsonProcessor<ResponseProcessingContext> for ResponseProcessor {
                 *value = Value::String(context.proxy_server_id.clone());
                 result = result.mark_modified();
             }
-        } else if context.rewrites_media_fields() && should_change_name(json_context, context) {
-            if let Value::String(name) = value {
-                *name = format!("{} [{}]", name, context.server.name);
-                result = result.mark_modified();
-            }
         }
 
         result
@@ -344,35 +336,6 @@ fn is_legacy_unmapped_media_id_field(json_context: &JsonProcessingContext) -> bo
             .any(|segment| segment.eq_ignore_ascii_case("MediaSources"));
 
     is_user_data_item_id || is_media_source_etag
-}
-
-fn should_change_name(
-    json_context: &JsonProcessingContext,
-    context: &ResponseProcessingContext,
-) -> bool {
-    context.should_change_name
-        && context.can_change_item_names
-        && NAME_FIELDS.contains(&json_context.key)
-        && is_media_item_root_path(&json_context.parent_path)
-        && !is_live_tv_item(json_context.parent_object.as_ref())
-}
-
-fn is_media_item_root_path(parent_path: &str) -> bool {
-    parent_path.is_empty()
-        || (parent_path.starts_with('[') && !parent_path.contains('.'))
-        || last_segment(parent_path).eq_ignore_ascii_case("Items")
-}
-
-fn is_live_tv_item(parent_object: Option<&Map<String, Value>>) -> bool {
-    let Some(parent_object) = parent_object else {
-        return false;
-    };
-
-    parent_object
-        .iter()
-        .find(|(key, _)| key.eq_ignore_ascii_case("CollectionType"))
-        .and_then(|(_, value)| value.as_str())
-        .is_some_and(|collection_type| collection_type.eq_ignore_ascii_case("LiveTv"))
 }
 
 fn last_segment(path: &str) -> &str {

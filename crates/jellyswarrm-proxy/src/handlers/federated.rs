@@ -20,8 +20,8 @@ mod upstream;
 use library_resolution::{resolve_catalog_plan, CatalogFetchTarget, CatalogPlan};
 use library_root::{get_automatic_library_root, get_configured_library_root};
 use media_reconciliation::{get_aggregate_show_items, get_virtual_library_items};
-use postprocessing::{FederatedItems, Pagination, ResponseShape};
-use request_policy::has_query_key;
+use postprocessing::{FederatedItems, ResponseShape};
+use request_policy::{has_query_key, CatalogRequestPolicy};
 use upstream::{fetch_catalog, FetchMode, FetchedCatalog};
 
 /// Series detail and single-channel/genre guides identify one upstream item.
@@ -198,10 +198,13 @@ async fn get_items_from_all_servers_preprocessed(
                 ResponseShape::Counted
             };
             finalize_items_response(
+                state,
+                &preprocessed.original_request,
                 FederatedItems::default(),
-                preprocessed.original_request.url(),
+                &CatalogRequestPolicy::from_url(preprocessed.original_request.url()),
                 response_shape,
             )
+            .await
         }
         CatalogPlan::SingleServer => {
             get_items(State(state.clone()), Preprocessed(preprocessed)).await
@@ -238,7 +241,7 @@ async fn get_interleaved_root(
     targets: Vec<CatalogFetchTarget>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let original_request = preprocessed.original_request;
-    let pagination = Pagination::from_url(original_request.url());
+    let policy = CatalogRequestPolicy::from_url(original_request.url());
     let FetchedCatalog {
         server_items,
         response_shape,
@@ -246,32 +249,55 @@ async fn get_interleaved_root(
     } = fetch_catalog(
         state,
         &original_request,
+        &policy,
         targets,
-        FetchMode::ClientWindow(pagination),
+        FetchMode::Listing,
         0,
     )
     .await?;
     let server_count = server_items.len();
+    let name_policy = if state.config.read().await.include_server_name_in_media {
+        crate::media_presentation::ItemNamePolicy::IncludeServerName
+    } else {
+        crate::media_presentation::ItemNamePolicy::Preserve
+    };
     let responses = server_items
         .into_iter()
-        .map(|items| items.server_items.response)
+        .map(|items| {
+            let server = items.server_items.server;
+            let mut response = items.server_items.response;
+            for item in response.items_mut() {
+                name_policy.apply(item, &server.name);
+            }
+            response
+        })
         .collect::<Vec<_>>();
     let items = FederatedItems::interleaved(responses);
 
     debug!("Combined items from {server_count} servers");
 
-    finalize_items_response(items, original_request.url(), response_shape)
+    finalize_items_response(state, &original_request, items, &policy, response_shape).await
 }
 
-fn finalize_items_response(
+async fn finalize_items_response(
+    state: &AppState,
+    request: &reqwest::Request,
     items: FederatedItems,
-    url: &url::Url,
+    policy: &CatalogRequestPolicy,
     response_shape: ResponseShape,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    serde_json::to_value(items.into_response(url, response_shape))
-        .map(Json)
+    let response = serde_json::to_value(items.into_response_with_policy(policy, response_shape))
         .map_err(|e| {
             error!("Failed to serialize federated items response: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR
-        })
+        })?;
+    if let Some(auth) = crate::request_preprocessing::JellyfinAuthorization::from_request(request) {
+        if let Some(token) = auth.token_ref() {
+            state
+                .client_sessions
+                .cache_media_response(token, &response)
+                .await;
+        }
+    }
+    Ok(Json(response))
 }

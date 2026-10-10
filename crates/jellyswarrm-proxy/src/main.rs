@@ -39,6 +39,7 @@ mod legacy_server_identity;
 mod mapping_auth;
 mod media_catalog;
 mod media_identity;
+mod media_presentation;
 mod media_storage_service;
 mod models;
 mod processors;
@@ -158,11 +159,6 @@ impl AppState {
         config.password.clone()
     }
 
-    pub async fn can_change_item_names(&self) -> bool {
-        let config = self.config.read().await;
-        config.include_server_name_in_media
-    }
-
     pub async fn remove_prefix_from_path<'a>(&self, path: &'a str) -> &'a str {
         let config = self.config.read().await;
         if let Some(prefix) = &config.url_prefix {
@@ -190,34 +186,28 @@ impl AppState {
         self.config.read().await.deduplicate_media
     }
 
+    /// Translate backend IDs, URLs and permissions without presentation or
+    /// caching side effects. Handlers cache only their finalized response.
     pub async fn process_response_json(
         &self,
         payload: &mut serde_json::Value,
         server: &Server,
         profile: ResponseProcessingProfile,
-        should_change_name: bool,
         proxy_api_key: Option<&str>,
     ) -> Result<bool, StatusCode> {
+        let config = self.config.read().await;
         let context = ResponseProcessingContext {
             server: server.clone(),
-            proxy_server_id: self.config.read().await.server_id.clone(),
+            proxy_server_id: config.server_id.clone(),
             proxy_api_key: proxy_api_key.map(str::to_string),
             profile,
-            should_change_name,
-            can_change_item_names: self.can_change_item_names().await,
         };
+        drop(config);
 
         let modified = self
             .processors
             .process_response_json(payload, &context)
             .await?;
-        if profile != ResponseProcessingProfile::Disabled {
-            if let Some(token) = proxy_api_key {
-                self.client_sessions
-                    .cache_media_response(token, payload)
-                    .await;
-            }
-        }
         Ok(modified)
     }
 }
@@ -1103,10 +1093,18 @@ async fn proxy_handler(
                         } else {
                             ResponseProcessingProfile::BestEffortMedia
                         },
-                        false,
                         response_proxy_api_key.as_deref(),
                     )
                     .await?;
+
+                if status.is_success() && response_profile != ResponseProcessingProfile::Disabled {
+                    if let Some(token) = response_proxy_api_key.as_deref() {
+                        state
+                            .client_sessions
+                            .cache_media_response(token, &json_value)
+                            .await;
+                    }
+                }
 
                 if was_modified {
                     let processed_body = serde_json::to_vec(&json_value).map_err(|e| {

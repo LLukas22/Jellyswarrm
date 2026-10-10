@@ -21,6 +21,7 @@ struct CatalogGroup {
 
 /// Pure catalog plan. Database-backed stable group IDs are applied only after
 /// all observations have been reconciled.
+/// Inputs carry translated IDs but original, undecorated upstream titles.
 #[derive(Debug)]
 pub struct MediaDedupPlan {
     groups: Vec<CatalogGroup>,
@@ -189,7 +190,6 @@ fn merge_media_group(members: Vec<TaggedMediaItem>, group_id: &str) -> MediaItem
         .expect("media group is never empty");
 
     best.item.id = group_id.to_string();
-    remove_server_suffix(&mut best.item, &best.server);
     // Movies and (Jellyfin v12+) episodes carry one MediaSource per version,
     // so the collapsed item advertises the summed count. Series/seasons have
     // no versions on the item itself — keep their original count instead of
@@ -198,16 +198,6 @@ fn merge_media_group(members: Vec<TaggedMediaItem>, group_id: &str) -> MediaItem
         best.item.media_source_count = Some(media_source_count);
     }
     best.item
-}
-
-/// Remove only the exact suffix added by the proxy, not arbitrary bracketed
-/// text that may be part of the original title.
-pub(crate) fn remove_server_suffix(item: &mut MediaItem, server: &Server) {
-    if let Some(name) = &mut item.name {
-        if let Some(title) = name.strip_suffix(&format!(" [{}]", server.name)) {
-            *name = title.to_string();
-        }
-    }
 }
 
 pub fn label_duplicates(items: Vec<TaggedMediaItem>) -> Vec<MediaItem> {
@@ -334,11 +324,6 @@ fn normalized_name(item: &MediaItem) -> String {
 
 fn normalize_title(value: &str) -> String {
     let value = value.trim();
-    let value = value
-        .rsplit_once('[')
-        .filter(|(_, suffix)| suffix.ends_with(']'))
-        .map(|(prefix, _)| prefix.trim_end())
-        .unwrap_or(value);
 
     value
         .to_ascii_lowercase()
@@ -411,16 +396,17 @@ mod tests {
     }
 
     #[test]
-    fn merged_titles_drop_only_the_exact_server_suffix() {
-        let mut member = tagged(1, 100, "Title [Extended] [Server 1]", "42");
-        remove_server_suffix(&mut member.item, &member.server);
-        assert_eq!(member.item.name.as_deref(), Some("Title [Extended]"));
-        remove_server_suffix(&mut member.item, &member.server);
-        assert_eq!(member.item.name.as_deref(), Some("Title [Extended]"));
-
-        let mut member = tagged(1, 100, "Title [Server 2]", "42");
-        remove_server_suffix(&mut member.item, &member.server);
-        assert_eq!(member.item.name.as_deref(), Some("Title [Server 2]"));
+    fn merging_preserves_original_titles_even_when_they_look_like_server_labels() {
+        let members = vec![
+            tagged(1, 100, "Title [Server 1]", "42"),
+            tagged(2, 50, "Title [Extended]", "42"),
+        ];
+        let merged = MediaDedupPlan::new(members).collapse(&assignments(
+            &["1-Title [Server 1]", "2-Title [Extended]"],
+            2,
+        ));
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].name.as_deref(), Some("Title [Server 1]"));
     }
 
     #[test]

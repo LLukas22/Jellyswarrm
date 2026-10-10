@@ -579,7 +579,6 @@ async fn playlist_mapping_database_failures_are_internal_errors() {
                 &mut permissions,
                 &f.servers[0],
                 ResponseProcessingProfile::PlaylistPermissions,
-                false,
                 None
             )
             .await

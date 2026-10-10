@@ -177,7 +177,6 @@ pub async fn execute_processed_json_request(
     request: reqwest::Request,
     server: &Server,
     profile: ResponseProcessingProfile,
-    should_change_name: bool,
     proxy_api_key: Option<&str>,
 ) -> Result<serde_json::Value, StatusCode> {
     let mut response = execute_json_request::<serde_json::Value>(&state.reqwest_client, request)
@@ -185,13 +184,7 @@ pub async fn execute_processed_json_request(
         .inspect_err(|e| error!("Failed to get upstream JSON: {:?}", e))?;
 
     state
-        .process_response_json(
-            &mut response,
-            server,
-            profile,
-            should_change_name,
-            proxy_api_key,
-        )
+        .process_response_json(&mut response, server, profile, proxy_api_key)
         .await?;
 
     Ok(response)
@@ -264,7 +257,6 @@ pub async fn process_playback_response(
             &mut response_json,
             server,
             ResponseProcessingProfile::Media,
-            false,
             proxy_api_key,
         )
         .await?;
@@ -627,7 +619,6 @@ mod tests {
                 &mut media_item,
                 &server,
                 ResponseProcessingProfile::Media,
-                false,
                 Some("proxy-token"),
             )
             .await
@@ -635,6 +626,14 @@ mod tests {
 
         assert!(was_modified);
         assert_ne!(media_item["Id"].as_str(), Some(original_item_id));
+        assert!(
+            state
+                .client_sessions
+                .media_metadata("proxy-token", media_item["Id"].as_str().unwrap())
+                .await
+                .is_none(),
+            "translation must not cache intermediate metadata"
+        );
         let virtual_album_id = media_item["AlbumId"].as_str().unwrap();
         assert_ne!(virtual_album_id, original_album_id);
         let album_mapping = state
@@ -667,6 +666,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn item_name_policy_preserves_titles_or_decorates_only_listing_items() {
+        use crate::media_presentation::ItemNamePolicy;
+        let (state, server) = create_test_state().await;
+        let title = format!("Original title [{}]", server.name);
+        for enabled in [false, true] {
+            state.config.write().await.include_server_name_in_media = enabled;
+            for policy in [ItemNamePolicy::Preserve, ItemNamePolicy::IncludeServerName] {
+                let mut payload = json!({"Items": [
+                    {"Id": "movie", "Type": "Movie", "Name": title,
+                     "People": [{"Id": "actor", "Name": "Actor", "Type": "Actor"}],
+                     "MediaSources": [{"Id": "version", "Name": "Version", "Type": "Default"}]},
+                    {"Id": "live", "Type": "CollectionFolder", "CollectionType": "livetv", "Name": "Live TV"}
+                ]});
+                state
+                    .process_response_json(
+                        &mut payload,
+                        &server,
+                        ResponseProcessingProfile::Media,
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                let mut items: crate::models::ItemsResponseWithCount =
+                    serde_json::from_value(json!({
+                        "Items": payload["Items"], "TotalRecordCount": 2, "StartIndex": 0
+                    }))
+                    .unwrap();
+                if enabled {
+                    for item in &mut items.items {
+                        policy.apply(item, &server.name);
+                    }
+                }
+                payload = serde_json::to_value(items).unwrap();
+                let expected = if enabled && policy == ItemNamePolicy::IncludeServerName {
+                    format!("{title} [{}]", server.name)
+                } else {
+                    title.clone()
+                };
+                assert_eq!(payload["Items"][0]["Name"], expected);
+                assert_eq!(payload["Items"][0]["People"][0]["Name"], "Actor");
+                assert_eq!(payload["Items"][0]["MediaSources"][0]["Name"], "Version");
+                assert_eq!(payload["Items"][1]["Name"], "Live TV");
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn response_processor_remaps_top_level_item_arrays() {
         let (state, server) = create_test_state().await;
         let first_id = "31313131313131313131313131313131";
@@ -696,7 +742,6 @@ mod tests {
                 &mut media_items,
                 &server,
                 ResponseProcessingProfile::Media,
-                false,
                 None,
             )
             .await
@@ -723,7 +768,6 @@ mod tests {
                 &mut payload,
                 &server,
                 ResponseProcessingProfile::BestEffortMedia,
-                false,
                 Some("proxy-token"),
             )
             .await
@@ -751,7 +795,6 @@ mod tests {
                 &mut payload,
                 &server,
                 ResponseProcessingProfile::Media,
-                false,
                 None,
             )
             .await
@@ -779,7 +822,6 @@ mod tests {
                 &mut payload,
                 &server,
                 ResponseProcessingProfile::Media,
-                false,
                 Some("proxy-token"),
             )
             .await

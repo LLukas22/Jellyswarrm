@@ -39,7 +39,10 @@ async fn selected_source_detail_fetches_owner_and_keeps_versions_across_equivale
             media_storage,
         )),
         play_sessions: Arc::new(SessionStorage::new()),
-        config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
+        config: Arc::new(tokio::sync::RwLock::new(AppConfig {
+            include_server_name_in_media: true,
+            ..AppConfig::default()
+        })),
     };
     let state = AppState::new(
         reqwest::Client::new(),
@@ -68,7 +71,7 @@ async fn selected_source_detail_fetches_owner_and_keeps_versions_across_equivale
         Mock::given(method("GET"))
             .and(path(format!("/Items/{owner_id}")))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "Id": owner_id, "Name": format!("Owner {index}"),
+                "Id": owner_id, "Name": format!("Owner {index} [Server {index}]"),
                 "Type": "Movie", "Overview": format!("Selected metadata {index}"),
                 "MediaSources": [{"Id": source_id, "Name": "Version", "Type": "Default",
                     "Path": format!("/media/{index}.mkv"), "SupportsDirectPlay": true,
@@ -216,7 +219,12 @@ async fn selected_source_detail_fetches_owner_and_keeps_versions_across_equivale
         .await
         .unwrap_or_else(|status| panic!("{case}: detail returned {status}"));
         assert_eq!(response["Id"], *expected_id, "{case}");
-        assert_eq!(response["Name"], format!("Owner {selected}"), "{case}");
+        // This suffix is part of the upstream title, not proxy decoration.
+        assert_eq!(
+            response["Name"],
+            format!("Owner {selected} [Server {selected}]"),
+            "{case}"
+        );
         assert_eq!(
             response["Overview"],
             format!("Selected metadata {selected}"),

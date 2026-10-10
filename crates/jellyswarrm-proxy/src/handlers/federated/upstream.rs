@@ -21,15 +21,11 @@ use super::{
     library_resolution::{is_library_root_request, CatalogFetchTarget},
     postprocessing::{Pagination, ResponseShape, ServerItems},
     request_policy::{
-        ensure_duplicate_identity_field, ensure_global_sort_fields,
-        is_upstream_limited_catalog_request, merged_library_max_pages,
         normalize_upstream_pagination, replace_aggregate_parent_id, set_upstream_page,
-        UPSTREAM_PAGE_SIZE,
+        CatalogRequestPolicy, UPSTREAM_PAGE_SIZE,
     },
 };
 use crate::url_helper::replace_path_id;
-
-const MAX_PARALLEL_UPSTREAM_PAGES: usize = 8;
 
 pub(super) struct FetchedCatalog {
     pub(super) server_items: Vec<FetchedServerItems>,
@@ -39,8 +35,8 @@ pub(super) struct FetchedCatalog {
 
 #[derive(Clone, Copy)]
 pub(super) enum FetchMode {
-    ClientWindow(Pagination),
-    VirtualLibrary { pagination: Pagination },
+    Listing,
+    VirtualLibrary,
     Inventory,
 }
 
@@ -56,6 +52,7 @@ pub(super) struct FetchedServerItems {
 pub(super) async fn fetch_show_catalog(
     state: &AppState,
     original_request: &reqwest::Request,
+    policy: &CatalogRequestPolicy,
     targets: Vec<CatalogFetchTarget>,
     mut failures: usize,
 ) -> Result<FetchedCatalog, StatusCode> {
@@ -133,29 +130,19 @@ pub(super) async fn fetch_show_catalog(
                 .clear()
                 .extend_pairs(pairs);
         }
-        ensure_global_sort_fields(request.url_mut());
+        policy.prepare_upstream(request.url_mut(), true);
         let source_parent_id = target.parent_id.clone();
         if let Some(parent_id) = target.parent_id.as_deref() {
             if let Some(replaced) = replace_path_id(request.url(), "Shows", parent_id) {
                 *request.url_mut() = replaced;
             }
-            // Episodes listing benefits from provider IDs the same way Items does.
-            ensure_duplicate_identity_field(request.url_mut());
         }
 
         let state = state.clone();
         join_set.spawn(async move {
-            let result = fetch_items_from_server(
-                index,
-                state,
-                request,
-                target.session,
-                target.server,
-                Pagination::unbounded(),
-                false,
-            )
-            .await
-            .map(FetchedServerItems::complete);
+            let result =
+                fetch_paged_items_from_server(index, state, request, target.session, target.server)
+                    .await;
             (
                 index,
                 result.map(|mut fetched| {
@@ -212,7 +199,7 @@ impl FetchedServerItems {
     }
 }
 
-struct WindowedItems {
+struct PagedItems {
     response: ItemsResponseVariants,
     upstream_total: Option<i32>,
     fully_fetched: bool,
@@ -221,6 +208,7 @@ struct WindowedItems {
 pub(super) async fn fetch_catalog(
     state: &AppState,
     original_request: &reqwest::Request,
+    policy: &CatalogRequestPolicy,
     targets: Vec<CatalogFetchTarget>,
     mode: FetchMode,
     mut failures: usize,
@@ -233,7 +221,10 @@ pub(super) async fn fetch_catalog(
             failures += 1;
             continue;
         };
-        ensure_global_sort_fields(request.url_mut());
+        policy.prepare_upstream(
+            request.url_mut(),
+            target.parent_id.is_some() || matches!(mode, FetchMode::VirtualLibrary),
+        );
         let source_parent_id = target.parent_id.clone();
         if let Some(parent_id) = target.parent_id.as_deref() {
             if let Some(resolved_id) = target.resolved_parent_id.as_deref() {
@@ -241,26 +232,27 @@ pub(super) async fn fetch_catalog(
                     replace_aggregate_parent_id(request.url(), resolved_id, parent_id);
             }
         }
-        if target.parent_id.is_some() || matches!(mode, FetchMode::VirtualLibrary { .. }) {
-            ensure_duplicate_identity_field(request.url_mut());
-        }
-
+        let upstream_limited = policy.upstream_limited;
+        let library_inventory =
+            is_library_root_request(request.url(), state.get_url_prefix().await.as_deref());
+        let pagination = policy.pagination;
         let state = state.clone();
         join_set.spawn(async move {
             let result = match mode {
-                FetchMode::ClientWindow(pagination) => fetch_items_from_server(
-                    index,
-                    state,
-                    request,
-                    target.session,
-                    target.server,
-                    pagination,
-                    true,
-                )
-                .await
-                .map(FetchedServerItems::complete),
-                FetchMode::VirtualLibrary { pagination } => {
-                    if is_upstream_limited_catalog_request(request.url()) {
+                FetchMode::Listing if upstream_limited || library_inventory => {
+                    fetch_items_from_server(
+                        index,
+                        state,
+                        request,
+                        target.session,
+                        target.server,
+                        pagination,
+                    )
+                    .await
+                    .map(FetchedServerItems::complete)
+                }
+                FetchMode::Listing | FetchMode::VirtualLibrary => {
+                    if upstream_limited {
                         fetch_items_from_server(
                             index,
                             state,
@@ -268,19 +260,16 @@ pub(super) async fn fetch_catalog(
                             target.session,
                             target.server,
                             pagination,
-                            false,
                         )
                         .await
                         .map(FetchedServerItems::complete)
                     } else {
-                        fetch_windowed_items_from_server(
+                        fetch_paged_items_from_server(
                             index,
                             state,
                             request,
                             target.session,
                             target.server,
-                            merged_library_max_pages(pagination),
-                            false,
                         )
                         .await
                     }
@@ -365,7 +354,6 @@ async fn fetch_items_from_server(
     session: AuthorizationSession,
     server: Server,
     pagination: Pagination,
-    should_change_name: bool,
 ) -> Result<ServerItems, StatusCode> {
     let proxy_api_key = JellyfinAuthorization::from_request(&request)
         .and_then(|auth| auth.token_ref().map(str::to_string));
@@ -375,14 +363,7 @@ async fn fetch_items_from_server(
     } = fetch_raw_items_from_server(index, state.clone(), request, session, server, pagination)
         .await?;
 
-    process_items_response_json(
-        &mut response,
-        &state,
-        &server,
-        should_change_name,
-        proxy_api_key.as_deref(),
-    )
-    .await?;
+    process_items_response_json(&mut response, &state, &server, proxy_api_key.as_deref()).await?;
 
     debug!(
         "Successfully retrieved {} items from server: {}",
@@ -411,38 +392,22 @@ pub(super) fn estimate_merged_library_total(
     fetched_len.max(upstream_total_sum.max(0) as usize)
 }
 
-async fn fetch_windowed_items_from_server(
+async fn fetch_paged_items_from_server(
     index: usize,
     state: AppState,
     request: reqwest::Request,
     session: AuthorizationSession,
     server: Server,
-    max_pages: Option<usize>,
-    should_change_name: bool,
 ) -> Result<FetchedServerItems, StatusCode> {
     let proxy_api_key = JellyfinAuthorization::from_request(&request)
         .and_then(|auth| auth.token_ref().map(str::to_string));
-    let WindowedItems {
+    let PagedItems {
         mut response,
         upstream_total,
         fully_fetched,
-    } = fetch_windowed_raw_items_from_server(
-        index,
-        state.clone(),
-        request,
-        session,
-        server.clone(),
-        max_pages,
-    )
-    .await?;
-    process_items_response_json(
-        &mut response,
-        &state,
-        &server,
-        should_change_name,
-        proxy_api_key.as_deref(),
-    )
-    .await?;
+    } = fetch_paged_raw_items_from_server(index, state.clone(), request, session, server.clone())
+        .await?;
+    process_items_response_json(&mut response, &state, &server, proxy_api_key.as_deref()).await?;
     Ok(FetchedServerItems {
         server_items: ServerItems { response, server },
         upstream_total,
@@ -451,14 +416,13 @@ async fn fetch_windowed_items_from_server(
     })
 }
 
-async fn fetch_windowed_raw_items_from_server(
+async fn fetch_paged_raw_items_from_server(
     index: usize,
     state: AppState,
     request: reqwest::Request,
     session: AuthorizationSession,
     server: Server,
-    max_pages: Option<usize>,
-) -> Result<WindowedItems, StatusCode> {
+) -> Result<PagedItems, StatusCode> {
     let first_page = fetch_upstream_page_raw(
         index,
         state.clone(),
@@ -484,50 +448,38 @@ async fn fetch_windowed_raw_items_from_server(
         .filter(|item| seen_item_ids.insert(item.id.clone()))
         .collect::<Vec<_>>();
 
-    let mut fully_fetched = first_page_len < UPSTREAM_PAGE_SIZE;
-    let max_pages = max_pages.or_else(|| {
-        upstream_total.map(|total| (total.max(0) as usize).div_ceil(UPSTREAM_PAGE_SIZE).max(1))
-    });
-    let mut next_page = 1;
-    while !fully_fetched && max_pages.is_none_or(|max_pages| next_page < max_pages) {
-        let end_page = max_pages
-            .map(|max_pages| (next_page + MAX_PARALLEL_UPSTREAM_PAGES).min(max_pages))
-            .unwrap_or(next_page + MAX_PARALLEL_UPSTREAM_PAGES);
-        let page_starts = (next_page..end_page)
-            .map(|page| page * UPSTREAM_PAGE_SIZE)
-            .collect::<Vec<_>>();
-        let extra_pages = fetch_upstream_pages_parallel(
+    // A short page can be a backend-imposed cap, not the end of the catalog.
+    // Follow actual offsets and trust counted totals only when covered. For
+    // uncounted catalogs, an empty page confirms the end.
+    let mut offset = first_page_len;
+    let mut fully_fetched = upstream_total
+        .is_some_and(|total| all_items.len() >= total.max(0) as usize)
+        || (upstream_total.is_none() && first_page_len == 0);
+    let mut made_progress = first_page_len > 0;
+    while !fully_fetched && made_progress {
+        let page = fetch_upstream_page_raw(
             index,
             state.clone(),
-            &request,
+            request
+                .try_clone()
+                .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?,
             session.clone(),
             server.clone(),
-            &page_starts,
+            offset,
         )
         .await?;
-        next_page = end_page;
-
-        if let Some((_, last_page)) = extra_pages.last() {
-            fully_fetched = last_page.len() < UPSTREAM_PAGE_SIZE;
-        }
-        let mut found_new_item = false;
-        for (_, page) in extra_pages {
-            for item in page.into_items() {
-                if seen_item_ids.insert(item.id.clone()) {
-                    found_new_item = true;
-                    all_items.push(item);
-                }
+        let page_len = page.len();
+        offset = offset.saturating_add(page_len);
+        made_progress = false;
+        for item in page.into_items() {
+            if seen_item_ids.insert(item.id.clone()) {
+                made_progress = true;
+                all_items.push(item);
             }
         }
-        if !found_new_item {
-            break;
-        }
-    }
-
-    if let Some(total) = upstream_total {
-        if all_items.len() >= total.max(0) as usize {
-            fully_fetched = true;
-        }
+        fully_fetched = upstream_total
+            .is_some_and(|total| all_items.len() >= total.max(0) as usize)
+            || (upstream_total.is_none() && page_len == 0);
     }
 
     let response = if had_counted_response {
@@ -541,7 +493,7 @@ async fn fetch_windowed_raw_items_from_server(
     };
     track_discovered_libraries(&state, &server, &response).await;
 
-    Ok(WindowedItems {
+    Ok(PagedItems {
         response,
         upstream_total,
         fully_fetched,
@@ -561,48 +513,6 @@ async fn fetch_upstream_page_raw(
     execute_raw_items_request(index, state, request, session, server)
         .await
         .map(|items| items.response)
-}
-
-async fn fetch_upstream_pages_parallel(
-    index: usize,
-    state: AppState,
-    request: &reqwest::Request,
-    session: AuthorizationSession,
-    server: Server,
-    page_starts: &[usize],
-) -> Result<Vec<(usize, ItemsResponseVariants)>, StatusCode> {
-    let mut pages = Vec::with_capacity(page_starts.len());
-    for chunk in page_starts.chunks(MAX_PARALLEL_UPSTREAM_PAGES) {
-        let mut join_set = JoinSet::new();
-        for &start_index in chunk {
-            let state = state.clone();
-            let request = request
-                .try_clone()
-                .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-            let session = session.clone();
-            let server = server.clone();
-            join_set.spawn(async move {
-                let page =
-                    fetch_upstream_page_raw(index, state, request, session, server, start_index)
-                        .await?;
-                Ok::<_, StatusCode>((start_index, page))
-            });
-        }
-
-        while let Some(result) = join_set.join_next().await {
-            match result {
-                Ok(Ok((start_index, page))) => pages.push((start_index, page)),
-                Ok(Err(status)) => return Err(status),
-                Err(error) => {
-                    error!("Parallel upstream page fetch failed: {:?}", error);
-                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                }
-            }
-        }
-    }
-
-    pages.sort_by_key(|(start_index, _)| *start_index);
-    Ok(pages)
 }
 
 async fn fetch_raw_items_from_server(
@@ -777,7 +687,6 @@ async fn process_items_response_json(
     response: &mut ItemsResponseVariants,
     state: &AppState,
     server: &Server,
-    should_change_name: bool,
     proxy_api_key: Option<&str>,
 ) -> Result<(), StatusCode> {
     let mut response_json = serde_json::to_value(&*response).map_err(|e| {
@@ -790,7 +699,6 @@ async fn process_items_response_json(
             &mut response_json,
             server,
             ResponseProcessingProfile::Media,
-            should_change_name,
             proxy_api_key,
         )
         .await
