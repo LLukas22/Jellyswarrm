@@ -10,15 +10,30 @@ pub(super) struct CatalogRequestPolicy {
 
 impl CatalogRequestPolicy {
     pub fn from_url(url: &url::Url) -> Self {
+        let sort = super::postprocessing::SortPolicy::from_url(url);
         Self {
             pagination: Pagination::from_url(url),
-            sort: super::postprocessing::SortPolicy::from_url(url),
+            sort,
             authoritative_inventory: is_authoritative_media_inventory_request(url),
             upstream_limited: is_upstream_limited_catalog_request(url),
         }
     }
 
     pub fn prepare_upstream(&self, url: &mut url::Url, include_identity: bool) {
+        if matches!(self.sort, super::postprocessing::SortPolicy::Random) {
+            let pairs = url
+                .query_pairs()
+                .filter(|(key, _)| {
+                    !key.eq_ignore_ascii_case("SortBy") && !key.eq_ignore_ascii_case("SortOrder")
+                })
+                .map(|(key, value)| (key.into_owned(), value.into_owned()))
+                .collect::<Vec<_>>();
+            url.query_pairs_mut()
+                .clear()
+                .extend_pairs(pairs)
+                .append_pair("SortBy", "SortName")
+                .append_pair("SortOrder", "Ascending");
+        }
         ensure_item_fields(url, &self.sort.required_fields());
         if include_identity {
             ensure_duplicate_identity_field(url);
@@ -121,13 +136,16 @@ pub(super) fn is_authoritative_media_inventory_request(url: &url::Url) -> bool {
 pub(super) fn set_upstream_page(url: &mut url::Url, start_index: usize, limit: usize) {
     let pairs = url
         .query_pairs()
-        .filter(|(key, _)| !is_pagination_key(key))
+        .filter(|(key, _)| {
+            !is_pagination_key(key) && !key.eq_ignore_ascii_case("EnableTotalRecordCount")
+        })
         .map(|(key, value)| (key.into_owned(), value.into_owned()))
         .collect::<Vec<_>>();
 
     let mut query = url.query_pairs_mut();
     query.clear().extend_pairs(pairs);
     query
+        .append_pair("EnableTotalRecordCount", "true")
         .append_pair("StartIndex", &start_index.to_string())
         .append_pair("Limit", &limit.to_string());
 }
@@ -270,6 +288,7 @@ mod tests {
             vec![
                 ("Recursive".to_string(), "true".to_string()),
                 ("Fields".to_string(), "Genres".to_string()),
+                ("EnableTotalRecordCount".to_string(), "true".to_string()),
                 ("StartIndex".to_string(), "300".to_string()),
                 ("Limit".to_string(), "100".to_string()),
             ]

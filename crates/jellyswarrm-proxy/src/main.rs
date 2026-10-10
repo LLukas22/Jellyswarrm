@@ -40,6 +40,7 @@ mod mapping_auth;
 mod media_catalog;
 mod media_identity;
 mod media_presentation;
+mod media_scope;
 mod media_storage_service;
 mod models;
 mod processors;
@@ -103,6 +104,7 @@ pub struct AppState {
     pub federated_users: Arc<FederatedUserService>,
     pub syncplay: Arc<SyncPlayService>,
     pub client_sessions: Arc<sessions::ClientSessionService>,
+    pub(crate) catalog_snapshots: Arc<handlers::federated::snapshots::CatalogSnapshots>,
 }
 
 impl AppState {
@@ -137,6 +139,7 @@ impl AppState {
             federated_users,
             syncplay: Arc::new(SyncPlayService::with_transport(transport.clone())),
             client_sessions: Arc::new(sessions::ClientSessionService::new(transport)),
+            catalog_snapshots: Arc::new(handlers::federated::snapshots::CatalogSnapshots::default()),
         }
     }
 

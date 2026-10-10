@@ -16,6 +16,7 @@ use crate::server_storage::Server;
 use crate::server_url::ServerUrl;
 use crate::{
     media_identity::{MediaAlias, MediaObservation, StableMediaGroup},
+    media_scope::MediaCatalogScope,
     models::generate_token,
 };
 use moka::future::Cache;
@@ -827,6 +828,13 @@ impl MediaStorageService {
                 .iter()
                 .flat_map(|index| members[*index].aliases.iter())
                 .collect::<BTreeSet<_>>();
+            // Multiple encodings on one backend are versions only when every
+            // member has the exact same numbered, provider-matched series identity.
+            let numbered_episode = component_aliases.len() == 1
+                && component_aliases.iter().next().is_some_and(|alias| {
+                    alias.kind == crate::media_identity::MediaKind::Episode
+                        && alias.provider == crate::media_identity::MediaProvider::SeriesGroup
+                });
             for alias in component_aliases {
                 sqlx::query(
                     r#"
@@ -850,8 +858,8 @@ impl MediaStorageService {
                 .map(|index| members[*index].server_id)
                 .collect::<HashSet<_>>()
                 .len();
-            let ambiguous = server_count != component.len();
-            let publish = !ambiguous && server_count > 1;
+            let ambiguous = server_count != component.len() && !numbered_episode;
+            let publish = !ambiguous && component.len() > 1;
             sqlx::query(
                 "UPDATE movie_version_groups SET ambiguous = ?, published = CASE WHEN published = 1 OR ? THEN 1 ELSE 0 END WHERE id = ?",
             )
@@ -969,16 +977,7 @@ impl MediaStorageService {
         let mut active_member_ids = HashSet::new();
         for row in rows {
             let key: String = row.try_get("scope_key")?;
-            let mut parts = key.splitn(3, ':');
-            let kind = parts.next();
-            let middle = parts.next();
-            let last = parts.next();
-            let applicable = match kind {
-                Some("configured" | "automatic" | "aggregate") => last == Some(viewer),
-                Some("latest") => middle == Some(viewer) && last.is_some(),
-                _ => false,
-            };
-            if !applicable {
+            if !MediaCatalogScope::belongs_to(&key, viewer) {
                 continue;
             }
             let group = Self::media_version_group_from_row(&row)?;
@@ -1026,15 +1025,7 @@ impl MediaStorageService {
         let mut active_ids = HashSet::new();
         for row in rows {
             let key: String = row.try_get("scope_key")?;
-            let mut parts = key.splitn(3, ':');
-            let kind = parts.next();
-            let middle = parts.next();
-            let last = parts.next();
-            if !match kind {
-                Some("configured" | "automatic" | "aggregate") => last == Some(viewer),
-                Some("latest") => middle == Some(viewer) && last.is_some(),
-                _ => false,
-            } {
+            if !MediaCatalogScope::belongs_to(&key, viewer) {
                 continue;
             }
             let members = self.get_media_version_members(row.try_get("id")?).await?;

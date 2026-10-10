@@ -39,6 +39,22 @@ impl FromRequest<AppState> for RequirePrimaryUser {
 
 pub struct Preprocessed(pub PreprocessedRequest);
 
+pub struct CatalogPreprocessed(pub PreprocessedRequest);
+
+impl FromRequest<AppState> for CatalogPreprocessed {
+    type Rejection = StatusCode;
+
+    async fn from_request(req: Request, state: &AppState) -> Result<Self, Self::Rejection> {
+        crate::request_preprocessing::preprocess_catalog_request(req, state)
+            .await
+            .map(Self)
+            .map_err(|error| {
+                error!("Failed to resolve catalog request: {error}");
+                StatusCode::BAD_REQUEST
+            })
+    }
+}
+
 impl FromRequest<AppState> for Preprocessed {
     type Rejection = StatusCode;
 

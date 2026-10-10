@@ -6,6 +6,7 @@ use tracing::error;
 use crate::{
     media_catalog::{MediaDedupPlan, TaggedMediaItem},
     media_identity::{MediaAlias, MediaKind, MediaObservation},
+    media_scope::{MediaCatalogScope, MediaScopeKind},
     media_storage_service::MediaCatalogSnapshot,
     request_preprocessing::PreprocessedRequest,
     AppState,
@@ -16,9 +17,7 @@ use super::{
     library_resolution::CatalogFetchTarget,
     postprocessing::{FederatedItems, ServerItems},
     request_policy::CatalogRequestPolicy,
-    upstream::{
-        estimate_merged_library_total, fetch_catalog, fetch_show_catalog, FetchMode, FetchedCatalog,
-    },
+    upstream::{fetch_catalog, fetch_show_catalog, FetchMode, FetchedCatalog},
 };
 
 async fn show_catalog_aliases(
@@ -106,6 +105,39 @@ pub(super) async fn get_virtual_library_items(
 
 async fn get_reconciled_catalog(
     state: &AppState,
+    mut preprocessed: PreprocessedRequest,
+    catalog_scope_key: String,
+    targets: Vec<CatalogFetchTarget>,
+    skipped_targets: usize,
+    context: CatalogContext,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    if skipped_targets > 0 {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+    let snapshot = super::snapshots::SnapshotRequest::prepare(
+        state,
+        &mut preprocessed,
+        &targets,
+        &catalog_scope_key,
+    )
+    .await;
+    snapshot
+        .serve(
+            state,
+            get_reconciled_catalog_uncached(
+                state,
+                preprocessed,
+                catalog_scope_key,
+                targets,
+                skipped_targets,
+                context,
+            ),
+        )
+        .await
+}
+
+async fn get_reconciled_catalog_uncached(
+    state: &AppState,
     preprocessed: PreprocessedRequest,
     catalog_scope_key: String,
     targets: Vec<CatalogFetchTarget>,
@@ -132,7 +164,6 @@ async fn get_reconciled_catalog(
     let series_group = context.series_group();
     let FetchedCatalog {
         server_items,
-        failures,
         response_shape,
     } = match &context {
         CatalogContext::Show { .. } => {
@@ -151,8 +182,7 @@ async fn get_reconciled_catalog(
         }
     };
 
-    let mut upstream_total_sum = 0i32;
-    let mut all_fully_fetched = true;
+    super::upstream::require_complete_sources(&server_items)?;
     let authoritative_inventory = series_group.is_none() && policy.authoritative_inventory;
     let mut snapshots = Vec::new();
     let mut tagged_items = Vec::new();
@@ -221,10 +251,6 @@ async fn get_reconciled_catalog(
         }
     }
     for fetch in server_items {
-        if let Some(total) = fetch.upstream_total {
-            upstream_total_sum = upstream_total_sum.saturating_add(total.max(0));
-        }
-        all_fully_fetched &= fetch.fully_fetched;
         let ServerItems { response, server } = fetch.server_items;
         let items = response.into_items();
         if deduplicate_media {
@@ -236,7 +262,8 @@ async fn get_reconciled_catalog(
                     fetch.source_parent_id.as_deref().unwrap_or_default()
                 ),
                 server_id: server.id,
-                complete: fetch.fully_fetched && authoritative_inventory,
+                complete: fetch.outcome == super::scan::FetchOutcome::Complete
+                    && authoritative_inventory,
                 observations: items
                     .iter()
                     .zip(&aliases)
@@ -263,7 +290,7 @@ async fn get_reconciled_catalog(
                 &catalog_scope_key,
                 reconciliation_generation.expect("enabled reconciliation has a generation"),
                 &snapshots,
-                authoritative_inventory && skipped_targets == 0 && failures == 0,
+                authoritative_inventory,
             )
             .await
             .map_err(|error| {
@@ -292,17 +319,7 @@ async fn get_reconciled_catalog(
             }
         }
     }
-    let total_count =
-        estimate_merged_library_total(items.len(), upstream_total_sum, all_fully_fetched);
-
-    finalize_items_response(
-        state,
-        &original_request,
-        items.with_reported_total(total_count),
-        &policy,
-        response_shape,
-    )
-    .await
+    finalize_items_response(state, &original_request, items, &policy, response_shape).await
 }
 
 /// Federates `/Shows/{aggregateId}/Seasons|Episodes` across the member
@@ -321,7 +338,12 @@ pub(super) async fn get_aggregate_show_items(
         .as_ref()
         .map(|scope| scope.user_id().to_string())
         .unwrap_or_else(|| "anonymous".to_string());
-    let catalog_scope_key = format!("aggregate:{aggregate_id}:{viewer}");
+    let catalog_scope_key = MediaCatalogScope {
+        kind: MediaScopeKind::Aggregate,
+        viewer: &viewer,
+        resource_id: &aggregate_id,
+    }
+    .to_string();
     get_reconciled_catalog(
         state,
         preprocessed,

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::time::Duration;
 
 use hyper::StatusCode;
 use tokio::task::JoinSet;
@@ -24,12 +24,12 @@ use super::{
         normalize_upstream_pagination, replace_aggregate_parent_id, set_upstream_page,
         CatalogRequestPolicy, UPSTREAM_PAGE_SIZE,
     },
+    scan::{FetchOutcome, PartialReason, ScanProgress},
 };
 use crate::url_helper::replace_path_id;
 
-pub(super) struct FetchedCatalog {
-    pub(super) server_items: Vec<FetchedServerItems>,
-    pub(super) failures: usize,
+pub(super) struct FetchedCatalog<T = ServerItems> {
+    pub(super) server_items: Vec<FetchedServerItems<T>>,
     pub(super) response_shape: ResponseShape,
 }
 
@@ -37,13 +37,18 @@ pub(super) struct FetchedCatalog {
 pub(super) enum FetchMode {
     Listing,
     VirtualLibrary,
-    Inventory,
 }
 
-pub(super) struct FetchedServerItems {
-    pub(super) server_items: ServerItems,
-    pub(super) upstream_total: Option<i32>,
-    pub(super) fully_fetched: bool,
+/// Backend IDs have not been translated. Only inventory grouping or the
+/// translation boundary can consume these responses.
+pub(super) struct RawServerItems {
+    pub(super) response: ItemsResponseVariants,
+    pub(super) server: Server,
+}
+
+pub(super) struct FetchedServerItems<T = ServerItems> {
+    pub(super) server_items: T,
+    pub(super) outcome: FetchOutcome,
     pub(super) source_parent_id: Option<String>,
 }
 
@@ -156,17 +161,10 @@ pub(super) async fn fetch_show_catalog(
     if join_set.is_empty() && failures == 0 {
         return Ok(FetchedCatalog {
             server_items: Vec::new(),
-            failures: 0,
             response_shape: ResponseShape::Counted,
         });
     }
-    let (indexed_results, failures) = collect_federated_results(join_set, failures).await?;
-    if failures > 0 {
-        warn!(
-            "Returning partial federated show response after {} server failure(s)",
-            failures
-        );
-    }
+    let indexed_results = collect_federated_results(join_set, failures).await?;
     let server_items = indexed_results
         .into_iter()
         .map(|(_, items)| items)
@@ -179,30 +177,44 @@ pub(super) async fn fetch_show_catalog(
 
     Ok(FetchedCatalog {
         server_items,
-        failures,
         response_shape,
     })
 }
 
 impl FetchedServerItems {
+    fn bounded(server_items: ServerItems) -> Self {
+        Self {
+            outcome: FetchOutcome::BoundedFeed,
+            ..Self::complete(server_items)
+        }
+    }
     fn complete(server_items: ServerItems) -> Self {
-        let upstream_total = match &server_items.response {
-            ItemsResponseVariants::WithCount(response) => Some(response.total_record_count),
-            ItemsResponseVariants::Bare(_) => None,
-        };
         Self {
             server_items,
-            upstream_total,
-            fully_fetched: true,
+            outcome: FetchOutcome::Complete,
             source_parent_id: None,
         }
     }
 }
 
+/// Pageable responses are all-or-nothing at the client boundary. A partial
+/// source must neither publish an exact-looking page nor replace an inventory.
+pub(super) fn require_complete_sources(sources: &[FetchedServerItems]) -> Result<(), StatusCode> {
+    for source in sources {
+        if let FetchOutcome::Partial(reason) = source.outcome {
+            warn!(
+                "Incomplete catalog from {}: {reason:?}",
+                source.server_items.server.name
+            );
+            return Err(StatusCode::BAD_GATEWAY);
+        }
+    }
+    Ok(())
+}
+
 struct PagedItems {
     response: ItemsResponseVariants,
-    upstream_total: Option<i32>,
-    fully_fetched: bool,
+    outcome: FetchOutcome,
 }
 
 pub(super) async fn fetch_catalog(
@@ -238,52 +250,26 @@ pub(super) async fn fetch_catalog(
         let pagination = policy.pagination;
         let state = state.clone();
         join_set.spawn(async move {
-            let result = match mode {
-                FetchMode::Listing if upstream_limited || library_inventory => {
-                    fetch_items_from_server(
-                        index,
-                        state,
-                        request,
-                        target.session,
-                        target.server,
-                        pagination,
-                    )
-                    .await
-                    .map(FetchedServerItems::complete)
-                }
-                FetchMode::Listing | FetchMode::VirtualLibrary => {
-                    if upstream_limited {
-                        fetch_items_from_server(
-                            index,
-                            state,
-                            request,
-                            target.session,
-                            target.server,
-                            pagination,
-                        )
-                        .await
-                        .map(FetchedServerItems::complete)
-                    } else {
-                        fetch_paged_items_from_server(
-                            index,
-                            state,
-                            request,
-                            target.session,
-                            target.server,
-                        )
-                        .await
-                    }
-                }
-                FetchMode::Inventory => fetch_raw_items_from_server(
+            let result = if upstream_limited || library_inventory {
+                fetch_items_from_server(
                     index,
                     state,
                     request,
                     target.session,
                     target.server,
-                    Pagination::unbounded(),
+                    pagination,
                 )
                 .await
-                .map(FetchedServerItems::complete),
+                .map(|items| {
+                    if upstream_limited {
+                        FetchedServerItems::bounded(items)
+                    } else {
+                        FetchedServerItems::complete(items)
+                    }
+                })
+            } else {
+                fetch_paged_items_from_server(index, state, request, target.session, target.server)
+                    .await
             };
             (
                 index,
@@ -295,13 +281,7 @@ pub(super) async fn fetch_catalog(
         });
     }
 
-    let (indexed_results, failures) = collect_federated_results(join_set, failures).await?;
-    if failures > 0 {
-        warn!(
-            "Returning partial federated response after {} server failure(s)",
-            failures
-        );
-    }
+    let indexed_results = collect_federated_results(join_set, failures).await?;
     let server_items = indexed_results
         .into_iter()
         .map(|(_, items)| items)
@@ -314,7 +294,6 @@ pub(super) async fn fetch_catalog(
 
     Ok(FetchedCatalog {
         server_items,
-        failures,
         response_shape,
     })
 }
@@ -322,7 +301,7 @@ pub(super) async fn fetch_catalog(
 async fn collect_federated_results<T: Send + 'static>(
     mut join_set: JoinSet<(usize, Result<T, StatusCode>)>,
     mut failures: usize,
-) -> Result<(Vec<(usize, T)>, usize), StatusCode> {
+) -> Result<Vec<(usize, T)>, StatusCode> {
     let mut indexed_results = Vec::new();
     while let Some(result) = join_set.join_next().await {
         match result {
@@ -338,13 +317,51 @@ async fn collect_federated_results<T: Send + 'static>(
         }
     }
 
+    if failures > 0 {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
     if indexed_results.is_empty() {
         error!("All federated server requests failed");
         return Err(StatusCode::BAD_GATEWAY);
     }
 
     indexed_results.sort_by_key(|(index, _)| *index);
-    Ok((indexed_results, failures))
+    Ok(indexed_results)
+}
+
+pub(super) async fn fetch_inventory(
+    state: &AppState,
+    request: &reqwest::Request,
+    targets: Vec<CatalogFetchTarget>,
+) -> Result<FetchedCatalog<RawServerItems>, StatusCode> {
+    let mut tasks = JoinSet::new();
+    for (index, target) in targets.into_iter().enumerate() {
+        let request = request
+            .try_clone()
+            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+        let state = state.clone();
+        tasks.spawn(async move {
+            (
+                index,
+                fetch_library_inventory(index, state, request, target.session, target.server).await,
+            )
+        });
+    }
+    let results = collect_federated_results(tasks, 0).await?;
+    let response_shape =
+        ResponseShape::from_responses(results.iter().map(|(_, items)| &items.response));
+    let server_items = results
+        .into_iter()
+        .map(|(_, server_items)| FetchedServerItems {
+            server_items,
+            outcome: FetchOutcome::Complete,
+            source_parent_id: None,
+        })
+        .collect();
+    Ok(FetchedCatalog {
+        server_items,
+        response_shape,
+    })
 }
 
 async fn fetch_items_from_server(
@@ -357,7 +374,7 @@ async fn fetch_items_from_server(
 ) -> Result<ServerItems, StatusCode> {
     let proxy_api_key = JellyfinAuthorization::from_request(&request)
         .and_then(|auth| auth.token_ref().map(str::to_string));
-    let ServerItems {
+    let RawServerItems {
         mut response,
         server,
     } = fetch_raw_items_from_server(index, state.clone(), request, session, server, pagination)
@@ -380,18 +397,6 @@ async fn fetch_items_from_server(
     Ok(ServerItems { response, server })
 }
 
-pub(super) fn estimate_merged_library_total(
-    fetched_len: usize,
-    upstream_total_sum: i32,
-    all_fully_fetched: bool,
-) -> usize {
-    if all_fully_fetched {
-        return fetched_len;
-    }
-
-    fetched_len.max(upstream_total_sum.max(0) as usize)
-}
-
 async fn fetch_paged_items_from_server(
     index: usize,
     state: AppState,
@@ -403,15 +408,13 @@ async fn fetch_paged_items_from_server(
         .and_then(|auth| auth.token_ref().map(str::to_string));
     let PagedItems {
         mut response,
-        upstream_total,
-        fully_fetched,
+        outcome,
     } = fetch_paged_raw_items_from_server(index, state.clone(), request, session, server.clone())
         .await?;
     process_items_response_json(&mut response, &state, &server, proxy_api_key.as_deref()).await?;
     Ok(FetchedServerItems {
         server_items: ServerItems { response, server },
-        upstream_total,
-        fully_fetched,
+        outcome,
         source_parent_id: None,
     })
 }
@@ -423,69 +426,50 @@ async fn fetch_paged_raw_items_from_server(
     session: AuthorizationSession,
     server: Server,
 ) -> Result<PagedItems, StatusCode> {
-    let first_page = fetch_upstream_page_raw(
-        index,
-        state.clone(),
-        request
-            .try_clone()
-            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?,
-        session.clone(),
-        server.clone(),
-        0,
-    )
-    .await?;
-
-    let had_counted_response = matches!(&first_page, ItemsResponseVariants::WithCount(_));
-    let upstream_total = match &first_page {
-        ItemsResponseVariants::WithCount(response) => Some(response.total_record_count),
-        ItemsResponseVariants::Bare(_) => None,
-    };
-    let first_page_len = first_page.len();
-    let mut seen_item_ids = HashSet::new();
-    let mut all_items = first_page
-        .into_items()
-        .into_iter()
-        .filter(|item| seen_item_ids.insert(item.id.clone()))
-        .collect::<Vec<_>>();
-
-    // A short page can be a backend-imposed cap, not the end of the catalog.
-    // Follow actual offsets and trust counted totals only when covered. For
-    // uncounted catalogs, an empty page confirms the end.
-    let mut offset = first_page_len;
-    let mut fully_fetched = upstream_total
-        .is_some_and(|total| all_items.len() >= total.max(0) as usize)
-        || (upstream_total.is_none() && first_page_len == 0);
-    let mut made_progress = first_page_len > 0;
-    while !fully_fetched && made_progress {
-        let page = fetch_upstream_page_raw(
-            index,
-            state.clone(),
-            request
-                .try_clone()
-                .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?,
-            session.clone(),
-            server.clone(),
-            offset,
+    let deadline = tokio::time::Instant::now()
+        + Duration::from_secs(state.config.read().await.timeout.clamp(1, 300));
+    let request = prepare_backend_request(request, &state, &session, &server).await;
+    let mut progress = ScanProgress::default();
+    let mut all_items = Vec::new();
+    let mut had_counted_response = false;
+    let outcome = loop {
+        let page = tokio::time::timeout_at(
+            deadline,
+            fetch_upstream_page_raw(
+                index,
+                state.clone(),
+                request
+                    .try_clone()
+                    .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?,
+                server.clone(),
+                progress.offset(),
+            ),
         )
-        .await?;
-        let page_len = page.len();
-        offset = offset.saturating_add(page_len);
-        made_progress = false;
-        for item in page.into_items() {
-            if seen_item_ids.insert(item.id.clone()) {
-                made_progress = true;
-                all_items.push(item);
-            }
+        .await;
+        let page = match page {
+            Ok(Ok(page)) => page,
+            Ok(Err(status)) if all_items.is_empty() => return Err(status),
+            Err(_) if all_items.is_empty() => return Err(StatusCode::GATEWAY_TIMEOUT),
+            Ok(Err(_)) => break FetchOutcome::Partial(PartialReason::Failed),
+            Err(_) => break FetchOutcome::Partial(PartialReason::Deadline),
+        };
+        if matches!(&page, ItemsResponseVariants::WithCount(_)) {
+            had_counted_response = true;
         }
-        fully_fetched = upstream_total
-            .is_some_and(|total| all_items.len() >= total.max(0) as usize)
-            || (upstream_total.is_none() && page_len == 0);
-    }
+        let complete = match progress.accept(&page) {
+            Ok(complete) => complete,
+            Err(reason) => break FetchOutcome::Partial(reason),
+        };
+        all_items.extend(page.into_items());
+        if complete {
+            break FetchOutcome::Complete;
+        }
+    };
 
     let response = if had_counted_response {
         ItemsResponseVariants::WithCount(ItemsResponseWithCount {
+            total_record_count: all_items.len().min(i32::MAX as usize) as i32,
             items: all_items,
-            total_record_count: 0,
             start_index: 0,
         })
     } else {
@@ -493,24 +477,19 @@ async fn fetch_paged_raw_items_from_server(
     };
     track_discovered_libraries(&state, &server, &response).await;
 
-    Ok(PagedItems {
-        response,
-        upstream_total,
-        fully_fetched,
-    })
+    Ok(PagedItems { response, outcome })
 }
 
 async fn fetch_upstream_page_raw(
     index: usize,
     state: AppState,
     request: reqwest::Request,
-    session: AuthorizationSession,
     server: Server,
     start_index: usize,
 ) -> Result<ItemsResponseVariants, StatusCode> {
     let mut request = request;
     set_upstream_page(request.url_mut(), start_index, UPSTREAM_PAGE_SIZE);
-    execute_raw_items_request(index, state, request, session, server)
+    execute_raw_items_request(index, state, request, server)
         .await
         .map(|items| items.response)
 }
@@ -522,14 +501,15 @@ async fn fetch_raw_items_from_server(
     session: AuthorizationSession,
     server: Server,
     pagination: Pagination,
-) -> Result<ServerItems, StatusCode> {
+) -> Result<RawServerItems, StatusCode> {
     // Library discovery must cover the whole inventory, independently of the
     // client's display page. Some upstreams cap even an unbounded request.
     if is_library_root_request(request.url(), state.get_url_prefix().await.as_deref()) {
         return fetch_library_inventory(index, state, request, session, server).await;
     }
     normalize_upstream_pagination(request.url_mut(), pagination);
-    let items = execute_raw_items_request(index, state.clone(), request, session, server).await?;
+    let request = prepare_backend_request(request, &state, &session, &server).await;
+    let items = execute_raw_items_request(index, state.clone(), request, server).await?;
     track_discovered_libraries(&state, &items.server, &items.response).await;
     Ok(items)
 }
@@ -540,10 +520,13 @@ async fn fetch_library_inventory(
     mut request: reqwest::Request,
     session: AuthorizationSession,
     server: Server,
-) -> Result<ServerItems, StatusCode> {
+) -> Result<RawServerItems, StatusCode> {
     // Keep the first request unpaginated for ordinary Jellyfin user Views.
     normalize_upstream_pagination(request.url_mut(), Pagination::unbounded());
-    let mut pagination = jellyfin_api::library_pagination::LibraryPagination::default();
+    let request = prepare_backend_request(request, &state, &session, &server).await;
+    let mut pagination = ScanProgress::default();
+    let deadline = tokio::time::Instant::now()
+        + Duration::from_secs(state.config.read().await.timeout.clamp(1, 300));
     let mut items = Vec::new();
     let mut counted = false;
     loop {
@@ -551,21 +534,19 @@ async fn fetch_library_inventory(
             .try_clone()
             .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
         // Advance by the actual number received, not our requested page size.
-        if pagination.fetched_count() > 0 {
+        if pagination.offset() > 0 {
             set_upstream_page(
                 page_request.url_mut(),
-                pagination.fetched_count(),
+                pagination.offset(),
                 UPSTREAM_PAGE_SIZE,
             );
         }
-        let page = execute_raw_items_request(
-            index,
-            state.clone(),
-            page_request,
-            session.clone(),
-            server.clone(),
+        let page = tokio::time::timeout_at(
+            deadline,
+            execute_raw_items_request(index, state.clone(), page_request, server.clone()),
         )
-        .await?;
+        .await
+        .map_err(|_| StatusCode::GATEWAY_TIMEOUT)??;
         let total = match &page.response {
             ItemsResponseVariants::WithCount(response) => {
                 Some(response.total_record_count.max(0) as usize)
@@ -573,17 +554,14 @@ async fn fetch_library_inventory(
             ItemsResponseVariants::Bare(_) => None,
         };
         counted |= total.is_some();
+        let complete = pagination.accept(&page.response).map_err(|error| {
+            warn!(
+                "Incomplete library inventory from server '{}': {error:?}",
+                server.name
+            );
+            StatusCode::BAD_GATEWAY
+        })? || total.is_none(); // Bare library-root responses are unpaginated inventories.
         let next = page.response.into_items();
-        let complete = pagination
-            .accept_page(total, next.iter().map(|item| item.id.as_str()))
-            .map_err(|error| {
-                warn!(
-                    "Incomplete library inventory from server '{}': {error}",
-                    server.name
-                );
-                StatusCode::BAD_GATEWAY
-            })?
-            .unwrap_or(true);
         items.extend(next);
         if complete {
             break;
@@ -601,27 +579,34 @@ async fn fetch_library_inventory(
     // Commit discoveries only after all pages succeeded. A failed continuation
     // must not make a partial inventory look authoritative.
     track_discovered_libraries(&state, &server, &response).await;
-    Ok(ServerItems { response, server })
+    Ok(RawServerItems { response, server })
+}
+
+async fn prepare_backend_request(
+    mut request: reqwest::Request,
+    state: &AppState,
+    session: &AuthorizationSession,
+    server: &Server,
+) -> reqwest::Request {
+    let auth = JellyfinAuthorization::Authorization(session.to_authorization());
+    apply_to_request(
+        &mut request,
+        server,
+        &Some(session.clone()),
+        &Some(auth),
+        state,
+        None,
+    )
+    .await;
+    request
 }
 
 async fn execute_raw_items_request(
     index: usize,
     state: AppState,
-    mut request: reqwest::Request,
-    session: AuthorizationSession,
+    request: reqwest::Request,
     server: Server,
-) -> Result<ServerItems, StatusCode> {
-    let auth = JellyfinAuthorization::Authorization(session.to_authorization());
-    apply_to_request(
-        &mut request,
-        &server,
-        &Some(session),
-        &Some(auth),
-        &state,
-        None,
-    )
-    .await;
-
+) -> Result<RawServerItems, StatusCode> {
     let response = execute_json_request::<serde_json::Value>(&state.reqwest_client, request)
         .await
         .inspect_err(|e| {
@@ -636,7 +621,7 @@ async fn execute_raw_items_request(
         index
     );
 
-    Ok(ServerItems {
+    Ok(RawServerItems {
         response: items_response,
         server,
     })
@@ -740,16 +725,6 @@ mod tests {
                 collection_type: "movies".to_string(),
             }]
         );
-    }
-
-    #[test]
-    fn merged_library_total_uses_exact_count_when_fully_fetched() {
-        assert_eq!(estimate_merged_library_total(42, 500, true), 42);
-    }
-
-    #[test]
-    fn merged_library_total_uses_upstream_total_when_windowed() {
-        assert_eq!(estimate_merged_library_total(80, 1000, false), 1000);
     }
 
     fn typed_media_item(id: &str, item_type: &str, collection_type: Option<&str>) -> MediaItem {

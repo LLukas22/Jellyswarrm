@@ -362,6 +362,23 @@ pub async fn extract_request_infos(
 }
 
 pub async fn preprocess_request(req: Request, state: &AppState) -> Result<PreprocessedRequest> {
+    preprocess_request_with_translation(req, state, true).await
+}
+
+/// Federated handlers resolve and validate routing first; only a selected
+/// single-server fallback or a concrete backend fetch translates the request.
+pub(crate) async fn preprocess_catalog_request(
+    req: Request,
+    state: &AppState,
+) -> Result<PreprocessedRequest> {
+    preprocess_request_with_translation(req, state, false).await
+}
+
+async fn preprocess_request_with_translation(
+    req: Request,
+    state: &AppState,
+    translate: bool,
+) -> Result<PreprocessedRequest> {
     debug!("Preprocessing request: {:?}", req.uri());
     let method = req.method().clone();
     let path = req.uri().path().to_string();
@@ -448,15 +465,17 @@ pub async fn preprocess_request(req: Request, state: &AppState) -> Result<Prepro
 
     let new_auth = remap_authorization(&auth, &session).await?;
 
-    apply_to_request(
-        &mut request,
-        &server,
-        &session,
-        &new_auth,
-        state,
-        access_scope.as_ref(),
-    )
-    .await;
+    if translate {
+        apply_to_request(
+            &mut request,
+            &server,
+            &session,
+            &new_auth,
+            state,
+            access_scope.as_ref(),
+        )
+        .await;
+    }
 
     Ok(PreprocessedRequest {
         request,

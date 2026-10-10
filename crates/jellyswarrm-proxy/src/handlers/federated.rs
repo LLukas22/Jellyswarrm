@@ -3,8 +3,8 @@ use hyper::StatusCode;
 use tracing::{debug, error};
 
 use crate::{
-    extractors::Preprocessed, handlers::items::get_items,
-    request_preprocessing::PreprocessedRequest, AppState,
+    extractors::CatalogPreprocessed as Preprocessed, request_preprocessing::PreprocessedRequest,
+    AppState,
 };
 
 mod item_policy;
@@ -12,7 +12,11 @@ mod library_resolution;
 mod library_root;
 mod media_reconciliation;
 mod postprocessing;
+#[cfg(test)]
+mod reliability_tests;
 mod request_policy;
+mod scan;
+pub(crate) mod snapshots;
 #[cfg(test)]
 mod tests;
 mod upstream;
@@ -23,6 +27,22 @@ use media_reconciliation::{get_aggregate_show_items, get_virtual_library_items};
 use postprocessing::{FederatedItems, ResponseShape};
 use request_policy::{has_query_key, CatalogRequestPolicy};
 use upstream::{fetch_catalog, FetchMode, FetchedCatalog};
+
+async fn get_items(
+    State(state): State<AppState>,
+    Preprocessed(mut request): Preprocessed,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    crate::request_preprocessing::apply_to_request(
+        &mut request.request,
+        &request.server,
+        &request.session,
+        &request.new_auth,
+        &state,
+        request.access_scope.as_ref(),
+    )
+    .await;
+    crate::handlers::items::get_items(State(state), crate::extractors::Preprocessed(request)).await
+}
 
 /// Series detail and single-channel/genre guides identify one upstream item.
 /// Query only its owning server so unrelated programs cannot enter the result.
@@ -126,7 +146,6 @@ pub async fn get_show_children_from_all_servers(
             .as_ref()
             .is_some_and(|scope| !scope.allows(member.server.id))
         {
-            skipped_targets += 1;
             continue;
         }
         let Some((session, server)) = sessions
@@ -237,6 +256,21 @@ async fn get_items_from_all_servers_preprocessed(
 
 async fn get_interleaved_root(
     state: &AppState,
+    mut preprocessed: PreprocessedRequest,
+    targets: Vec<CatalogFetchTarget>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let snapshot =
+        snapshots::SnapshotRequest::prepare(state, &mut preprocessed, &targets, "listing").await;
+    snapshot
+        .serve(
+            state,
+            get_interleaved_root_uncached(state, preprocessed, targets),
+        )
+        .await
+}
+
+async fn get_interleaved_root_uncached(
+    state: &AppState,
     preprocessed: PreprocessedRequest,
     targets: Vec<CatalogFetchTarget>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
@@ -255,24 +289,20 @@ async fn get_interleaved_root(
         0,
     )
     .await?;
+    upstream::require_complete_sources(&server_items)?;
     let server_count = server_items.len();
     let name_policy = if state.config.read().await.include_server_name_in_media {
         crate::media_presentation::ItemNamePolicy::IncludeServerName
     } else {
         crate::media_presentation::ItemNamePolicy::Preserve
     };
-    let responses = server_items
-        .into_iter()
-        .map(|items| {
-            let server = items.server_items.server;
-            let mut response = items.server_items.response;
-            for item in response.items_mut() {
-                name_policy.apply(item, &server.name);
-            }
-            response
-        })
-        .collect::<Vec<_>>();
-    let items = FederatedItems::interleaved(responses);
+    let items = FederatedItems::from_servers(
+        server_items
+            .into_iter()
+            .map(|items| items.server_items)
+            .collect(),
+        name_policy,
+    );
 
     debug!("Combined items from {server_count} servers");
 
@@ -291,12 +321,19 @@ async fn finalize_items_response(
             error!("Failed to serialize federated items response: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-    if let Some(auth) = crate::request_preprocessing::JellyfinAuthorization::from_request(request) {
-        if let Some(token) = auth.token_ref() {
-            state
-                .client_sessions
-                .cache_media_response(token, &response)
-                .await;
+    if library_resolution::is_library_root_request(
+        request.url(),
+        state.get_url_prefix().await.as_deref(),
+    ) {
+        if let Some(auth) =
+            crate::request_preprocessing::JellyfinAuthorization::from_request(request)
+        {
+            if let Some(token) = auth.token_ref() {
+                state
+                    .client_sessions
+                    .cache_media_response(token, &response)
+                    .await;
+            }
         }
     }
     Ok(Json(response))

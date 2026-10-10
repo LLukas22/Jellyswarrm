@@ -301,13 +301,6 @@ pub enum ItemsResponseVariants {
 }
 
 impl ItemsResponseVariants {
-    pub fn items_mut(&mut self) -> &mut [MediaItem] {
-        match self {
-            Self::WithCount(response) => &mut response.items,
-            Self::Bare(items) => items,
-        }
-    }
-
     pub fn items(&self) -> &[MediaItem] {
         match self {
             ItemsResponseVariants::WithCount(response) => &response.items,

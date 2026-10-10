@@ -17,7 +17,7 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
-async fn setup() -> (
+pub(super) async fn setup() -> (
     AppState,
     sqlx::SqlitePool,
     Vec<(AuthorizationSession, Server)>,
@@ -90,7 +90,10 @@ async fn setup() -> (
     (state, pool, sessions, upstreams)
 }
 
-fn request(path: &str, sessions: &[(AuthorizationSession, Server)]) -> PreprocessedRequest {
+pub(super) fn request(
+    path: &str,
+    sessions: &[(AuthorizationSession, Server)],
+) -> PreprocessedRequest {
     let original_request = reqwest::Request::new(
         reqwest::Method::GET,
         url::Url::parse(&format!("http://localhost{path}")).unwrap(),
@@ -1058,7 +1061,10 @@ async fn catalog_pagination_follows_backend_caps_and_detects_stalled_pages() {
                 result.server_items.response.len(),
                 if stalled { 2 } else { 5 }
             );
-            assert_eq!(result.fully_fetched, !stalled);
+            assert_eq!(
+                result.outcome == super::scan::FetchOutcome::Complete,
+                !stalled
+            );
         }
         let offsets = upstreams[0]
             .received_requests()
@@ -1156,6 +1162,63 @@ async fn catalog_cache_contains_only_final_visible_items_and_titles() {
             .unwrap()["Name"],
         visible["Name"]
     );
+}
+
+#[tokio::test]
+async fn search_first_show_children_merge_and_keep_viewer_scoped_parent_links() {
+    let (state, _pool, sessions, upstreams) = setup().await;
+    for (index, upstream) in upstreams.iter().enumerate() {
+        Mock::given(method("GET")).and(path("/Items"))
+            .and(query_param("SearchTerm", "show"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Items": [
+                    {"Id": "show", "Type": "Series", "Name": "Show", "ProviderIds": {"Tmdb": "42"}},
+                    {"Id": "season", "Type": "Season", "SeriesId": "show", "ParentId": "show", "IndexNumber": 1,
+                     "Name": if index == 0 { "Season 1" } else { "Staffel 1" }},
+                    {"Id": "episode", "Type": "Episode", "SeriesId": "show", "SeasonId": "season", "ParentId": "season",
+                     "IndexNumber": 1, "ParentIndexNumber": 1, "Name": if index == 0 { "Rebirth" } else { "Wiedergeburt" }}
+                ], "TotalRecordCount": 3, "StartIndex": 0
+            }))).mount(upstream).await;
+    }
+    // No browse/latest requests have established identities beforehand.
+    let Json(result) = get_items_from_all_servers_preprocessed(
+        &state,
+        request("/Items?SearchTerm=show&Recursive=true", &sessions),
+    )
+    .await
+    .unwrap();
+    let items = result["Items"].as_array().unwrap();
+    assert_eq!(items.len(), 3);
+    let show = items.iter().find(|item| item["Type"] == "Series").unwrap();
+    let season = items.iter().find(|item| item["Type"] == "Season").unwrap();
+    let episode = items.iter().find(|item| item["Type"] == "Episode").unwrap();
+    assert_eq!(season["SeriesId"], show["Id"]);
+    assert_eq!(season["ParentId"], show["Id"]);
+    assert_eq!(episode["SeriesId"], show["Id"]);
+    assert_eq!(episode["SeasonId"], season["Id"]);
+    assert_eq!(episode["ParentId"], season["Id"]);
+    for (_, server) in &sessions {
+        let mapping = state
+            .media_storage
+            .get_or_create_media_mapping("show", server)
+            .await
+            .unwrap();
+        assert_eq!(
+            state
+                .media_storage
+                .get_media_parent_group_id(&mapping.virtual_media_id, "viewer")
+                .await
+                .unwrap()
+                .as_deref(),
+            show["Id"].as_str()
+        );
+        assert!(state
+            .media_storage
+            .get_media_parent_group_id(&mapping.virtual_media_id, "other-viewer")
+            .await
+            .unwrap()
+            .is_none());
+    }
 }
 
 #[tokio::test]
@@ -1335,6 +1398,7 @@ async fn first_recursive_catalog_merges_series_and_numbered_seasons_together() {
     }
     // The additive parent pass must not prevent the final complete inventory
     // from removing a season that has disappeared from both backends.
+    state.catalog_snapshots.expire();
     for (index, upstream) in upstreams.iter().enumerate() {
         upstream.reset().await;
         Mock::given(method("GET")).and(path("/Items"))
@@ -1637,7 +1701,16 @@ async fn latest_routes_collapse_before_sort_and_limit_and_retain_partial_identit
         .respond_with(ResponseTemplate::new(503))
         .mount(&upstreams[1])
         .await;
-    for active_sessions in [&sessions[..], &sessions[..1]] {
+    assert_eq!(
+        get_items_from_all_servers_preprocessed(
+            &state,
+            request("/Items/Latest?Limit=1", &sessions),
+        )
+        .await
+        .unwrap_err(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    for active_sessions in [&sessions[..1]] {
         let Json(response) = get_items_from_all_servers_preprocessed(
             &state,
             request("/Items/Latest?Limit=1", active_sessions),

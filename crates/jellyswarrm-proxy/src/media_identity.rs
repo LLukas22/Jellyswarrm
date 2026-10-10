@@ -97,6 +97,14 @@ impl MediaAlias {
         let Some(kind) = MediaKind::from_item_kind(&item.item_type) else {
             return BTreeSet::new();
         };
+        let range_suffix = if kind == MediaKind::Episode {
+            let Some(suffix) = Self::episode_range_suffix(item) else {
+                return BTreeSet::new();
+            };
+            suffix
+        } else {
+            String::new()
+        };
 
         let Some(provider_ids) = item.provider_ids.as_ref().and_then(|ids| ids.as_object()) else {
             return BTreeSet::new();
@@ -118,7 +126,7 @@ impl MediaAlias {
                     Self {
                         provider,
                         kind,
-                        provider_id,
+                        provider_id: format!("{provider_id}{range_suffix}"),
                     }
                 })
             })
@@ -165,10 +173,39 @@ impl MediaAlias {
         if season < 0 || episode < 0 {
             return None;
         }
+        let range_suffix = Self::episode_range_suffix(item)?;
         Some(Self {
             provider: MediaProvider::SeriesGroup,
             kind: MediaKind::Episode,
-            provider_id: format!("{series_group_id}:season:{season}:episode:{episode}"),
+            provider_id: format!(
+                "{series_group_id}:season:{season}:episode:{episode}{range_suffix}"
+            ),
+        })
+    }
+
+    /// A combined episode is not a playback substitute for its first episode.
+    /// Preserve legacy single-episode keys, but qualify ranges on every alias.
+    fn episode_range_suffix(item: &MediaItem) -> Option<String> {
+        let end = item
+            .extra
+            .get("IndexNumberEnd")
+            .or_else(|| item.extra.get("indexNumberEnd"));
+        let Some(end) = end.filter(|value| !value.is_null()) else {
+            return Some(String::new());
+        };
+        let end = end.as_i64()?;
+        let start = item
+            .extra
+            .get("IndexNumber")
+            .or_else(|| item.extra.get("indexNumber"))?
+            .as_i64()?;
+        if start < 0 || end < start {
+            return None;
+        }
+        Some(if end == start {
+            String::new()
+        } else {
+            format!(":range:{start}-{end}")
         })
     }
 }
@@ -218,6 +255,31 @@ pub struct StableMediaGroup {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn combined_episode_ranges_never_alias_single_episodes() {
+        let item = |end| {
+            serde_json::from_value::<MediaItem>(json!({"Id": "episode", "Type": "Episode", "ParentIndexNumber": 1, "IndexNumber": 1, "IndexNumberEnd": end, "ProviderIds": {"Tvdb": "42"}})).unwrap()
+        };
+        let single = item(json!(null));
+        assert_eq!(
+            MediaAlias::for_episode(&single, "show"),
+            MediaAlias::for_episode(&item(json!(1)), "show")
+        );
+        assert_ne!(
+            MediaAlias::for_episode(&single, "show"),
+            MediaAlias::for_episode(&item(json!(2)), "show")
+        );
+        assert!(MediaAlias::from_item(&single).is_disjoint(&MediaAlias::from_item(&item(json!(2)))));
+        assert_ne!(
+            MediaAlias::for_episode(&item(json!(2)), "show"),
+            MediaAlias::for_episode(&item(json!(3)), "show")
+        );
+        for end in [json!(0), json!(-1), json!("2"), json!(1.5)] {
+            assert!(MediaAlias::for_episode(&item(end.clone()), "show").is_none());
+            assert!(MediaAlias::from_item(&item(end)).is_empty());
+        }
+    }
 
     #[test]
     fn episode_identity_requires_explicit_coordinates_and_matched_series() {

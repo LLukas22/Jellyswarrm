@@ -394,6 +394,7 @@ pub(super) async fn record_playback_sources(
     state: &AppState,
     aggregate_id: &str,
     server: &Server,
+    original_item_id: &str,
     source_generation: i64,
     sources: &mut Vec<MediaSource>,
 ) -> Result<(), StatusCode> {
@@ -411,7 +412,10 @@ pub(super) async fn record_playback_sources(
         .await
         .map_err(storage_error)?
         .into_iter()
-        .find(|member| member.mapping.server_id == server.id)
+        .find(|member| {
+            member.mapping.server_id == server.id
+                && member.mapping.original_media_id == original_item_id
+        })
     else {
         return Ok(());
     };
@@ -495,7 +499,10 @@ pub(super) async fn resolve_playback_route(
         return Ok(PlaybackRouteDecision::SelectedSourceUnavailable);
     }
 
-    if route.member_mapping.server_id == preprocessed.server.id {
+    if route.member_mapping.server_id == preprocessed.server.id
+        && crate::url_helper::contains_id(preprocessed.request.url(), "Items").as_deref()
+            == Some(route.member_mapping.original_media_id.as_str())
+    {
         return Ok(PlaybackRouteDecision::Original);
     }
     let Some((session, server)) = preprocessed.sessions.as_ref().and_then(|sessions| {

@@ -21,6 +21,15 @@ use wiremock::{
 
 #[tokio::test]
 async fn selected_source_detail_fetches_owner_and_keeps_versions_across_equivalent_scopes() {
+    check_selected_source_detail(&["automatic:library:viewer", "latest:viewer:"]).await;
+}
+
+#[tokio::test]
+async fn search_only_selected_source_detail_keeps_all_versions() {
+    check_selected_source_detail(&["search:viewer:"]).await;
+}
+
+async fn check_selected_source_detail(catalog_scopes: &[&str]) {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
@@ -78,7 +87,7 @@ async fn selected_source_detail_fetches_owner_and_keeps_versions_across_equivale
                     "DefaultAudioStreamIndex": index,
                     "MediaStreams": [{"Type": "Audio", "Index": index, "Language": "deu"}]}]
             })))
-            .expect(4)
+            .expect(catalog_scopes.len() as u64 + 2)
             .mount(&upstream)
             .await;
         let server_id = state
@@ -147,7 +156,7 @@ async fn selected_source_detail_fetches_owner_and_keeps_versions_across_equivale
     }
     state.server_storage.check_servers_health().await;
     let mut groups = Vec::new();
-    for scope in ["automatic:library:viewer", "latest:viewer:"] {
+    for scope in catalog_scopes {
         let generation = state
             .media_storage
             .begin_media_reconciliation()
@@ -166,10 +175,12 @@ async fn selected_source_detail_fetches_owner_and_keeps_versions_across_equivale
     }
     let scope =
         VirtualLibraryAccessScope::new("viewer", sessions.iter().map(|(_, server)| server.id));
-    // Expose both scopes, select the second source, then switch back to the first.
-    for (case, requested_id, selected, expected_id) in [
-        ("browse aggregate", &groups[0], 0, &groups[0]),
-        ("latest aggregate", &groups[1], 0, &groups[1]),
+    // Expose each scope, select the second source, then switch back to the first.
+    let mut cases = groups
+        .iter()
+        .map(|group| ("aggregate", group, 0, group))
+        .collect::<Vec<_>>();
+    cases.extend([
         (
             "select second version",
             &sources[1].virtual_media_id,
@@ -182,7 +193,8 @@ async fn selected_source_detail_fetches_owner_and_keeps_versions_across_equivale
             0,
             &owners[0].virtual_media_id,
         ),
-    ] {
+    ]);
+    for (case, requested_id, selected, expected_id) in cases {
         let (session, server) = &sessions[selected];
         let original_request = reqwest::Request::new(
             reqwest::Method::GET,

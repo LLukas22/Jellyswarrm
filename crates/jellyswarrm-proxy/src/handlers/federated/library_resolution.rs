@@ -4,6 +4,7 @@ use hyper::StatusCode;
 use tracing::{debug, error};
 
 use crate::{
+    media_scope::{MediaCatalogScope, MediaScopeKind},
     request_preprocessing::PreprocessedRequest,
     server_storage::Server,
     user_authorization_service::AuthorizationSession,
@@ -162,13 +163,18 @@ pub(super) async fn resolve_catalog_plan(
         // Latest and search are additive feeds, not inventories. Keep their
         // identity scopes stable across windows, terms and missing sessions.
         return Ok(CatalogPlan::Virtual {
-            catalog_scope_key: format!(
-                "{}:{viewer}:{}",
-                if is_search { "search" } else { "latest" },
-                parent_id(preprocessed.original_request.url())
+            catalog_scope_key: MediaCatalogScope {
+                kind: if is_search {
+                    MediaScopeKind::Search
+                } else {
+                    MediaScopeKind::Latest
+                },
+                viewer,
+                resource_id: &parent_id(preprocessed.original_request.url())
                     .map(|id| normalize_library_id(&id))
-                    .unwrap_or_default()
-            ),
+                    .unwrap_or_default(),
+            }
+            .to_string(),
             targets,
             skipped_targets: 0,
         });
@@ -255,7 +261,6 @@ async fn resolve_aggregate_plan(
             .as_ref()
             .is_some_and(|scope| !scope.allows(member.server.id))
         {
-            skipped_targets += 1;
             continue;
         }
         let Some((session, server)) = sessions
@@ -288,7 +293,12 @@ async fn resolve_aggregate_plan(
         targets.len()
     );
     Ok(Some(CatalogPlan::Virtual {
-        catalog_scope_key: format!("aggregate:{}:{viewer}", group.virtual_media_id),
+        catalog_scope_key: MediaCatalogScope {
+            kind: MediaScopeKind::Aggregate,
+            viewer,
+            resource_id: &group.virtual_media_id,
+        }
+        .to_string(),
         targets,
         skipped_targets,
     }))

@@ -225,6 +225,7 @@ pub async fn post_playback_info(
 
     set_json_body(&mut request, &payload)?;
 
+    let original_item_id = contains_id(request.url(), "Items").ok_or(StatusCode::BAD_REQUEST)?;
     match execute_json_request::<PlaybackResponse>(&state.reqwest_client, request).await {
         Ok(mut response) => {
             process_playback_response(
@@ -239,6 +240,7 @@ pub async fn post_playback_info(
                 &state,
                 &requested_item_id,
                 &server,
+                &original_item_id,
                 source_generation,
                 &mut response.media_sources,
             )

@@ -3,6 +3,7 @@ use std::str::FromStr;
 
 use crate::{
     media_catalog::{label_duplicates, TaggedMediaItem},
+    media_presentation::{CatalogItem, ItemNamePolicy},
     models::{
         enums::{ItemSortBy, SortOrder},
         ItemsResponseVariants, ItemsResponseWithCount, MediaItem,
@@ -44,7 +45,7 @@ impl Pagination {
         pagination
     }
 
-    fn apply(self, items: Vec<MediaItem>) -> Vec<MediaItem> {
+    fn apply<T>(self, items: Vec<T>) -> Vec<T> {
         if self.start_index >= items.len() {
             return Vec::new();
         }
@@ -102,50 +103,52 @@ pub(super) struct ServerItems {
 
 #[derive(Default)]
 pub(super) struct FederatedItems {
-    items: Vec<MediaItem>,
-    reported_total: Option<usize>,
+    items: Vec<CatalogItem>,
 }
 
 impl FederatedItems {
-    pub(super) fn items_mut(&mut self) -> &mut [MediaItem] {
+    pub(super) fn items_mut(&mut self) -> &mut [CatalogItem] {
         &mut self.items
     }
+    #[cfg(test)]
     pub(super) fn new(items: Vec<MediaItem>) -> Self {
         Self {
-            items,
-            reported_total: None,
+            items: items.into_iter().map(Into::into).collect(),
         }
     }
 
+    #[cfg(test)]
     pub(super) fn interleaved(responses: Vec<ItemsResponseVariants>) -> Self {
         Self::new(interleave(responses))
     }
 
     pub(super) fn from_tagged_items(items: Vec<TaggedMediaItem>) -> Self {
-        Self::new(label_duplicates(items))
+        Self::from_merged_items(label_duplicates(items))
     }
 
-    pub(super) fn from_merged_items(items: Vec<MediaItem>) -> Self {
-        Self::new(items)
+    pub(super) fn from_merged_items(items: Vec<CatalogItem>) -> Self {
+        Self { items }
     }
 
-    pub(super) fn merge_interleaved(mut self, server_items: Vec<ServerItems>) -> Self {
-        self.items.extend(interleave(
-            server_items
+    pub(super) fn from_servers(servers: Vec<ServerItems>, policy: ItemNamePolicy) -> Self {
+        Self::from_merged_items(interleave_catalog(
+            servers
                 .into_iter()
-                .map(|items| items.response)
+                .map(|source| {
+                    source
+                        .response
+                        .into_items()
+                        .into_iter()
+                        .map(|item| policy.annotate(item, &source.server.name))
+                        .collect()
+                })
                 .collect(),
-        ));
-        self
+        ))
     }
 
-    pub(super) fn with_reported_total(mut self, total_count: usize) -> Self {
-        self.reported_total = Some(total_count);
+    pub(super) fn merge_interleaved(mut self, server_items: Vec<Vec<CatalogItem>>) -> Self {
+        self.items.extend(interleave_catalog(server_items));
         self
-    }
-
-    pub(super) fn len(&self) -> usize {
-        self.items.len()
     }
 
     #[cfg(test)]
@@ -167,8 +170,12 @@ impl FederatedItems {
     ) -> ItemsResponseVariants {
         let pagination = policy.pagination;
         policy.sort.apply(&mut self.items);
-        let total_count = self.reported_total.unwrap_or(self.items.len());
-        let items = pagination.apply(self.items);
+        let total_count = self.items.len();
+        let items = pagination
+            .apply(self.items)
+            .into_iter()
+            .map(CatalogItem::present)
+            .collect();
         shape.wrap(items, total_count, pagination)
     }
 }
@@ -181,6 +188,7 @@ pub(super) struct SortCriterion {
 
 #[derive(Debug)]
 pub(super) enum SortPolicy {
+    Random,
     PreserveUpstream,
     SeasonOrder,
     EpisodeOrder,
@@ -198,10 +206,10 @@ impl SortPolicy {
 
         let mut fields = query_list::<ItemSortBy>(url, "SortBy");
         let mut orders = query_list::<SortOrder>(url, "SortOrder");
-        if matches!(
-            fields.first(),
-            Some(ItemSortBy::Random | ItemSortBy::DateLastContentAdded)
-        ) {
+        if fields.first() == Some(&ItemSortBy::Random) {
+            return Self::Random;
+        }
+        if fields.first() == Some(&ItemSortBy::DateLastContentAdded) {
             // Neither ranking can be reconstructed from BaseItemDto. Keep each
             // upstream server's ranking rather than applying a tie-breaker.
             return Self::PreserveUpstream;
@@ -241,8 +249,12 @@ impl SortPolicy {
         )
     }
 
-    fn apply(&self, items: &mut [MediaItem]) {
+    fn apply(&self, items: &mut [CatalogItem]) {
         match self {
+            Self::Random => {
+                use rand::seq::SliceRandom;
+                items.shuffle(&mut rand::rng());
+            }
             Self::PreserveUpstream => {}
             Self::SeasonOrder | Self::EpisodeOrder => {
                 let numeric_key = |item: &MediaItem| {
@@ -271,12 +283,15 @@ impl SortPolicy {
                             SortOrder::Descending => ordering.reverse(),
                         })
                     })
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .unwrap_or_else(|| left.id.cmp(&right.id))
             }),
         }
     }
 
     pub(super) fn required_fields(&self) -> Vec<&'static str> {
+        if matches!(self, Self::Random) {
+            return vec!["SortName"];
+        }
         let Self::Fields(criteria) = self else {
             return Vec::new();
         };
@@ -318,10 +333,23 @@ where
     values
 }
 
+#[cfg(test)]
 fn interleave(responses: Vec<ItemsResponseVariants>) -> Vec<MediaItem> {
+    interleave_catalog(
+        responses
+            .into_iter()
+            .map(|response| response.into_items().into_iter().map(Into::into).collect())
+            .collect(),
+    )
+    .into_iter()
+    .map(|entry| entry.item)
+    .collect()
+}
+
+fn interleave_catalog(responses: Vec<Vec<CatalogItem>>) -> Vec<CatalogItem> {
     let mut queues = responses
         .into_iter()
-        .map(|response| VecDeque::from(response.into_items()))
+        .map(VecDeque::from)
         .collect::<Vec<_>>();
     let mut remaining = queues.iter().map(VecDeque::len).sum();
     let mut items = Vec::with_capacity(remaining);
@@ -557,7 +585,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_random_with_sort_name_tiebreaker_preserves_upstream_ranking() {
+    fn legacy_random_with_sort_name_tiebreaker_keeps_all_items() {
         let url = url::Url::parse(
             "http://localhost/Users/u/Items?IncludeItemTypes=MusicAlbum&SortBy=Random,SortName",
         )
@@ -568,7 +596,11 @@ mod tests {
         ])])
         .into_response(&url, ResponseShape::Bare);
 
-        assert_eq!(item_ids(&response.into_items()), vec!["first", "second"]);
+        assert!(matches!(SortPolicy::from_url(&url), SortPolicy::Random));
+        let items = response.into_items();
+        let mut ids = item_ids(&items);
+        ids.sort();
+        assert_eq!(ids, vec!["first", "second"]);
     }
 
     #[test]
@@ -731,8 +763,7 @@ mod tests {
 
     #[test]
     fn pagination_slices_after_interleave() {
-        let url =
-            url::Url::parse("http://localhost/Items?SortBy=Random&StartIndex=1&Limit=2").unwrap();
+        let url = url::Url::parse("http://localhost/Shows/NextUp?StartIndex=1&Limit=2").unwrap();
         let response = FederatedItems::interleaved(vec![
             ItemsResponseVariants::Bare(vec![media_item("a1", None), media_item("a2", None)]),
             ItemsResponseVariants::Bare(vec![media_item("b1", None), media_item("b2", None)]),
@@ -792,7 +823,11 @@ mod tests {
         ]);
 
         assert_eq!(
-            item_ids(&items.items),
+            items
+                .items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
             vec!["a1", "b1", "c1", "a2", "b2", "b3"]
         );
     }
@@ -811,7 +846,11 @@ mod tests {
         ]);
 
         assert_eq!(
-            item_ids(&items.items),
+            items
+                .items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
             vec!["live-one", "movie-one", "movie-two"]
         );
     }
@@ -831,7 +870,14 @@ mod tests {
             )]),
         ]);
 
-        assert_eq!(item_ids(&items.items), vec!["channel-one", "channel-two"]);
+        assert_eq!(
+            items
+                .items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["channel-one", "channel-two"]
+        );
     }
 
     #[test]
@@ -865,7 +911,7 @@ mod tests {
     }
 
     #[test]
-    fn pipeline_sorts_then_paginates_with_reported_total() {
+    fn pipeline_sorts_then_paginates_with_exact_total() {
         let url =
             url::Url::parse("http://localhost/Items?SortBy=SortName&StartIndex=1&Limit=1").unwrap();
         let response = FederatedItems::new(vec![
@@ -873,7 +919,6 @@ mod tests {
             named_media_item("a", "Alpha"),
             named_media_item("b", "Beta"),
         ])
-        .with_reported_total(12)
         .into_response(&url, ResponseShape::Counted);
 
         let ItemsResponseVariants::WithCount(response) = response else {
@@ -885,7 +930,7 @@ mod tests {
                 response.total_record_count,
                 response.start_index,
             ),
-            (vec!["b"], 12, 1)
+            (vec!["b"], 3, 1)
         );
     }
 

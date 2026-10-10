@@ -291,11 +291,12 @@ impl JsonProcessor<ResponseProcessingContext> for ResponseProcessor {
                 *value = Value::Bool(false);
                 result = result.mark_modified();
             }
-        } else if context.rewrites_media_fields() && SERVER_ID_FIELDS.contains(&json_context.key) {
-            if value.is_string() {
-                *value = Value::String(context.proxy_server_id.clone());
-                result = result.mark_modified();
-            }
+        } else if context.rewrites_media_fields()
+            && SERVER_ID_FIELDS.contains(&json_context.key)
+            && value.is_string()
+        {
+            *value = Value::String(context.proxy_server_id.clone());
+            result = result.mark_modified();
         }
 
         result
