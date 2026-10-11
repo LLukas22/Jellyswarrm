@@ -170,7 +170,7 @@ fn union(parents: &mut [usize], left: usize, right: usize) {
     }
 }
 
-fn merge_media_group(members: Vec<TaggedMediaItem>, group_id: &str) -> MediaItem {
+pub(crate) fn merge_media_group(members: Vec<TaggedMediaItem>, group_id: &str) -> MediaItem {
     let advertises_versions = members.iter().any(|member| {
         MediaKind::from_item_kind(&member.item.item_type)
             .is_some_and(|kind| kind.has_media_sources())

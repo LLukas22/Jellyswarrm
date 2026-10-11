@@ -76,6 +76,102 @@ async fn create_test_server_with_url(pool: &SqlitePool, url: &str) -> Server {
 }
 
 #[tokio::test]
+async fn playback_source_observations_preserve_siblings_and_respect_full_refresh_generations() {
+    let (pool, service) = migrated_service().await;
+    let server = create_test_server(&pool).await;
+    let owner = service
+        .get_or_create_media_mapping("owner", &server)
+        .await
+        .unwrap();
+    let source_a = service
+        .get_or_create_media_mapping("source-a", &server)
+        .await
+        .unwrap();
+    let source_b = service
+        .get_or_create_media_mapping("source-b", &server)
+        .await
+        .unwrap();
+    let initial = service.begin_media_reconciliation().await.unwrap();
+    let groups = service
+        .reconcile_media_catalog(
+            "scope",
+            initial,
+            &[MediaCatalogSnapshot {
+                source_key: "library".into(),
+                server_id: server.id,
+                complete: true,
+                observations: vec![tmdb_movie_observation(&owner.virtual_media_id, "42")],
+            }],
+            true,
+        )
+        .await
+        .unwrap();
+    let group = service
+        .get_media_version_group(&groups[&owner.virtual_media_id].virtual_media_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let observation = |source: &MediaMapping| MediaVersionSourceObservation {
+        member_mapping_id: owner.id,
+        source_virtual_id: source.virtual_media_id.clone(),
+    };
+    assert!(service
+        .replace_media_version_sources(
+            group.id,
+            initial,
+            &[owner.id],
+            &[observation(&source_a), observation(&source_b)]
+        )
+        .await
+        .unwrap());
+    let playback = service.begin_media_reconciliation().await.unwrap();
+    assert!(service
+        .observe_media_version_sources(group.id, playback, &[owner.id], &[observation(&source_a)])
+        .await
+        .unwrap());
+    assert!(service
+        .get_media_version_source_route(group.id, &source_b.virtual_media_id)
+        .await
+        .unwrap()
+        .is_some());
+    let stale = service.begin_media_reconciliation().await.unwrap();
+    let refresh = service.begin_media_reconciliation().await.unwrap();
+    // A complete detail refresh still removes a deleted source.
+    assert!(service
+        .replace_media_version_sources(group.id, refresh, &[owner.id], &[observation(&source_a)])
+        .await
+        .unwrap());
+    assert!(service
+        .get_media_version_source_route(group.id, &source_b.virtual_media_id)
+        .await
+        .unwrap()
+        .is_none());
+    // An older in-flight playback response must not resurrect it.
+    assert!(!service
+        .observe_media_version_sources(group.id, stale, &[owner.id], &[observation(&source_b)])
+        .await
+        .unwrap());
+    assert!(service
+        .get_media_version_source_route(group.id, &source_b.virtual_media_id)
+        .await
+        .unwrap()
+        .is_none());
+    let fresh = service.begin_media_reconciliation().await.unwrap();
+    assert!(service
+        .observe_media_version_sources(group.id, fresh, &[owner.id], &[observation(&source_b)])
+        .await
+        .unwrap());
+    for source in [&source_a, &source_b] {
+        assert!(service
+            .get_media_version_source_route(group.id, &source.virtual_media_id)
+            .await
+            .unwrap()
+            .is_some());
+    }
+    assert_no_foreign_key_violations(&pool).await;
+}
+
+#[tokio::test]
 async fn parent_navigation_accepts_filtered_subsets_but_rejects_incomparable_groups() {
     let (pool, service) = migrated_service().await;
     let mut snapshots = Vec::new();

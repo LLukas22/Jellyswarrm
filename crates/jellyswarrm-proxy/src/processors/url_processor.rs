@@ -320,6 +320,18 @@ impl UrlProcessor {
         access_scope: Option<&VirtualLibraryAccessScope>,
         required_server_id: Option<ServerId>,
     ) {
+        // These endpoints carry a second ID after the item. Capture it before
+        // rewriting the item (item/source IDs may be identical on the backend).
+        let source_id = decoded_path_segments(url.path())
+            .windows(4)
+            .find_map(|parts| {
+                (parts[0].eq_ignore_ascii_case("Videos")
+                    && is_id_like(&parts[1])
+                    && is_id_like(&parts[2])
+                    && (parts[3].eq_ignore_ascii_case("Subtitles")
+                        || parts[3].eq_ignore_ascii_case("Attachments")))
+                .then(|| parts[2].clone())
+            });
         let selected_source = url.query_pairs().find_map(|(key, value)| {
             key.eq_ignore_ascii_case("MediaSourceId")
                 .then(|| value.into_owned())
@@ -364,6 +376,14 @@ impl UrlProcessor {
                     );
                     *url = replace_id(url.clone(), &media_id, &media_mapping.original_media_id);
                 }
+            }
+        }
+        if let Some(source_id) = source_id {
+            if let Some(mapping) = self
+                .client_media_mapping(&source_id, access_scope, required_server_id)
+                .await
+            {
+                *url = replace_id(url.clone(), &source_id, &mapping.original_media_id);
             }
         }
     }

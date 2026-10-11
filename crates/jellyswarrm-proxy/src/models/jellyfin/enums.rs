@@ -236,6 +236,8 @@ pub enum ItemSortBy {
     DateLastContentAdded,
     DatePlayed,
     EpisodeOrder,
+    IndexNumber,
+    StartDate,
     InheritedParentalRating,
     IsFolder,
     IsUnplayed,

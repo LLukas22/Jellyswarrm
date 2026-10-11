@@ -1154,6 +1154,43 @@ impl MediaStorageService {
         refreshed_member_mapping_ids: &[i64],
         observations: &[MediaVersionSourceObservation],
     ) -> Result<bool, sqlx::Error> {
+        self.store_media_version_sources(
+            group_id,
+            generation,
+            refreshed_member_mapping_ids,
+            observations,
+            true,
+        )
+        .await
+    }
+
+    /// PlaybackInfo can be filtered by source, live stream, or client capabilities.
+    /// Record its positive observations without removing other advertised versions.
+    pub async fn observe_media_version_sources(
+        &self,
+        group_id: i64,
+        generation: i64,
+        member_mapping_ids: &[i64],
+        observations: &[MediaVersionSourceObservation],
+    ) -> Result<bool, sqlx::Error> {
+        self.store_media_version_sources(
+            group_id,
+            generation,
+            member_mapping_ids,
+            observations,
+            false,
+        )
+        .await
+    }
+
+    async fn store_media_version_sources(
+        &self,
+        group_id: i64,
+        generation: i64,
+        refreshed_member_mapping_ids: &[i64],
+        observations: &[MediaVersionSourceObservation],
+        replace: bool,
+    ) -> Result<bool, sqlx::Error> {
         let _reconciliation_guard = self.media_version_reconciliation.lock().await;
         let mut transaction = self.pool.begin().await?;
         let refreshed_members = refreshed_member_mapping_ids
@@ -1198,14 +1235,16 @@ impl MediaStorageService {
                 return Ok(false);
             }
             scope_id = Some(member_scope_id);
-            sqlx::query(
-                "DELETE FROM movie_version_sources WHERE scope_id = ? AND group_id = ? AND member_mapping_id = ?",
-            )
-            .bind(member_scope_id)
-            .bind(group_id)
-            .bind(member_id)
-            .execute(&mut *transaction)
-            .await?;
+            if replace {
+                sqlx::query(
+                    "DELETE FROM movie_version_sources WHERE scope_id = ? AND group_id = ? AND member_mapping_id = ?",
+                )
+                .bind(member_scope_id)
+                .bind(group_id)
+                .bind(member_id)
+                .execute(&mut *transaction)
+                .await?;
+            }
             sqlx::query(
                 "UPDATE movie_version_members SET sources_generation = ? WHERE group_id = ? AND media_mapping_id = ?",
             )

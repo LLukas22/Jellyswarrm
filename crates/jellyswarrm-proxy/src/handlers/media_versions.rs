@@ -445,9 +445,9 @@ pub(super) async fn record_playback_sources(
             source_virtual_id: source.id.clone(),
         })
         .collect::<Vec<_>>();
-    let sources_replaced = state
+    let sources_recorded = state
         .media_storage
-        .replace_media_version_sources(
+        .observe_media_version_sources(
             group.id,
             source_generation,
             &[member.mapping.id],
@@ -455,7 +455,7 @@ pub(super) async fn record_playback_sources(
         )
         .await
         .map_err(storage_error)?;
-    if !sources_replaced {
+    if !sources_recorded {
         let mut routable_sources = Vec::new();
         for source in sources.drain(..) {
             if state

@@ -387,11 +387,61 @@ pub struct MediaItem {
 }
 
 impl MediaItem {
+    pub fn supports_sort(sort_by: enums::ItemSortBy) -> bool {
+        use enums::ItemSortBy::*;
+        matches!(
+            sort_by,
+            SortName
+                | Name
+                | AlbumArtist
+                | Album
+                | Artist
+                | ProductionYear
+                | Runtime
+                | CommunityRating
+                | CriticRating
+                | OfficialRating
+                | PremiereDate
+                | DateCreated
+                | PlayCount
+                | DatePlayed
+                | ParentIndexNumber
+                | IndexNumber
+                | StartDate
+        )
+    }
+
+    fn extra_field(&self, name: &str) -> Option<&serde_json::Value> {
+        self.extra
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value)
+    }
+
+    pub fn item_number(&self, name: &str) -> i64 {
+        self.extra_field(name)
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(i64::MAX)
+    }
+
     pub fn cmp_by(&self, other: &Self, sort_by: enums::ItemSortBy) -> std::cmp::Ordering {
         use enums::ItemSortBy;
         use std::cmp::Ordering;
 
         match sort_by {
+            ItemSortBy::ParentIndexNumber => self
+                .item_number("ParentIndexNumber")
+                .cmp(&other.item_number("ParentIndexNumber")),
+            ItemSortBy::IndexNumber => self
+                .item_number("IndexNumber")
+                .cmp(&other.item_number("IndexNumber")),
+            ItemSortBy::StartDate => compare_dates(
+                self.extra_field("StartDate")
+                    .and_then(serde_json::Value::as_str),
+                other
+                    .extra_field("StartDate")
+                    .and_then(serde_json::Value::as_str),
+            ),
             ItemSortBy::SortName => {
                 let left = self
                     .sort_name

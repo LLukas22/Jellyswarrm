@@ -1,4 +1,5 @@
 use super::*;
+mod regressions;
 use crate::{
     media_identity::{MediaAlias, MediaObservation},
     media_storage_service::{MediaCatalogSnapshot, MediaVersionSourceObservation},

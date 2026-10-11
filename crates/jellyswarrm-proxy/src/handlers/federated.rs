@@ -7,6 +7,7 @@ use crate::{
     AppState,
 };
 
+mod item_lookup;
 mod item_policy;
 mod library_resolution;
 mod library_root;
@@ -202,6 +203,9 @@ async fn get_items_from_all_servers_preprocessed(
     state: &AppState,
     preprocessed: PreprocessedRequest,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    if let Some(lookup) = item_lookup::RequestedItems::resolve(state, &preprocessed).await? {
+        return lookup.fetch(state, preprocessed).await;
+    }
     let plan = resolve_catalog_plan(state, &preprocessed).await?;
     match plan {
         CatalogPlan::EmptyVirtual => {

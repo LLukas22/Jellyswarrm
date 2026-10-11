@@ -9,7 +9,9 @@ use crate::{
     config::MediaStreamingMode,
     extractors::Preprocessed,
     proxy_headers::remove_hop_by_hop_headers,
-    request_preprocessing::{apply_to_request, remap_authorization, PreprocessedRequest},
+    request_preprocessing::{
+        apply_to_request, remap_authorization, JellyfinAuthorization, PreprocessedRequest,
+    },
     server_storage::Server,
     session_storage::PlaybackSession,
     user_authorization_service::AuthorizationSession,
@@ -96,7 +98,33 @@ async fn forward_media_request(
 
     match server.media_streaming_mode {
         MediaStreamingMode::Redirect => {
-            info!("Redirecting {} to: {}", log_label, url);
+            // Redirects cannot carry the backend Authorization header prepared by
+            // preprocessing. Use Jellyfin's canonical query token on the target.
+            let mut url = url;
+            if let Some(token) =
+                JellyfinAuthorization::from_request(&request).and_then(|auth| auth.token())
+            {
+                let pairs = url
+                    .query_pairs()
+                    .filter(|(key, _)| {
+                        !crate::processors::url_processor::matches_case_insensitive(
+                            key,
+                            crate::processors::url_processor::API_KEY_QUERY_TAGS,
+                        )
+                    })
+                    .map(|(key, value)| (key.into_owned(), value.into_owned()))
+                    .collect::<Vec<_>>();
+                url.query_pairs_mut()
+                    .clear()
+                    .extend_pairs(pairs)
+                    .append_pair("ApiKey", &token);
+            }
+            info!(
+                "Redirecting {} via {}: {}",
+                log_label,
+                server.name,
+                url.path()
+            );
             Ok(axum::response::Redirect::temporary(url.as_ref()).into_response())
         }
         MediaStreamingMode::Proxy => {

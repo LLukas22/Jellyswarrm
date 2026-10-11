@@ -209,9 +209,9 @@ impl SortPolicy {
         if fields.first() == Some(&ItemSortBy::Random) {
             return Self::Random;
         }
-        if fields.first() == Some(&ItemSortBy::DateLastContentAdded) {
-            // Neither ranking can be reconstructed from BaseItemDto. Keep each
-            // upstream server's ranking rather than applying a tie-breaker.
+        if fields.iter().any(|field| !MediaItem::supports_sort(*field)) {
+            // Do not turn unsupported/backend-only rankings into name or UUID
+            // order, including when an unsupported field has a supported tie-breaker.
             return Self::PreserveUpstream;
         }
         if fields.is_empty() {
@@ -260,11 +260,11 @@ impl SortPolicy {
                 let numeric_key = |item: &MediaItem| {
                     (
                         if matches!(self, Self::EpisodeOrder) {
-                            item_number(item, "ParentIndexNumber")
+                            item.item_number("ParentIndexNumber")
                         } else {
                             0
                         },
-                        item_number(item, "IndexNumber"),
+                        item.item_number("IndexNumber"),
                     )
                 };
                 items.sort_by(|left, right| {
@@ -304,14 +304,6 @@ impl SortPolicy {
             })
             .collect()
     }
-}
-
-fn item_number(item: &MediaItem, key: &str) -> i64 {
-    item.extra
-        .iter()
-        .find(|(field, _)| field.eq_ignore_ascii_case(key))
-        .and_then(|(_, value)| value.as_i64())
-        .unwrap_or(i64::MAX)
 }
 
 fn query_list<T>(url: &url::Url, expected_key: &str) -> Vec<T>
@@ -384,6 +376,22 @@ fn to_i32(value: usize) -> i32 {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn unsupported_sort_does_not_replace_backend_order_with_name_or_id_order() {
+        for sort in [
+            "FutureBackendRank,SortName",
+            "DateLastContentAdded,SortName",
+        ] {
+            let url = url::Url::parse(&format!("http://localhost/Items?SortBy={sort}")).unwrap();
+            let items = vec![
+                named_media_item("z", "Zulu"),
+                named_media_item("a", "Alpha"),
+            ];
+            let result = FederatedItems::new(items).into_response(&url, ResponseShape::Bare);
+            assert_eq!(item_ids(&result.into_items()), vec!["z", "a"]);
+        }
+    }
 
     #[test]
     fn shared_request_policy_survives_upstream_pagination_rewrites() {
