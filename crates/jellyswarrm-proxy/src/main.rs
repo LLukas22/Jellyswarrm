@@ -750,6 +750,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             // Video streaming routes
             .route("/LiveStreams/Open", post(handlers::livestreams::post_livestream_open))
+            .route("/LiveStreams/Close", post(handlers::livestreams::post_live_stream_action))
+            .route("/LiveStreams/MediaInfo", post(handlers::livestreams::post_live_stream_action))
             .route("/Genres", get(handlers::federated::get_items_from_all_servers))
             .route("/Studios", get(handlers::federated::get_items_from_all_servers))
             .nest(

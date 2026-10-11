@@ -1,4 +1,5 @@
 use super::*;
+mod lifecycle;
 mod routes;
 
 async fn web_fixture() -> (Fixture, String, String) {

@@ -21,7 +21,17 @@ pub struct PlaybackSession {
 
 pub struct SessionStorage {
     sessions: RwLock<Vec<TrackedPlaybackSession>>,
+    live_streams: RwLock<Vec<LiveStreamBinding>>,
     session_ttl: Duration,
+}
+
+#[derive(Clone)]
+pub struct LiveStreamBinding {
+    pub virtual_id: String,
+    pub original_id: String,
+    pub user_id: String,
+    pub server_id: ServerId,
+    updated_at: Instant,
 }
 
 struct TrackedPlaybackSession {
@@ -44,6 +54,7 @@ impl SessionStorage {
     pub fn with_session_ttl(session_ttl: Duration) -> Self {
         SessionStorage {
             sessions: RwLock::new(Vec::new()),
+            live_streams: RwLock::new(Vec::new()),
             session_ttl,
         }
     }
@@ -84,6 +95,61 @@ impl SessionStorage {
             revision,
             updated_at: Instant::now(),
         });
+    }
+
+    pub async fn sessions_for_user(&self, user_id: &str) -> Vec<PlaybackSession> {
+        self.live_sessions()
+            .await
+            .iter()
+            .filter(|tracked| tracked.session.user_id == user_id)
+            .map(|tracked| tracked.session.clone())
+            .collect()
+    }
+
+    /// Live IDs are backend-local, and may collide across servers. Keep their
+    /// caller-scoped bindings independently of stop reports so close can follow stop.
+    pub async fn register_live_stream(
+        &self,
+        original_id: &str,
+        user_id: &str,
+        server_id: ServerId,
+    ) -> String {
+        let mut streams = self.live_streams.write().await;
+        streams.retain(|stream| stream.updated_at.elapsed() <= self.session_ttl);
+        if let Some(stream) = streams.iter_mut().find(|stream| {
+            stream.original_id == original_id
+                && stream.user_id == user_id
+                && stream.server_id == server_id
+        }) {
+            stream.updated_at = Instant::now();
+            return stream.virtual_id.clone();
+        }
+        let virtual_id = uuid::Uuid::new_v4().simple().to_string();
+        streams.push(LiveStreamBinding {
+            virtual_id: virtual_id.clone(),
+            original_id: original_id.into(),
+            user_id: user_id.into(),
+            server_id,
+            updated_at: Instant::now(),
+        });
+        virtual_id
+    }
+
+    pub async fn live_stream(&self, id: &str, user_id: &str) -> Option<LiveStreamBinding> {
+        let mut streams = self.live_streams.write().await;
+        streams.retain(|stream| stream.updated_at.elapsed() <= self.session_ttl);
+        let stream = streams
+            .iter_mut()
+            .find(|stream| stream.virtual_id == id && stream.user_id == user_id)?;
+        stream.updated_at = Instant::now();
+        Some(stream.clone())
+    }
+
+    pub async fn remove_live_stream(&self, id: &str, user_id: &str) {
+        self.live_streams
+            .write()
+            .await
+            .retain(|stream| stream.virtual_id != id || stream.user_id != user_id);
     }
 
     pub async fn bind_original_item(
@@ -245,6 +311,25 @@ impl SessionStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn live_stream_bindings_are_viewer_scoped_and_expire() {
+        let storage = SessionStorage::with_session_ttl(Duration::from_secs(10));
+        let server = ServerId::new(1);
+        let alice = storage
+            .register_live_stream("opaque", "alice", server)
+            .await;
+        let bob = storage.register_live_stream("opaque", "bob", server).await;
+        assert_ne!(alice, bob);
+        assert!(storage.live_stream(&alice, "bob").await.is_none());
+        storage.remove_live_stream(&alice, "bob").await;
+        assert!(storage.live_stream(&alice, "alice").await.is_some());
+        for binding in storage.live_streams.write().await.iter_mut() {
+            binding.updated_at = Instant::now() - Duration::from_secs(11);
+        }
+        assert!(storage.live_stream(&alice, "alice").await.is_none());
+        assert!(storage.live_stream(&bob, "bob").await.is_none());
+    }
 
     fn playback_session(
         session_id: &str,

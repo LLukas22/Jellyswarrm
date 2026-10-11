@@ -218,6 +218,7 @@ pub async fn remap_playback_request(
     payload: &mut PlaybackRequest,
     state: &AppState,
     session: &AuthorizationSession,
+    server: &Server,
 ) -> Result<(), StatusCode> {
     if payload.user_id.is_some() {
         payload.user_id = Some(session.original_user_id.clone());
@@ -237,6 +238,21 @@ pub async fn remap_playback_request(
         }
     }
 
+    for (key, value) in &mut payload.extra {
+        if key.eq_ignore_ascii_case("LiveStreamId") {
+            if let Some(id) = value.as_str().filter(|id| !id.is_empty()) {
+                let binding = state
+                    .play_sessions
+                    .live_stream(id, &session.user_id)
+                    .await
+                    .ok_or(StatusCode::BAD_REQUEST)?;
+                if binding.server_id != server.id {
+                    return Err(StatusCode::BAD_REQUEST);
+                }
+                *value = serde_json::Value::String(binding.original_id);
+            }
+        }
+    }
     Ok(())
 }
 
@@ -247,6 +263,10 @@ pub async fn process_playback_response(
     session: &AuthorizationSession,
     proxy_api_key: Option<&str>,
 ) -> Result<(), StatusCode> {
+    for source in &mut response.media_sources {
+        crate::handlers::livestreams::bind_live_source(state, source, &session.user_id, server)
+            .await?;
+    }
     let mut response_json = serde_json::to_value(&*response).map_err(|e| {
         error!("Failed to serialize playback response JSON: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR

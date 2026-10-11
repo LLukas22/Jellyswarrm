@@ -1917,7 +1917,7 @@ async fn latest_preserves_unknown_identity_and_disabled_behavior() {
         CatalogPlan::Interleaved(_)
     ));
     state.config.write().await.deduplicate_media = true;
-    for path in ["/Items", "/UserItems/Resume", "/Items/Suggestions"] {
+    for path in ["/Items", "/Items/Suggestions"] {
         assert!(matches!(
             resolve_catalog_plan(&state, &request(path, &sessions))
                 .await
@@ -1925,4 +1925,17 @@ async fn latest_preserves_unknown_identity_and_disabled_behavior() {
             CatalogPlan::Interleaved(_)
         ));
     }
+    assert!(matches!(
+        resolve_catalog_plan(&state, &request("/UserItems/Resume", &sessions))
+            .await
+            .unwrap(),
+        CatalogPlan::Virtual { .. }
+    ));
+    state.config.write().await.deduplicate_media = false;
+    assert!(matches!(
+        resolve_catalog_plan(&state, &request("/UserItems/Resume", &sessions))
+            .await
+            .unwrap(),
+        CatalogPlan::Interleaved(_)
+    ));
 }

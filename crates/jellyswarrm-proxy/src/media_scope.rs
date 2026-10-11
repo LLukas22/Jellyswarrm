@@ -7,6 +7,7 @@ pub enum MediaScopeKind {
     Aggregate,
     Latest,
     Search,
+    Resume,
 }
 
 /// Shared codec for persisted catalog keys and viewer-scoped reverse lookups.
@@ -27,6 +28,7 @@ impl<'a> MediaCatalogScope<'a> {
             "aggregate" => MediaScopeKind::Aggregate,
             "latest" => MediaScopeKind::Latest,
             "search" => MediaScopeKind::Search,
+            "resume" => MediaScopeKind::Resume,
             _ => return None,
         };
         let middle = parts.next()?;
@@ -35,12 +37,17 @@ impl<'a> MediaCatalogScope<'a> {
             return None;
         }
         let (viewer, resource_id) = match kind {
-            MediaScopeKind::Latest | MediaScopeKind::Search => (middle, last),
+            MediaScopeKind::Latest | MediaScopeKind::Search | MediaScopeKind::Resume => {
+                (middle, last)
+            }
             _ => (last, middle),
         };
         if viewer.is_empty()
             || (resource_id.is_empty()
-                && !matches!(kind, MediaScopeKind::Latest | MediaScopeKind::Search))
+                && !matches!(
+                    kind,
+                    MediaScopeKind::Latest | MediaScopeKind::Search | MediaScopeKind::Resume
+                ))
         {
             return None;
         }
@@ -64,9 +71,10 @@ impl fmt::Display for MediaCatalogScope<'_> {
             MediaScopeKind::Aggregate => "aggregate",
             MediaScopeKind::Latest => "latest",
             MediaScopeKind::Search => "search",
+            MediaScopeKind::Resume => "resume",
         };
         match self.kind {
-            MediaScopeKind::Latest | MediaScopeKind::Search => {
+            MediaScopeKind::Latest | MediaScopeKind::Search | MediaScopeKind::Resume => {
                 write!(f, "{kind}:{}:{}", self.viewer, self.resource_id)
             }
             _ => write!(f, "{kind}:{}:{}", self.resource_id, self.viewer),
@@ -88,6 +96,8 @@ mod tests {
             "latest:viewer:library",
             "search:viewer:",
             "search:viewer:library",
+            "resume:viewer:",
+            "resume:viewer:library",
         ] {
             let scope = MediaCatalogScope::parse(key).unwrap();
             assert_eq!(scope.to_string(), key);

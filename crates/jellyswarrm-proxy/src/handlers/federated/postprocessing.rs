@@ -169,6 +169,7 @@ impl FederatedItems {
         shape: ResponseShape,
     ) -> ItemsResponseVariants {
         let pagination = policy.pagination;
+        self.items.retain(|item| policy.matches_playback(item));
         policy.sort.apply(&mut self.items);
         let total_count = self.items.len();
         let items = pagination

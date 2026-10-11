@@ -8,20 +8,98 @@ pub(super) struct CatalogRequestPolicy {
     pub sort: super::postprocessing::SortPolicy,
     pub inventory_types: BTreeSet<MediaKind>,
     pub upstream_limited: bool,
+    pub reconcile_playback: bool,
+    playback_filters: Vec<PlaybackFilter>,
+}
+
+enum PlaybackFilter {
+    Played(bool),
+    Resumable,
+}
+
+impl PlaybackFilter {
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "isplayed" => Some(Self::Played(true)),
+            "isunplayed" => Some(Self::Played(false)),
+            "isresumable" => Some(Self::Resumable),
+            _ => None,
+        }
+    }
 }
 
 impl CatalogRequestPolicy {
     pub fn from_url(url: &url::Url) -> Self {
         let sort = super::postprocessing::SortPolicy::from_url(url);
+        let mut playback_filters = Vec::new();
+        for (key, value) in url.query_pairs() {
+            if key.eq_ignore_ascii_case("Filters") {
+                playback_filters.extend(value.split(',').filter_map(PlaybackFilter::parse));
+            } else if key.eq_ignore_ascii_case("IsPlayed") {
+                if let Ok(played) = value.to_ascii_lowercase().parse() {
+                    playback_filters.push(PlaybackFilter::Played(played));
+                }
+            }
+        }
+        if url
+            .path()
+            .trim_end_matches('/')
+            .to_ascii_lowercase()
+            .ends_with("/resume")
+        {
+            playback_filters.push(PlaybackFilter::Resumable);
+        }
         Self {
             pagination: Pagination::from_url(url),
             sort,
             inventory_types: authoritative_inventory_types(url),
             upstream_limited: is_upstream_limited_catalog_request(url),
+            reconcile_playback: false,
+            playback_filters,
         }
     }
 
     pub fn prepare_upstream(&self, url: &mut url::Url, include_identity: bool) {
+        if self.reconcile_playback && !self.playback_filters.is_empty() {
+            // Fetch all copies before applying playback predicates. Otherwise a
+            // newer completion can be hidden by an older resumable copy.
+            let pairs = url
+                .query_pairs()
+                .filter_map(|(key, value)| {
+                    if key.eq_ignore_ascii_case("IsPlayed")
+                        || key.eq_ignore_ascii_case("EnableUserData")
+                    {
+                        return None;
+                    }
+                    if key.eq_ignore_ascii_case("Filters") {
+                        let remaining = value
+                            .split(',')
+                            .filter(|value| PlaybackFilter::parse(value).is_none())
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        return (!remaining.is_empty()).then(|| (key.into_owned(), remaining));
+                    }
+                    Some((key.into_owned(), value.into_owned()))
+                })
+                .collect::<Vec<_>>();
+            url.query_pairs_mut()
+                .clear()
+                .extend_pairs(pairs)
+                .append_pair("EnableUserData", "true");
+            let path = url.path().trim_end_matches('/');
+            if path.to_ascii_lowercase().ends_with("/resume") {
+                let base = &path[..path.len() - "/Resume".len()];
+                let path = if base.to_ascii_lowercase().ends_with("/useritems") {
+                    format!("{}/Items", &base[..base.len() - "/UserItems".len()])
+                } else {
+                    base.to_string()
+                };
+                url.set_path(&path);
+                if !has_query_key(url, &["Recursive"]) {
+                    url.query_pairs_mut().append_pair("Recursive", "true");
+                }
+            }
+        }
         if matches!(self.sort, super::postprocessing::SortPolicy::Random) {
             let pairs = url
                 .query_pairs()
@@ -40,6 +118,19 @@ impl CatalogRequestPolicy {
         if include_identity {
             ensure_duplicate_identity_field(url);
         }
+    }
+
+    pub fn matches_playback(&self, item: &crate::models::MediaItem) -> bool {
+        !self.reconcile_playback
+            || self.playback_filters.iter().all(|filter| match filter {
+                PlaybackFilter::Played(played) => {
+                    item.user_data.as_ref().is_some_and(|data| data.played) == *played
+                }
+                PlaybackFilter::Resumable => item
+                    .user_data
+                    .as_ref()
+                    .is_some_and(|data| data.playback_position_ticks > 0),
+            })
     }
 }
 

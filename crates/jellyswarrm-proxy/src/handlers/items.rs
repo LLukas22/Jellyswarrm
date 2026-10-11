@@ -322,7 +322,7 @@ pub async fn post_playback_info(
         }
     };
 
-    remap_playback_request(&mut payload, &state, &session).await?;
+    remap_playback_request(&mut payload, &state, &session, &server).await?;
 
     debug!("Forwarding PlaybackRequest JSON: {:?}", &payload);
 

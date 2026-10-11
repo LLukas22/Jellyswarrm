@@ -450,6 +450,17 @@ impl UrlProcessor {
                 }
             } else if matches_case_insensitive(name, API_KEY_QUERY_TAGS) {
                 *value = session.jellyfin_token.clone();
+            } else if name.eq_ignore_ascii_case("LiveStreamId") {
+                if let Some(binding) = self
+                    .data_context
+                    .play_sessions
+                    .live_stream(value, &session.user_id)
+                    .await
+                {
+                    if Some(binding.server_id) == server_id {
+                        *value = binding.original_id;
+                    }
+                }
             }
         }
     }

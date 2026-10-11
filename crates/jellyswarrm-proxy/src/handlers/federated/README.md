@@ -66,6 +66,12 @@ flowchart TD
   evidence of playback wins over an untouched copy; ties retain the preferred
   copy. Other preferences, such as favorites, stay with the preferred copy.
   Explicit member details retain that member's playback state.
+- With media deduplication enabled, merged playback predicates (`IsPlayed`,
+  `IsUnplayed`, and `IsResumable`) are applied after playback-state reconciliation
+  and before sorting/counting/pagination. Upstream scans omit those predicates
+  so newer completions and restarts cannot be hidden by older copies. Resume
+  endpoints use paged item scans for the same reason; unscoped resume results
+  have a viewer-scoped, additive identity catalog.
 - Both legacy and modern watched/unwatched actions on an aggregate update all
   authorized copies. Availability is checked before writes; offline members
   produce 503 and upstream rejections are propagated rather than acknowledging
@@ -75,6 +81,15 @@ flowchart TD
   sends the opaque open token to the bound backend and exact original item.
   Its singular `MediaSource` response records newly opened sources for subsequent
   streaming and retains the merged version naming contract.
+  Opening accepts query and JSON DTO fields with query precedence, translating
+  both forms to the negotiated member. Negotiated source routes referenced by
+  live playback sessions survive static detail refreshes; after a session stops
+  or expires, subsequent refreshes can prune them normally.
+- Live stream IDs returned by opening or auto-opening are opaque viewer/backend
+  bindings, including their delivery URL references. Stream requests and playback
+  renegotiation translate them back; media-info refresh and close target their
+  owning backend. Bindings outlive playback stop, expire after inactivity, and
+  are removed on successful close (failed closes remain retryable).
 - Genres and studios use the same member resolution and global pagination as
   library browsing. `Items/Filters` and `Items/Filters2` union filter-option DTOs
   from available members, preserving source-owned IDs and removing duplicate

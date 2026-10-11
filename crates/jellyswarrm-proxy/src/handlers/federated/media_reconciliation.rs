@@ -158,7 +158,8 @@ async fn get_reconciled_catalog_uncached(
         None
     };
     let original_request = preprocessed.original_request;
-    let policy = CatalogRequestPolicy::from_url(original_request.url());
+    let mut policy = CatalogRequestPolicy::from_url(original_request.url());
+    policy.reconcile_playback = deduplicate_media;
     let series_group = context.series_group();
     let FetchedCatalog {
         server_items,

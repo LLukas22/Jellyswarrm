@@ -158,7 +158,15 @@ pub(super) async fn resolve_catalog_plan(
         .url()
         .query_pairs()
         .any(|(key, _)| key.eq_ignore_ascii_case("SearchTerm"));
+    let is_resume = preprocessed
+        .original_request
+        .url()
+        .path()
+        .trim_end_matches('/')
+        .to_ascii_lowercase()
+        .ends_with("/resume");
     if (is_search
+        || is_resume
         || preprocessed
             .original_request
             .url()
@@ -179,6 +187,8 @@ pub(super) async fn resolve_catalog_plan(
             catalog_scope_key: MediaCatalogScope {
                 kind: if is_search {
                     MediaScopeKind::Search
+                } else if is_resume {
+                    MediaScopeKind::Resume
                 } else {
                     MediaScopeKind::Latest
                 },

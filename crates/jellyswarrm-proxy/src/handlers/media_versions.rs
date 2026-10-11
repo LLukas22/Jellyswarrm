@@ -113,7 +113,7 @@ pub(super) async fn merge_media_detail(
         .iter()
         .map(|hosted| hosted.member_mapping.id)
         .collect::<Vec<_>>();
-    let (sources, observations) = merge_sources(&hosted_sources);
+    let (sources, mut observations) = merge_sources(&hosted_sources);
     if !sources.is_empty() {
         item.media_source_count = Some(sources.len().min(i32::MAX as usize) as i32);
         item.media_sources = Some(sources);
@@ -135,6 +135,30 @@ pub(super) async fn merge_media_detail(
         }
     }
 
+    // A static detail inventory cannot revoke a source negotiated by an active
+    // player (for example the dynamic source returned by LiveStreams/Open).
+    if let Some(scope) = context.access_scope {
+        for session in state.play_sessions.sessions_for_user(scope.user_id()).await {
+            let Some(route) = state
+                .media_storage
+                .get_media_version_source_route(group.id, &session.item_id)
+                .await
+                .map_err(storage_error)?
+            else {
+                continue;
+            };
+            if route.member_mapping.server_id == session.server_id
+                && session.original_item_id.as_deref()
+                    == Some(&route.member_mapping.original_media_id)
+                && refreshed_member_mapping_ids.contains(&route.member_mapping.id)
+            {
+                observations.push(MediaVersionSourceObservation {
+                    member_mapping_id: route.member_mapping.id,
+                    source_virtual_id: session.item_id,
+                });
+            }
+        }
+    }
     let sources_replaced = state
         .media_storage
         .replace_media_version_sources(
