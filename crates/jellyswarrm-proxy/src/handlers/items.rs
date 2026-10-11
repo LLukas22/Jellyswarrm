@@ -290,6 +290,22 @@ pub async fn post_playback_info(
 
     let mut payload = payload;
 
+    // Jellyfin Web uses item.Id as the default source when carrying track
+    // preferences into the next queued item. An aggregate has no source of
+    // its own: let the already selected member negotiate its default sources.
+    let default_aggregate_source = payload.media_source_id.as_deref().is_some_and(|source| {
+        crate::media_storage_service::MediaStorageService::normalize_uuid(source)
+            == crate::media_storage_service::MediaStorageService::normalize_uuid(&requested_item_id)
+    }) && state
+        .media_storage
+        .get_media_version_group(&requested_item_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .is_some();
+    if default_aggregate_source {
+        payload.media_source_id = None;
+    }
+
     let route = resolve_playback_route(
         &state,
         &preprocessed,
@@ -315,6 +331,26 @@ pub async fn post_playback_info(
     let original_item_id = contains_id(request.url(), "Items").ok_or(StatusCode::BAD_REQUEST)?;
     match execute_json_request::<PlaybackResponse>(&state.reqwest_client, request).await {
         Ok(mut response) => {
+            // Preserve the client's intent to use the member's own source.
+            // Otherwise Web cannot find its aggregate ID among the real sources
+            // and may choose a different direct-play version with different
+            // track indexes. Prefer the native item/source identity; backends
+            // with distinct IDs expose their default source first.
+            if default_aggregate_source && !response.media_sources.is_empty() {
+                let index = response
+                    .media_sources
+                    .iter()
+                    .position(|source| {
+                        crate::media_storage_service::MediaStorageService::normalize_uuid(
+                            &source.id,
+                        ) == crate::media_storage_service::MediaStorageService::normalize_uuid(
+                            &original_item_id,
+                        )
+                    })
+                    .unwrap_or(0);
+                let source = response.media_sources.remove(index);
+                response.media_sources = vec![source];
+            }
             process_playback_response(
                 &mut response,
                 &state,

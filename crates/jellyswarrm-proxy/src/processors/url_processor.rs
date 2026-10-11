@@ -45,6 +45,7 @@ pub static MEDIA_ID_QUERY_TAGS: &[&str] = &[
     "LibrarySeriesId",
     "ChannelIds",
     "GenreIds",
+    "StudioIds",
     "ExcludeItemIds",
     "SeriesTimerId",
     "MediaSourceId",

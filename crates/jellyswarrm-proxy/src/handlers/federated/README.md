@@ -53,6 +53,34 @@ flowchart TD
   session. Subtitle and attachment source IDs in the path have the same routing
   authority as `MediaSourceId` in the query, and conflicting selections fail
   before forwarding.
+- Playback negotiation accepts Jellyfin Web's own aggregate ID as the default
+  `MediaSourceId` fallback when remembering audio/subtitle selections. It removes
+  that synthetic source filter, retains the member's own/default source in the
+  response, and preserves track selections; other explicit
+  sources still require recorded ownership. Negotiated aggregate source names
+  use the same backend labels as details and queue lookups so Web can match the
+  chosen version on the next episode.
+- Merged movie/episode details and catalog entries take playback fields together
+  from the available copy with the newest valid `LastPlayedDate`, including a
+  newer completion or restart with a lower position. With missing timestamps,
+  evidence of playback wins over an untouched copy; ties retain the preferred
+  copy. Other preferences, such as favorites, stay with the preferred copy.
+  Explicit member details retain that member's playback state.
+- Both legacy and modern watched/unwatched actions on an aggregate update all
+  authorized copies. Availability is checked before writes; offline members
+  produce 503 and upstream rejections are propagated rather than acknowledging
+  a partial update. Successful writes invalidate the viewer's catalog cache,
+  including when a later write fails. Member-specific actions stay source-local.
+- `LiveStreams/Open` validates the caller's negotiated session and item, then
+  sends the opaque open token to the bound backend and exact original item.
+  Its singular `MediaSource` response records newly opened sources for subsequent
+  streaming and retains the merged version naming contract.
+- Genres and studios use the same member resolution and global pagination as
+  library browsing. `Items/Filters` and `Items/Filters2` union filter-option DTOs
+  from available members, preserving source-owned IDs and removing duplicate
+  options. Failed members are omitted; an entirely failed fetch returns 503.
+  Genre/studio ID filters are partitioned per backend before ID translation, so
+  another backend's IDs never turn a filtered request into an unfiltered scan.
 - Transcoder cancellation (`DELETE /Videos/ActiveEncodings`) requires a known
   playback session owned by the caller and targets that session's backend.
   Unknown, missing, or conflicting session IDs are rejected; an unavailable

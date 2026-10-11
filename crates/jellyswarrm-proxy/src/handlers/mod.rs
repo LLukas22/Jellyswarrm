@@ -5,6 +5,7 @@ pub(crate) mod federated;
 pub(crate) mod items;
 pub(crate) mod livestreams;
 pub(crate) mod media_versions;
+pub(crate) mod played_state;
 pub(crate) mod quick_connect;
 pub(crate) mod syncplay;
 pub(crate) mod system;

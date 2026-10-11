@@ -682,6 +682,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         get(handlers::federated::get_items_from_all_servers_if_not_restricted),
                     )
                     .route("/{item_id}", item_detail_routes())
+                    .route("/Filters", get(handlers::federated::get_filters))
+                    .route("/Filters2", get(handlers::federated::get_filters))
                     .route("/{item_id}/Similar", get(handlers::items::get_items))
                     .route("/{item_id}/LocalTrailers", get(handlers::items::get_items))
                     .route(
@@ -747,6 +749,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ),
             )
             // Video streaming routes
+            .route("/LiveStreams/Open", post(handlers::livestreams::post_livestream_open))
+            .route("/Genres", get(handlers::federated::get_items_from_all_servers))
+            .route("/Studios", get(handlers::federated::get_items_from_all_servers))
             .nest(
                 "/Videos",
                 Router::new()
@@ -1036,6 +1041,9 @@ async fn proxy_handler(
     };
 
     let request_url = preprocessed.request.url().clone();
+    if let Some(response) = handlers::played_state::update_aggregate(&state, &preprocessed).await? {
+        return Ok(response.into_response());
+    }
     let mutation_viewer = (!matches!(*preprocessed.request.method(), Method::GET | Method::HEAD))
         .then(|| preprocessed.user.as_ref().map(|user| user.id.clone()))
         .flatten();

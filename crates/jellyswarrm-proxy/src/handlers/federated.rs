@@ -7,7 +7,9 @@ use crate::{
     AppState,
 };
 
+mod filters;
 mod item_lookup;
+pub use filters::get_filters;
 mod item_policy;
 mod library_resolution;
 mod library_root;

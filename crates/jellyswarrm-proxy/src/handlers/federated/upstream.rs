@@ -221,6 +221,9 @@ pub(super) async fn fetch_catalog(
             failures += 1;
             continue;
         };
+        if !super::filters::restrict_named_ids(state, request.url_mut(), target.server.id).await? {
+            continue;
+        }
         policy.prepare_upstream(
             request.url_mut(),
             target.parent_id.is_some() || matches!(mode, FetchMode::VirtualLibrary),
@@ -269,6 +272,13 @@ pub(super) async fn fetch_catalog(
         });
     }
 
+    if join_set.is_empty() && failures == 0 {
+        return Ok(FetchedCatalog {
+            server_items: Vec::new(),
+            response_shape: ResponseShape::Counted,
+            failures: 0,
+        });
+    }
     let (indexed_results, failures) = collect_federated_results(join_set, failures).await?;
     let server_items = indexed_results
         .into_iter()

@@ -48,6 +48,7 @@ struct HostedMediaSources {
     member_mapping: MediaMapping,
     server: Server,
     sources: Vec<MediaSource>,
+    user_data: Option<crate::models::UserData>,
     is_primary: bool,
 }
 
@@ -103,6 +104,7 @@ pub(super) async fn merge_media_detail(
             member_mapping: base_mapping,
             server: context.base_server.clone(),
             sources: item.media_sources.take().unwrap_or_default(),
+            user_data: item.user_data.clone(),
             is_primary: true,
         },
     );
@@ -118,6 +120,19 @@ pub(super) async fn merge_media_detail(
     }
     if is_aggregate {
         item.id = group.virtual_media_id.clone();
+        if crate::media_identity::MediaKind::from_item_kind(&item.item_type)
+            .is_some_and(|kind| kind.has_media_sources())
+        {
+            crate::media_catalog::merge_playback_user_data(
+                &mut item.user_data,
+                hosted_sources
+                    .iter()
+                    .filter_map(|hosted| hosted.user_data.as_ref()),
+            );
+        }
+        if let Some(data) = &mut item.user_data {
+            data.item_id = item.id.clone();
+        }
     }
 
     let sources_replaced = state
@@ -336,6 +351,7 @@ async fn fetch_member_source(
         member_mapping: host.member.mapping,
         server: host.server,
         sources: item.media_sources.unwrap_or_default(),
+        user_data: item.user_data,
         is_primary: false,
     })
 }
@@ -445,6 +461,11 @@ pub(super) async fn record_playback_sources(
             source_virtual_id: source.id.clone(),
         })
         .collect::<Vec<_>>();
+    // Web uses the negotiated Name to match the version on the next episode.
+    // Keep it identical to the source name advertised by merged details.
+    for source in sources.iter_mut() {
+        source.name = Some(version_name(source, server));
+    }
     let sources_recorded = state
         .media_storage
         .observe_media_version_sources(
@@ -630,12 +651,14 @@ mod tests {
                 member_mapping: mapping(1, 1),
                 server: server(1, "Primary"),
                 sources: vec![source("source-a", Some("4K"), None)],
+                user_data: None,
                 is_primary: true,
             },
             HostedMediaSources {
                 member_mapping: mapping(2, 2),
                 server: server(2, "Backup"),
                 sources: vec![source("source-b", None, Some(1080))],
+                user_data: None,
                 is_primary: false,
             },
         ];
@@ -673,12 +696,14 @@ mod tests {
                 member_mapping: mapping(2, 2),
                 server: server(2, "Selected"),
                 sources: vec![selected],
+                user_data: None,
                 is_primary: true,
             },
             HostedMediaSources {
                 member_mapping: mapping(1, 1),
                 server: server(1, "Original"),
                 sources: vec![source("original-source", None, None)],
+                user_data: None,
                 is_primary: false,
             },
         ]);
@@ -707,12 +732,14 @@ mod tests {
                 member_mapping: mapping(1, 1),
                 server: server(1, "Primary"),
                 sources: vec![source("same-source", None, None)],
+                user_data: None,
                 is_primary: true,
             },
             HostedMediaSources {
                 member_mapping: mapping(2, 2),
                 server: server(2, "Backup"),
                 sources: vec![source("same-source", None, None)],
+                user_data: None,
                 is_primary: false,
             },
         ];

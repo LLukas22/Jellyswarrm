@@ -170,7 +170,7 @@ fn union(parents: &mut [usize], left: usize, right: usize) {
     }
 }
 
-pub(crate) fn merge_media_group(members: Vec<TaggedMediaItem>, group_id: &str) -> MediaItem {
+pub(crate) fn merge_media_group(mut members: Vec<TaggedMediaItem>, group_id: &str) -> MediaItem {
     let advertises_versions = members.iter().any(|member| {
         MediaKind::from_item_kind(&member.item.item_type)
             .is_some_and(|kind| kind.has_media_sources())
@@ -181,9 +181,10 @@ pub(crate) fn merge_media_group(members: Vec<TaggedMediaItem>, group_id: &str) -
         .sum::<i64>()
         .min(i32::MAX as i64) as i32;
 
-    let mut best = members
-        .into_iter()
-        .max_by(|left, right| {
+    let best_index = members
+        .iter()
+        .enumerate()
+        .max_by(|(_, left), (_, right)| {
             compare_virtual_library_routes(
                 &left.server,
                 &left.item.id,
@@ -191,9 +192,23 @@ pub(crate) fn merge_media_group(members: Vec<TaggedMediaItem>, group_id: &str) -
                 &right.item.id,
             )
         })
-        .expect("media group is never empty");
+        .expect("media group is never empty")
+        .0;
+
+    let mut best = members.swap_remove(best_index);
+    if advertises_versions {
+        merge_playback_user_data(
+            &mut best.item.user_data,
+            members
+                .iter()
+                .filter_map(|member| member.item.user_data.as_ref()),
+        );
+    }
 
     best.item.id = group_id.to_string();
+    if let Some(data) = &mut best.item.user_data {
+        data.item_id = group_id.to_string();
+    }
     // Movies and (Jellyfin v12+) episodes carry one MediaSource per version,
     // so the collapsed item advertises the summed count. Series/seasons have
     // no versions on the item itself — keep their original count instead of
@@ -202,6 +217,41 @@ pub(crate) fn merge_media_group(members: Vec<TaggedMediaItem>, group_id: &str) -
         best.item.media_source_count = Some(media_source_count);
     }
     best.item
+}
+
+/// Preserve the preferred copy's non-playback preferences, but take playback
+/// fields together from the most recently played copy. In particular, a newer
+/// completion (zero position) must beat an older, partially watched version.
+/// Older servers can omit LastPlayedDate; only then use evidence of playback
+/// as a fallback, keeping the preferred copy on ties.
+pub(crate) fn merge_playback_user_data<'a>(
+    base: &mut Option<crate::models::UserData>,
+    candidates: impl IntoIterator<Item = &'a crate::models::UserData>,
+) {
+    fn rank(
+        data: &crate::models::UserData,
+    ) -> (Option<chrono::DateTime<chrono::FixedOffset>>, bool) {
+        (
+            data.last_played_date
+                .as_deref()
+                .and_then(|date| chrono::DateTime::parse_from_rfc3339(date).ok()),
+            data.played || data.play_count > 0 || data.playback_position_ticks > 0,
+        )
+    }
+
+    for candidate in candidates {
+        let Some(current) = base else {
+            *base = Some(candidate.clone());
+            continue;
+        };
+        if rank(candidate) > rank(current) {
+            current.playback_position_ticks = candidate.playback_position_ticks;
+            current.play_count = candidate.play_count;
+            current.played = candidate.played;
+            current.played_percentage = candidate.played_percentage;
+            current.last_played_date = candidate.last_played_date.clone();
+        }
+    }
 }
 
 pub fn label_duplicates(items: Vec<TaggedMediaItem>) -> Vec<CatalogItem> {
