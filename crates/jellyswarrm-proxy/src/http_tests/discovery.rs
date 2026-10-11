@@ -1,0 +1,89 @@
+//! Fan-out contracts exercise global requests independently of source-owned reads.
+use super::*;
+use wiremock::{
+    matchers::{method, path},
+    Mock, ResponseTemplate,
+};
+
+macro_rules! contracts {
+    ($($name:ident: $route:literal;)+) => {
+        pub(super) const ROUTES: &[&str] = &[$($route),+];
+        $(#[tokio::test] async fn $name() { discovery_contract($route).await; })+
+    };
+}
+contracts! {
+    modern_views: "/UserViews?UserId={user}";
+    legacy_views: "/Users/{user}/Views";
+    library_folders: "/Library/MediaFolders";
+    movies: "/Items?UserId={user}&IncludeItemTypes=Movie&Recursive=true";
+    search: "/Items?UserId={user}&SearchTerm=Movie&IncludeItemTypes=Movie";
+    channels: "/LiveTv/Channels?UserId={user}";
+    programs: "/LiveTv/Programs?UserId={user}";
+    recommendations: "/LiveTv/Programs/Recommended?UserId={user}";
+    recordings: "/LiveTv/Recordings?UserId={user}";
+    folders: "/LiveTv/Recordings/Folders?UserId={user}";
+    persons: "/Persons?UserId={user}&SearchTerm=Actor";
+    artists: "/Artists?UserId={user}&SearchTerm=Artist";
+    genres: "/Genres?UserId={user}";
+    studios: "/Studios?UserId={user}";
+}
+async fn discovery_contract(route: &str) {
+    let f = Fixture::new().await;
+    f.healthy().await;
+    f.state.config.write().await.merge_libraries = false;
+    for (index, upstream) in f.upstreams.iter().enumerate() {
+        let original = f.original(index).await;
+        let target = if route == "/Library/MediaFolders" {
+            format!("/Users/backend-user-{index}/Views")
+        } else {
+            route
+                .replace("{user}", &format!("backend-user-{index}"))
+                .split('?')
+                .next()
+                .unwrap()
+                .to_string()
+        };
+        let kind = if target.ends_with("Views") {
+            "CollectionFolder"
+        } else {
+            "Movie"
+        };
+        Mock::given(method("GET")).and(path(target))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Items":[{"Id":original,"Name":format!("Source {index}"),"Type":kind,"CollectionType":"movies"}],"TotalRecordCount":1,"StartIndex":0})))
+            .expect(1).mount(upstream).await;
+    }
+    let response = f
+        .request(
+            reqwest::Method::GET,
+            &route.replace("{user}", &f.user.id),
+            &f.user,
+            "tv",
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "{route}");
+    let result: Value = response.json().await.unwrap();
+    assert_eq!(result["TotalRecordCount"], 2, "{route}: {result}");
+    for id in &f.items {
+        assert!(
+            result["Items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["Id"] == *id),
+            "{route}: {result}"
+        );
+    }
+    for (index, upstream) in f.upstreams.iter().enumerate() {
+        let requests = upstream.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0]
+            .headers
+            .get("authorization")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains(&format!("backend-token-{index}")));
+    }
+}
