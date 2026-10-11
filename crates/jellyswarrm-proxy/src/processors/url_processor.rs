@@ -65,6 +65,63 @@ pub static USER_ID_PATH_TAGS: &[&str] = &["Users"];
 pub static USER_ID_QUERY_TAGS: &[&str] = &["UserId"];
 pub static API_KEY_QUERY_TAGS: &[&str] = &["api_key", "ApiKey"];
 
+fn path_media_source_id(url: &url::Url) -> Option<String> {
+    decoded_path_segments(url.path())
+        .windows(4)
+        .find_map(|parts| {
+            (parts[0].eq_ignore_ascii_case("Videos")
+                && is_id_like(&parts[1])
+                && is_id_like(&parts[2])
+                && (parts[3].eq_ignore_ascii_case("Subtitles")
+                    || parts[3].eq_ignore_ascii_case("Attachments")))
+            .then(|| parts[2].clone())
+        })
+}
+
+/// Path and query source selections have identical authority. Reject conflicting
+/// selections before choosing a server or rewriting any IDs.
+pub(crate) fn selected_media_source(url: &url::Url) -> Result<Option<String>> {
+    let mut selected = None;
+    let query_sources = url
+        .query_pairs()
+        .filter(|(key, _)| key.eq_ignore_ascii_case("MediaSourceId"))
+        .flat_map(|(_, value)| value.split(',').map(str::to_string).collect::<Vec<_>>());
+    for source in path_media_source_id(url).into_iter().chain(query_sources) {
+        let source = source.trim();
+        if source.is_empty() {
+            continue;
+        }
+        let source = crate::media_storage_service::MediaStorageService::normalize_uuid(source);
+        if selected
+            .as_ref()
+            .is_some_and(|previous| previous != &source)
+        {
+            anyhow::bail!("conflicting media source selections");
+        }
+        selected = Some(source);
+    }
+    Ok(selected)
+}
+
+pub(crate) fn play_session_id(url: &url::Url) -> Result<Option<String>> {
+    let mut selected = None;
+    for (key, value) in url.query_pairs() {
+        if !(key.eq_ignore_ascii_case("PlaySessionId") || key.eq_ignore_ascii_case("SessionId"))
+            || value.is_empty()
+        {
+            continue;
+        }
+        if selected
+            .as_deref()
+            .is_some_and(|previous| previous != value)
+        {
+            anyhow::bail!("conflicting playback session IDs");
+        }
+        selected = Some(value.into_owned());
+    }
+    Ok(selected)
+}
+
 pub struct UrlProcessor {
     data_context: DataContext,
 }
@@ -139,6 +196,9 @@ impl UrlProcessor {
         url: &url::Url,
         access_scope: Option<&VirtualLibraryAccessScope>,
     ) -> Result<Option<Server>> {
+        let Some(source_id) = selected_media_source(url)? else {
+            return Ok(None);
+        };
         let mut aggregate_group = None;
         for path_segment in MEDIA_ID_PATH_TAGS {
             let Some(media_id) = contains_id(url, path_segment) else {
@@ -155,39 +215,29 @@ impl UrlProcessor {
             }
         }
 
-        for (name, value) in url.query_pairs() {
-            if !name.eq_ignore_ascii_case("MediaSourceId") {
-                continue;
-            }
-            for source_id in value.split(',').map(str::trim).filter(|id| !id.is_empty()) {
-                if let Some(group) = &aggregate_group {
-                    let route = self
-                        .data_context
-                        .media_storage
-                        .get_media_version_source_route(group.id, source_id)
-                        .await?
-                        .filter(|route| {
-                            access_scope
-                                .is_none_or(|scope| scope.allows(route.member_mapping.server_id))
-                        })
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "media source does not belong to the requested media aggregate"
-                            )
-                        })?;
-                    return Ok(self
-                        .data_context
-                        .server_storage
-                        .get_server_by_id(route.member_mapping.server_id)
-                        .await?);
-                }
-                if let Some(server) = self
-                    .server_from_client_media_id(source_id, access_scope)
-                    .await?
-                {
-                    return Ok(Some(server));
-                }
-            }
+        if let Some(group) = &aggregate_group {
+            let route = self
+                .data_context
+                .media_storage
+                .get_media_version_source_route(group.id, &source_id)
+                .await?
+                .filter(|route| {
+                    access_scope.is_none_or(|scope| scope.allows(route.member_mapping.server_id))
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!("media source does not belong to the requested media aggregate")
+                })?;
+            return Ok(self
+                .data_context
+                .server_storage
+                .get_server_by_id(route.member_mapping.server_id)
+                .await?);
+        }
+        if let Some(server) = self
+            .server_from_client_media_id(&source_id, access_scope)
+            .await?
+        {
+            return Ok(Some(server));
         }
         Ok(None)
     }
@@ -322,20 +372,8 @@ impl UrlProcessor {
     ) {
         // These endpoints carry a second ID after the item. Capture it before
         // rewriting the item (item/source IDs may be identical on the backend).
-        let source_id = decoded_path_segments(url.path())
-            .windows(4)
-            .find_map(|parts| {
-                (parts[0].eq_ignore_ascii_case("Videos")
-                    && is_id_like(&parts[1])
-                    && is_id_like(&parts[2])
-                    && (parts[3].eq_ignore_ascii_case("Subtitles")
-                        || parts[3].eq_ignore_ascii_case("Attachments")))
-                .then(|| parts[2].clone())
-            });
-        let selected_source = url.query_pairs().find_map(|(key, value)| {
-            key.eq_ignore_ascii_case("MediaSourceId")
-                .then(|| value.into_owned())
-        });
+        let source_id = path_media_source_id(url);
+        let selected_source = selected_media_source(url).ok().flatten();
         for &path_segment in MEDIA_ID_PATH_TAGS {
             if let Some(media_id) = contains_id(url, path_segment) {
                 if let Some(source) = selected_source.as_deref() {

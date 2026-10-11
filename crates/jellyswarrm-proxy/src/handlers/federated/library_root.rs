@@ -53,11 +53,7 @@ struct LibraryRootInventory {
     non_library_per_server: Vec<Vec<CatalogItem>>,
 }
 
-#[derive(Clone)]
-struct ServerMediaItem {
-    item: MediaItem,
-    server: Server,
-}
+type ServerMediaItem = crate::media_catalog::TaggedMediaItem;
 
 async fn process_library_group_individually(
     state: &AppState,
@@ -421,7 +417,28 @@ async fn build_virtual_library_item(
     display_name: String,
     virtual_id: String,
 ) -> Result<BuiltVirtualLibrary, StatusCode> {
-    let mut members = Vec::new();
+    let mut processed = Vec::with_capacity(group.len());
+    for ServerMediaItem { item, server } in group {
+        let item = process_media_item_for_server(item, state, &server, ItemNamePolicy::Preserve)
+            .await?
+            .item;
+        processed.push(ServerMediaItem { item, server });
+    }
+    let members = processed
+        .iter()
+        .map(|member| (member.server.id, member.item.id.clone()))
+        .collect();
+    let item = merge_virtual_library_items(processed, display_name, virtual_id)?;
+    Ok(BuiltVirtualLibrary { item, members })
+}
+
+/// Shared presentation for roots and explicit ID lookups. Members have already
+/// crossed the response translation boundary, so their artwork IDs stay concrete.
+pub(super) fn merge_virtual_library_items(
+    group: Vec<ServerMediaItem>,
+    display_name: String,
+    virtual_id: String,
+) -> Result<CatalogItem, StatusCode> {
     let mut template = None;
     let mut total_child_count = 0;
 
@@ -436,16 +453,13 @@ async fn build_virtual_library_item(
         .and_then(|tags| tags.get("Primary").cloned());
     let mut image_source_id = None;
 
-    for (index, ServerMediaItem { item, server }) in group.into_iter().enumerate() {
+    for (index, ServerMediaItem { item, .. }) in group.into_iter().enumerate() {
         total_child_count += item.child_count.unwrap_or(0);
-        let processed =
-            process_media_item_for_server(item, state, &server, ItemNamePolicy::Preserve).await?;
-        members.push((server.id, processed.id.clone()));
         if index == image_source_index {
-            image_source_id = Some(processed.id.clone());
+            image_source_id = Some(item.id.clone());
         }
         if index == preferred_source_index {
-            template = Some(processed);
+            template = Some(item);
         }
     }
 
@@ -466,7 +480,7 @@ async fn build_virtual_library_item(
             false,
         );
     }
-    Ok(BuiltVirtualLibrary { item, members })
+    Ok(item.into())
 }
 
 fn preferred_library_source_index(group: &[ServerMediaItem]) -> Option<usize> {

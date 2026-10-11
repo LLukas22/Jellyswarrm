@@ -49,6 +49,8 @@ impl SessionStorage {
     }
 
     pub async fn add_session(&self, mut session: PlaybackSession) {
+        session.item_id =
+            crate::media_storage_service::MediaStorageService::normalize_uuid(&session.item_id);
         let mut sessions = self.live_sessions().await;
         if session.original_item_id.is_none() {
             session.original_item_id = sessions
@@ -176,6 +178,7 @@ impl SessionStorage {
         session_id: &str,
         item_id: &str,
     ) -> Option<PlaybackSession> {
+        let item_id = crate::media_storage_service::MediaStorageService::normalize_uuid(item_id);
         let sessions = self.live_sessions().await;
 
         sessions
@@ -188,6 +191,7 @@ impl SessionStorage {
     }
 
     pub async fn get_sessions_by_item_id(&self, item_id: &str) -> Vec<PlaybackSession> {
+        let item_id = crate::media_storage_service::MediaStorageService::normalize_uuid(item_id);
         let sessions = self.live_sessions().await;
 
         sessions

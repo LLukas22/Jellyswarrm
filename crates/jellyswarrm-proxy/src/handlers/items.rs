@@ -35,7 +35,7 @@ async fn get_processed_item_json(
         .and_then(Iterator::last)
         .map(str::to_string);
     let requested_item_id = contains_id(preprocessed.original_request.url(), "Items");
-    let server = preprocessed.server.clone();
+    let mut server = preprocessed.server.clone();
     let mut selected_group = None;
     if let (true, Some(item_id), Some(scope)) = (
         merge_media_versions,
@@ -89,14 +89,101 @@ async fn get_processed_item_json(
         ensure_query_list_value(preprocessed.request.url_mut(), "Fields", "MediaSources");
     }
 
-    let mut response = execute_processed_json_request(
+    let result = execute_processed_json_request(
         state,
-        preprocessed.request,
+        preprocessed
+            .request
+            .try_clone()
+            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?,
         &server,
         ResponseProcessingProfile::Media,
         proxy_api_key.as_deref(),
     )
-    .await?;
+    .await;
+    let mut response = match result {
+        Ok(response) => response,
+        Err(status) => {
+            let Some(id) = virtual_library.as_deref() else {
+                return Err(status);
+            };
+            let VirtualLibraryResolution::Resolved(mut library) = state
+                .virtual_library_service
+                .resolve(id, preprocessed.access_scope.as_ref())
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            else {
+                return Err(status);
+            };
+            // Visibility can change after a root refresh (or a client may open
+            // a saved ID first). Retry other authorized members on source failure.
+            if status != StatusCode::FORBIDDEN
+                && status != StatusCode::UNAUTHORIZED
+                && status != StatusCode::NOT_FOUND
+                && !status.is_server_error()
+            {
+                return Err(status);
+            }
+            library.members.sort_by(|left, right| {
+                crate::virtual_library_service::compare_virtual_library_routes(
+                    &right.server,
+                    &right.mapping.original_media_id,
+                    &left.server,
+                    &left.mapping.original_media_id,
+                )
+            });
+            let failed_id = contains_id(preprocessed.request.url(), "Items");
+            let mut fallback = None;
+            for member in library.members {
+                if member.server.id == server.id
+                    && failed_id.as_deref() == Some(&member.mapping.original_media_id)
+                {
+                    continue;
+                }
+                let Some((session, _)) = preprocessed.sessions.as_ref().and_then(|sessions| {
+                    sessions
+                        .iter()
+                        .find(|(_, server)| server.id == member.server.id)
+                }) else {
+                    continue;
+                };
+                let mut request = preprocessed
+                    .original_request
+                    .try_clone()
+                    .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+                *request.url_mut() =
+                    replace_path_id(request.url(), "Items", &member.mapping.virtual_media_id)
+                        .ok_or(StatusCode::BAD_REQUEST)?;
+                let session = Some(session.clone());
+                let auth =
+                    crate::request_preprocessing::remap_authorization(&preprocessed.auth, &session)
+                        .await
+                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                crate::request_preprocessing::apply_to_request(
+                    &mut request,
+                    &member.server,
+                    &session,
+                    &auth,
+                    state,
+                    preprocessed.access_scope.as_ref(),
+                )
+                .await;
+                if let Ok(response) = execute_processed_json_request(
+                    state,
+                    request,
+                    &member.server,
+                    ResponseProcessingProfile::Media,
+                    proxy_api_key.as_deref(),
+                )
+                .await
+                {
+                    server = member.server;
+                    fallback = Some(response);
+                    break;
+                }
+            }
+            fallback.ok_or(status)?
+        }
+    };
 
     if let (true, Some(requested_item_id)) = (merge_media_versions, requested_item_id.as_deref()) {
         merge_media_detail(

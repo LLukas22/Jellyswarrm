@@ -594,6 +594,7 @@ mod tests {
                     complete: true,
                     observations: vec![MediaObservation {
                         virtual_media_id: mapping.virtual_media_id.clone(),
+                        kind: MediaKind::Movie,
                         aliases: BTreeSet::from([alias]),
                     }],
                 }],

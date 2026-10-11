@@ -23,6 +23,7 @@ use super::{
 struct RequestedItem {
     id: String,
     aggregate: bool,
+    library_name: Option<String>,
     members: Vec<MediaMapping>,
 }
 
@@ -57,6 +58,26 @@ impl RequestedItems {
         let mut seen = HashSet::new();
         let mut entries = Vec::new();
         for id in ids.into_iter().filter(|id| seen.insert(id.clone())) {
+            let library = state
+                .virtual_library_service
+                .resolve(&id, request.access_scope.as_ref())
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            if let crate::virtual_library_service::VirtualLibraryResolution::Resolved(library) =
+                library
+            {
+                entries.push(RequestedItem {
+                    id,
+                    aggregate: false,
+                    library_name: Some(library.name),
+                    members: library
+                        .members
+                        .into_iter()
+                        .map(|member| member.mapping)
+                        .collect(),
+                });
+                continue;
+            }
             let group = state
                 .media_storage
                 .get_media_version_group(&id)
@@ -93,13 +114,11 @@ impl RequestedItems {
             entries.push(RequestedItem {
                 id,
                 aggregate,
+                library_name: None,
                 members,
             });
         }
-        Ok(entries
-            .iter()
-            .any(|entry| entry.aggregate)
-            .then_some(Self(entries)))
+        Ok((!entries.is_empty()).then_some(Self(entries)))
     }
 
     pub async fn fetch(
@@ -117,6 +136,11 @@ impl RequestedItems {
             policy.sort = SortPolicy::PreserveUpstream;
         }
         let sessions = request.sessions.as_ref().ok_or(StatusCode::UNAUTHORIZED)?;
+        let source_generation = state
+            .media_storage
+            .begin_media_reconciliation()
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         let mut seen_servers = HashSet::new();
         let mut fetches = Vec::new();
         for (session, server) in sessions
@@ -199,7 +223,7 @@ impl RequestedItems {
         }
         let mut items: Vec<crate::media_presentation::CatalogItem> = Vec::new();
         for entry in self.0 {
-            let members = entry
+            let mut members = entry
                 .members
                 .iter()
                 .filter_map(|member| fetched.get(&member.virtual_media_id).cloned())
@@ -207,7 +231,32 @@ impl RequestedItems {
             if members.is_empty() {
                 continue;
             }
-            if entry.aggregate {
+            if let Some(name) = entry.library_name {
+                items.push(super::library_root::merge_virtual_library_items(
+                    members, name, entry.id,
+                )?);
+            } else if entry.aggregate {
+                // Queue clients can select these sources without opening detail.
+                // Record positive observations only: Fields/client capabilities
+                // can restrict the sources returned by an item lookup.
+                for member in &mut members {
+                    if let Some(sources) = &mut member.item.media_sources {
+                        let mapping = entry
+                            .members
+                            .iter()
+                            .find(|mapping| mapping.virtual_media_id == member.item.id)
+                            .expect("fetched member belongs to requested item");
+                        crate::handlers::media_versions::record_playback_sources(
+                            state,
+                            &entry.id,
+                            &member.server,
+                            &mapping.original_media_id,
+                            source_generation,
+                            sources,
+                        )
+                        .await?;
+                    }
+                }
                 items.push(merge_media_group(members, &entry.id).into());
             } else {
                 items.extend(members.into_iter().map(|member| member.item.into()));

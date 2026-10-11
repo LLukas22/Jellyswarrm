@@ -1,5 +1,7 @@
 //! Reproductions through HTTP, real authorization/storage, and protocol-aware backends.
 use super::*;
+mod catalog_correctness;
+mod streaming_routing;
 use wiremock::matchers::query_param;
 
 const MOVIE: &str = "11111111111111111111111111111111";

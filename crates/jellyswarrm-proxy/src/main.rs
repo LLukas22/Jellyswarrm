@@ -1026,7 +1026,12 @@ async fn proxy_handler(
         Ok(request) => request,
         Err(error) => {
             error!("Failed to preprocess request: {}", error);
-            return Ok((StatusCode::BAD_REQUEST, client_request_error(&error)).into_response());
+            let status = if error.is::<request_preprocessing::NoAvailableBackend>() {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            return Ok((status, client_request_error(&error)).into_response());
         }
     };
 

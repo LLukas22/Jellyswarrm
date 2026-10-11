@@ -122,6 +122,7 @@ async fn check_selected_source_detail(catalog_scopes: &[&str]) {
             complete: true,
             observations: vec![MediaObservation {
                 virtual_media_id: owner.virtual_media_id.clone(),
+                kind: MediaKind::Movie,
                 aliases: BTreeSet::from([MediaAlias {
                     provider: MediaProvider::Tmdb,
                     kind: MediaKind::Movie,

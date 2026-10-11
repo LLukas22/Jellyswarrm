@@ -403,9 +403,13 @@ impl VirtualLibraryService {
               WHERE snapshot.automatic_virtual_id = ? AND snapshot.user_id = ? \
                AND (m.virtual_library_id IS NULL OR NOT EXISTS ( \
                    SELECT 1 FROM media_mappings mapping \
-                   JOIN library_group_members configured \
-                     ON configured.server_id = m.server_id \
-                    AND configured.original_library_id = mapping.original_media_id \
+                    JOIN library_group_members configured \
+                      ON configured.server_id = m.server_id \
+                     AND configured.original_library_id = mapping.original_media_id \
+                    JOIN library_groups configured_group ON configured_group.virtual_id = configured.group_virtual_id \
+                    JOIN merged_libraries automatic ON automatic.virtual_id = m.automatic_virtual_id \
+                      AND (LOWER(automatic.collection_type) = LOWER(configured_group.collection_type) \
+                           OR LOWER(automatic.collection_type) LIKE LOWER(configured_group.collection_type) || ':%') \
                    WHERE mapping.virtual_media_id = m.virtual_library_id \
                )) \
              ORDER BY m.server_id, m.virtual_library_id",
@@ -465,6 +469,48 @@ impl VirtualLibraryService {
 
         let mut tx = self.pool.begin().await?;
         upsert_discovered_libraries(&mut tx, libraries).await?;
+        tx.commit().await
+    }
+
+    /// Use the shared persistent clock so in-flight inventories remain ordered
+    /// across service clones and independently for each viewer/backend pair.
+    pub async fn begin_viewer_inventory(&self) -> Result<i64, sqlx::Error> {
+        self.media_storage.begin_media_reconciliation().await
+    }
+
+    pub async fn replace_viewer_libraries(
+        &self,
+        user_id: &str,
+        server_id: ServerId,
+        generation: i64,
+        libraries: &[DiscoveredLibrary],
+    ) -> Result<(), sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        let updated = sqlx::query(
+            "INSERT INTO library_viewer_inventories (user_id, server_id, generation) VALUES (?, ?, ?) \
+             ON CONFLICT(user_id, server_id) DO UPDATE SET generation = excluded.generation \
+             WHERE excluded.generation > library_viewer_inventories.generation",
+        )
+        .bind(user_id).bind(server_id.as_i64()).bind(generation)
+        .execute(&mut *tx).await?;
+        if updated.rows_affected() == 0 {
+            return Ok(());
+        }
+        sqlx::query("DELETE FROM library_viewer_members WHERE user_id = ? AND server_id = ?")
+            .bind(user_id)
+            .bind(server_id.as_i64())
+            .execute(&mut *tx)
+            .await?;
+        for library in libraries
+            .iter()
+            .filter(|library| library.server_id == server_id)
+        {
+            sqlx::query("INSERT INTO library_viewer_members (user_id, server_id, original_library_id, collection_type) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING")
+                .bind(user_id).bind(server_id.as_i64())
+                .bind(normalize_library_id(&library.original_library_id))
+                .bind(library.collection_type.trim().to_ascii_lowercase())
+                .execute(&mut *tx).await?;
+        }
         tx.commit().await
     }
 
@@ -784,6 +830,39 @@ impl VirtualLibraryService {
             if !server_is_allowed(record.server_id, access_scope, None) {
                 continue;
             }
+            // A server mapping alone does not establish access to every library
+            // on it. Once a viewer inventory exists, require a compatible member.
+            // Before the first inventory, retain routing with upstream enforcement.
+            let viewer_kind: Option<(Option<String>,)> = if let Some(scope) = access_scope {
+                sqlx::query_as(
+                    "SELECT member.collection_type FROM library_viewer_inventories inventory \
+                     LEFT JOIN library_viewer_members member ON member.user_id = inventory.user_id \
+                       AND member.server_id = inventory.server_id AND member.original_library_id = ? \
+                     WHERE inventory.user_id = ? AND inventory.server_id = ?",
+                ).bind(&record.original_library_id).bind(scope.user_id()).bind(record.server_id.as_i64())
+                    .fetch_optional(&self.pool).await?
+            } else {
+                None
+            };
+            if let Some((kind,)) = viewer_kind {
+                if !kind.is_some_and(|kind| {
+                    group
+                        .collection_type
+                        .as_deref()
+                        .is_some_and(|expected| expected.eq_ignore_ascii_case(&kind))
+                }) {
+                    continue;
+                }
+            } else if let Some(discovered) = self
+                .get_discovered_library(record.server_id, &record.original_library_id)
+                .await?
+            {
+                if !group.collection_type.as_deref().is_some_and(|kind| {
+                    kind.eq_ignore_ascii_case(discovered.collection_type.trim())
+                }) {
+                    continue;
+                }
+            }
             let Some(server) = self
                 .server_storage
                 .get_server_by_id(record.server_id)
@@ -895,6 +974,151 @@ fn server_is_allowed(
 mod tests {
     use super::*;
     use crate::{config::MIGRATOR, server_storage::ServerStorageService};
+
+    #[tokio::test]
+    async fn viewer_inventories_are_isolated_and_fence_delayed_refreshes() {
+        let f = Fixture::new(&[(1, 100), (2, 50)]).await;
+        let group = f.service.create_group("Movies").await.unwrap();
+        for id in [1, 2] {
+            f.service
+                .add_member(
+                    &group.virtual_id,
+                    ServerId::new(id),
+                    "movies",
+                    "Movies",
+                    "movies",
+                )
+                .await
+                .unwrap();
+        }
+        let scope =
+            |user| VirtualLibraryAccessScope::new(user, [ServerId::new(1), ServerId::new(2)]);
+        let old = f.service.begin_viewer_inventory().await.unwrap();
+        let new = f.service.begin_viewer_inventory().await.unwrap();
+        let libraries = [DiscoveredLibrary {
+            server_id: ServerId::new(1),
+            original_library_id: "movies".into(),
+            name: "Movies".into(),
+            collection_type: "movies".into(),
+        }];
+        f.service
+            .replace_viewer_libraries("alice", ServerId::new(1), new, &[])
+            .await
+            .unwrap();
+        f.service
+            .replace_viewer_libraries("alice", ServerId::new(1), old, &libraries)
+            .await
+            .unwrap();
+        // Another server completing an older request still commits independently.
+        f.service
+            .replace_viewer_libraries(
+                "alice",
+                ServerId::new(2),
+                old,
+                &[DiscoveredLibrary {
+                    server_id: ServerId::new(2),
+                    ..libraries[0].clone()
+                }],
+            )
+            .await
+            .unwrap();
+        f.service
+            .replace_viewer_libraries("bob", ServerId::new(1), old, &libraries)
+            .await
+            .unwrap();
+        // The global discovery cache is additive and not generation-fenced.
+        // A late response there must not override a viewer's ordered snapshot.
+        f.service
+            .track_discovered_libraries(&[DiscoveredLibrary {
+                collection_type: "tvshows".into(),
+                ..libraries[0].clone()
+            }])
+            .await
+            .unwrap();
+        let VirtualLibraryResolution::Resolved(alice) = f
+            .service
+            .resolve(&group.virtual_id, Some(&scope("alice")))
+            .await
+            .unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(alice.members.len(), 1);
+        assert_eq!(alice.members[0].server.id, ServerId::new(2));
+        let VirtualLibraryResolution::Resolved(bob) = f
+            .service
+            .resolve(&group.virtual_id, Some(&scope("bob")))
+            .await
+            .unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(bob.members.len(), 2);
+        // The inventory survives rebuilding the service (as on process restart).
+        let restarted = VirtualLibraryService::new(
+            f.pool.clone(),
+            f.service.server_storage.clone(),
+            f.service.media_storage.clone(),
+        );
+        let VirtualLibraryResolution::Resolved(alice) = restarted
+            .resolve(&group.virtual_id, Some(&scope("alice")))
+            .await
+            .unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(alice.members.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn consistency_migration_repairs_empty_groups_and_preserves_populated_groups() {
+        let f = Fixture::new(&[(1, 100)]).await;
+        MIGRATOR.undo(&f.pool, 20261011000000).await.unwrap();
+        let populated = f.service.create_group("Movies").await.unwrap();
+        f.service
+            .add_member(
+                &populated.virtual_id,
+                ServerId::new(1),
+                "movies",
+                "Movies",
+                "movies",
+            )
+            .await
+            .unwrap();
+        let empty = f.service.create_group("Old empty group").await.unwrap();
+        sqlx::query("UPDATE library_groups SET collection_type = 'movies' WHERE virtual_id = ?")
+            .bind(&empty.virtual_id)
+            .execute(&f.pool)
+            .await
+            .unwrap();
+        MIGRATOR.run(&f.pool).await.unwrap();
+        assert!(f
+            .service
+            .get_group(&empty.virtual_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .collection_type
+            .is_none());
+        assert_eq!(
+            f.service
+                .get_group(&populated.virtual_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .collection_type
+                .as_deref(),
+            Some("movies")
+        );
+        assert_eq!(
+            f.service
+                .list_members(&populated.virtual_id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
 
     struct Fixture {
         pool: SqlitePool,

@@ -27,6 +27,7 @@ async fn migrated_service() -> (SqlitePool, MediaStorageService) {
 fn tmdb_movie_observation(virtual_media_id: &str, provider_id: &str) -> MediaObservation {
     MediaObservation {
         virtual_media_id: virtual_media_id.to_string(),
+        kind: MediaKind::Movie,
         aliases: BTreeSet::from([MediaAlias {
             provider: crate::media_identity::MediaProvider::Tmdb,
             kind: crate::media_identity::MediaKind::Movie,
@@ -41,6 +42,180 @@ async fn assert_no_foreign_key_violations(pool: &SqlitePool) {
         .await
         .unwrap();
     assert!(violations.is_empty());
+}
+
+#[tokio::test]
+async fn typed_inventory_removals_fence_old_scans_without_pruning_other_types() {
+    let (pool, service) = migrated_service().await;
+    let server = create_test_server_with_url(&pool, "http://typed:8096").await;
+    let mut observations = Vec::new();
+    for kind in MediaKind::ALL {
+        let mapping = service
+            .get_or_create_media_mapping(kind.as_str(), &server)
+            .await
+            .unwrap();
+        let mut observation = tmdb_movie_observation(&mapping.virtual_media_id, "42");
+        observation.kind = kind;
+        observation.aliases = observation
+            .aliases
+            .into_iter()
+            .map(|mut alias| {
+                alias.kind = kind;
+                alias
+            })
+            .collect();
+        observations.push(observation);
+    }
+    // A type is known even if the backend supplies no provider IDs.
+    let unknown = service
+        .get_or_create_media_mapping("unidentified-movie", &server)
+        .await
+        .unwrap();
+    observations.push(MediaObservation {
+        virtual_media_id: unknown.virtual_media_id,
+        kind: MediaKind::Movie,
+        aliases: BTreeSet::new(),
+    });
+    let snapshot = |observations, complete| MediaCatalogSnapshot {
+        source_key: "library".into(),
+        server_id: server.id,
+        complete,
+        observations,
+    };
+    let scope = "configured:library:viewer";
+    let seed = service.begin_media_reconciliation().await.unwrap();
+    service
+        .reconcile_media_catalog(scope, seed, &[snapshot(observations.clone(), true)], true)
+        .await
+        .unwrap();
+    let old_full = service.begin_media_reconciliation().await.unwrap();
+    let movie_refresh = service.begin_media_reconciliation().await.unwrap();
+    service
+        .reconcile_media_catalog_with_coverage(
+            scope,
+            movie_refresh,
+            &[snapshot(vec![], true)],
+            true,
+            &BTreeSet::from([MediaKind::Movie]),
+        )
+        .await
+        .unwrap();
+    // Neither a delayed full inventory nor a delayed additive observation can
+    // resurrect the deleted movies. Other types from that scan remain valid.
+    for complete in [false, true] {
+        service
+            .reconcile_media_catalog(
+                scope,
+                old_full,
+                &[snapshot(observations.clone(), complete)],
+                complete,
+            )
+            .await
+            .unwrap();
+    }
+    let kinds: Vec<(String,)> = sqlx::query_as("SELECT member.media_kind FROM movie_catalog_sightings sighting JOIN movie_version_members member ON member.scope_id = sighting.scope_id AND member.media_mapping_id = sighting.media_mapping_id ORDER BY member.media_kind")
+        .fetch_all(&pool).await.unwrap();
+    assert_eq!(
+        kinds,
+        vec![("episode".into(),), ("season".into(),), ("series".into(),)]
+    );
+
+    // A later positive observation must survive an older empty typed refresh.
+    let delayed = service.begin_media_reconciliation().await.unwrap();
+    let recovered = service.begin_media_reconciliation().await.unwrap();
+    service
+        .reconcile_media_catalog(
+            scope,
+            recovered,
+            &[snapshot(vec![observations[0].clone()], false)],
+            false,
+        )
+        .await
+        .unwrap();
+    service
+        .reconcile_media_catalog_with_coverage(
+            scope,
+            delayed,
+            &[snapshot(vec![], true)],
+            false,
+            &BTreeSet::from([MediaKind::Movie]),
+        )
+        .await
+        .unwrap();
+    let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM movie_catalog_sightings")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 4);
+    assert_no_foreign_key_violations(&pool).await;
+}
+
+#[tokio::test]
+async fn typed_inventory_migration_preserves_ids_and_backfills_existing_members() {
+    let (pool, service) = migrated_service().await;
+    let server = create_test_server_with_url(&pool, "http://upgrade:8096").await;
+    let mapping = service
+        .get_or_create_media_mapping("movie", &server)
+        .await
+        .unwrap();
+    let generation = service.begin_media_reconciliation().await.unwrap();
+    let groups = service
+        .reconcile_media_catalog(
+            "configured:library:viewer",
+            generation,
+            &[MediaCatalogSnapshot {
+                source_key: "library".into(),
+                server_id: server.id,
+                complete: true,
+                observations: vec![tmdb_movie_observation(&mapping.virtual_media_id, "42")],
+            }],
+            true,
+        )
+        .await
+        .unwrap();
+    let id = &groups[&mapping.virtual_media_id].virtual_media_id;
+    MIGRATOR.undo(&pool, 20260926010000).await.unwrap();
+    // Exercise the legacy unqualified movie-provider representation as well.
+    sqlx::query("UPDATE movie_version_aliases SET provider = 'tmdb'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    MIGRATOR.run(&pool).await.unwrap();
+    assert_eq!(
+        service
+            .get_media_version_members_by_virtual_id(id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    let (kind,): (String,) = sqlx::query_as("SELECT media_kind FROM movie_version_members")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(kind, "movie");
+    let generation = service.begin_media_reconciliation().await.unwrap();
+    service
+        .reconcile_media_catalog_with_coverage(
+            "configured:library:viewer",
+            generation,
+            &[MediaCatalogSnapshot {
+                source_key: "library".into(),
+                server_id: server.id,
+                complete: true,
+                observations: vec![],
+            }],
+            false,
+            &BTreeSet::from([MediaKind::Movie]),
+        )
+        .await
+        .unwrap();
+    assert!(service
+        .get_media_version_members_by_virtual_id(id)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_no_foreign_key_violations(&pool).await;
 }
 
 async fn create_test_server(pool: &SqlitePool) -> Server {
@@ -188,6 +363,7 @@ async fn parent_navigation_accepts_filtered_subsets_but_rejects_incomparable_gro
             complete: false,
             observations: vec![MediaObservation {
                 virtual_media_id: mapping.virtual_media_id,
+                kind: MediaKind::Series,
                 aliases: BTreeSet::from([MediaAlias {
                     provider: crate::media_identity::MediaProvider::Tmdb,
                     kind: crate::media_identity::MediaKind::Series,

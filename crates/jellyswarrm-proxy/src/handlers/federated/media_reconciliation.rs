@@ -181,7 +181,7 @@ async fn get_reconciled_catalog_uncached(
         }
     };
 
-    let authoritative_inventory = series_group.is_none() && policy.authoritative_inventory;
+    let authoritative_inventory = series_group.is_none() && !policy.inventory_types.is_empty();
     let mut snapshots = Vec::new();
     let mut tagged_items = Vec::new();
     let viewer = preprocessed
@@ -224,6 +224,7 @@ async fn get_reconciled_catalog_uncached(
                     .filter(|item| item.item_type == crate::models::enums::BaseItemKind::Series)
                     .map(|item| MediaObservation {
                         virtual_media_id: item.id.clone(),
+                        kind: MediaKind::Series,
                         aliases: MediaAlias::from_item(item),
                     })
                     .collect(),
@@ -270,6 +271,8 @@ async fn get_reconciled_catalog_uncached(
                     .filter(|(item, _)| MediaKind::from_item_kind(&item.item_type).is_some())
                     .map(|(item, aliases)| MediaObservation {
                         virtual_media_id: item.id.clone(),
+                        kind: MediaKind::from_item_kind(&item.item_type)
+                            .expect("deduplicated type"),
                         aliases: aliases.clone(),
                     })
                     .collect(),
@@ -286,11 +289,12 @@ async fn get_reconciled_catalog_uncached(
         let plan = MediaDedupPlan::with_aliases(tagged_items, catalog_aliases);
         let stable_group_ids = state
             .media_storage
-            .reconcile_media_catalog(
+            .reconcile_media_catalog_with_coverage(
                 &catalog_scope_key,
                 reconciliation_generation.expect("enabled reconciliation has a generation"),
                 &snapshots,
                 authoritative_inventory && failures == 0,
+                &policy.inventory_types,
             )
             .await
             .map_err(|error| {
@@ -397,12 +401,13 @@ mod tests {
                 .get_or_create_media_mapping(id, &server)
                 .await
                 .unwrap();
-            let item = serde_json::from_value(serde_json::json!({
+            let item: crate::models::MediaItem = serde_json::from_value(serde_json::json!({
                 "Id": mapping.virtual_media_id, "Type": kind, "ProviderIds": {"Tmdb": "42"}
             }))
             .unwrap();
             observations.push(MediaObservation {
                 virtual_media_id: mapping.virtual_media_id,
+                kind: MediaKind::from_item_kind(&item.item_type).unwrap(),
                 aliases: MediaAlias::from_item(&item),
             });
         }

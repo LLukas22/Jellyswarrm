@@ -15,7 +15,7 @@ use crate::server_storage::Server;
 #[cfg(test)]
 use crate::server_url::ServerUrl;
 use crate::{
-    media_identity::{MediaAlias, MediaObservation, StableMediaGroup},
+    media_identity::{MediaAlias, MediaKind, MediaObservation, StableMediaGroup},
     media_scope::MediaCatalogScope,
     models::generate_token,
 };
@@ -320,6 +320,26 @@ impl MediaStorageService {
         snapshots: &[MediaCatalogSnapshot],
         prune_missing_sources: bool,
     ) -> Result<HashMap<String, StableMediaGroup>, sqlx::Error> {
+        self.reconcile_media_catalog_with_coverage(
+            scope_key,
+            generation,
+            snapshots,
+            prune_missing_sources,
+            &MediaKind::ALL.into_iter().collect(),
+        )
+        .await
+    }
+
+    /// A complete source scan replaces sightings only for the types covered by
+    /// the query. Per-type watermarks also fence older full or filtered scans.
+    pub async fn reconcile_media_catalog_with_coverage(
+        &self,
+        scope_key: &str,
+        generation: i64,
+        snapshots: &[MediaCatalogSnapshot],
+        prune_missing_sources: bool,
+        complete_types: &BTreeSet<MediaKind>,
+    ) -> Result<HashMap<String, StableMediaGroup>, sqlx::Error> {
         let _guard = self.media_version_reconciliation.lock().await;
         let mut transaction = self.pool.begin().await?;
         let scope_id = Self::media_scope_id(&mut transaction, scope_key).await?;
@@ -330,7 +350,7 @@ impl MediaStorageService {
                 .await?;
 
         let mut resolved_snapshots = Vec::with_capacity(snapshots.len());
-        let mut aliases_by_mapping = HashMap::<i64, BTreeSet<MediaAlias>>::new();
+        let mut aliases_by_mapping = HashMap::<i64, (MediaKind, BTreeSet<MediaAlias>)>::new();
         for snapshot in snapshots {
             let source_generation: Option<(i64,)> = sqlx::query_as(
                 "SELECT committed_generation FROM movie_catalog_sources WHERE scope_id = ? AND source_key = ?",
@@ -353,8 +373,22 @@ impl MediaStorageService {
                 snapshot.server_id,
             )
             .await?;
+            let type_generations = sqlx::query_as::<_, (String, i64)>(
+                "SELECT media_kind, committed_generation FROM movie_catalog_type_generations WHERE source_id = ?",
+            )
+            .bind(source_id)
+            .fetch_all(&mut *transaction)
+            .await?
+            .into_iter()
+            .collect::<HashMap<_, _>>();
             let mut observed_mapping_ids = HashSet::new();
             for observation in &snapshot.observations {
+                if type_generations
+                    .get(observation.kind.as_str())
+                    .is_some_and(|committed| generation <= *committed)
+                {
+                    continue;
+                }
                 let mapping: Option<(i64,)> = sqlx::query_as(
                     "SELECT id FROM media_mappings WHERE virtual_media_id = ? AND server_id = ?",
                 )
@@ -368,20 +402,22 @@ impl MediaStorageService {
                 observed_mapping_ids.insert(mapping_id);
                 aliases_by_mapping
                     .entry(mapping_id)
-                    .or_default()
+                    .or_insert_with(|| (observation.kind, BTreeSet::new()))
+                    .1
                     .extend(observation.aliases.iter().cloned());
             }
-            resolved_snapshots.push((source_id, snapshot, observed_mapping_ids));
+            resolved_snapshots.push((source_id, snapshot, observed_mapping_ids, type_generations));
         }
 
-        for (mapping_id, aliases) in aliases_by_mapping {
+        for (mapping_id, (kind, aliases)) in aliases_by_mapping {
             let updated = sqlx::query(
                 r#"
                 INSERT INTO movie_version_members (
-                    scope_id, media_mapping_id, aliases_generation, observed_at
-                ) VALUES (?, ?, ?, ?)
+                    scope_id, media_mapping_id, aliases_generation, observed_at, media_kind
+                ) VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT (scope_id, media_mapping_id) DO UPDATE SET
                     aliases_generation = excluded.aliases_generation,
+                    media_kind = excluded.media_kind,
                     observed_at = excluded.observed_at
                 WHERE movie_version_members.aliases_generation < excluded.aliases_generation
                 "#,
@@ -390,6 +426,7 @@ impl MediaStorageService {
             .bind(mapping_id)
             .bind(generation)
             .bind(chrono::Utc::now())
+            .bind(kind.as_str())
             .execute(&mut *transaction)
             .await?;
             if updated.rows_affected() == 0 {
@@ -415,7 +452,7 @@ impl MediaStorageService {
             }
         }
 
-        for (source_id, snapshot, observed_mapping_ids) in resolved_snapshots {
+        for (source_id, snapshot, observed_mapping_ids, type_generations) in resolved_snapshots {
             for mapping_id in &observed_mapping_ids {
                 sqlx::query(
                     r#"
@@ -436,13 +473,28 @@ impl MediaStorageService {
 
             if snapshot.complete {
                 let existing = sqlx::query(
-                    "SELECT media_mapping_id FROM movie_catalog_sightings WHERE source_id = ?",
+                    "SELECT sighting.media_mapping_id, member.media_kind FROM movie_catalog_sightings sighting JOIN movie_version_members member ON member.scope_id = sighting.scope_id AND member.media_mapping_id = sighting.media_mapping_id WHERE sighting.source_id = ?",
                 )
                 .bind(source_id)
                 .fetch_all(&mut *transaction)
                 .await?;
                 for row in existing {
                     let mapping_id: i64 = row.get("media_mapping_id");
+                    let kind: Option<String> = row.get("media_kind");
+                    if let Some(kind) = kind.as_deref() {
+                        if !MediaKind::parse(kind)
+                            .is_some_and(|kind| complete_types.contains(&kind))
+                            || type_generations
+                                .get(kind)
+                                .is_some_and(|committed| generation <= *committed)
+                        {
+                            continue;
+                        }
+                    } else if complete_types.len() != MediaKind::ALL.len() {
+                        // Legacy unidentified members can only be removed by a
+                        // full inventory until their type has been observed.
+                        continue;
+                    }
                     if !observed_mapping_ids.contains(&mapping_id) {
                         sqlx::query(
                             "DELETE FROM movie_catalog_sightings WHERE source_id = ? AND media_mapping_id = ? AND generation <= ?",
@@ -454,13 +506,23 @@ impl MediaStorageService {
                         .await?;
                     }
                 }
-                sqlx::query(
-                    "UPDATE movie_catalog_sources SET committed_generation = ? WHERE id = ?",
-                )
-                .bind(generation)
-                .bind(source_id)
-                .execute(&mut *transaction)
-                .await?;
+                for kind in complete_types {
+                    sqlx::query("INSERT INTO movie_catalog_type_generations (source_id, media_kind, committed_generation) VALUES (?, ?, ?) ON CONFLICT(source_id, media_kind) DO UPDATE SET committed_generation = MAX(committed_generation, excluded.committed_generation)")
+                        .bind(source_id)
+                        .bind(kind.as_str())
+                        .bind(generation)
+                        .execute(&mut *transaction)
+                        .await?;
+                }
+                if complete_types.len() == MediaKind::ALL.len() {
+                    sqlx::query(
+                        "UPDATE movie_catalog_sources SET committed_generation = ? WHERE id = ?",
+                    )
+                    .bind(generation)
+                    .bind(source_id)
+                    .execute(&mut *transaction)
+                    .await?;
+                }
             }
         }
 
@@ -470,7 +532,10 @@ impl MediaStorageService {
             .execute(&mut *transaction)
             .await?;
 
-        if prune_missing_sources && generation > scope_sources_generation {
+        if prune_missing_sources
+            && complete_types.len() == MediaKind::ALL.len()
+            && generation > scope_sources_generation
+        {
             let current_source_keys = snapshots
                 .iter()
                 .map(|snapshot| snapshot.source_key.as_str())
@@ -484,8 +549,9 @@ impl MediaStorageService {
                 let source_key: String = row.get("source_key");
                 if !current_source_keys.contains(source_key.as_str()) {
                     let source_id: i64 = row.get("id");
-                    sqlx::query("DELETE FROM movie_catalog_sources WHERE id = ? AND committed_generation <= ? AND NOT EXISTS (SELECT 1 FROM movie_catalog_sightings WHERE source_id = movie_catalog_sources.id AND generation > ?)")
+                    sqlx::query("DELETE FROM movie_catalog_sources WHERE id = ? AND committed_generation <= ? AND NOT EXISTS (SELECT 1 FROM movie_catalog_sightings WHERE source_id = movie_catalog_sources.id AND generation > ?) AND NOT EXISTS (SELECT 1 FROM movie_catalog_type_generations WHERE source_id = movie_catalog_sources.id AND committed_generation > ?)")
                         .bind(source_id)
+                        .bind(generation)
                         .bind(generation)
                         .bind(generation)
                         .execute(&mut *transaction)

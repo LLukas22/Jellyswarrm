@@ -419,11 +419,37 @@ async fn preprocess_request_with_translation(
         )
         .await?
     } else {
+        // A batch lookup is routed by the federated handler, which validates
+        // each identity against the full authorization scope. An offline ID
+        // must not select (or veto) the backend used to initialize this request.
+        let mut routing_request = original_request
+            .try_clone()
+            .ok_or_else(|| anyhow!("failed to clone catalog routing request"))?;
+        if !translate
+            && routing_request
+                .url()
+                .path()
+                .trim_end_matches('/')
+                .to_ascii_lowercase()
+                .ends_with("/items")
+        {
+            let pairs = routing_request
+                .url()
+                .query_pairs()
+                .filter(|(key, _)| !key.eq_ignore_ascii_case("Ids"))
+                .map(|(key, value)| (key.into_owned(), value.into_owned()))
+                .collect::<Vec<_>>();
+            routing_request
+                .url_mut()
+                .query_pairs_mut()
+                .clear()
+                .extend_pairs(pairs);
+        }
         resolve_server(
             &sessions,
             &request_body_result,
             state,
-            &request,
+            &routing_request,
             access_scope.as_ref(),
         )
         .await?
@@ -820,6 +846,43 @@ pub async fn resolve_server(
     request: &reqwest::Request,
     access_scope: Option<&VirtualLibraryAccessScope>,
 ) -> Result<(Server, Option<AuthorizationSession>, bool)> {
+    let path = crate::url_helper::decoded_path_segments(
+        state.remove_prefix_from_path(request.url().path()).await,
+    );
+    if request.method() == reqwest::Method::DELETE
+        && matches!(path.as_slice(), [videos, action] if videos.eq_ignore_ascii_case("Videos") && action.eq_ignore_ascii_case("ActiveEncodings"))
+    {
+        let scope = access_scope
+            .ok_or_else(|| anyhow!("transcoder cancellation requires authentication"))?;
+        let session_id = crate::processors::url_processor::play_session_id(request.url())?
+            .ok_or_else(|| anyhow!("transcoder cancellation requires a playback session ID"))?;
+        // Jellyfin only recognizes PlaySessionId on this endpoint. Accepting
+        // SessionId alone would turn a targeted stop into a device-wide stop.
+        if !request
+            .url()
+            .query_pairs()
+            .any(|(key, value)| key.eq_ignore_ascii_case("PlaySessionId") && !value.is_empty())
+        {
+            return Err(anyhow!("transcoder cancellation requires PlaySessionId"));
+        }
+        let (play_session, _) = state
+            .play_sessions
+            .resolve_report_session(&session_id, scope.user_id())
+            .await?
+            .ok_or_else(|| anyhow!("unknown transcoder playback session"))?;
+        if !scope.allows(play_session.server_id) {
+            return Err(anyhow!("playback session server is no longer authorized"));
+        }
+        let (session, server) = sessions
+            .as_ref()
+            .and_then(|sessions| {
+                sessions
+                    .iter()
+                    .find(|(_, server)| server.id == play_session.server_id)
+            })
+            .ok_or(NoAvailableBackend)?;
+        return Ok((server.clone(), Some(session.clone()), true));
+    }
     if let Some(play_session) = request_body_result
         .as_ref()
         .and_then(|result| result.authoritative_play_session.as_ref())
@@ -1504,6 +1567,7 @@ mod tests {
                 complete: true,
                 observations: vec![MediaObservation {
                     virtual_media_id: mapping.virtual_media_id.clone(),
+                    kind: MediaKind::Movie,
                     aliases: BTreeSet::from([MediaAlias {
                         provider: MediaProvider::Tmdb,
                         kind: MediaKind::Movie,

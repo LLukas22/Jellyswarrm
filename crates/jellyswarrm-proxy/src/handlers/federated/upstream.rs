@@ -522,6 +522,36 @@ async fn fetch_library_inventory(
     server: Server,
 ) -> Result<RawServerItems, StatusCode> {
     // Keep the first request unpaginated for ordinary Jellyfin user Views.
+    // MediaFolders can be an administrator-wide inventory; filtered Views are
+    // not evidence that omitted libraries are inaccessible to this viewer.
+    let path = request.url().path().to_ascii_lowercase();
+    let viewer_inventory = (path.ends_with("/views") || path.ends_with("/userviews"))
+        && request.url().query_pairs().all(|(key, _)| {
+            matches!(
+                key.to_ascii_lowercase().as_str(),
+                "userid"
+                    | "fields"
+                    | "startindex"
+                    | "limit"
+                    | "enableimages"
+                    | "enableuserdata"
+                    | "enableimagetypes"
+                    | "imagetypelimit"
+                    | "api_key"
+                    | "apikey"
+            )
+        });
+    let generation = if viewer_inventory {
+        Some(
+            state
+                .virtual_library_service
+                .begin_viewer_inventory()
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        )
+    } else {
+        None
+    };
     normalize_upstream_pagination(request.url_mut(), Pagination::unbounded());
     let request = prepare_backend_request(request, &state, &session, &server).await;
     let mut pagination = ScanProgress::default();
@@ -578,6 +608,18 @@ async fn fetch_library_inventory(
     // Commit discoveries only after all pages succeeded. A failed continuation
     // must not make a partial inventory look authoritative.
     track_discovered_libraries(&state, &server, &response).await;
+    if let Some(generation) = generation {
+        state
+            .virtual_library_service
+            .replace_viewer_libraries(
+                &session.user_id,
+                server.id,
+                generation,
+                &discovered_libraries_from_response(server.id, &response),
+            )
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
     Ok(RawServerItems { response, server })
 }
 

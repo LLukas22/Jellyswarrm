@@ -1,5 +1,6 @@
 use super::*;
 mod regressions;
+mod virtual_libraries;
 use crate::{
     media_identity::{MediaAlias, MediaObservation},
     media_storage_service::{MediaCatalogSnapshot, MediaVersionSourceObservation},
@@ -94,6 +95,7 @@ async fn same_server_episode_selection_survives_streams_and_all_playback_reports
                     .iter()
                     .map(|member| MediaObservation {
                         virtual_media_id: member.virtual_media_id.clone(),
+                        kind: crate::media_identity::MediaKind::Episode,
                         aliases: aliases.clone(),
                     })
                     .collect(),

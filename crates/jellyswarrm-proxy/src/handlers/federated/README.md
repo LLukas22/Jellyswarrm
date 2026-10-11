@@ -28,10 +28,35 @@ flowchart TD
   Incomplete/failing sources are excluded while healthy sources remain available.
   If every source fails, the request returns 503. Counts describe the available
   result set. Degraded responses are not cached, so recovery is retried promptly.
-  Only fully scanned sources can replace their own sightings, and missing sources
-  are pruned only when every authorized target was available and succeeded.
+  Only fully scanned sources can replace their own sightings. Recursive,
+  unfiltered type-specific scans (such as `IncludeItemTypes=Movie`) replace only
+  those types; per-type generations prevent older scans from reviving removals.
+  Missing sources are pruned only by an all-type inventory when every authorized
+  target was available and succeeded.
   Authorization scope includes offline backends independently of active sessions.
   Bounded feeds are additive observations, never complete inventories.
+- `Items?Ids=...` resolves every requested identity against the caller's mapped
+  servers before fetching available members. Offline entries do not block online
+  entries; an entirely unavailable lookup returns 503. Aggregates keep their
+  requested IDs and advertised source ownership is recorded for queue playback,
+  even when the client has not opened an item detail page.
+  Configured and automatic library IDs use the same folder presentation as the
+  root listing, including their virtual identity, name, and concrete artwork IDs.
+- Complete, unfiltered user-view inventories persist each viewer's visible
+  library members. Configured-library routing requires compatible visible members
+  once an inventory exists; failed scans preserve prior observations, and older
+  scans cannot overwrite newer ones. Library detail retries other eligible
+  members when a backend rejects or cannot serve the selected member.
+- Streaming session aliases normalize media UUIDs, including dashed and uppercase
+  forms. Explicit playback sessions retain their item/backend binding; requests
+  with an explicit media source but no session do not adopt another player's
+  session. Subtitle and attachment source IDs in the path have the same routing
+  authority as `MediaSourceId` in the query, and conflicting selections fail
+  before forwarding.
+- Transcoder cancellation (`DELETE /Videos/ActiveEncodings`) requires a known
+  playback session owned by the caller and targets that session's backend.
+  Unknown, missing, or conflicting session IDs are rejected; an unavailable
+  owner returns 503. Cancellation retains the playback binding for stream changes.
 - Field sorts use a final ID tiebreaker. Random queries scan in name order and
   shuffle once per snapshot; Next Up and backend-only rankings retain upstream
   order. Snapshot consistency lasts until expiry/eviction; upstream APIs provide

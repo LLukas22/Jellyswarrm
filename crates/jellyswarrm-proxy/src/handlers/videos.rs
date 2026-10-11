@@ -30,12 +30,43 @@ fn extract_stream_item_id(path: &str) -> Option<&str> {
     None
 }
 
-fn extract_play_session_id(url: &url::Url) -> Option<String> {
-    url.query_pairs().find_map(|(key, value)| {
-        (key.eq_ignore_ascii_case("PlaySessionId") || key.eq_ignore_ascii_case("SessionId"))
-            .then(|| value.to_string())
-            .filter(|value| !value.is_empty())
-    })
+fn extract_play_session_id(url: &url::Url) -> Result<Option<String>, StatusCode> {
+    crate::processors::url_processor::play_session_id(url).map_err(|_| StatusCode::BAD_REQUEST)
+}
+
+async fn selected_play_session(
+    state: &AppState,
+    preprocessed: &PreprocessedRequest,
+    item_id: &str,
+    session_id: Option<&str>,
+) -> Result<Option<PlaybackSession>, StatusCode> {
+    let Some(user_id) = request_user_id(preprocessed) else {
+        return Ok(None);
+    };
+    let candidates = state.play_sessions.get_sessions_by_item_id(item_id).await;
+    if let Some(session_id) = session_id {
+        let known = state
+            .play_sessions
+            .resolve_report_session(session_id, user_id)
+            .await
+            .map_err(|_| StatusCode::FORBIDDEN)?;
+        let matching = matching_play_session(candidates, Some(session_id), Some(user_id)).ok();
+        // A known session must never be silently rebound to another item. New
+        // direct-stream sessions can still establish their first binding.
+        if known.is_some() && matching.is_none() {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        return Ok(matching);
+    }
+    if crate::processors::url_processor::selected_media_source(preprocessed.original_request.url())
+        .map_err(|_| StatusCode::BAD_REQUEST)?
+        .is_some()
+    {
+        // Preprocessing already routed this explicit selection. Another player
+        // using the same aggregate must not override it through implicit matching.
+        return Ok(None);
+    }
+    Ok(matching_play_session(candidates, None, Some(user_id)).ok())
 }
 
 fn matching_play_session(
@@ -263,15 +294,10 @@ async fn request_for_play_session(
         .as_deref()
         .filter(|_| aggregate.is_some());
     if let (Some(group), Some(original_item)) = (&aggregate, original_item) {
-        if let Some(source) =
-            preprocessed
-                .original_request
-                .url()
-                .query_pairs()
-                .find_map(|(key, value)| {
-                    key.eq_ignore_ascii_case("MediaSourceId")
-                        .then(|| value.into_owned())
-                })
+        if let Some(source) = crate::processors::url_processor::selected_media_source(
+            preprocessed.original_request.url(),
+        )
+        .map_err(|_| StatusCode::BAD_REQUEST)?
         {
             let route = state
                 .media_storage
@@ -337,16 +363,12 @@ pub async fn get_video_resource(
     let id = extract_stream_item_id(preprocessed.original_request.url().path())
         .ok_or(StatusCode::NOT_FOUND)?
         .to_string();
-    let session_id = extract_play_session_id(preprocessed.original_request.url());
-    let candidates = state.play_sessions.get_sessions_by_item_id(&id).await;
-    let play_session = match matching_play_session(
-        candidates,
-        session_id.as_deref(),
-        request_user_id(&preprocessed),
-    ) {
-        Ok(play_session) => play_session,
-        Err(_) => return forward_preprocessed_resource(&state, preprocessed, &id).await,
-    };
+    let session_id = extract_play_session_id(preprocessed.original_request.url())?;
+    let play_session =
+        match selected_play_session(&state, &preprocessed, &id, session_id.as_deref()).await? {
+            Some(play_session) => play_session,
+            None => return forward_preprocessed_resource(&state, preprocessed, &id).await,
+        };
 
     let server = resolve_play_session_server(&state, &play_session).await?;
     info!(
@@ -364,16 +386,10 @@ pub async fn get_stream(
 ) -> Result<Response, StatusCode> {
     let item_id =
         extract_stream_item_id(preprocessed.original_request.url().path()).map(str::to_string);
-    let session_id = extract_play_session_id(preprocessed.original_request.url());
+    let session_id = extract_play_session_id(preprocessed.original_request.url())?;
     let user_id = request_user_id(&preprocessed).map(str::to_string);
     let play_session = if let Some(item_id) = item_id.as_deref() {
-        let candidates = state.play_sessions.get_sessions_by_item_id(item_id).await;
-        matching_play_session(
-            candidates,
-            session_id.as_deref(),
-            request_user_id(&preprocessed),
-        )
-        .ok()
+        selected_play_session(&state, &preprocessed, item_id, session_id.as_deref()).await?
     } else {
         None
     };

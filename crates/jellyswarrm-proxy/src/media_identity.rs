@@ -41,6 +41,8 @@ pub enum MediaKind {
 }
 
 impl MediaKind {
+    pub const ALL: [Self; 4] = [Self::Movie, Self::Series, Self::Season, Self::Episode];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Movie => "movie",
@@ -240,6 +242,7 @@ impl MediaAlias {
 #[derive(Debug, Clone)]
 pub struct MediaObservation {
     pub virtual_media_id: String,
+    pub kind: MediaKind,
     pub aliases: BTreeSet<MediaAlias>,
 }
 

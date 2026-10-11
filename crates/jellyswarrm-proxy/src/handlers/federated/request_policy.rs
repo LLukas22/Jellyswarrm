@@ -1,10 +1,12 @@
 use super::postprocessing::Pagination;
+use crate::media_identity::MediaKind;
+use std::collections::BTreeSet;
 
 /// One interpretation of the client query, shared by fetching and finalization.
 pub(super) struct CatalogRequestPolicy {
     pub pagination: Pagination,
     pub sort: super::postprocessing::SortPolicy,
-    pub authoritative_inventory: bool,
+    pub inventory_types: BTreeSet<MediaKind>,
     pub upstream_limited: bool,
 }
 
@@ -14,7 +16,7 @@ impl CatalogRequestPolicy {
         Self {
             pagination: Pagination::from_url(url),
             sort,
-            authoritative_inventory: is_authoritative_media_inventory_request(url),
+            inventory_types: authoritative_inventory_types(url),
             upstream_limited: is_upstream_limited_catalog_request(url),
         }
     }
@@ -86,7 +88,12 @@ pub(super) fn is_upstream_limited_catalog_request(url: &url::Url) -> bool {
     path.contains("/latest") || path.contains("/suggestions")
 }
 
+#[cfg(test)]
 pub(super) fn is_authoritative_media_inventory_request(url: &url::Url) -> bool {
+    authoritative_inventory_types(url).len() == MediaKind::ALL.len()
+}
+
+fn authoritative_inventory_types(url: &url::Url) -> BTreeSet<MediaKind> {
     if is_upstream_limited_catalog_request(url)
         || !url
             .path()
@@ -95,7 +102,7 @@ pub(super) fn is_authoritative_media_inventory_request(url: &url::Url) -> bool {
             .next()
             .is_some_and(|segment| segment.eq_ignore_ascii_case("Items"))
     {
-        return false;
+        return BTreeSet::new();
     }
     const SAFE_KEYS: &[&str] = &[
         "parentid",
@@ -110,27 +117,31 @@ pub(super) fn is_authoritative_media_inventory_request(url: &url::Url) -> bool {
         "imagetypeLimit",
         "enableimagetypes",
         "enabletotalrecordcount",
+        "enableimages",
+        "enableuserdata",
+        "api_key",
+        "apikey",
     ];
     let mut recursive = false;
-    let mut includes_dedup_types = true;
+    let mut included_types = None;
     let safe = url.query_pairs().all(|(key, value)| {
         if key.eq_ignore_ascii_case("recursive") {
             recursive = value.eq_ignore_ascii_case("true");
         } else if key.eq_ignore_ascii_case("includeitemtypes") {
-            // A source shares sightings across types, so replacing it requires
-            // coverage of every type participating in reconciliation.
-            includes_dedup_types &=
-                ["Movie", "Series", "Season", "Episode"]
-                    .iter()
-                    .all(|required| {
-                        value
-                            .split(',')
-                            .any(|item_type| item_type.trim().eq_ignore_ascii_case(required))
-                    });
+            let types = included_types.get_or_insert_with(BTreeSet::new);
+            types.extend(
+                value
+                    .split(',')
+                    .filter_map(|kind| MediaKind::parse(&kind.trim().to_ascii_lowercase())),
+            );
         }
         SAFE_KEYS.iter().any(|safe| key.eq_ignore_ascii_case(safe))
     });
-    safe && recursive && includes_dedup_types
+    if safe && recursive {
+        included_types.unwrap_or_else(|| MediaKind::ALL.into_iter().collect())
+    } else {
+        BTreeSet::new()
+    }
 }
 
 pub(super) fn set_upstream_page(url: &mut url::Url, start_index: usize, limit: usize) {
@@ -352,6 +363,23 @@ mod tests {
                         .unwrap();
                 assert!(!is_authoritative_media_inventory_request(&url));
             }
+        }
+    }
+
+    #[test]
+    fn typed_inventories_cover_only_requested_types_and_never_filtered_results() {
+        for (query, expected) in [
+            ("Recursive=true&IncludeItemTypes=Movie", vec![MediaKind::Movie]),
+            ("Recursive=true&includeItemTypes=Series,Season&IncludeItemTypes=Episode", vec![MediaKind::Series, MediaKind::Season, MediaKind::Episode]),
+            ("Recursive=true&IncludeItemTypes=Movie&EnableImages=false&EnableUserData=false&ApiKey=token", vec![MediaKind::Movie]),
+            ("Recursive=true&IncludeItemTypes=Audio", vec![]),
+            ("Recursive=true&IncludeItemTypes=Movie&SearchTerm=Movie", vec![]),
+            ("Recursive=true&IncludeItemTypes=Movie&IsPlayed=true", vec![]),
+            ("Recursive=true&IncludeItemTypes=Movie&Ids=movie", vec![]),
+            ("Recursive=false&IncludeItemTypes=Movie", vec![]),
+        ] {
+            let url = url::Url::parse(&format!("http://localhost/Items?{query}")).unwrap();
+            assert_eq!(authoritative_inventory_types(&url), expected.into_iter().collect(), "{query}");
         }
     }
 
