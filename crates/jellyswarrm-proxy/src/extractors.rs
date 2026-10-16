@@ -52,6 +52,8 @@ impl FromRequest<AppState> for CatalogPreprocessed {
                 error!("Failed to resolve catalog request: {error}");
                 if error.is::<crate::request_preprocessing::NoAvailableBackend>() {
                     StatusCode::SERVICE_UNAVAILABLE
+                } else if error.is::<crate::request_preprocessing::MediaAccessDenied>() {
+                    StatusCode::FORBIDDEN
                 } else {
                     StatusCode::BAD_REQUEST
                 }
@@ -67,6 +69,8 @@ impl FromRequest<AppState> for Preprocessed {
             error!("Failed to preprocess request: {}", e);
             if e.is::<crate::request_preprocessing::NoAvailableBackend>() {
                 StatusCode::SERVICE_UNAVAILABLE
+            } else if e.is::<crate::request_preprocessing::MediaAccessDenied>() {
+                StatusCode::FORBIDDEN
             } else {
                 StatusCode::BAD_REQUEST
             }

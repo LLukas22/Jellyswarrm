@@ -9,7 +9,7 @@ use wiremock::{
 macro_rules! contracts {
     ($($name:ident: $route:literal, $body:expr;)+) => {
         pub(super) const ROUTES: &[&str] = &[$($route),+];
-        $(#[tokio::test] async fn $name() { body_contract($route,$body).await; })+
+        $(scenario_test!($name, body_contract, $route, $body);)+
     };
 }
 contracts! {
@@ -18,10 +18,14 @@ contracts! {
     create_collection: "/Collections?Name=My%20collection&Ids={item}", Value::Null;
     update_timer: "/LiveTv/Timers/{item}", json!({"Id":"{item}","ChannelId":"{item}","Name":"Recording","PrePaddingSeconds":60,"PostPaddingSeconds":120});
     update_series_timer: "/LiveTv/SeriesTimers/{item}", json!({"Id":"{item}","ChannelId":"{item}","Name":"Series","RecordAnyTime":true,"RecordNewOnly":true});
+    posted_guide_translates_channel_id_arrays: "/LiveTv/Programs", json!({"ChannelIds":["{item}"],"UserId":"{user}","StartIndex":0,"Limit":100});
+    recording_creation_translates_program_id: "/LiveTv/Timers", json!({"ProgramId":"{item}","ChannelId":"{item}","Name":"Recording"});
+    series_recording_creation_translates_program_id: "/LiveTv/SeriesTimers", json!({"ProgramId":"{item}","ChannelId":"{item}","Name":"Series recording","RecordNewOnly":true});
+    metadata_edit_reaches_item_owner: "/Items/{item}", json!({"Id":"{item}","Name":"Updated movie","ProviderIds":{"Tmdb":"42"},"Overview":"Keep this text"});
 }
 
-pub(super) async fn body_contract(route: &str, body: Value) {
-    let f = Fixture::new().await;
+pub(super) async fn body_contract(scenario: Scenario, route: &str, body: Value) {
+    let f = Fixture::for_scenario(scenario).await;
     f.healthy().await;
     let original = f.original(1).await;
     let substitute =
@@ -69,5 +73,14 @@ pub(super) async fn body_contract(route: &str, body: Value) {
     if creates {
         assert_eq!(response.json::<Value>().await.unwrap()["Id"], f.items[1]);
     }
+    let requests = f.upstreams[1].received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1, "{route}");
+    assert!(requests[0]
+        .headers
+        .get("authorization")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .contains("backend-token-1"));
     assert!(f.upstreams[0].received_requests().await.unwrap().is_empty());
 }

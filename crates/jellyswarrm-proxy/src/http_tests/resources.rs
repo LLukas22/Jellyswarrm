@@ -9,7 +9,7 @@ use wiremock::{
 macro_rules! contracts {
     ($($name:ident: $route:literal;)+) => {
         pub(super) const ROUTES: &[&str] = &[$($route),+];
-        $(#[tokio::test] async fn $name() { resource_contract($route).await; })+
+        $(scenario_test!($name, resource_contract, $route);)+
     };
 }
 contracts! {
@@ -34,25 +34,35 @@ contracts! {
     download: "/Items/{item}/Download";
     fallback_font: "/FallbackFont/Fonts/Noto.ttf";
 }
-async fn resource_contract(route: &str) {
-    let f = Fixture::new().await;
+async fn resource_contract(scenario: Scenario, route: &str) {
+    let f = Fixture::for_scenario(scenario).await;
     f.healthy().await;
     let owner = usize::from(route.contains("{item}"));
     let original = f.original(owner).await;
     let upstream_path = route.replace("{item}", &original);
-    Mock::given(method("GET"))
-        .and(path(&upstream_path))
-        .and(header("range", "bytes=2-5"))
-        .respond_with(
+    let playlist = route.ends_with(".m3u8") && !route.contains("Trickplay");
+    let body = if playlist {
+        b"#EXTM3U\n#EXT-X-ENDLIST\n".to_vec()
+    } else {
+        vec![0, 255, 13, 10]
+    };
+    let mock = Mock::given(method("GET")).and(path(&upstream_path));
+    let mock = if playlist {
+        mock.respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "application/vnd.apple.mpegurl")
+                .set_body_bytes(body.clone()),
+        )
+    } else {
+        mock.and(header("range", "bytes=2-5")).respond_with(
             ResponseTemplate::new(206)
                 .insert_header("Content-Type", "application/octet-stream")
                 .insert_header("Content-Range", "bytes 2-5/8")
                 .insert_header("Accept-Ranges", "bytes")
                 .set_body_bytes([0, 255, 13, 10]),
         )
-        .expect(1)
-        .mount(&f.upstreams[owner])
-        .await;
+    };
+    mock.expect(1).mount(&f.upstreams[owner]).await;
     let response = f
         .request(
             reqwest::Method::GET,
@@ -64,9 +74,21 @@ async fn resource_contract(route: &str) {
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT, "{route}");
-    assert_eq!(response.headers()["Content-Range"], "bytes 2-5/8");
-    assert_eq!(response.bytes().await.unwrap().as_ref(), [0, 255, 13, 10]);
+    assert_eq!(
+        response.status(),
+        if playlist {
+            StatusCode::OK
+        } else {
+            StatusCode::PARTIAL_CONTENT
+        },
+        "{route}"
+    );
+    if playlist {
+        assert!(!response.headers().contains_key("Content-Range"));
+    } else {
+        assert_eq!(response.headers()["Content-Range"], "bytes 2-5/8");
+    }
+    assert_eq!(response.bytes().await.unwrap().as_ref(), body);
     assert!(
         f.upstreams[1 - owner]
             .received_requests()
@@ -77,6 +99,9 @@ async fn resource_contract(route: &str) {
     );
     let requests = f.upstreams[owner].received_requests().await.unwrap();
     assert_eq!(requests.len(), 1);
+    if playlist {
+        assert!(!requests[0].headers.contains_key("range"));
+    }
     let headers = format!("{:?}", requests[0].headers);
     assert!(headers.contains(&format!("backend-token-{owner}")));
     assert!(!headers.contains(&f.user.virtual_key));

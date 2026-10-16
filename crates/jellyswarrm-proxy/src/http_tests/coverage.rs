@@ -1,5 +1,5 @@
 //! No silent holes: each discovered route must have an executable contract,
-//! an executable known-gap reproduction, or an explicit scope decision.
+//! a workflow contract, or an explicit scope decision.
 use super::*;
 
 fn route_pattern(route: &str) -> regex::Regex {
@@ -61,42 +61,9 @@ const WORKFLOWS: &[(&str, &str, &str)] = &[
         "same_server_episode_selection_survives_streams_and_all_playback_reports",
     ),
 ];
-const GAPS: &[(&str, &str, &str)] = &[
-    (
-        "GET",
-        "/Videos/{id}/AdditionalParts",
-        "additional_parts_returns_client_ids",
-    ),
-    (
-        "GET",
-        "/LiveTv/Timers/Defaults",
-        "recording_defaults_follow_program_owner",
-    ),
-    (
-        "POST",
-        "/LiveTv/Programs",
-        "posted_guide_translates_channel_id_arrays",
-    ),
-    (
-        "POST",
-        "/LiveTv/Timers",
-        "recording_creation_translates_program_id",
-    ),
-    (
-        "POST",
-        "/LiveTv/SeriesTimers",
-        "series_recording_creation_translates_program_id",
-    ),
-    ("POST", "/Items/{id}", "metadata_edit_reaches_item_owner"),
-    (
-        "POST",
-        "/Items/RemoteSearch/Apply/{id}",
-        "remote_metadata_apply_reaches_item_owner",
-    ),
-];
 
-// Explicit exclusions: backend administration, remote metadata acquisition and
-// media editing, rather than browsing, library state, queues or playback.
+// Explicit exclusions: backend administration and remaining media editors,
+// rather than browsing, library state, queues or playback.
 // Exact endpoint patterns make newly introduced client calls fail this check.
 const OUTSIDE_SCOPE: &[(&str, &str, &str)] = &[
     ("DELETE", "/Items/{id}/Images", "image editor"),
@@ -166,7 +133,7 @@ fn every_discovered_route_has_a_contract_or_explicit_scope_decision() {
     assert_eq!(inventory["schema"], 1);
     let cases = contracts();
     let mut missing = std::collections::BTreeSet::new();
-    let mut totals = [0; 4];
+    let mut totals = [0; 3];
     for request in inventory["requests"].as_array().unwrap() {
         let method = request["method"].as_str().unwrap();
         let path = request["path"].as_str().unwrap();
@@ -186,13 +153,11 @@ fn every_discovered_route_has_a_contract_or_explicit_scope_decision() {
             totals[0] += 1;
         } else if WORKFLOWS.iter().any(|(m, p, _)| matches(m, p)) {
             totals[1] += 1;
-        } else if GAPS.iter().any(|(m, p, _)| matches(m, p)) {
-            totals[2] += 1;
         } else if OUTSIDE_SCOPE
             .iter()
             .any(|(m, p, reason)| !reason.is_empty() && matches(m, p))
         {
-            totals[3] += 1;
+            totals[2] += 1;
         } else {
             missing.insert(format!(
                 "{method} {path} ({}:{} {})",
@@ -200,7 +165,10 @@ fn every_discovered_route_has_a_contract_or_explicit_scope_decision() {
             ));
         }
     }
-    println!("Client call sites: {} request contracts, {} workflow contracts, {} known gaps, {} explicitly excluded",totals[0],totals[1],totals[2],totals[3]);
+    println!(
+        "Client call sites: {} request contracts, {} workflow contracts, {} explicitly excluded",
+        totals[0], totals[1], totals[2]
+    );
     assert!(
         missing.is_empty(),
         "Unclassified client routes:\n{}",
@@ -209,7 +177,7 @@ fn every_discovered_route_has_a_contract_or_explicit_scope_decision() {
 }
 
 #[test]
-fn workflow_and_gap_references_point_to_executable_tests() {
+fn workflow_references_point_to_executable_tests() {
     let workflows = [
         include_str!("pipeline.rs"),
         include_str!("pipeline/regressions/streaming_routing.rs"),
@@ -221,12 +189,6 @@ fn workflow_and_gap_references_point_to_executable_tests() {
         assert!(
             workflows.contains(&format!("async fn {test}(")),
             "missing workflow {test}"
-        );
-    }
-    for (_, _, test) in GAPS {
-        assert!(
-            include_str!("known_gaps.rs").contains(&format!("async fn {test}(")),
-            "missing reproduction {test}"
         );
     }
 }

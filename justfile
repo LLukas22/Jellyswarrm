@@ -70,9 +70,13 @@ check: doctor
 http-test:
     JELLYSWARRM_SKIP_UI=1 cargo test --package jellyswarrm-proxy --bin jellyswarrm-proxy http_tests
 
-# Run desired contracts for known defects; expected to fail until they are fixed.
-http-test-gaps:
-    JELLYSWARRM_SKIP_UI=1 cargo test --package jellyswarrm-proxy --bin jellyswarrm-proxy http_tests::known_gaps -- --ignored --nocapture
+# Run the HTTP contracts with separate, unmerged backend libraries.
+http-test-normal:
+    JELLYSWARRM_SKIP_UI=1 cargo test --package jellyswarrm-proxy --bin jellyswarrm-proxy normal_servers
+
+# Run the HTTP contracts with merged libraries and deduplicated media.
+http-test-merged:
+    JELLYSWARRM_SKIP_UI=1 cargo test --package jellyswarrm-proxy --bin jellyswarrm-proxy merged_libraries
 
 # Refresh the client call-site inventory after installing the UI dependencies.
 http-routes-update:

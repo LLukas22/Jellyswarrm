@@ -27,7 +27,7 @@ pub(super) const METHOD: &str = "GET";
 macro_rules! contracts {
     ($($name:ident: $route:literal, $shape:ident;)+) => {
         pub(super) const ROUTES: &[&str] = &[$($route),+];
-        $(#[tokio::test] async fn $name() { read_contract($route, Shape::$shape).await; })+
+        $(scenario_test!($name, read_contract, $route, Shape::$shape);)+
     };
 }
 
@@ -47,6 +47,7 @@ contracts! {
     ancestors: "/Items/{item}/Ancestors?UserId={user}", Bare;
     intros: "/Users/{user}/Items/{item}/Intros", List;
     local_trailers: "/Users/{user}/Items/{item}/LocalTrailers", Bare;
+    additional_parts_returns_client_ids: "/Videos/{item}/AdditionalParts?UserId={user}", List;
     special_features: "/Users/{user}/Items/{item}/SpecialFeatures", Bare;
     theme_media: "/Items/{item}/ThemeMedia?UserId={user}&InheritFromParent=true", Theme;
     instant_mix: "/Items/{item}/InstantMix?UserId={user}&Limit=50", List;
@@ -82,13 +83,14 @@ contracts! {
     recording_folders: "/LiveTv/Recordings/Folders?ParentId={item}&UserId={user}", List;
     timers: "/LiveTv/Timers", List;
     timer: "/LiveTv/Timers/{item}", Detail;
+    recording_defaults_follow_program_owner: "/LiveTv/Timers/Defaults?ProgramId={item}", Detail;
     series_timers: "/LiveTv/SeriesTimers?SortBy=SortName", List;
     series_timer: "/LiveTv/SeriesTimers/{item}", Detail;
     item_counts: "/Items/Counts?UserId={user}", Counts;
 }
 
-pub(super) async fn read_contract(route: &str, shape: Shape) {
-    let f = Fixture::new().await;
+async fn read_contract(scenario: Scenario, route: &str, shape: Shape) {
+    let f = Fixture::for_scenario(scenario).await;
     f.healthy().await;
     let owner = usize::from(route.contains("{item}"));
     let original = f.original(owner).await;

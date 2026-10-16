@@ -13,6 +13,8 @@ pub use filters::get_filters;
 mod item_policy;
 mod library_resolution;
 mod library_root;
+mod live_tv;
+pub use live_tv::post_live_tv_programs;
 mod media_reconciliation;
 mod postprocessing;
 #[cfg(test)]
@@ -44,6 +46,7 @@ async fn get_items(
         request.access_scope.as_ref(),
     )
     .await;
+    live_tv::sync_posted_guide_body(&mut request.request)?;
     crate::handlers::items::get_items(State(state), crate::extractors::Preprocessed(request)).await
 }
 

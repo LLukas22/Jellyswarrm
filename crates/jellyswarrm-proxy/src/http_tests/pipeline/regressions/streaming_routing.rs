@@ -73,7 +73,10 @@ async fn explicit_source_without_session_is_not_overridden_by_another_playback()
     for resource in ["stream.mp4", "master.m3u8"] {
         if resource == "master.m3u8" {
             Mock::given(path(format!("/Videos/{MOVIE}/master.m3u8")))
-                .respond_with(ResponseTemplate::new(200).set_body_string("backend-1"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string("#EXTM3U\n# backend-1\n#EXT-X-ENDLIST\n"),
+                )
                 .mount(&f.upstreams[1])
                 .await;
         }
@@ -91,7 +94,14 @@ async fn explicit_source_without_session_is_not_overridden_by_another_playback()
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.text().await.unwrap(), "backend-1");
+        assert_eq!(
+            response.text().await.unwrap(),
+            if resource == "master.m3u8" {
+                "#EXTM3U\n# backend-1\n#EXT-X-ENDLIST\n"
+            } else {
+                "backend-1"
+            }
+        );
     }
     assert_eq!(
         f.state
@@ -225,7 +235,10 @@ async fn equivalent_aggregate_uuids_keep_negotiated_backend_and_binding() {
         for resource in ["stream.mp4", "master.m3u8"] {
             if resource == "master.m3u8" {
                 Mock::given(path(format!("/Videos/{MOVIE}/master.m3u8")))
-                    .respond_with(ResponseTemplate::new(200).set_body_string("backend-1"))
+                    .respond_with(
+                        ResponseTemplate::new(200)
+                            .set_body_string("#EXTM3U\n# backend-1\n#EXT-X-ENDLIST\n"),
+                    )
                     .mount(&f.upstreams[1])
                     .await;
             }
@@ -240,7 +253,14 @@ async fn equivalent_aggregate_uuids_keep_negotiated_backend_and_binding() {
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::OK);
-            assert_eq!(response.text().await.unwrap(), "backend-1");
+            assert_eq!(
+                response.text().await.unwrap(),
+                if resource == "master.m3u8" {
+                    "#EXTM3U\n# backend-1\n#EXT-X-ENDLIST\n"
+                } else {
+                    "backend-1"
+                }
+            );
         }
     }
     assert_eq!(

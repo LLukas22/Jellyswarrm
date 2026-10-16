@@ -21,7 +21,15 @@ pub(super) async fn restrict_named_ids(
     url: &mut url::Url,
     server_id: crate::server_id::ServerId,
 ) -> Result<bool, StatusCode> {
-    for key in ["GenreIds", "StudioIds"] {
+    let guide = url
+        .path()
+        .trim_end_matches('/')
+        .to_ascii_lowercase()
+        .ends_with("/livetv/programs");
+    for key in ["GenreIds", "StudioIds"]
+        .into_iter()
+        .chain(guide.then_some("ChannelIds"))
+    {
         let ids = url
             .query_pairs()
             .filter(|(name, _)| name.eq_ignore_ascii_case(key))

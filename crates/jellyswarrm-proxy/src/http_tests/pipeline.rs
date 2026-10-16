@@ -1,4 +1,5 @@
 use super::*;
+mod media_paths;
 mod regressions;
 mod virtual_libraries;
 use crate::{

@@ -839,6 +839,10 @@ async fn resolve_playback_report_member(
 #[error("no authorized backend is currently available")]
 pub(crate) struct NoAvailableBackend;
 
+#[derive(Debug, thiserror::Error)]
+#[error("requested media is outside the caller's authorized server scope")]
+pub(crate) struct MediaAccessDenied;
+
 pub async fn resolve_server(
     sessions: &Option<Vec<(AuthorizationSession, Server)>>,
     request_body_result: &Option<RequestBodyAnalysisResult>,
@@ -918,6 +922,18 @@ pub async fn resolve_server(
     });
     let mut request_server =
         server_from_request_media_ids(state, request, routing_scope.as_ref()).await?;
+
+    // Body-only routes (for example recording creation) must not silently
+    // fall back to an allowed server when their IDs belong to a forbidden one.
+    if let (Some(scope), Some(analysis)) = (access_scope, request_body_result) {
+        for id in &analysis.found_ids {
+            state
+                .processors
+                .url_processor
+                .validate_media_access(id, scope)
+                .await?;
+        }
+    }
 
     if request_server.is_none() {
         if let Some(request_body_result) = request_body_result {

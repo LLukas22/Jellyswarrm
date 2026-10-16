@@ -9,13 +9,14 @@ use wiremock::{
 macro_rules! contracts {
     ($($name:ident: $verb:literal,$route:literal,$body:expr;)+) => {
         pub(super) const ROUTES: &[(&str,&str)] = &[$(($verb,$route)),+];
-        $(#[tokio::test] async fn $name() { editing_contract($verb,$route,$body).await; })+
+        $(scenario_test!($name, editing_contract, $verb, $route, $body);)+
     };
 }
 contracts! {
     metadata_fields: "GET","/Items/{item}/MetadataEditor",Value::Null;
     external_id_fields: "GET","/Items/{item}/ExternalIdInfos",Value::Null;
     remote_search: "POST","/Items/RemoteSearch/Movie?ItemId={item}",json!({"ItemId":"{item}","SearchInfo":{"Name":"Movie","Year":2026}});
+    remote_metadata_apply_reaches_item_owner: "POST","/Items/RemoteSearch/Apply/{item}?ReplaceAllImages=true",json!({"Name":"Movie","ProviderIds":{"Tmdb":"42"}});
     content_type: "POST","/Items/{item}/ContentType?ContentType=movies",Value::Null;
     refresh: "POST","/Items/{item}/Refresh?MetadataRefreshMode=FullRefresh&ImageRefreshMode=ValidationOnly&ReplaceAllMetadata=false",Value::Null;
     image_delete: "DELETE","/Items/{item}/Images/Primary/0",Value::Null;
@@ -27,8 +28,8 @@ contracts! {
     delete_item: "DELETE","/Items/{item}",Value::Null;
 }
 
-pub(super) async fn editing_contract(verb: &str, route: &str, body: Value) {
-    let f = Fixture::new().await;
+async fn editing_contract(scenario: Scenario, verb: &str, route: &str, body: Value) {
+    let f = Fixture::for_scenario(scenario).await;
     f.healthy().await;
     let original = f.original(1).await;
     let target = url::Url::parse(&format!(
@@ -86,4 +87,13 @@ pub(super) async fn editing_contract(verb: &str, route: &str, body: Value) {
         assert_eq!(response.json::<Value>().await.unwrap(), expected);
     }
     assert!(f.upstreams[0].received_requests().await.unwrap().is_empty());
+    let requests = f.upstreams[1].received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1, "{verb} {route}");
+    assert!(requests[0]
+        .headers
+        .get("authorization")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .contains("backend-token-1"));
 }

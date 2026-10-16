@@ -17,6 +17,20 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio_tungstenite::connect_async;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Scenario {
+    /// Connected servers retain separate library and item identities.
+    NormalServers,
+    /// Automatic library grouping plus selectable provider-matched versions.
+    MergedLibraries,
+}
+
+impl Scenario {
+    pub(super) fn merged(self) -> bool {
+        self == Self::MergedLibraries
+    }
+}
+
 pub(crate) struct Fixture {
     pub(crate) state: AppState,
     pub(crate) user: User,
@@ -51,6 +65,20 @@ pub(crate) fn auth(user: &User, id: &str) -> String {
 }
 impl Fixture {
     pub(crate) async fn new() -> Self {
+        // Existing focused regressions may override individual settings themselves.
+        Self::with_config(AppConfig::default()).await
+    }
+
+    pub(super) async fn for_scenario(scenario: Scenario) -> Self {
+        Self::with_config(AppConfig {
+            merge_libraries: scenario.merged(),
+            deduplicate_media: scenario.merged(),
+            ..Default::default()
+        })
+        .await
+    }
+
+    async fn with_config(config: AppConfig) -> Self {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -67,7 +95,7 @@ impl Fixture {
             play_sessions: Arc::new(SessionStorage::new()),
             config: Arc::new(tokio::sync::RwLock::new(AppConfig {
                 url_prefix: Some("proxy".into()),
-                ..Default::default()
+                ..config
             })),
         };
         let state = AppState::new(

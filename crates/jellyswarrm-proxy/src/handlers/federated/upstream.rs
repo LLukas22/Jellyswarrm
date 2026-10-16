@@ -655,9 +655,10 @@ async fn prepare_backend_request(
 async fn execute_raw_items_request(
     index: usize,
     state: AppState,
-    request: reqwest::Request,
+    mut request: reqwest::Request,
     server: Server,
 ) -> Result<RawServerItems, StatusCode> {
+    super::live_tv::sync_posted_guide_body(&mut request)?;
     let response = execute_json_request::<serde_json::Value>(&state.reqwest_client, request)
         .await
         .inspect_err(|e| {

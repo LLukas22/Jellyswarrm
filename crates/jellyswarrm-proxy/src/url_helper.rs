@@ -39,10 +39,17 @@ pub fn decoded_path_segments(path: &str) -> Vec<String> {
 }
 
 pub fn contains_id(url: &Url, name: &str) -> Option<String> {
+    let tags = name.split('/').collect::<Vec<_>>();
     decoded_path_segments(url.path())
-        .windows(2)
-        .find(|pair| pair[0].eq_ignore_ascii_case(name) && is_id_like(&pair[1]))
-        .map(|pair| pair[1].clone())
+        .windows(tags.len() + 1)
+        .find(|parts| {
+            parts
+                .iter()
+                .zip(&tags)
+                .all(|(part, tag)| part.eq_ignore_ascii_case(tag))
+                && is_id_like(&parts[tags.len()])
+        })
+        .map(|parts| parts[tags.len()].clone())
 }
 
 pub fn replace_id(url: Url, original: &str, replacement: &str) -> Url {
@@ -155,6 +162,24 @@ mod tests {
     fn test_contains_id_not_found() {
         let url = Url::parse("https://example.com/foo/bar").unwrap();
         assert_eq!(contains_id(&url, "foo"), None);
+    }
+
+    #[test]
+    fn deep_path_id_requires_the_complete_tag_sequence() {
+        let id = "0123456789abcdef0123456789abcdef";
+        let url = Url::parse(&format!(
+            "https://example.com/items/remotesearch/%41pply/{id}?ReplaceAllImages=true"
+        ))
+        .unwrap();
+        assert_eq!(
+            contains_id(&url, "Items/RemoteSearch/Apply"),
+            Some(id.into())
+        );
+        assert_eq!(contains_id(&url, "Items"), None);
+        assert_eq!(contains_id(&url, "Other/RemoteSearch/Apply"), None);
+        let replaced = replace_path_id(&url, "Items/RemoteSearch/Apply", "backend").unwrap();
+        assert_eq!(replaced.path(), "/items/remotesearch/Apply/backend");
+        assert_eq!(replaced.query(), Some("ReplaceAllImages=true"));
     }
 
     #[test]

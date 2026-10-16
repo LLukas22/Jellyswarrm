@@ -839,6 +839,8 @@ async fn proxy_handler(
             error!("Failed to preprocess request: {}", error);
             let status = if error.is::<request_preprocessing::NoAvailableBackend>() {
                 StatusCode::SERVICE_UNAVAILABLE
+            } else if error.is::<request_preprocessing::MediaAccessDenied>() {
+                StatusCode::FORBIDDEN
             } else {
                 StatusCode::BAD_REQUEST
             };
@@ -1132,9 +1134,11 @@ mod web_asset_path_tests {
     }
 }
 
-// Shared with HTTP integration tests so DELETE coverage exercises the production route.
+// Shared with HTTP integration tests so mutations exercise the production route.
 fn item_detail_routes() -> axum::routing::MethodRouter<AppState> {
-    get(handlers::items::get_item).delete(proxy_handler)
+    get(handlers::items::get_item)
+        .post(proxy_handler)
+        .delete(proxy_handler)
 }
 
 #[cfg(test)]

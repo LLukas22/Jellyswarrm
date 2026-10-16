@@ -5,9 +5,12 @@ use wiremock::{
     Mock, ResponseTemplate,
 };
 
-#[tokio::test]
-async fn source_owned_requests_reject_foreign_viewers_before_upstream() {
-    let f = Fixture::new().await;
+scenario_test!(
+    source_owned_requests_reject_foreign_viewers_before_upstream,
+    foreign_viewer_contract
+);
+async fn foreign_viewer_contract(scenario: Scenario) {
+    let f = Fixture::for_scenario(scenario).await;
     f.healthy().await;
     for (verb, route, body) in [
         (
@@ -40,24 +43,184 @@ async fn source_owned_requests_reject_foreign_viewers_before_upstream() {
             format!("/Playlists/{}/Items?Ids={}", f.items[1], f.items[1]),
             Value::Null,
         ),
+        (
+            reqwest::Method::GET,
+            format!("/Videos/{}/AdditionalParts", f.items[1]),
+            Value::Null,
+        ),
+        (
+            reqwest::Method::POST,
+            format!("/Items/{}", f.items[1]),
+            json!({"Id":f.items[1],"Name":"Edit"}),
+        ),
+        (
+            reqwest::Method::POST,
+            format!("/Items/RemoteSearch/Apply/{}", f.items[1]),
+            json!({"Name":"Edit"}),
+        ),
+        (
+            reqwest::Method::GET,
+            format!("/LiveTv/Timers/Defaults?ProgramId={}", f.items[1]),
+            Value::Null,
+        ),
+        (
+            reqwest::Method::POST,
+            "/LiveTv/Timers".into(),
+            json!({"ProgramId":f.items[1],"Name":"Recording"}),
+        ),
+        (
+            reqwest::Method::POST,
+            "/LiveTv/SeriesTimers".into(),
+            json!({"ProgramId":f.items[1],"Name":"Series"}),
+        ),
     ] {
         let mut request = f.request(verb, &route, &f.other, "tv");
         if !body.is_null() {
             request = request.json(&body);
         }
         let response = request.send().await.unwrap();
-        assert!(
-            !response.status().is_success(),
-            "foreign request unexpectedly accepted: {route}"
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "foreign request: {route}"
         );
     }
     f.no_upstream_requests().await;
 }
 
-#[tokio::test]
-async fn source_owned_read_propagates_upstream_errors_without_other_backend_fallback() {
+scenario_test!(
+    partially_mapped_user_cannot_access_another_backend,
+    partial_access_contract
+);
+async fn partial_access_contract(scenario: Scenario) {
+    let f = Fixture::for_scenario(scenario).await;
+    f.healthy().await;
+    let (_, allowed) = f
+        .state
+        .media_storage
+        .get_media_mapping_with_server(&f.items[0])
+        .await
+        .unwrap()
+        .unwrap();
+    f.state
+        .user_authorization
+        .add_server_mapping(&f.other.id, &allowed, "bob", &"password".into(), None)
+        .await
+        .unwrap();
+    f.state
+        .user_authorization
+        .store_authorization_session(
+            &f.other.id,
+            &allowed,
+            &Authorization::parse(&auth(&f.other, "tv")).unwrap(),
+            "bob-token-0".into(),
+            "bob-user-0".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let original = f.original(0).await;
+    Mock::given(method("GET"))
+        .and(path(format!("/Items/{original}")))
+        .respond_with(move |request: &wiremock::Request| {
+            assert!(request
+                .headers
+                .get("authorization")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("bob-token-0"));
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"Id":original,"Type":"Movie","Name":"Allowed"}))
+        })
+        .expect(1)
+        .mount(&f.upstreams[0])
+        .await;
+    let response = f
+        .request(
+            reqwest::Method::GET,
+            &format!("/Items/{}", f.items[0]),
+            &f.other,
+            "tv",
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.json::<Value>().await.unwrap()["Id"], f.items[0]);
+    let before = f.upstreams[0].received_requests().await.unwrap().len();
+    for (verb, route, body) in [
+        (
+            reqwest::Method::GET,
+            format!("/Items/{}", f.items[1]),
+            Value::Null,
+        ),
+        (
+            reqwest::Method::GET,
+            format!("/Items/{}?MediaSourceId={}", f.items[0], f.items[1]),
+            Value::Null,
+        ),
+        (
+            reqwest::Method::GET,
+            format!("/Items/{}?MediaSourceId={}", f.items[1], f.items[0]),
+            Value::Null,
+        ),
+        (
+            reqwest::Method::GET,
+            format!("/Videos/{}/stream.mp4", f.items[1]),
+            Value::Null,
+        ),
+        (
+            reqwest::Method::GET,
+            format!(
+                "/Videos/{}/master.m3u8?ApiKey={}&DeviceId=tv",
+                f.items[1], f.other.virtual_key
+            ),
+            Value::Null,
+        ),
+        (
+            reqwest::Method::GET,
+            format!("/Items/{}/Images/Primary", f.items[1]),
+            Value::Null,
+        ),
+        (
+            reqwest::Method::POST,
+            format!("/Items/{}/PlaybackInfo", f.items[1]),
+            json!({"DeviceProfile":{}}),
+        ),
+        (
+            reqwest::Method::POST,
+            "/LiveTv/Timers".into(),
+            json!({"ProgramId":f.items[1]}),
+        ),
+        (
+            reqwest::Method::POST,
+            "/LiveTv/SeriesTimers".into(),
+            json!({"ProgramId":f.items[1]}),
+        ),
+    ] {
+        let request = if route.contains("ApiKey=") {
+            reqwest::Client::new().request(verb, format!("{}{route}", f.url))
+        } else {
+            f.request(verb, &route, &f.other, "tv")
+        };
+        let response = request.json(&body).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{route}");
+    }
+    assert_eq!(
+        f.upstreams[0].received_requests().await.unwrap().len(),
+        before
+    );
+    assert!(f.upstreams[1].received_requests().await.unwrap().is_empty());
+}
+
+scenario_test!(
+    source_owned_read_propagates_upstream_errors_without_other_backend_fallback,
+    upstream_error_contract
+);
+async fn upstream_error_contract(scenario: Scenario) {
     for status in [401, 403, 404, 500, 503] {
-        let f = Fixture::new().await;
+        let f = Fixture::for_scenario(scenario).await;
         f.healthy().await;
         let original = f.original(1).await;
         Mock::given(method("GET"))
@@ -81,9 +244,12 @@ async fn source_owned_read_propagates_upstream_errors_without_other_backend_fall
     }
 }
 
-#[tokio::test]
-async fn header_and_query_authentication_translate_to_the_same_backend_identity() {
-    let f = Fixture::new().await;
+scenario_test!(
+    header_and_query_authentication_translate_to_the_same_backend_identity,
+    authentication_contract
+);
+async fn authentication_contract(scenario: Scenario) {
+    let f = Fixture::for_scenario(scenario).await;
     f.healthy().await;
     let original = f.original(1).await;
     Mock::given(method("GET"))
@@ -116,9 +282,12 @@ async fn header_and_query_authentication_translate_to_the_same_backend_identity(
     assert!(f.upstreams[0].received_requests().await.unwrap().is_empty());
 }
 
-#[tokio::test]
-async fn normalized_uuid_and_lowercase_route_have_the_same_owner() {
-    let f = Fixture::new().await;
+scenario_test!(
+    normalized_uuid_and_lowercase_route_have_the_same_owner,
+    normalized_route_contract
+);
+async fn normalized_route_contract(scenario: Scenario) {
+    let f = Fixture::for_scenario(scenario).await;
     f.healthy().await;
     let original = f.original(1).await;
     let id = uuid::Uuid::parse_str(&f.items[1])
@@ -152,9 +321,12 @@ async fn normalized_uuid_and_lowercase_route_have_the_same_owner() {
     assert!(f.upstreams[0].received_requests().await.unwrap().is_empty());
 }
 
-#[tokio::test]
-async fn head_on_image_resource_preserves_metadata_without_response_bytes() {
-    let f = Fixture::new().await;
+scenario_test!(
+    head_on_image_resource_preserves_metadata_without_response_bytes,
+    head_resource_contract
+);
+async fn head_resource_contract(scenario: Scenario) {
+    let f = Fixture::for_scenario(scenario).await;
     f.healthy().await;
     let original = f.original(1).await;
     Mock::given(method("HEAD"))

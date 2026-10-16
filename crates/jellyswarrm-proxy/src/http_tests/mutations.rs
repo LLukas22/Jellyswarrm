@@ -9,7 +9,7 @@ use wiremock::{
 macro_rules! contracts {
     ($($name:ident: $verb:literal, $route:literal;)+) => {
         pub(super) const ROUTES: &[(&str,&str)] = &[$(($verb,$route)),+];
-        $(#[tokio::test] async fn $name() { mutation_contract($verb,$route).await; })+
+        $(scenario_test!($name, mutation_contract, $verb, $route);)+
     };
 }
 contracts! {
@@ -29,8 +29,8 @@ contracts! {
     cancel_timer: "DELETE", "/LiveTv/Timers/{item}";
     cancel_series_timer: "DELETE", "/LiveTv/SeriesTimers/{item}";
 }
-async fn mutation_contract(verb: &str, route: &str) {
-    let f = Fixture::new().await;
+async fn mutation_contract(scenario: Scenario, verb: &str, route: &str) {
+    let f = Fixture::for_scenario(scenario).await;
     f.healthy().await;
     let original = f.original(1).await;
     let backend = route

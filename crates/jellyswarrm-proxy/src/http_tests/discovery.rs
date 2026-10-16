@@ -8,7 +8,7 @@ use wiremock::{
 macro_rules! contracts {
     ($($name:ident: $route:literal;)+) => {
         pub(super) const ROUTES: &[&str] = &[$($route),+];
-        $(#[tokio::test] async fn $name() { discovery_contract($route).await; })+
+        $(scenario_test!($name, discovery_contract, $route);)+
     };
 }
 contracts! {
@@ -27,10 +27,10 @@ contracts! {
     genres: "/Genres?UserId={user}";
     studios: "/Studios?UserId={user}";
 }
-async fn discovery_contract(route: &str) {
-    let f = Fixture::new().await;
+async fn discovery_contract(scenario: Scenario, route: &str) {
+    let f = Fixture::for_scenario(scenario).await;
     f.healthy().await;
-    f.state.config.write().await.merge_libraries = false;
+    let library_root = route.contains("Views") || route == "/Library/MediaFolders";
     for (index, upstream) in f.upstreams.iter().enumerate() {
         let original = f.original(index).await;
         let target = if route == "/Library/MediaFolders" {
@@ -48,8 +48,13 @@ async fn discovery_contract(route: &str) {
         } else {
             "Movie"
         };
+        let name = if library_root {
+            "Movies".to_string()
+        } else {
+            format!("Source {index}")
+        };
         Mock::given(method("GET")).and(path(target))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Items":[{"Id":original,"Name":format!("Source {index}"),"Type":kind,"CollectionType":"movies"}],"TotalRecordCount":1,"StartIndex":0})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Items":[{"Id":original,"Name":name,"Type":kind,"CollectionType":"movies"}],"TotalRecordCount":1,"StartIndex":0})))
             .expect(1).mount(upstream).await;
     }
     let response = f
@@ -64,16 +69,26 @@ async fn discovery_contract(route: &str) {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK, "{route}");
     let result: Value = response.json().await.unwrap();
-    assert_eq!(result["TotalRecordCount"], 2, "{route}: {result}");
-    for id in &f.items {
-        assert!(
-            result["Items"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|item| item["Id"] == *id),
-            "{route}: {result}"
-        );
+    if library_root && scenario.merged() {
+        assert_eq!(result["TotalRecordCount"], 1, "{route}: {result}");
+        let library = &result["Items"][0];
+        assert_eq!(library["Type"], "CollectionFolder");
+        assert_eq!(library["CollectionType"], "movies");
+        assert!(!f
+            .items
+            .contains(&library["Id"].as_str().unwrap().to_string()));
+    } else {
+        assert_eq!(result["TotalRecordCount"], 2, "{route}: {result}");
+        for id in &f.items {
+            assert!(
+                result["Items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|item| item["Id"] == *id),
+                "{route}: {result}"
+            );
+        }
     }
     for (index, upstream) in f.upstreams.iter().enumerate() {
         let requests = upstream.received_requests().await.unwrap();

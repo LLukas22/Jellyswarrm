@@ -5,6 +5,8 @@ use futures_util::StreamExt;
 use hyper::StatusCode;
 use tracing::{error, info, warn};
 
+mod hls;
+
 use crate::{
     config::MediaStreamingMode,
     extractors::Preprocessed,
@@ -88,13 +90,41 @@ fn matching_play_session(
 }
 
 async fn proxy_request(
-    client: &reqwest::Client,
-    request: reqwest::Request,
+    state: &AppState,
+    server: &Server,
+    mut request: reqwest::Request,
+    proxy_api_key: Option<&str>,
 ) -> Result<Response, StatusCode> {
-    let resp = client.execute(request).await.map_err(|e| {
-        error!("Proxy request failed: {}", e);
-        StatusCode::BAD_GATEWAY
-    })?;
+    let playlist_path = hls::is_playlist_path(request.url());
+    let head = request.method() == reqwest::Method::HEAD;
+    // Keep playlist text inspectable even when a client advertises compression.
+    request.headers_mut().insert(
+        hyper::header::ACCEPT_ENCODING,
+        hyper::header::HeaderValue::from_static("identity"),
+    );
+    if playlist_path {
+        // Never serve a raw partial playlist or revalidate a pre-rewrite version.
+        for header in [
+            hyper::header::RANGE,
+            hyper::header::IF_RANGE,
+            hyper::header::IF_NONE_MATCH,
+            hyper::header::IF_MODIFIED_SINCE,
+        ] {
+            request.headers_mut().remove(header);
+        }
+    }
+    let resp = state
+        .streaming_reqwest_client
+        .execute(request)
+        .await
+        .map_err(|e| {
+            error!("Proxy request failed: {}", e);
+            StatusCode::BAD_GATEWAY
+        })?;
+
+    if playlist_path || hls::is_playlist_type(resp.headers()) {
+        return hls::response(state, server, resp, proxy_api_key, head).await;
+    }
 
     let status = resp.status();
     let mut headers = resp.headers().clone();
@@ -124,6 +154,7 @@ async fn forward_media_request(
     server: &Server,
     request: reqwest::Request,
     log_label: &str,
+    proxy_api_key: Option<&str>,
 ) -> Result<Response, StatusCode> {
     let url = request.url().clone();
 
@@ -156,13 +187,29 @@ async fn forward_media_request(
                 server.name,
                 url.path()
             );
-            Ok(axum::response::Redirect::temporary(url.as_ref()).into_response())
+            let mut response = axum::response::Redirect::temporary(url.as_ref()).into_response();
+            response.headers_mut().insert(
+                hyper::header::REFERRER_POLICY,
+                hyper::header::HeaderValue::from_static("no-referrer"),
+            );
+            Ok(response)
         }
         MediaStreamingMode::Proxy => {
-            info!("Proxying {} from: {}", log_label, url);
-            proxy_request(&state.streaming_reqwest_client, request).await
+            info!(
+                "Proxying {} from {}: {}",
+                log_label,
+                server.name,
+                url.path()
+            );
+            proxy_request(state, server, request, proxy_api_key).await
         }
     }
+}
+
+fn proxy_api_key(preprocessed: &PreprocessedRequest) -> Option<String> {
+    // An unrecognized/passthrough backend token is not a proxy credential.
+    preprocessed.user.as_ref()?;
+    preprocessed.auth.as_ref()?.token()
 }
 
 fn session_for_server(
@@ -335,6 +382,7 @@ async fn forward_preprocessed_resource(
         return Err(StatusCode::NOT_FOUND);
     }
 
+    let proxy_api_key = proxy_api_key(&preprocessed);
     let server = preprocessed.server;
     if !state
         .server_storage
@@ -353,13 +401,21 @@ async fn forward_preprocessed_resource(
         "No matching play session for resource {}; using media mapping via {}",
         id, server.name
     );
-    forward_media_request(state, &server, preprocessed.request, "media resource").await
+    forward_media_request(
+        state,
+        &server,
+        preprocessed.request,
+        "media resource",
+        proxy_api_key.as_deref(),
+    )
+    .await
 }
 
 pub async fn get_video_resource(
     State(state): State<AppState>,
     Preprocessed(preprocessed): Preprocessed,
 ) -> Result<Response, StatusCode> {
+    let proxy_api_key = proxy_api_key(&preprocessed);
     let id = extract_stream_item_id(preprocessed.original_request.url().path())
         .ok_or(StatusCode::NOT_FOUND)?
         .to_string();
@@ -377,13 +433,21 @@ pub async fn get_video_resource(
     );
 
     let request = request_for_play_session(&state, preprocessed, &server, &play_session).await?;
-    forward_media_request(&state, &server, request, "media resource").await
+    forward_media_request(
+        &state,
+        &server,
+        request,
+        "media resource",
+        proxy_api_key.as_deref(),
+    )
+    .await
 }
 
 pub async fn get_stream(
     State(state): State<AppState>,
     Preprocessed(preprocessed): Preprocessed,
 ) -> Result<Response, StatusCode> {
+    let proxy_api_key = proxy_api_key(&preprocessed);
     let item_id =
         extract_stream_item_id(preprocessed.original_request.url().path()).map(str::to_string);
     let session_id = extract_play_session_id(preprocessed.original_request.url())?;
@@ -398,8 +462,14 @@ pub async fn get_stream(
         let server = preprocessed.server.clone();
         let original_item_id =
             extract_stream_item_id(preprocessed.request.url().path()).map(str::to_string);
-        let response =
-            forward_media_request(&state, &server, preprocessed.request, "media stream").await?;
+        let response = forward_media_request(
+            &state,
+            &server,
+            preprocessed.request,
+            "media stream",
+            proxy_api_key.as_deref(),
+        )
+        .await?;
         if response.status().is_success() || response.status().is_redirection() {
             if let (Some(session_id), Some(item_id), Some(user_id)) = (session_id, item_id, user_id)
             {
@@ -419,7 +489,14 @@ pub async fn get_stream(
     };
     let server = resolve_play_session_server(&state, &play_session).await?;
     let request = request_for_play_session(&state, preprocessed, &server, &play_session).await?;
-    forward_media_request(&state, &server, request, "media stream").await
+    forward_media_request(
+        &state,
+        &server,
+        request,
+        "media stream",
+        proxy_api_key.as_deref(),
+    )
+    .await
 }
 
 #[cfg(test)]

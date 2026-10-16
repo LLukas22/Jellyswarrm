@@ -10,9 +10,13 @@ pub(super) const ROUTES: &[(&str, &str)] = &[
     ("POST", "/DisplayPreferences/usersettings"),
 ];
 
-#[tokio::test]
-async fn user_settings_read_write_preserves_preferences_and_translates_user() {
-    let f = Fixture::new().await;
+scenario_test!(
+    user_settings_read_write_preserves_preferences_and_translates_user,
+    preferences_contract
+);
+
+async fn preferences_contract(scenario: Scenario) {
+    let f = Fixture::for_scenario(scenario).await;
     f.healthy().await;
     let prefs = json!({"CustomPrefs":{"subtitleMode":"Smart","enableNextVideoInfoOverlay":"true"},"SortBy":"SortName","SortOrder":"Ascending"});
     Mock::given(method("GET"))
