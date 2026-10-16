@@ -1,21 +1,22 @@
 use std::collections::HashSet;
 
-use hyper::StatusCode;
 use serde_json::Value;
 use tokio::task::JoinSet;
-use tracing::{debug, error, warn};
+use tracing::{error, warn};
 
 use crate::{
-    handlers::common::{execute_processed_json_request, response_json_to_payload},
+    application::context::{RequestContext, TargetError},
+    application::error::ApplicationError,
+    application::json::execute_processed_json_request_typed,
     media_storage_service::{
         MediaMapping, MediaVersionGroup, MediaVersionMember, MediaVersionSourceObservation,
     },
     models::{MediaItem, MediaSource},
     processors::response_processor::ResponseProcessingProfile,
-    request_preprocessing::{
-        apply_to_request, remap_authorization, JellyfinAuthorization, PreprocessedRequest,
-    },
+    request_preprocessing::JellyfinAuthorization,
     server_storage::Server,
+    upstream::jellyfin::json::response_json_to_payload_typed,
+    upstream::jellyfin::request::UpstreamRequestBuilder,
     url_helper::{ensure_query_list_value, replace_path_id},
     user_authorization_service::AuthorizationSession,
     virtual_library_service::{compare_virtual_library_routes, VirtualLibraryAccessScope},
@@ -25,7 +26,34 @@ use crate::{
 const MEDIA_SOURCES_FIELD: &str = "MediaSources";
 const GROUPING_SOURCE_TYPE: &str = "Grouping";
 
-pub(super) struct DetailMergeContext<'a> {
+/// Static inventories may replace refreshed member sources, but cannot revoke
+/// a dynamically negotiated source still bound to this viewer's active player.
+struct PreserveActiveNegotiatedSources;
+
+impl PreserveActiveNegotiatedSources {
+    fn retain(
+        session: &crate::session_storage::PlaybackSession,
+        route: &crate::media_storage_service::MediaVersionSourceRoute,
+        refreshed_members: &[i64],
+    ) -> bool {
+        route.member_mapping.server_id == session.server_id
+            && session.original_item_id.as_deref() == Some(&route.member_mapping.original_media_id)
+            && refreshed_members.contains(&route.member_mapping.id)
+    }
+}
+
+/// Select the owning item in client identity space, before backend translation.
+/// Neither a source's ID nor a backend ID belongs in this path.
+pub(super) fn normalize_detail_member(
+    request: &mut reqwest::Request,
+    mapping: &MediaMapping,
+) -> Result<(), ApplicationError> {
+    *request.url_mut() = replace_path_id(request.url(), "Items", &mapping.virtual_media_id)
+        .ok_or(ApplicationError::InvalidInput("missing item path"))?;
+    Ok(())
+}
+
+pub(crate) struct DetailMergeContext<'a> {
     pub requested_item_id: &'a str,
     pub selected_group: Option<MediaVersionGroup>,
     pub base_server: &'a Server,
@@ -54,16 +82,16 @@ struct HostedMediaSources {
 
 /// Merges all reachable members of a stable media group into one typed item
 /// response. Unknown Jellyfin fields survive through the flattened DTO fields.
-pub(super) async fn merge_media_detail(
+pub(crate) async fn merge_media_detail(
     state: &AppState,
     context: DetailMergeContext<'_>,
     proxy_api_key: Option<&str>,
     payload: &mut Value,
-) -> Result<(), StatusCode> {
+) -> Result<(), ApplicationError> {
     if let Some(scope) = context.access_scope {
-        let mut item: MediaItem = response_json_to_payload(payload.clone())?;
-        preserve_media_parent_groups(state, &mut item, scope.user_id()).await?;
-        *payload = serde_json::to_value(item).map_err(|error| unexpected_error(error.into()))?;
+        let mut item: MediaItem = response_json_to_payload_typed(payload.clone())?;
+        preserve_media_parent_groups_typed(state, &mut item, scope.user_id(), None).await?;
+        *payload = serde_json::to_value(item).map_err(ApplicationError::Serialization)?;
     }
     let aggregate_group = state
         .media_storage
@@ -75,14 +103,14 @@ pub(super) async fn merge_media_detail(
         return Ok(());
     };
 
-    let mut item: MediaItem = response_json_to_payload(payload.clone())?;
+    let mut item: MediaItem = response_json_to_payload_typed(payload.clone())?;
     let Some(base_mapping) = state
         .media_storage
         .get_media_mapping_by_virtual(&item.id)
         .await
         .map_err(storage_error)?
     else {
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        return Err(ApplicationError::MissingIdentity("base media mapping"));
     };
 
     let members = state
@@ -147,11 +175,11 @@ pub(super) async fn merge_media_detail(
             else {
                 continue;
             };
-            if route.member_mapping.server_id == session.server_id
-                && session.original_item_id.as_deref()
-                    == Some(&route.member_mapping.original_media_id)
-                && refreshed_member_mapping_ids.contains(&route.member_mapping.id)
-            {
+            if PreserveActiveNegotiatedSources::retain(
+                &session,
+                &route,
+                &refreshed_member_mapping_ids,
+            ) {
                 observations.push(MediaVersionSourceObservation {
                     member_mapping_id: route.member_mapping.id,
                     source_virtual_id: session.item_id,
@@ -185,28 +213,17 @@ pub(super) async fn merge_media_detail(
         item.media_source_count = Some(routable_sources.len().min(i32::MAX as usize) as i32);
         item.media_sources = Some(routable_sources);
     }
-    *payload = serde_json::to_value(item).map_err(|conversion_error| {
-        error!("Failed to serialize merged media detail: {conversion_error}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    *payload = serde_json::to_value(item).map_err(ApplicationError::Serialization)?;
 
     Ok(())
 }
 
-pub(super) async fn preserve_media_parent_groups(
-    state: &AppState,
-    item: &mut MediaItem,
-    viewer: &str,
-) -> Result<(), StatusCode> {
-    preserve_media_parent_groups_in_scope(state, item, viewer, None).await
-}
-
-pub(super) async fn preserve_media_parent_groups_in_scope(
+pub(crate) async fn preserve_media_parent_groups_typed(
     state: &AppState,
     item: &mut MediaItem,
     viewer: &str,
     catalog_scope: Option<&str>,
-) -> Result<(), StatusCode> {
+) -> Result<(), ApplicationError> {
     if !matches!(
         item.item_type,
         crate::models::enums::BaseItemKind::Season | crate::models::enums::BaseItemKind::Episode
@@ -314,7 +331,11 @@ async fn fetch_member_sources(
     while let Some(result) = join_set.join_next().await {
         match result {
             Ok(Ok(hosted)) => sources.push(hosted),
-            Ok(Err(status)) => warn!("Media version detail fetch failed with status {status}"),
+            Ok(Err(error)) => warn!(
+                status = error.detail_status().as_u16(),
+                error = %error,
+                "Media version detail fetch failed"
+            ),
             Err(join_error) => error!("Media version detail task aborted: {join_error}"),
         }
     }
@@ -328,48 +349,49 @@ async fn fetch_member_source(
     access_scope: Option<VirtualLibraryAccessScope>,
     proxy_api_key: Option<String>,
     host: VersionHost,
-) -> Result<HostedMediaSources, StatusCode> {
+) -> Result<HostedMediaSources, ApplicationError> {
     if !state
         .server_storage
         .server_status(host.server.id)
         .await
         .is_healthy()
     {
-        return Err(StatusCode::SERVICE_UNAVAILABLE);
+        return Err(ApplicationError::UnavailableOwner);
     }
 
-    let Some(url) = replace_path_id(
-        original_request.url(),
-        "Items",
-        &host.member.mapping.virtual_media_id,
-    ) else {
-        return Err(StatusCode::BAD_REQUEST);
-    };
-    *original_request.url_mut() = url;
+    normalize_detail_member(&mut original_request, &host.member.mapping)?;
     ensure_query_list_value(original_request.url_mut(), "Fields", MEDIA_SOURCES_FIELD);
 
-    let new_auth = remap_authorization(&auth, &Some(host.session.clone()))
+    let context = RequestContext::new(
+        &original_request,
+        auth,
+        None,
+        Some(vec![(host.session, host.server.clone())]),
+        access_scope,
+    );
+    let target = context
+        .target(host.server.id)
+        .map_err(|error| match error {
+            TargetError::AccessDenied | TargetError::ViewerMismatch => {
+                ApplicationError::AccessDenied
+            }
+            TargetError::UnavailableOwner => ApplicationError::UnavailableOwner,
+        })?;
+    let prefix = state.get_url_prefix().await;
+    let request = UpstreamRequestBuilder::new(&state.processors.url_processor, prefix.as_deref())
+        .build(&target, &original_request)
         .await
-        .map_err(unexpected_error)?;
-    apply_to_request(
-        &mut original_request,
-        &host.server,
-        &Some(host.session),
-        &new_auth,
-        &state,
-        access_scope.as_ref(),
-    )
-    .await;
+        .map_err(|error| ApplicationError::Internal(error.into()))?;
 
-    let response = execute_processed_json_request(
+    let response = execute_processed_json_request_typed(
         &state,
-        original_request,
+        request,
         &host.server,
         ResponseProcessingProfile::Media,
         proxy_api_key.as_deref(),
     )
     .await?;
-    let item: MediaItem = response_json_to_payload(response)?;
+    let item: MediaItem = response_json_to_payload_typed(response)?;
 
     Ok(HostedMediaSources {
         member_mapping: host.member.mapping,
@@ -408,7 +430,7 @@ fn merge_sources(
     (sources, observations)
 }
 
-fn version_name(source: &MediaSource, server: &Server) -> String {
+pub(crate) fn version_name(source: &MediaSource, server: &Server) -> String {
     let upstream_name = source
         .name
         .as_deref()
@@ -432,198 +454,8 @@ fn version_name(source: &MediaSource, server: &Server) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Playback routing
-// ---------------------------------------------------------------------------
-
-pub(super) enum PlaybackRouteDecision {
-    Original,
-    Rerouted(Box<ReroutedPlaybackRoute>),
-    InvalidSelectedSource,
-    SelectedSourceUnavailable,
-}
-
-pub(super) struct ReroutedPlaybackRoute {
-    pub server: Server,
-    pub session: AuthorizationSession,
-    pub request: reqwest::Request,
-}
-
-pub(super) async fn record_playback_sources(
-    state: &AppState,
-    aggregate_id: &str,
-    server: &Server,
-    original_item_id: &str,
-    source_generation: i64,
-    sources: &mut Vec<MediaSource>,
-) -> Result<(), StatusCode> {
-    let Some(group) = state
-        .media_storage
-        .get_media_version_group(aggregate_id)
-        .await
-        .map_err(storage_error)?
-    else {
-        return Ok(());
-    };
-    let Some(member) = state
-        .media_storage
-        .get_media_version_members(group.id)
-        .await
-        .map_err(storage_error)?
-        .into_iter()
-        .find(|member| {
-            member.mapping.server_id == server.id
-                && member.mapping.original_media_id == original_item_id
-        })
-    else {
-        return Ok(());
-    };
-    let observations = sources
-        .iter()
-        .map(|source| MediaVersionSourceObservation {
-            member_mapping_id: member.mapping.id,
-            source_virtual_id: source.id.clone(),
-        })
-        .collect::<Vec<_>>();
-    // Web uses the negotiated Name to match the version on the next episode.
-    // Keep it identical to the source name advertised by merged details.
-    for source in sources.iter_mut() {
-        source.name = Some(version_name(source, server));
-    }
-    let sources_recorded = state
-        .media_storage
-        .observe_media_version_sources(
-            group.id,
-            source_generation,
-            &[member.mapping.id],
-            &observations,
-        )
-        .await
-        .map_err(storage_error)?;
-    if !sources_recorded {
-        let mut routable_sources = Vec::new();
-        for source in sources.drain(..) {
-            if state
-                .media_storage
-                .get_media_version_source_route(group.id, &source.id)
-                .await
-                .map_err(storage_error)?
-                .is_some()
-            {
-                routable_sources.push(source);
-            }
-        }
-        *sources = routable_sources;
-    }
-    Ok(())
-}
-
-/// Resolves an explicit source selection through the source routes recorded by
-/// the item detail response. Requests without an explicit source need no
-/// special handling: aggregate URL preprocessing already selects the best
-/// healthy group member.
-pub(super) async fn resolve_playback_route(
-    state: &AppState,
-    preprocessed: &PreprocessedRequest,
-    requested_item_id: &str,
-    selected_source_id: Option<&str>,
-) -> Result<PlaybackRouteDecision, StatusCode> {
-    let Some(group) = state
-        .media_storage
-        .get_media_version_group(requested_item_id)
-        .await
-        .map_err(storage_error)?
-    else {
-        return Ok(PlaybackRouteDecision::Original);
-    };
-    let Some(selected_source_id) = selected_source_id.filter(|id| !id.trim().is_empty()) else {
-        return Ok(PlaybackRouteDecision::Original);
-    };
-    let Some(route) = state
-        .media_storage
-        .get_media_version_source_route(group.id, selected_source_id)
-        .await
-        .map_err(storage_error)?
-    else {
-        return Ok(PlaybackRouteDecision::InvalidSelectedSource);
-    };
-    if preprocessed
-        .access_scope
-        .as_ref()
-        .is_some_and(|scope| !scope.allows(route.member_mapping.server_id))
-    {
-        return Ok(PlaybackRouteDecision::InvalidSelectedSource);
-    }
-    if !state
-        .server_storage
-        .server_status(route.member_mapping.server_id)
-        .await
-        .is_healthy()
-    {
-        return Ok(PlaybackRouteDecision::SelectedSourceUnavailable);
-    }
-
-    if route.member_mapping.server_id == preprocessed.server.id
-        && crate::url_helper::contains_id(preprocessed.request.url(), "Items").as_deref()
-            == Some(route.member_mapping.original_media_id.as_str())
-    {
-        return Ok(PlaybackRouteDecision::Original);
-    }
-    let Some((session, server)) = preprocessed.sessions.as_ref().and_then(|sessions| {
-        sessions
-            .iter()
-            .find(|(_session, server)| server.id == route.member_mapping.server_id)
-    }) else {
-        return Ok(PlaybackRouteDecision::SelectedSourceUnavailable);
-    };
-
-    let mut request = preprocessed
-        .original_request
-        .try_clone()
-        .ok_or(StatusCode::BAD_REQUEST)?;
-    let Some(url) = replace_path_id(
-        request.url(),
-        "Items",
-        &route.member_mapping.virtual_media_id,
-    ) else {
-        return Err(StatusCode::BAD_REQUEST);
-    };
-    *request.url_mut() = url;
-
-    let new_auth = remap_authorization(&preprocessed.auth, &Some(session.clone()))
-        .await
-        .map_err(unexpected_error)?;
-    apply_to_request(
-        &mut request,
-        server,
-        &Some(session.clone()),
-        &new_auth,
-        state,
-        preprocessed.access_scope.as_ref(),
-    )
-    .await;
-
-    debug!(
-        "Routing aggregate media {} source {} to server {}",
-        group.virtual_media_id, route.source_mapping.virtual_media_id, server.name
-    );
-    Ok(PlaybackRouteDecision::Rerouted(Box::new(
-        ReroutedPlaybackRoute {
-            server: server.clone(),
-            session: session.clone(),
-            request,
-        },
-    )))
-}
-
-fn storage_error(error: sqlx::Error) -> StatusCode {
-    error!("Media version storage operation failed: {error}");
-    StatusCode::INTERNAL_SERVER_ERROR
-}
-
-fn unexpected_error(error: anyhow::Error) -> StatusCode {
-    error!("Media version request preparation failed: {error}");
-    StatusCode::INTERNAL_SERVER_ERROR
+fn storage_error(error: sqlx::Error) -> ApplicationError {
+    ApplicationError::Storage(error)
 }
 
 #[cfg(test)]
@@ -666,6 +498,71 @@ mod tests {
             })])
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn active_source_preservation_requires_exact_owner_item_and_refreshed_member() {
+        let member = mapping(1, 1);
+        let route = crate::media_storage_service::MediaVersionSourceRoute {
+            source_mapping: mapping(2, 1),
+            member_mapping: member.clone(),
+        };
+        let mut session = crate::session_storage::PlaybackSession {
+            session_id: "player".into(),
+            item_id: route.source_mapping.virtual_media_id.clone(),
+            user_id: "viewer".into(),
+            server_id: member.server_id,
+            original_item_id: Some(member.original_media_id.clone()),
+        };
+        assert!(PreserveActiveNegotiatedSources::retain(
+            &session,
+            &route,
+            &[member.id]
+        ));
+        assert!(!PreserveActiveNegotiatedSources::retain(
+            &session,
+            &route,
+            &[]
+        ));
+        session.original_item_id = Some("another-item".into());
+        assert!(!PreserveActiveNegotiatedSources::retain(
+            &session,
+            &route,
+            &[member.id]
+        ));
+        session.original_item_id = Some(member.original_media_id.clone());
+        session.server_id = crate::server_id::ServerId::new(99);
+        assert!(!PreserveActiveNegotiatedSources::retain(
+            &session,
+            &route,
+            &[member.id]
+        ));
+    }
+
+    #[test]
+    fn member_detail_normalization_uses_item_virtual_identity_not_source_or_backend_id() {
+        let mut member = mapping(1, 1);
+        member.virtual_media_id = "11111111111111111111111111111111".into();
+        // An upstream ID can itself look like another proxy ID. Feeding it to
+        // the builder would translate that identity for a second time.
+        member.original_media_id = "22222222222222222222222222222222".into();
+        let mut request = reqwest::Request::new(
+            reqwest::Method::GET,
+            "http://proxy.example/jelly/Users/viewer/Items/33333333333333333333333333333333?Extension=one%2Ftwo&Extension=three"
+                .parse()
+                .unwrap(),
+        );
+        *request.body_mut() = Some("opaque body".into());
+        normalize_detail_member(&mut request, &member).unwrap();
+        assert_eq!(
+            request.url().path(),
+            "/jelly/Users/viewer/Items/11111111111111111111111111111111"
+        );
+        assert_eq!(
+            request.url().query(),
+            Some("Extension=one%2Ftwo&Extension=three")
+        );
+        assert_eq!(request.body().unwrap().as_bytes().unwrap(), b"opaque body");
     }
 
     #[test]

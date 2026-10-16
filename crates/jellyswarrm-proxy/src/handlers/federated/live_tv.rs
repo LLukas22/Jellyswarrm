@@ -2,17 +2,13 @@
 //! while preserving POST and its typed body on the upstream wire.
 use axum::{
     body::{to_bytes, Body},
-    extract::{Request, State},
+    extract::{FromRequest, Request, State},
     Json,
 };
 use hyper::StatusCode;
 use serde_json::Value;
 
-use crate::{
-    extractors::CatalogPreprocessed,
-    handlers::common::{payload_from_request, set_json_body},
-    AppState,
-};
+use crate::{extractors::CatalogInput, AppState};
 
 pub async fn post_live_tv_programs(
     State(state): State<AppState>,
@@ -64,64 +60,6 @@ pub async fn post_live_tv_programs(
         .extensions
         .insert(axum::extract::OriginalUri(parts.uri.clone()));
     let request = Request::from_parts(parts, Body::from(bytes));
-    let preprocessed = crate::request_preprocessing::preprocess_catalog_request(request, &state)
-        .await
-        .map_err(|error| {
-            tracing::error!("Failed to resolve posted guide: {error}");
-            if error.is::<crate::request_preprocessing::NoAvailableBackend>() {
-                StatusCode::SERVICE_UNAVAILABLE
-            } else {
-                StatusCode::BAD_REQUEST
-            }
-        })?;
-    super::get_live_tv_programs(State(state), CatalogPreprocessed(preprocessed)).await
-}
-
-/// URL rewriting has already translated credentials/IDs and selected the page.
-/// Copy that policy back to the DTO immediately before each upstream request.
-pub(super) fn sync_posted_guide_body(request: &mut reqwest::Request) -> Result<(), StatusCode> {
-    if request.method() != reqwest::Method::POST
-        || !request
-            .url()
-            .path()
-            .trim_end_matches('/')
-            .to_ascii_lowercase()
-            .ends_with("/livetv/programs")
-    {
-        return Ok(());
-    }
-    let mut payload: Value = payload_from_request(request)?;
-    let fields = payload.as_object_mut().ok_or(StatusCode::BAD_REQUEST)?;
-    for (key, value) in request.url().query_pairs() {
-        let pagination =
-            key.eq_ignore_ascii_case("StartIndex") || key.eq_ignore_ascii_case("Limit");
-        if let Some((_, field)) = fields
-            .iter_mut()
-            .find(|(field, _)| field.eq_ignore_ascii_case(&key))
-        {
-            *field = if pagination {
-                serde_json::from_str(&value).map_err(|_| StatusCode::BAD_REQUEST)?
-            } else {
-                match field {
-                    Value::Array(_) => Value::Array(
-                        value
-                            .split(',')
-                            .filter(|id| !id.is_empty())
-                            .map(|id| Value::String(id.into()))
-                            .collect(),
-                    ),
-                    Value::Bool(_) | Value::Number(_) => {
-                        serde_json::from_str(&value).map_err(|_| StatusCode::BAD_REQUEST)?
-                    }
-                    _ => Value::String(value.into_owned()),
-                }
-            };
-        } else if pagination {
-            fields.insert(
-                key.into_owned(),
-                serde_json::from_str(&value).map_err(|_| StatusCode::BAD_REQUEST)?,
-            );
-        }
-    }
-    set_json_body(request, &payload)
+    let input = CatalogInput::from_request(request, &state).await?;
+    super::get_live_tv_programs(State(state), input).await
 }

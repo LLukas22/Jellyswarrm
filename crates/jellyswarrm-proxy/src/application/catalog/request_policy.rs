@@ -1,11 +1,12 @@
+//! Existing query policy retained during service extraction.
 use super::postprocessing::Pagination;
 use crate::media_identity::MediaKind;
 use std::collections::BTreeSet;
 
 /// One interpretation of the client query, shared by fetching and finalization.
-pub(super) struct CatalogRequestPolicy {
-    pub pagination: Pagination,
-    pub sort: super::postprocessing::SortPolicy,
+pub(crate) struct CatalogRequestPolicy {
+    pub(super) pagination: Pagination,
+    pub(super) sort: super::postprocessing::SortPolicy,
     pub inventory_types: BTreeSet<MediaKind>,
     pub upstream_limited: bool,
     pub reconcile_playback: bool,

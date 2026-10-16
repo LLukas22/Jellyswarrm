@@ -45,6 +45,337 @@ async fn playback_fixture() -> (Fixture, String, Vec<String>) {
     (f, aggregate, sources)
 }
 
+#[tokio::test]
+async fn offline_explicit_sources_keep_route_specific_errors_without_sibling_traffic() {
+    let (f, aggregate, sources) = playback_fixture().await;
+    f.upstreams[1].reset().await;
+    Mock::given(path("/System/Info/Public"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&f.upstreams[1])
+        .await;
+    f.state.server_storage.check_servers_health().await;
+    let counts = futures_util::future::join_all(
+        f.upstreams
+            .iter()
+            .map(|upstream| async { upstream.received_requests().await.unwrap().len() }),
+    )
+    .await;
+
+    // Body selection is evaluated after the healthy aggregate representative
+    // is resolved. Query selection goes through the earlier URL routing gate.
+    let body_selected = f
+        .request(
+            reqwest::Method::POST,
+            &format!("/Items/{aggregate}/PlaybackInfo"),
+            &f.user,
+            "tv",
+        )
+        .json(&json!({"MediaSourceId": sources[1], "DeviceProfile": {}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(body_selected.status(), StatusCode::SERVICE_UNAVAILABLE);
+    for (method, endpoint) in [
+        (
+            reqwest::Method::POST,
+            format!("/Items/{aggregate}/PlaybackInfo"),
+        ),
+        (
+            reqwest::Method::GET,
+            format!("/Videos/{aggregate}/stream.mp4"),
+        ),
+        (
+            reqwest::Method::GET,
+            format!("/Videos/{aggregate}/master.m3u8"),
+        ),
+    ] {
+        let response = f
+            .request(
+                method,
+                &format!("{endpoint}?MediaSourceId={}", sources[1]),
+                &f.user,
+                "tv",
+            )
+            .json(&json!({"DeviceProfile": {}}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{endpoint}");
+    }
+    for (upstream, count) in f.upstreams.iter().zip(counts) {
+        assert_eq!(upstream.received_requests().await.unwrap().len(), count);
+    }
+    assert!(f
+        .state
+        .play_sessions
+        .get_sessions_by_item_id(&aggregate)
+        .await
+        .is_empty());
+}
+
+#[tokio::test]
+async fn ambiguous_implicit_delivery_preserves_deterministic_mapping_default() {
+    let (f, aggregate, sources) = playback_fixture().await;
+    let members = f
+        .state
+        .media_storage
+        .get_media_version_members_by_virtual_id(&aggregate)
+        .await
+        .unwrap();
+    let default = members
+        .iter()
+        .max_by(|left, right| {
+            crate::virtual_library_service::compare_virtual_library_routes(
+                &left.server,
+                &left.mapping.original_media_id,
+                &right.server,
+                &right.mapping.original_media_id,
+            )
+        })
+        .unwrap();
+    let owner = f
+        .upstreams
+        .iter()
+        .position(|upstream| default.server.url.as_str().trim_end_matches('/') == upstream.uri())
+        .unwrap();
+    for (index, upstream) in f.upstreams.iter().enumerate() {
+        Mock::given(path(format!("/Videos/{MOVIE}/master.m3u8")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(format!("#EXTM3U\n# backend-{index}\n#EXT-X-ENDLIST\n")),
+            )
+            .mount(upstream)
+            .await;
+    }
+    // Reverse creation order as well: implicit delivery must not select the
+    // newest session, the first session, or reject ambiguity as HTTP 400.
+    for order in [[0, 1], [1, 0]] {
+        for index in order {
+            negotiate(&f, &aggregate, &sources[index]).await;
+        }
+        assert_eq!(
+            f.state
+                .play_sessions
+                .get_sessions_by_item_id(&aggregate)
+                .await
+                .len(),
+            2
+        );
+        let counts = futures_util::future::join_all(
+            f.upstreams
+                .iter()
+                .map(|upstream| async { upstream.received_requests().await.unwrap().len() }),
+        )
+        .await;
+        for resource in ["stream.mp4", "master.m3u8"] {
+            let response = f
+                .request(
+                    reqwest::Method::GET,
+                    &format!("/Videos/{aggregate}/{resource}"),
+                    &f.user,
+                    "tv",
+                )
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{resource}");
+            let expected = if resource == "stream.mp4" {
+                format!("backend-{owner}")
+            } else {
+                format!("#EXTM3U\n# backend-{owner}\n#EXT-X-ENDLIST\n")
+            };
+            assert_eq!(response.text().await.unwrap(), expected);
+        }
+        for (index, (upstream, count)) in f.upstreams.iter().zip(counts).enumerate() {
+            let requests = upstream.received_requests().await.unwrap();
+            assert_eq!(requests.len() - count, if index == owner { 2 } else { 0 });
+            for request in &requests[count..] {
+                let identity = format!("{:?}", request.headers);
+                assert!(identity.contains(&format!("backend-token-{owner}")));
+                assert!(!identity.contains(&f.user.virtual_key));
+                assert!(!identity.contains(&format!("backend-token-{}", 1 - owner)));
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn anonymous_and_backend_token_delivery_do_not_borrow_proxy_credentials() {
+    let (f, _, sources) = playback_fixture().await;
+    for (owner, source) in sources.iter().enumerate() {
+        // Fixture::items are unrelated seed mappings, not the MOVIE mappings
+        // discovered by movie_catalog. Select the actual catalog member on
+        // this source's backend so the rewritten item matches the media mock.
+        let (_, server) = f
+            .state
+            .media_storage
+            .get_media_mapping_with_server(source)
+            .await
+            .unwrap()
+            .unwrap();
+        let item = f
+            .state
+            .media_storage
+            .get_media_mapping_by_original(MOVIE, server.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .virtual_media_id;
+        Mock::given(path(format!("/Videos/{MOVIE}/master.m3u8")))
+            .respond_with(ResponseTemplate::new(200).set_body_string("#EXTM3U\n#EXT-X-ENDLIST\n"))
+            .mount(&f.upstreams[owner])
+            .await;
+        for token in [None, Some("external-backend-token")] {
+            let counts = futures_util::future::join_all(
+                f.upstreams
+                    .iter()
+                    .map(|upstream| async { upstream.received_requests().await.unwrap().len() }),
+            )
+            .await;
+            // The same mapped item is permitted for delivery, but negotiation
+            // still requires a proxy device authorization session.
+            let playback_url = format!("{}/Items/{item}/PlaybackInfo", f.url);
+            let mut playback = reqwest::Client::new()
+                .post(playback_url)
+                .json(&json!({"DeviceProfile": {}}));
+            if let Some(token) = token {
+                playback = playback.query(&[("ApiKey", token)]);
+            }
+            assert_eq!(
+                playback.send().await.unwrap().status(),
+                StatusCode::UNAUTHORIZED
+            );
+            for resource in ["stream.mp4", "master.m3u8"] {
+                let mut request = reqwest::Client::new().get(format!(
+                    "{}/Videos/{}/{resource}?MediaSourceId={}",
+                    f.url, item, source
+                ));
+                if let Some(token) = token {
+                    request = request.query(&[("ApiKey", token)]);
+                }
+                let response = request.send().await.unwrap();
+                assert_eq!(
+                    response.status(),
+                    StatusCode::OK,
+                    "{resource}, token={token:?}"
+                );
+                assert_eq!(
+                    response.text().await.unwrap(),
+                    if resource == "stream.mp4" {
+                        format!("backend-{owner}")
+                    } else {
+                        "#EXTM3U\n#EXT-X-ENDLIST\n".into()
+                    }
+                );
+            }
+            for (index, (upstream, count)) in f.upstreams.iter().zip(counts).enumerate() {
+                let requests = upstream.received_requests().await.unwrap();
+                assert_eq!(requests.len() - count, if index == owner { 2 } else { 0 });
+                for request in &requests[count..] {
+                    assert_eq!(
+                        request.url.path(),
+                        if request.url.path().ends_with(".mp4") {
+                            format!("/Videos/{MOVIE}/stream.mp4")
+                        } else {
+                            format!("/Videos/{MOVIE}/master.m3u8")
+                        }
+                    );
+                    assert!(request
+                        .url
+                        .query_pairs()
+                        .any(|(key, value)| key == "MediaSourceId"
+                            && value == if owner == 0 { SOURCE_A } else { SOURCE_B }));
+                    let credentials = format!("{:?} {}", request.headers, request.url);
+                    assert!(!credentials.contains(&f.user.virtual_key));
+                    assert!(!credentials.contains("backend-token-0"));
+                    assert!(!credentials.contains("backend-token-1"));
+                    assert_eq!(
+                        request
+                            .url
+                            .query_pairs()
+                            .find_map(|(key, value)| {
+                                (key == "ApiKey").then(|| value.into_owned())
+                            })
+                            .as_deref(),
+                        token
+                    );
+                    assert!(!request.headers.contains_key("x-emby-token"));
+                    assert!(!request.headers.contains_key("authorization"));
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn raw_upstream_id_passthrough_uses_stream_default_but_not_hls_resource_fallback() {
+    let (f, _, _) = playback_fixture().await;
+    // Raw upstream IDs have no virtual mapping. Legacy direct delivery permits
+    // the default server, whereas HLS resource delivery requires a matched ID.
+    assert!(f
+        .state
+        .media_storage
+        .get_media_mapping_by_virtual(MOVIE)
+        .await
+        .unwrap()
+        .is_none());
+    let default = f
+        .state
+        .server_storage
+        .get_best_server()
+        .await
+        .unwrap()
+        .unwrap();
+    let owner = f
+        .upstreams
+        .iter()
+        .position(|upstream| default.url.as_str().trim_end_matches('/') == upstream.uri())
+        .unwrap();
+    for token in [None, Some("external-backend-token")] {
+        let counts = futures_util::future::join_all(
+            f.upstreams
+                .iter()
+                .map(|upstream| async { upstream.received_requests().await.unwrap().len() }),
+        )
+        .await;
+        for (resource, status) in [
+            ("stream.mp4", StatusCode::OK),
+            ("master.m3u8", StatusCode::NOT_FOUND),
+        ] {
+            let mut request =
+                reqwest::Client::new().get(format!("{}/Videos/{MOVIE}/{resource}", f.url));
+            if let Some(token) = token {
+                request = request.query(&[("ApiKey", token)]);
+            }
+            let response = request.send().await.unwrap();
+            assert_eq!(response.status(), status, "{resource}, token={token:?}");
+            if status == StatusCode::OK {
+                assert_eq!(response.text().await.unwrap(), format!("backend-{owner}"));
+            }
+        }
+        for (index, (upstream, count)) in f.upstreams.iter().zip(counts).enumerate() {
+            let requests = upstream.received_requests().await.unwrap();
+            assert_eq!(requests.len() - count, if index == owner { 1 } else { 0 });
+            for request in &requests[count..] {
+                assert_eq!(request.url.path(), format!("/Videos/{MOVIE}/stream.mp4"));
+                assert_eq!(
+                    request
+                        .url
+                        .query_pairs()
+                        .find_map(|(key, value)| { (key == "ApiKey").then(|| value.into_owned()) })
+                        .as_deref(),
+                    token
+                );
+                let credentials = format!("{:?} {}", request.headers, request.url);
+                assert!(!credentials.contains(&f.user.virtual_key));
+                assert!(!credentials.contains("backend-token-0"));
+                assert!(!credentials.contains("backend-token-1"));
+                assert!(!request.headers.contains_key("authorization"));
+            }
+        }
+    }
+}
+
 async fn negotiate(f: &Fixture, aggregate: &str, source: &str) {
     let response = f
         .request(

@@ -1,4 +1,7 @@
-use std::time::{Duration, Instant};
+use std::{
+    sync::{Arc, Weak},
+    time::{Duration, Instant},
+};
 
 use tokio::sync::{RwLock, RwLockWriteGuard};
 
@@ -21,8 +24,25 @@ pub struct PlaybackSession {
 
 pub struct SessionStorage {
     sessions: RwLock<Vec<TrackedPlaybackSession>>,
-    live_streams: RwLock<Vec<LiveStreamBinding>>,
+    live_streams: RwLock<LiveStreams>,
     session_ttl: Duration,
+}
+
+#[derive(Default)]
+struct LiveStreams {
+    bindings: Vec<LiveStreamBinding>,
+    pending: Vec<Weak<PreparedLiveStream>>,
+}
+
+/// An unpublished identity reservation. Dropping it never changes a binding.
+pub struct PreparedLiveStream {
+    binding: LiveStreamBinding,
+}
+
+impl PreparedLiveStream {
+    pub fn virtual_id(&self) -> &str {
+        &self.binding.virtual_id
+    }
 }
 
 #[derive(Clone)]
@@ -54,7 +74,7 @@ impl SessionStorage {
     pub fn with_session_ttl(session_ttl: Duration) -> Self {
         SessionStorage {
             sessions: RwLock::new(Vec::new()),
-            live_streams: RwLock::new(Vec::new()),
+            live_streams: RwLock::new(LiveStreams::default()),
             session_ttl,
         }
     }
@@ -114,31 +134,97 @@ impl SessionStorage {
         user_id: &str,
         server_id: ServerId,
     ) -> String {
+        loop {
+            let plan = self
+                .prepare_live_stream(original_id, user_id, server_id)
+                .await;
+            if self.commit_live_streams(std::slice::from_ref(&plan)).await {
+                return plan.virtual_id().to_string();
+            }
+        }
+    }
+
+    pub async fn prepare_live_stream(
+        &self,
+        original_id: &str,
+        user_id: &str,
+        server_id: ServerId,
+    ) -> Arc<PreparedLiveStream> {
         let mut streams = self.live_streams.write().await;
-        streams.retain(|stream| stream.updated_at.elapsed() <= self.session_ttl);
-        if let Some(stream) = streams.iter_mut().find(|stream| {
+        streams.pending.retain(|plan| plan.strong_count() > 0);
+        let matches = |stream: &LiveStreamBinding| {
             stream.original_id == original_id
                 && stream.user_id == user_id
                 && stream.server_id == server_id
-        }) {
-            stream.updated_at = Instant::now();
-            return stream.virtual_id.clone();
+        };
+        if let Some(plan) = streams
+            .pending
+            .iter()
+            .filter_map(Weak::upgrade)
+            .find(|plan| matches(&plan.binding))
+        {
+            return plan;
         }
-        let virtual_id = uuid::Uuid::new_v4().simple().to_string();
-        streams.push(LiveStreamBinding {
-            virtual_id: virtual_id.clone(),
-            original_id: original_id.into(),
-            user_id: user_id.into(),
-            server_id,
-            updated_at: Instant::now(),
+        let virtual_id = streams
+            .bindings
+            .iter()
+            .find(|stream| matches(stream) && stream.updated_at.elapsed() <= self.session_ttl)
+            .map(|stream| stream.virtual_id.clone())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
+        let plan = Arc::new(PreparedLiveStream {
+            binding: LiveStreamBinding {
+                virtual_id,
+                original_id: original_id.into(),
+                user_id: user_id.into(),
+                server_id,
+                updated_at: Instant::now(),
+            },
         });
-        virtual_id
+        streams.pending.push(Arc::downgrade(&plan));
+        plan
+    }
+
+    /// Revalidate every reservation before publishing any of them. Close invalidates
+    /// outstanding reservations, so a late response cannot resurrect a closed ID.
+    pub async fn commit_live_streams(&self, plans: &[Arc<PreparedLiveStream>]) -> bool {
+        let mut streams = self.live_streams.write().await;
+        if plans.iter().any(|plan| {
+            !streams
+                .pending
+                .iter()
+                .any(|pending| pending.ptr_eq(&Arc::downgrade(plan)))
+        }) {
+            return false;
+        }
+        // Preparation must not mutate published bindings. Reclaim expired entries
+        // only after the complete reservation batch has passed validation; keep
+        // reservations intact so another prepared operation can still commit.
+        streams
+            .bindings
+            .retain(|binding| binding.updated_at.elapsed() <= self.session_ttl);
+        for plan in plans {
+            if let Some(binding) = streams
+                .bindings
+                .iter_mut()
+                .find(|binding| binding.virtual_id == plan.virtual_id())
+            {
+                binding.updated_at = Instant::now();
+            } else {
+                let mut binding = plan.binding.clone();
+                binding.updated_at = Instant::now();
+                streams.bindings.push(binding);
+            }
+        }
+        true
     }
 
     pub async fn live_stream(&self, id: &str, user_id: &str) -> Option<LiveStreamBinding> {
         let mut streams = self.live_streams.write().await;
-        streams.retain(|stream| stream.updated_at.elapsed() <= self.session_ttl);
+        streams
+            .bindings
+            .retain(|stream| stream.updated_at.elapsed() <= self.session_ttl);
         let stream = streams
+            .bindings
             .iter_mut()
             .find(|stream| stream.virtual_id == id && stream.user_id == user_id)?;
         stream.updated_at = Instant::now();
@@ -146,10 +232,15 @@ impl SessionStorage {
     }
 
     pub async fn remove_live_stream(&self, id: &str, user_id: &str) {
-        self.live_streams
-            .write()
-            .await
+        let mut streams = self.live_streams.write().await;
+        streams
+            .bindings
             .retain(|stream| stream.virtual_id != id || stream.user_id != user_id);
+        streams.pending.retain(|pending| {
+            pending
+                .upgrade()
+                .is_some_and(|plan| plan.virtual_id() != id || plan.binding.user_id != user_id)
+        });
     }
 
     pub async fn bind_original_item(
@@ -324,11 +415,172 @@ mod tests {
         assert!(storage.live_stream(&alice, "bob").await.is_none());
         storage.remove_live_stream(&alice, "bob").await;
         assert!(storage.live_stream(&alice, "alice").await.is_some());
-        for binding in storage.live_streams.write().await.iter_mut() {
+        for binding in storage.live_streams.write().await.bindings.iter_mut() {
             binding.updated_at = Instant::now() - Duration::from_secs(11);
         }
         assert!(storage.live_stream(&alice, "alice").await.is_none());
         assert!(storage.live_stream(&bob, "bob").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn live_prepare_is_unpublished_and_does_not_refresh_existing_binding() {
+        let storage = SessionStorage::new();
+        let server = ServerId::new(1);
+        let pending = storage.prepare_live_stream("new", "viewer", server).await;
+        assert!(storage
+            .live_stream(pending.virtual_id(), "viewer")
+            .await
+            .is_none());
+        drop(pending);
+        assert!(storage.live_streams.read().await.bindings.is_empty());
+        let id = storage
+            .register_live_stream("existing", "viewer", server)
+            .await;
+        let before = storage.live_streams.read().await.bindings[0].updated_at;
+        let pending = storage
+            .prepare_live_stream("existing", "viewer", server)
+            .await;
+        assert_eq!(pending.virtual_id(), id);
+        drop(pending);
+        assert_eq!(
+            storage.live_streams.read().await.bindings[0].updated_at,
+            before
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_live_commit_prunes_expired_bindings_without_lookup() {
+        let storage = SessionStorage::with_session_ttl(Duration::from_millis(1));
+        let server = ServerId::new(1);
+        let expired = storage
+            .register_live_stream("opaque", "viewer", server)
+            .await;
+        // Deterministic short-TTL expiry, without sleeping or triggering lookup cleanup.
+        storage.live_streams.write().await.bindings[0].updated_at =
+            Instant::now() - Duration::from_secs(1);
+        let pending = storage
+            .prepare_live_stream("opaque", "viewer", server)
+            .await;
+        assert_ne!(pending.virtual_id(), expired);
+        assert_eq!(storage.live_streams.read().await.bindings.len(), 1);
+        let replacement = storage
+            .register_live_stream("opaque", "viewer", server)
+            .await;
+        assert_eq!(replacement, pending.virtual_id());
+        let streams = storage.live_streams.read().await;
+        assert_eq!(streams.bindings.len(), 1);
+        assert_eq!(streams.bindings[0].virtual_id, replacement);
+        drop(streams);
+        assert!(storage.commit_live_streams(&[pending]).await);
+        assert_eq!(storage.live_streams.read().await.bindings.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn rejected_live_commit_does_not_prune_expired_bindings_or_valid_reservations() {
+        let storage = SessionStorage::with_session_ttl(Duration::from_millis(1));
+        let server = ServerId::new(1);
+        storage
+            .register_live_stream("expired", "viewer", server)
+            .await;
+        let before = Instant::now() - Duration::from_secs(1);
+        storage.live_streams.write().await.bindings[0].updated_at = before;
+        let valid = storage.prepare_live_stream("new", "viewer", server).await;
+        let obsolete = storage
+            .prepare_live_stream("closed", "viewer", server)
+            .await;
+        storage
+            .remove_live_stream(obsolete.virtual_id(), "viewer")
+            .await;
+        assert!(
+            !storage
+                .commit_live_streams(&[valid.clone(), obsolete])
+                .await
+        );
+        let streams = storage.live_streams.read().await;
+        assert_eq!(streams.bindings.len(), 1);
+        assert_eq!(streams.bindings[0].updated_at, before);
+        drop(streams);
+        assert!(storage.commit_live_streams(&[valid]).await);
+        assert_eq!(storage.live_streams.read().await.bindings.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn concurrent_live_preparations_share_identity_and_commit_atomically() {
+        let storage = SessionStorage::new();
+        let server = ServerId::new(1);
+        let (first, second) = tokio::join!(
+            storage.prepare_live_stream("opaque", "viewer", server),
+            storage.prepare_live_stream("opaque", "viewer", server),
+        );
+        assert_eq!(first.virtual_id(), second.virtual_id());
+        assert!(storage.commit_live_streams(&[first]).await);
+        assert!(storage.commit_live_streams(&[second]).await);
+        assert_eq!(storage.live_streams.read().await.bindings.len(), 1);
+
+        let untouched_id = storage
+            .register_live_stream("untouched", "viewer", server)
+            .await;
+        let untouched = storage
+            .prepare_live_stream("untouched", "viewer", server)
+            .await;
+        let untouched_before = storage
+            .live_streams
+            .read()
+            .await
+            .bindings
+            .iter()
+            .find(|binding| binding.virtual_id == untouched_id)
+            .unwrap()
+            .updated_at;
+        let valid = storage.prepare_live_stream("new", "viewer", server).await;
+        let obsolete = storage
+            .prepare_live_stream("opaque", "viewer", server)
+            .await;
+        storage
+            .remove_live_stream(obsolete.virtual_id(), "viewer")
+            .await;
+        let replacement = storage
+            .register_live_stream("opaque", "viewer", server)
+            .await;
+        assert_ne!(replacement, obsolete.virtual_id());
+        let before = storage
+            .live_streams
+            .read()
+            .await
+            .bindings
+            .iter()
+            .find(|binding| binding.virtual_id == replacement)
+            .unwrap()
+            .updated_at;
+        assert!(
+            !storage
+                .commit_live_streams(&[untouched, valid.clone(), obsolete])
+                .await
+        );
+        assert!(storage
+            .live_stream(valid.virtual_id(), "viewer")
+            .await
+            .is_none());
+        let streams = storage.live_streams.read().await;
+        assert_eq!(streams.bindings.len(), 2);
+        assert_eq!(
+            streams
+                .bindings
+                .iter()
+                .find(|binding| binding.virtual_id == replacement)
+                .unwrap()
+                .updated_at,
+            before
+        );
+        assert_eq!(
+            streams
+                .bindings
+                .iter()
+                .find(|binding| binding.virtual_id == untouched_id)
+                .unwrap()
+                .updated_at,
+            untouched_before
+        );
     }
 
     fn playback_session(

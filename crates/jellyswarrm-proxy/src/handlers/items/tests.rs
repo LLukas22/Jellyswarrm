@@ -2,11 +2,11 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use super::*;
 use crate::{
+    application::{context::RequestContext, input::OperationRequest},
     config::{AppConfig, MediaStreamingMode, MIGRATOR},
     handlers::quick_connect::QuickConnectStorage,
     media_identity::{MediaAlias, MediaKind, MediaObservation, MediaProvider},
     media_storage_service::{MediaCatalogSnapshot, MediaStorageService},
-    request_preprocessing::apply_to_request,
     server_storage::ServerStorageService,
     session_storage::SessionStorage,
     user_authorization_service::{AuthorizationSession, Device, UserAuthorizationService},
@@ -196,37 +196,25 @@ async fn check_selected_source_detail(catalog_scopes: &[&str]) {
         ),
     ]);
     for (case, requested_id, selected, expected_id) in cases {
-        let (session, server) = &sessions[selected];
         let original_request = reqwest::Request::new(
             reqwest::Method::GET,
             format!("http://localhost/Items/{requested_id}?userId=viewer")
                 .parse()
                 .unwrap(),
         );
-        let mut request = original_request.try_clone().unwrap();
-        apply_to_request(
-            &mut request,
-            server,
-            &Some(session.clone()),
-            &None,
-            &state,
-            Some(&scope),
-        )
-        .await;
+        let context = RequestContext::new(
+            &original_request,
+            None,
+            None,
+            Some(sessions.clone()),
+            Some(scope.clone()),
+        );
         let Json(response) = get_item(
             State(state.clone()),
-            Preprocessed(PreprocessedRequest {
-                request,
+            OperationInput(OperationRequest {
                 original_request,
-                user: None,
-                sessions: Some(sessions.clone()),
-                server: server.clone(),
-                auth: None,
-                session: Some(session.clone()),
-                new_auth: None,
-                access_scope: Some(scope.clone()),
-                server_matched_request: true,
-                pending_playback_session_update: None,
+                context,
+                body_analysis: None,
             }),
         )
         .await

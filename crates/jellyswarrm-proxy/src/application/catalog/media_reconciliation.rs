@@ -1,19 +1,19 @@
-use axum::Json;
+use crate::application::error::ApplicationError;
+#[cfg(test)]
 use hyper::StatusCode;
 use std::collections::BTreeSet;
-use tracing::error;
 
 use crate::{
+    application::catalog::input::CatalogRequest,
     media_catalog::{MediaDedupPlan, TaggedMediaItem},
     media_identity::{MediaAlias, MediaKind, MediaObservation},
     media_scope::{MediaCatalogScope, MediaScopeKind},
     media_storage_service::MediaCatalogSnapshot,
-    request_preprocessing::PreprocessedRequest,
     AppState,
 };
 
 use super::{
-    finalize_items_response,
+    finalize_items_response_typed,
     library_resolution::CatalogFetchTarget,
     postprocessing::{FederatedItems, ServerItems},
     request_policy::CatalogRequestPolicy,
@@ -26,7 +26,7 @@ async fn show_catalog_aliases(
     viewer: &str,
     series_group: Option<&str>,
     catalog_scope: &str,
-) -> Result<Vec<BTreeSet<MediaAlias>>, StatusCode> {
+) -> Result<Vec<BTreeSet<MediaAlias>>, ApplicationError> {
     let mut parents = std::collections::HashMap::new();
     let mut result = Vec::with_capacity(items.len());
     for item in items {
@@ -48,10 +48,7 @@ async fn show_catalog_aliases(
                         .media_storage
                         .get_media_parent_group_id_for_scope(parent, viewer, Some(catalog_scope))
                         .await
-                        .map_err(|error| {
-                            error!("Failed to resolve show parent identity: {error}");
-                            StatusCode::INTERNAL_SERVER_ERROR
-                        })?;
+                        .map_err(ApplicationError::Storage)?;
                     parents.insert(parent.clone(), group);
                 }
                 parents[parent].clone()
@@ -86,13 +83,32 @@ impl CatalogContext {
     }
 }
 
-pub(super) async fn get_virtual_library_items(
+#[cfg(test)]
+pub(crate) async fn get_virtual_library_items(
     state: &AppState,
-    preprocessed: PreprocessedRequest,
+    preprocessed: CatalogRequest,
     catalog_scope_key: String,
     targets: Vec<CatalogFetchTarget>,
     skipped_targets: usize,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Result<serde_json::Value, StatusCode> {
+    get_virtual_library_items_typed(
+        state,
+        preprocessed,
+        catalog_scope_key,
+        targets,
+        skipped_targets,
+    )
+    .await
+    .map_err(|error| error.detail_status())
+}
+
+pub(super) async fn get_virtual_library_items_typed(
+    state: &AppState,
+    preprocessed: CatalogRequest,
+    catalog_scope_key: String,
+    targets: Vec<CatalogFetchTarget>,
+    skipped_targets: usize,
+) -> Result<serde_json::Value, ApplicationError> {
     get_reconciled_catalog(
         state,
         preprocessed,
@@ -106,19 +122,20 @@ pub(super) async fn get_virtual_library_items(
 
 async fn get_reconciled_catalog(
     state: &AppState,
-    mut preprocessed: PreprocessedRequest,
+    preprocessed: CatalogRequest,
     catalog_scope_key: String,
     targets: Vec<CatalogFetchTarget>,
     skipped_targets: usize,
     context: CatalogContext,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Result<serde_json::Value, ApplicationError> {
     let snapshot = super::snapshots::SnapshotRequest::prepare(
         state,
-        &mut preprocessed,
+        &preprocessed,
         &targets,
         &catalog_scope_key,
     )
     .await;
+    let policy = snapshot.materialization_policy(&preprocessed);
     snapshot
         .serve(
             state,
@@ -129,6 +146,7 @@ async fn get_reconciled_catalog(
                 targets,
                 skipped_targets,
                 context,
+                policy,
             ),
         )
         .await
@@ -136,12 +154,13 @@ async fn get_reconciled_catalog(
 
 async fn get_reconciled_catalog_uncached(
     state: &AppState,
-    preprocessed: PreprocessedRequest,
+    preprocessed: CatalogRequest,
     catalog_scope_key: String,
     targets: Vec<CatalogFetchTarget>,
     skipped_targets: usize,
     context: CatalogContext,
-) -> Result<super::snapshots::SnapshotResponse, StatusCode> {
+    mut policy: CatalogRequestPolicy,
+) -> Result<super::snapshots::SnapshotResponse, ApplicationError> {
     let deduplicate_media = state.deduplicate_media_enabled().await;
     let reconciliation_generation = if deduplicate_media {
         Some(
@@ -149,23 +168,15 @@ async fn get_reconciled_catalog_uncached(
                 .media_storage
                 .begin_media_reconciliation()
                 .await
-                .map_err(|error| {
-                    error!("Failed to begin media reconciliation: {error}");
-                    StatusCode::INTERNAL_SERVER_ERROR
-                })?,
+                .map_err(ApplicationError::Storage)?,
         )
     } else {
         None
     };
     let original_request = preprocessed.original_request;
-    let mut policy = CatalogRequestPolicy::from_url(original_request.url());
     policy.reconcile_playback = deduplicate_media;
     let series_group = context.series_group();
-    let FetchedCatalog {
-        server_items,
-        response_shape,
-        failures,
-    } = match &context {
+    let fetched = match &context {
         CatalogContext::Show { .. } => {
             fetch_show_catalog(state, &original_request, &policy, targets, skipped_targets).await?
         }
@@ -182,14 +193,71 @@ async fn get_reconciled_catalog_uncached(
         }
     };
 
-    let authoritative_inventory = series_group.is_none() && !policy.inventory_types.is_empty();
-    let mut snapshots = Vec::new();
-    let mut tagged_items = Vec::new();
     let viewer = preprocessed
+        .context
         .access_scope
         .as_ref()
         .map(|scope| scope.user_id().to_string())
         .unwrap_or_else(|| "anonymous".to_string());
+    let complete = fetched.failures == 0;
+    let outcomes = fetched.outcomes.clone();
+    let response_shape = fetched.response_shape;
+    let items = reconcile_fetched_catalog(
+        state,
+        ReconciliationContext {
+            viewer: &viewer,
+            catalog_scope_key: &catalog_scope_key,
+            series_group,
+            generation: reconciliation_generation,
+        },
+        &policy,
+        fetched,
+    )
+    .await?;
+    Ok(super::snapshots::SnapshotResponse {
+        response: finalize_items_response_typed(
+            state,
+            &original_request,
+            items,
+            &policy,
+            response_shape,
+        )
+        .await?,
+        complete,
+        outcomes,
+    })
+}
+
+pub(super) struct ReconciliationContext<'a> {
+    pub viewer: &'a str,
+    pub catalog_scope_key: &'a str,
+    pub series_group: Option<&'a str>,
+    pub generation: Option<i64>,
+}
+
+/// Shared refresh/interactive reconciliation. No incoming request, observation,
+/// cache materialization or client pagination belongs in this stage.
+pub(super) async fn reconcile_fetched_catalog(
+    state: &AppState,
+    context: ReconciliationContext<'_>,
+    policy: &CatalogRequestPolicy,
+    fetched: FetchedCatalog,
+) -> Result<FederatedItems, ApplicationError> {
+    let ReconciliationContext {
+        viewer,
+        catalog_scope_key,
+        series_group,
+        generation: reconciliation_generation,
+    } = context;
+    let deduplicate_media = reconciliation_generation.is_some();
+    let FetchedCatalog {
+        server_items,
+        failures,
+        ..
+    } = fetched;
+    let authoritative_inventory = series_group.is_none() && !policy.inventory_types.is_empty();
+    let mut snapshots = Vec::new();
+    let mut tagged_items = Vec::new();
     let mut catalog_aliases = Vec::new();
     // A cold recursive listing can contain both the parent series and its
     // children. Publish provider-matched parents before deriving child aliases,
@@ -238,16 +306,13 @@ async fn get_reconciled_catalog_uncached(
             state
                 .media_storage
                 .reconcile_media_catalog(
-                    &catalog_scope_key,
+                    catalog_scope_key,
                     reconciliation_generation.expect("enabled reconciliation has a generation"),
                     &parents,
                     false,
                 )
                 .await
-                .map_err(|error| {
-                    error!("Failed to reconcile parent series identities: {error}");
-                    StatusCode::INTERNAL_SERVER_ERROR
-                })?;
+                .map_err(ApplicationError::Storage)?;
         }
     }
     for fetch in server_items {
@@ -255,7 +320,7 @@ async fn get_reconciled_catalog_uncached(
         let items = response.into_items();
         if deduplicate_media {
             let aliases =
-                show_catalog_aliases(state, &items, &viewer, series_group, &catalog_scope_key)
+                show_catalog_aliases(state, &items, viewer, series_group, catalog_scope_key)
                     .await?;
             snapshots.push(MediaCatalogSnapshot {
                 source_key: format!(
@@ -291,28 +356,25 @@ async fn get_reconciled_catalog_uncached(
         let stable_group_ids = state
             .media_storage
             .reconcile_media_catalog_with_coverage(
-                &catalog_scope_key,
+                catalog_scope_key,
                 reconciliation_generation.expect("enabled reconciliation has a generation"),
                 &snapshots,
                 authoritative_inventory && failures == 0,
                 &policy.inventory_types,
             )
             .await
-            .map_err(|error| {
-                error!("Failed to reconcile media version groups: {error}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+            .map_err(ApplicationError::Storage)?;
         FederatedItems::from_merged_items(plan.collapse(&stable_group_ids))
     } else {
         FederatedItems::from_tagged_items(tagged_items)
     };
     for item in items.items_mut() {
         if deduplicate_media || series_group.is_some() {
-            crate::handlers::media_versions::preserve_media_parent_groups_in_scope(
+            crate::application::details::sources::preserve_media_parent_groups_typed(
                 state,
                 item,
-                &viewer,
-                Some(&catalog_scope_key),
+                viewer,
+                Some(catalog_scope_key),
             )
             .await?;
         }
@@ -329,25 +391,35 @@ async fn get_reconciled_catalog_uncached(
             }
         }
     }
-    Ok(super::snapshots::SnapshotResponse {
-        response: finalize_items_response(state, &original_request, items, &policy, response_shape)
-            .await?,
-        complete: failures == 0,
-    })
+    Ok(items)
 }
 
 /// Federates `/Shows/{aggregateId}/Seasons|Episodes` across the member
 /// series of a collapsed show. Seasons and (Jellyfin v12+) episodes merge
 /// using provider identities, with children identified by their matched parent
 /// series and season/episode numbers when available.
-pub(super) async fn get_aggregate_show_items(
+#[cfg(test)]
+pub(crate) async fn get_aggregate_show_items(
     state: &AppState,
-    preprocessed: PreprocessedRequest,
+    preprocessed: CatalogRequest,
     aggregate_id: String,
     targets: Vec<CatalogFetchTarget>,
     skipped_targets: usize,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Result<serde_json::Value, StatusCode> {
+    get_aggregate_show_items_typed(state, preprocessed, aggregate_id, targets, skipped_targets)
+        .await
+        .map_err(|error| error.detail_status())
+}
+
+pub(super) async fn get_aggregate_show_items_typed(
+    state: &AppState,
+    preprocessed: CatalogRequest,
+    aggregate_id: String,
+    targets: Vec<CatalogFetchTarget>,
+    skipped_targets: usize,
+) -> Result<serde_json::Value, ApplicationError> {
     let viewer = preprocessed
+        .context
         .access_scope
         .as_ref()
         .map(|scope| scope.user_id().to_string())
@@ -374,7 +446,7 @@ pub(super) async fn get_aggregate_show_items(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::handlers::federated::request_policy::is_authoritative_media_inventory_request;
+    use crate::application::catalog::request_policy::is_authoritative_media_inventory_request;
     use crate::{
         config::MIGRATOR, media_storage_service::MediaStorageService, server_storage::Server,
     };

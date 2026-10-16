@@ -1,10 +1,12 @@
+//! Completeness tracking for catalog scans.
+use crate::application::error::ApplicationError;
 use crate::models::ItemsResponseVariants;
 
 pub(super) const MAX_SCAN_ITEMS: usize = 100_000;
 pub(super) const MAX_SCAN_PAGES: usize = 10_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum PartialReason {
+pub(crate) enum PartialReason {
     Changed,
     Stalled,
     Failed,
@@ -13,10 +15,17 @@ pub(super) enum PartialReason {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum FetchOutcome {
+pub(crate) enum FetchOutcome {
     Complete,
     BoundedFeed,
     Partial(PartialReason),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SourceOutcome {
+    pub server_id: crate::server_id::ServerId,
+    pub parent_id: Option<String>,
+    pub outcome: FetchOutcome,
 }
 
 /// Shared validation for catalog and library-inventory scans. An uncounted
@@ -33,12 +42,20 @@ impl ScanProgress {
         self.paging.fetched_count()
     }
 
+    #[cfg(test)]
     pub fn accept(&mut self, page: &ItemsResponseVariants) -> Result<bool, PartialReason> {
+        self.accept_typed(page).map_err(|error| match error {
+            ApplicationError::IncompleteCatalog { reason, .. } => reason,
+            _ => unreachable!("scan validation only produces incomplete inventory errors"),
+        })
+    }
+
+    pub fn accept_typed(&mut self, page: &ItemsResponseVariants) -> Result<bool, ApplicationError> {
         let counted = matches!(page, ItemsResponseVariants::WithCount(_));
         if self.counted.is_some_and(|previous| previous != counted)
             || page.items().iter().any(|item| item.id.is_empty())
         {
-            return Err(PartialReason::Changed);
+            return Err(incomplete(PartialReason::Changed));
         }
         self.counted = Some(counted);
         self.pages += 1;
@@ -48,7 +65,7 @@ impl ScanProgress {
             && (self.pages > MAX_SCAN_PAGES
                 || self.offset().saturating_add(page.len()) > MAX_SCAN_ITEMS)
         {
-            return Err(PartialReason::Budget);
+            return Err(incomplete(PartialReason::Budget));
         }
         let total = match page {
             ItemsResponseVariants::WithCount(page) => {
@@ -56,7 +73,7 @@ impl ScanProgress {
                     || page.start_index as usize != self.offset()
                     || page.total_record_count < 0
                 {
-                    return Err(PartialReason::Changed);
+                    return Err(incomplete(PartialReason::Changed));
                 }
                 Some(page.total_record_count as usize)
             }
@@ -66,20 +83,28 @@ impl ScanProgress {
         let complete = self
             .paging
             .accept_page(total, page.items().iter().map(|item| item.id.as_str()))
-            .map_err(|_| {
-                if page.len() == 0 {
+            .map_err(|error| ApplicationError::IncompleteCatalog {
+                reason: if page.len() == 0 {
                     PartialReason::Stalled
                 } else {
                     PartialReason::Changed
-                }
+                },
+                cause: Some(Box::new(ApplicationError::Internal(error.into()))),
             })?;
         if total.is_some_and(|total| self.offset() > total) {
-            return Err(PartialReason::Changed);
+            return Err(incomplete(PartialReason::Changed));
         }
         if self.offset() == old_offset && complete != Some(true) {
-            return Err(PartialReason::Stalled);
+            return Err(incomplete(PartialReason::Stalled));
         }
         Ok(complete == Some(true))
+    }
+}
+
+fn incomplete(reason: PartialReason) -> ApplicationError {
+    ApplicationError::IncompleteCatalog {
+        reason,
+        cause: None,
     }
 }
 

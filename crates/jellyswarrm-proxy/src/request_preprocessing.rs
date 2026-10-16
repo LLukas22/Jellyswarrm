@@ -6,17 +6,16 @@ use http_body_util::BodyExt;
 use std::fmt;
 use tracing::{debug, error};
 
+#[cfg(test)]
+use crate::application::playback::lifecycle::PendingPlaybackSessionUpdate;
 use crate::models::Authorization;
 use crate::processors::analyze_json;
 use crate::processors::request_analyzer::{
     PlaybackSessionAction, RequestAnalysisContext, RequestBodyAnalysisResult,
 };
-use crate::proxy_headers::remove_hop_by_hop_headers;
 use crate::server_storage::Server;
-use crate::session_storage::{PlaybackSession, SessionRevision};
-use crate::url_helper::join_server_url;
 use crate::user_authorization_service::{AuthorizationSession, Device, User};
-use crate::virtual_library_service::{compare_virtual_library_routes, VirtualLibraryAccessScope};
+use crate::virtual_library_service::VirtualLibraryAccessScope;
 use crate::AppState;
 
 pub struct RequestIdentity {
@@ -205,6 +204,8 @@ impl JellyfinAuthorization {
     }
 }
 
+// Historical unit fixtures only. Production routes use raw application inputs.
+#[cfg(test)]
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct PreprocessedRequest {
@@ -218,14 +219,7 @@ pub struct PreprocessedRequest {
     pub new_auth: Option<JellyfinAuthorization>,
     pub access_scope: Option<VirtualLibraryAccessScope>,
     pub server_matched_request: bool,
-    pub pending_playback_session_update: Option<PendingPlaybackSessionUpdate>,
-}
-
-#[derive(Debug, Clone)]
-pub struct PendingPlaybackSessionUpdate {
-    pub action: PlaybackSessionAction,
-    pub session: PlaybackSession,
-    pub revision: Option<SessionRevision>,
+    pub(crate) pending_playback_session_update: Option<PendingPlaybackSessionUpdate>,
 }
 
 pub async fn extract_request_infos(
@@ -282,7 +276,7 @@ pub async fn extract_request_infos(
             ));
         }
         if let Some(found_user) = analysis_result.get_user() {
-            debug!("Found user in request body: {:?}", found_user);
+            debug!(user_id = %found_user.id, "Found user in request body");
             if user.is_none() && auth.is_none() {
                 user = Some(found_user);
             }
@@ -382,174 +376,6 @@ pub async fn extract_request_infos(
     ))
 }
 
-pub async fn preprocess_request(req: Request, state: &AppState) -> Result<PreprocessedRequest> {
-    preprocess_request_with_translation(req, state, true).await
-}
-
-/// Federated handlers resolve and validate routing first; only a selected
-/// single-server fallback or a concrete backend fetch translates the request.
-pub(crate) async fn preprocess_catalog_request(
-    req: Request,
-    state: &AppState,
-) -> Result<PreprocessedRequest> {
-    preprocess_request_with_translation(req, state, false).await
-}
-
-async fn preprocess_request_with_translation(
-    req: Request,
-    state: &AppState,
-    translate: bool,
-) -> Result<PreprocessedRequest> {
-    debug!("Preprocessing request: {:?}", req.uri());
-    let method = req.method().clone();
-    let path = req.uri().path().to_string();
-    let playback_session_action = playback_session_action(&method, &path, state).await;
-    let (mut request, auth, user, sessions, request_body_result, access_scope) =
-        extract_request_infos(req, state, playback_session_action).await?;
-    let original_request = request
-        .try_clone()
-        .ok_or_else(|| anyhow!("failed to clone preprocessed request body"))?;
-    let (server, session, server_matched_request) = if playback_session_action.is_some() {
-        resolve_playback_report_server(
-            &sessions,
-            request_body_result
-                .as_ref()
-                .ok_or_else(|| anyhow!("missing playback report"))?,
-            state,
-        )
-        .await?
-    } else {
-        // A batch lookup is routed by the federated handler, which validates
-        // each identity against the full authorization scope. An offline ID
-        // must not select (or veto) the backend used to initialize this request.
-        let mut routing_request = original_request
-            .try_clone()
-            .ok_or_else(|| anyhow!("failed to clone catalog routing request"))?;
-        if !translate
-            && routing_request
-                .url()
-                .path()
-                .trim_end_matches('/')
-                .to_ascii_lowercase()
-                .ends_with("/items")
-        {
-            let pairs = routing_request
-                .url()
-                .query_pairs()
-                .filter(|(key, _)| !key.eq_ignore_ascii_case("Ids"))
-                .map(|(key, value)| (key.into_owned(), value.into_owned()))
-                .collect::<Vec<_>>();
-            routing_request
-                .url_mut()
-                .query_pairs_mut()
-                .clear()
-                .extend_pairs(pairs);
-        }
-        resolve_server(
-            &sessions,
-            &request_body_result,
-            state,
-            &routing_request,
-            access_scope.as_ref(),
-        )
-        .await?
-    };
-    let playback_member = if playback_session_action.is_some() {
-        let member = resolve_playback_report_member(
-            request_body_result
-                .as_ref()
-                .expect("validated playback report"),
-            state,
-            &server,
-        )
-        .await?;
-        // Keep original_request intact for local session observation. The generic
-        // body processor will translate this exact member, never pick a sibling.
-        let mut body = body_to_json(&request).ok_or_else(|| anyhow!("missing playback body"))?;
-        if let Some(object) = body.as_object_mut() {
-            for (key, value) in object.iter_mut() {
-                if key.eq_ignore_ascii_case("ItemId") {
-                    *value = serde_json::Value::String(member.virtual_media_id.clone());
-                }
-            }
-        }
-        *request.body_mut() = Some(serde_json::to_vec(&body)?.into());
-        Some(member)
-    } else {
-        None
-    };
-    let pending_playback_session_update = match playback_session_action {
-        Some(PlaybackSessionAction::Start) => request_body_result.as_ref().and_then(|result| {
-            Some(PendingPlaybackSessionUpdate {
-                action: PlaybackSessionAction::Start,
-                revision: None,
-                session: PlaybackSession {
-                    session_id: result.requested_play_session_id.clone()?,
-                    item_id: result.requested_play_item_id.clone()?,
-                    user_id: user.as_ref()?.id.clone(),
-                    server_id: server.id,
-                    original_item_id: playback_member
-                        .as_ref()
-                        .map(|member| member.original_media_id.clone()),
-                },
-            })
-        }),
-        Some(action @ (PlaybackSessionAction::Refresh | PlaybackSessionAction::Remove)) => {
-            request_body_result.as_ref().and_then(|result| {
-                Some(PendingPlaybackSessionUpdate {
-                    action,
-                    session: result.authoritative_play_session.clone()?,
-                    revision: Some(result.authoritative_play_session_revision?),
-                })
-            })
-        }
-        None => None,
-    };
-
-    state
-        .processors
-        .url_processor
-        .validate_container_request(
-            request.url(),
-            &session,
-            access_scope.as_ref(),
-            server.id,
-            request_body_result
-                .as_ref()
-                .map(|result| result.found_ids.as_slice())
-                .unwrap_or_default(),
-        )
-        .await?;
-
-    let new_auth = remap_authorization(&auth, &session).await?;
-
-    if translate {
-        apply_to_request(
-            &mut request,
-            &server,
-            &session,
-            &new_auth,
-            state,
-            access_scope.as_ref(),
-        )
-        .await;
-    }
-
-    Ok(PreprocessedRequest {
-        request,
-        original_request,
-        user,
-        sessions,
-        server,
-        auth,
-        session,
-        new_auth,
-        access_scope,
-        server_matched_request,
-        pending_playback_session_update,
-    })
-}
-
 pub(crate) async fn playback_session_action(
     method: &http::Method,
     request_path: &str,
@@ -572,6 +398,7 @@ pub(crate) async fn playback_session_action(
     }
 }
 
+#[cfg(test)]
 pub async fn apply_to_request(
     request: &mut reqwest::Request,
     server: &Server,
@@ -580,468 +407,30 @@ pub async fn apply_to_request(
     state: &AppState,
     access_scope: Option<&VirtualLibraryAccessScope>,
 ) {
-    remove_hop_by_hop_headers(request.headers_mut());
-
-    apply_host_header(request, server);
-
-    apply_authorization_header(request, auth);
-
-    apply_new_target_uri(request, server, session, state, access_scope).await;
+    let prefix = state.get_url_prefix().await;
+    crate::upstream::jellyfin::request::UpstreamRequestBuilder::new(
+        &state.processors.url_processor,
+        prefix.as_deref(),
+    )
+    .apply(request, server, session, auth, access_scope)
+    .await;
 }
 
-pub async fn apply_new_target_uri(
-    request: &mut reqwest::Request,
-    server: &Server,
-    session: &Option<AuthorizationSession>,
-    state: &AppState,
-    access_scope: Option<&VirtualLibraryAccessScope>,
-) {
-    let mut orig_url = request.url().clone();
-    debug!("Original request URL: {}", orig_url);
-
-    state
-        .processors
-        .url_processor
-        .client_to_server_url(&mut orig_url, session, access_scope, Some(server.id))
-        .await;
-
-    let path = state.remove_prefix_from_path(orig_url.path()).await;
-    let mut new_url = join_server_url(&server.url, path);
-    new_url.set_query(orig_url.query());
-
-    *request.url_mut() = new_url;
-}
-
-pub fn apply_authorization_header(
-    request: &mut reqwest::Request,
-    auth: &Option<JellyfinAuthorization>,
-) {
-    //Remove stale auth headers
-    let headers = request.headers_mut();
-    headers.remove(reqwest::header::AUTHORIZATION);
-    headers.remove("X-Emby-Authorization");
-    headers.remove("X-Emby-Token");
-    headers.remove("X-MediaBrowser-Token");
-
-    if let Some(auth) = auth {
-        match auth {
-            JellyfinAuthorization::Authorization(auth) => {
-                if let Ok(value) = reqwest::header::HeaderValue::from_str(&auth.to_header_value()) {
-                    request
-                        .headers_mut()
-                        .insert(reqwest::header::AUTHORIZATION, value);
-                }
-            }
-            // Map XEmbyAuthorization to Authorization header
-            JellyfinAuthorization::XEmbyAuthorization(auth) => {
-                if let Ok(value) = reqwest::header::HeaderValue::from_str(&auth.to_header_value()) {
-                    request
-                        .headers_mut()
-                        .insert(reqwest::header::AUTHORIZATION, value);
-                }
-            }
-            JellyfinAuthorization::XMediaBrowser(token) => {
-                if let Ok(value) = reqwest::header::HeaderValue::from_str(token) {
-                    request.headers_mut().insert("X-MediaBrowser-Token", value);
-                }
-            }
-            JellyfinAuthorization::XEmbyToken(token) => {
-                if let Ok(value) = reqwest::header::HeaderValue::from_str(token) {
-                    request.headers_mut().insert("X-Emby-Token", value);
-                }
-            }
-            JellyfinAuthorization::ApiKey(_) => {}
-        }
-    }
-}
-
-pub fn apply_host_header(request: &mut reqwest::Request, server: &Server) {
-    if let Some(host) = server.url.host_str() {
-        if let Ok(value) = reqwest::header::HeaderValue::from_str(host) {
-            request.headers_mut().insert(reqwest::header::HOST, value);
-        }
-    }
-}
-
-pub async fn remap_authorization(
-    auth: &Option<JellyfinAuthorization>,
-    session: &Option<AuthorizationSession>,
-) -> Result<Option<JellyfinAuthorization>> {
-    let Some(auth) = auth else {
-        return Ok(None);
-    };
-
-    let remapped_session = if let Some(session) = session {
-        match auth {
-            JellyfinAuthorization::Authorization(_) => Some(JellyfinAuthorization::Authorization(
-                session.to_authorization(),
-            )),
-            JellyfinAuthorization::XMediaBrowser(_) => {
-                let token = session.jellyfin_token.clone();
-                Some(JellyfinAuthorization::XMediaBrowser(token))
-            }
-            JellyfinAuthorization::ApiKey(_) => {
-                let token = session.jellyfin_token.clone();
-                Some(JellyfinAuthorization::ApiKey(token))
-            }
-            JellyfinAuthorization::XEmbyToken(_) => Some(JellyfinAuthorization::Authorization(
-                session.to_authorization(),
-            )),
-            JellyfinAuthorization::XEmbyAuthorization(_) => Some(
-                JellyfinAuthorization::Authorization(session.to_authorization()),
-            ),
-        }
-    } else {
-        None
-    };
-    debug!("Remapped authorization to: {:?}", remapped_session);
-    Ok(remapped_session)
-}
 // Reports must not use the generic best-server fallback: a wrong destination can
 // update another copy's playback state. Only top-level item/source fields route them.
+#[cfg(test)]
 async fn resolve_playback_report_server(
     sessions: &Option<Vec<(AuthorizationSession, Server)>>,
     analysis: &RequestBodyAnalysisResult,
     state: &AppState,
 ) -> Result<(Server, Option<AuthorizationSession>, bool)> {
-    let sessions = sessions
-        .as_ref()
-        .ok_or_else(|| anyhow!("no authorization sessions available"))?;
-    let item_id = analysis
-        .requested_play_item_id
-        .as_deref()
-        .ok_or_else(|| anyhow!("playback report requires an item"))?;
-    let mut candidates =
-        if let Some(group) = state.media_storage.get_media_version_group(item_id).await? {
-            if let Some(source_id) = analysis.requested_play_source_id.as_deref() {
-                vec![
-                    state
-                        .media_storage
-                        .get_media_version_source_route(group.id, source_id)
-                        .await?
-                        .ok_or_else(|| anyhow!("media source does not belong to playback item"))?
-                        .member_mapping
-                        .server_id,
-                ]
-            } else {
-                state
-                    .media_storage
-                    .get_media_version_members_by_virtual_id(item_id)
-                    .await?
-                    .into_iter()
-                    .map(|member| member.server.id)
-                    .collect()
-            }
-        } else {
-            let (_, server) = state
-                .media_storage
-                .get_media_mapping_with_server(item_id)
-                .await?
-                .ok_or_else(|| anyhow!("unknown playback item"))?;
-            if let Some(source_id) = analysis.requested_play_source_id.as_deref() {
-                let (_, source_server) = state
-                    .media_storage
-                    .get_media_mapping_with_server(source_id)
-                    .await?
-                    .ok_or_else(|| anyhow!("unknown playback source"))?;
-                if source_server.id != server.id {
-                    return Err(anyhow!("conflicting playback item and source servers"));
-                }
-            }
-            vec![server.id]
-        };
-    if let Some(play_session) = &analysis.authoritative_play_session {
-        if !candidates.contains(&play_session.server_id) {
-            return Err(anyhow!(
-                "conflicting playback session and item/source authority"
-            ));
-        }
-        candidates.retain(|id| *id == play_session.server_id);
-    }
-    candidates.retain(|id| sessions.iter().any(|(_, server)| server.id == *id));
-    candidates.sort_by_key(|id| id.as_i64());
-    candidates.dedup();
-    if candidates.len() != 1 {
-        return Err(anyhow!(
-            "playback item/source route is unavailable or ambiguous"
-        ));
-    }
-    let (session, server) = sessions
-        .iter()
-        .find(|(_, server)| server.id == candidates[0])
-        .ok_or_else(|| anyhow!("playback server is unavailable"))?;
-    Ok((server.clone(), Some(session.clone()), true))
-}
-
-async fn resolve_playback_report_member(
-    analysis: &RequestBodyAnalysisResult,
-    state: &AppState,
-    server: &Server,
-) -> Result<crate::media_storage_service::MediaMapping> {
-    let item_id = analysis
-        .requested_play_item_id
-        .as_deref()
-        .ok_or_else(|| anyhow!("playback report requires an item"))?;
-    let member = if let Some(group) = state.media_storage.get_media_version_group(item_id).await? {
-        if let Some(source) = analysis.requested_play_source_id.as_deref() {
-            state
-                .media_storage
-                .get_media_version_source_route(group.id, source)
-                .await?
-                .ok_or_else(|| anyhow!("media source does not belong to playback item"))?
-                .member_mapping
-        } else {
-            let bound_item = analysis
-                .authoritative_play_session
-                .as_ref()
-                .and_then(|session| session.original_item_id.as_deref());
-            let members = state
-                .media_storage
-                .get_media_version_members(group.id)
-                .await?
-                .into_iter()
-                .filter(|member| {
-                    member.server.id == server.id
-                        && bound_item.is_none_or(|id| member.mapping.original_media_id == id)
-                })
-                .collect::<Vec<_>>();
-            if members.len() != 1 {
-                return Err(anyhow!("playback item member is unavailable or ambiguous"));
-            }
-            members.into_iter().next().expect("one member").mapping
-        }
-    } else {
-        state
-            .media_storage
-            .get_media_mapping_by_virtual(item_id)
-            .await?
-            .ok_or_else(|| anyhow!("unknown playback item"))?
-    };
-    if member.server_id != server.id
-        || analysis
-            .authoritative_play_session
-            .as_ref()
-            .is_some_and(|session| {
-                session
-                    .original_item_id
-                    .as_ref()
-                    .is_some_and(|id| id != &member.original_media_id)
-            })
-    {
-        return Err(anyhow!(
-            "conflicting playback session and item/source authority"
-        ));
-    }
-    Ok(member)
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("no authorized backend is currently available")]
-pub(crate) struct NoAvailableBackend;
-
-#[derive(Debug, thiserror::Error)]
-#[error("requested media is outside the caller's authorized server scope")]
-pub(crate) struct MediaAccessDenied;
-
-pub async fn resolve_server(
-    sessions: &Option<Vec<(AuthorizationSession, Server)>>,
-    request_body_result: &Option<RequestBodyAnalysisResult>,
-    state: &AppState,
-    request: &reqwest::Request,
-    access_scope: Option<&VirtualLibraryAccessScope>,
-) -> Result<(Server, Option<AuthorizationSession>, bool)> {
-    let path = crate::url_helper::decoded_path_segments(
-        state.remove_prefix_from_path(request.url().path()).await,
-    );
-    if request.method() == reqwest::Method::DELETE
-        && matches!(path.as_slice(), [videos, action] if videos.eq_ignore_ascii_case("Videos") && action.eq_ignore_ascii_case("ActiveEncodings"))
-    {
-        let scope = access_scope
-            .ok_or_else(|| anyhow!("transcoder cancellation requires authentication"))?;
-        let session_id = crate::processors::url_processor::play_session_id(request.url())?
-            .ok_or_else(|| anyhow!("transcoder cancellation requires a playback session ID"))?;
-        // Jellyfin only recognizes PlaySessionId on this endpoint. Accepting
-        // SessionId alone would turn a targeted stop into a device-wide stop.
-        if !request
-            .url()
-            .query_pairs()
-            .any(|(key, value)| key.eq_ignore_ascii_case("PlaySessionId") && !value.is_empty())
-        {
-            return Err(anyhow!("transcoder cancellation requires PlaySessionId"));
-        }
-        let (play_session, _) = state
-            .play_sessions
-            .resolve_report_session(&session_id, scope.user_id())
-            .await?
-            .ok_or_else(|| anyhow!("unknown transcoder playback session"))?;
-        if !scope.allows(play_session.server_id) {
-            return Err(anyhow!("playback session server is no longer authorized"));
-        }
-        let (session, server) = sessions
-            .as_ref()
-            .and_then(|sessions| {
-                sessions
-                    .iter()
-                    .find(|(_, server)| server.id == play_session.server_id)
-            })
-            .ok_or(NoAvailableBackend)?;
-        return Ok((server.clone(), Some(session.clone()), true));
-    }
-    if let Some(play_session) = request_body_result
-        .as_ref()
-        .and_then(|result| result.authoritative_play_session.as_ref())
-    {
-        let server = state
-            .server_storage
-            .get_server_by_id(play_session.server_id)
-            .await?
-            .ok_or_else(|| anyhow!("playback session server no longer exists"))?;
-        let (session, _) = sessions
-            .as_ref()
-            .and_then(|sessions| {
-                sessions
-                    .iter()
-                    .find(|(_session, candidate)| candidate.id == server.id)
-            })
-            .ok_or_else(|| anyhow!("playback session server is unavailable"))?;
-        return Ok((server, Some(session.clone()), true));
-    }
-
-    if access_scope.is_some_and(|scope| !scope.server_ids().is_empty())
-        && sessions.as_ref().is_none_or(|sessions| sessions.is_empty())
-    {
-        return Err(NoAvailableBackend.into());
-    }
-    // Choose aggregate representatives only from usable sessions. Keep the
-    // full mapped scope on PreprocessedRequest for inventory reconciliation.
-    let routing_scope = access_scope.map(|scope| {
-        VirtualLibraryAccessScope::new(
-            scope.user_id(),
-            sessions.iter().flatten().map(|(_, server)| server.id),
-        )
-    });
-    let mut request_server =
-        server_from_request_media_ids(state, request, routing_scope.as_ref()).await?;
-
-    // Body-only routes (for example recording creation) must not silently
-    // fall back to an allowed server when their IDs belong to a forbidden one.
-    if let (Some(scope), Some(analysis)) = (access_scope, request_body_result) {
-        for id in &analysis.found_ids {
-            state
-                .processors
-                .url_processor
-                .validate_media_access(id, scope)
-                .await?;
-        }
-    }
-
-    if request_server.is_none() {
-        if let Some(request_body_result) = request_body_result {
-            if let Some(found_server) = request_body_result.get_server() {
-                if access_scope.is_none_or(|scope| scope.allows(found_server.id)) {
-                    debug!(
-                        "Using server found in request body analysis: {} ({})",
-                        found_server.name, found_server.url
-                    );
-                    request_server = Some(found_server);
-                }
-            }
-        }
-    }
-
-    if request_server.is_none() {
-        request_server = server_from_body_media_aggregate_ids(
-            state,
-            request_body_result.as_ref(),
-            routing_scope.as_ref(),
-        )
-        .await?;
-    }
-
-    if let Some(sessions) = sessions {
-        if let Some(request_server) = request_server {
-            if let Some((session, server)) = sessions
-                .iter()
-                .find(|(_, server)| request_server.id == server.id)
-            {
-                debug!("Found server in request: {}", server.url);
-                return Ok((server.clone(), Some(session.clone()), true));
-            }
-            return Err(anyhow!(
-                "requested media server has no available authorization session"
-            ));
-        }
-
-        let Some((session, server)) = sessions.first() else {
-            return Err(anyhow!("no authorization sessions available"));
-        };
-        return Ok((server.clone(), Some(session.clone()), false));
-    }
-
-    if access_scope.is_some() {
-        return Err(anyhow!("no authorization sessions available"));
-    }
-
-    if let Some(request_server) = request_server {
-        debug!("Using request server: {}", request_server.url);
-        return Ok((request_server, None, true));
-    }
-
-    let server = state.server_storage.get_best_server().await?;
-    let server = server.ok_or_else(|| anyhow!("No server available"))?;
-    Ok((server, None, false))
-}
-
-async fn server_from_body_media_aggregate_ids(
-    state: &AppState,
-    analysis: Option<&RequestBodyAnalysisResult>,
-    access_scope: Option<&VirtualLibraryAccessScope>,
-) -> Result<Option<Server>> {
-    let Some(analysis) = analysis else {
-        return Ok(None);
-    };
-    for media_id in &analysis.found_ids {
-        let members = state
-            .media_storage
-            .get_media_version_members_by_virtual_id(media_id)
-            .await?;
-        let mut healthy_members = Vec::new();
-        for member in members {
-            if access_scope.is_none_or(|scope| scope.allows(member.server.id))
-                && state
-                    .server_storage
-                    .server_status(member.server.id)
-                    .await
-                    .is_healthy()
-            {
-                healthy_members.push(member);
-            }
-        }
-        if let Some(member) = healthy_members.into_iter().max_by(|left, right| {
-            compare_virtual_library_routes(
-                &left.server,
-                &left.mapping.original_media_id,
-                &right.server,
-                &right.mapping.original_media_id,
-            )
-        }) {
-            return Ok(Some(member.server));
-        }
-    }
-    Ok(None)
-}
-
-async fn server_from_request_media_ids(
-    state: &AppState,
-    request: &reqwest::Request,
-    access_scope: Option<&VirtualLibraryAccessScope>,
-) -> Result<Option<Server>> {
-    state
-        .processors
-        .url_processor
-        .server_from_client_url(request.url(), access_scope)
+    crate::application::playback::reports::resolve_server(sessions, analysis, &state.media_storage)
         .await
 }
+
+pub(crate) use crate::application::playback::reports::NoAvailableBackend;
+
+pub(crate) use crate::application::error::MediaAccessDenied;
 
 pub async fn get_user_from_request(
     auth: &Option<JellyfinAuthorization>,
@@ -1165,7 +554,7 @@ mod tests {
     use crate::media_storage_service::MediaStorageService;
     use crate::server_id::ServerId;
     use crate::server_storage::ServerStorageService;
-    use crate::session_storage::SessionStorage;
+    use crate::session_storage::{PlaybackSession, SessionStorage};
     use crate::user_authorization_service::UserAuthorizationService;
     use crate::virtual_library_service::VirtualLibraryService;
     use crate::{DataContext, ProxyProcessors};

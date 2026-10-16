@@ -8,7 +8,7 @@ use crate::processors::field_matcher::{
 use crate::processors::json_processor::{
     JsonProcessingContext, JsonProcessingResult, JsonProcessor,
 };
-use crate::request_preprocessing::{JellyfinAuthorization, PreprocessedRequest};
+use crate::request_preprocessing::JellyfinAuthorization;
 use crate::server_storage::Server;
 use crate::user_authorization_service::{AuthorizationSession, User};
 use crate::DataContext;
@@ -55,19 +55,6 @@ pub struct RequestProcessingContext {
     pub auth: Option<JellyfinAuthorization>,
     pub session: Option<AuthorizationSession>,
     pub new_auth: Option<JellyfinAuthorization>,
-}
-
-impl RequestProcessingContext {
-    pub fn new(preprocessed_request: &PreprocessedRequest) -> Self {
-        Self {
-            user: preprocessed_request.user.clone(),
-            server: preprocessed_request.server.clone(),
-            sessions: preprocessed_request.sessions.clone(),
-            auth: preprocessed_request.auth.clone(),
-            session: preprocessed_request.session.clone(),
-            new_auth: preprocessed_request.new_auth.clone(),
-        }
-    }
 }
 
 #[async_trait]

@@ -1,4 +1,4 @@
-use axum::{extract::State, Json};
+use crate::application::error::ApplicationError;
 use hyper::StatusCode;
 use serde_json::{json, Value};
 
@@ -7,11 +7,9 @@ use super::{
     request_policy::replace_aggregate_parent_id,
 };
 use crate::{
-    extractors::CatalogPreprocessed,
-    handlers::common::execute_processed_json_request,
-    processors::response_processor::ResponseProcessingProfile,
-    request_preprocessing::{apply_to_request, remap_authorization},
-    AppState,
+    application::catalog::input::CatalogRequest,
+    application::json::execute_processed_json_request_typed,
+    processors::response_processor::ResponseProcessingProfile, AppState,
 };
 
 /// Facet IDs remain source-owned. Partition OR lists for each backend instead
@@ -20,7 +18,7 @@ pub(super) async fn restrict_named_ids(
     state: &AppState,
     url: &mut url::Url,
     server_id: crate::server_id::ServerId,
-) -> Result<bool, StatusCode> {
+) -> Result<bool, ApplicationError> {
     let guide = url
         .path()
         .trim_end_matches('/')
@@ -51,7 +49,7 @@ pub(super) async fn restrict_named_ids(
                 .media_storage
                 .get_media_mapping_by_virtual(&id)
                 .await
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+                .map_err(ApplicationError::Storage)?
                 .is_some_and(|mapping| mapping.server_id == server_id)
             {
                 selected.push(id);
@@ -75,60 +73,81 @@ pub(super) async fn restrict_named_ids(
 
 /// Filter DTOs contain arrays of options rather than paged BaseItemDto lists.
 /// Resolve library members as for browsing, then union their visible options.
-pub async fn get_filters(
-    State(state): State<AppState>,
-    CatalogPreprocessed(preprocessed): CatalogPreprocessed,
-) -> Result<Json<Value>, StatusCode> {
-    let targets = match resolve_catalog_plan(&state, &preprocessed).await? {
+pub(crate) async fn get_filters_typed(
+    state: &AppState,
+    preprocessed: CatalogRequest,
+) -> Result<Value, ApplicationError> {
+    let targets = match resolve_catalog_plan(state, &preprocessed).await? {
         CatalogPlan::EmptyVirtual => {
-            return Ok(Json(
-                json!({"Genres":[],"Tags":[],"Years":[],"OfficialRatings":[]}),
-            ))
+            return Ok(json!({"Genres":[],"Tags":[],"Years":[],"OfficialRatings":[]}))
         }
-        CatalogPlan::SingleServer => vec![CatalogFetchTarget {
-            session: preprocessed
-                .session
-                .clone()
-                .ok_or(StatusCode::UNAUTHORIZED)?,
-            server: preprocessed.server.clone(),
-            parent_id: None,
-            resolved_parent_id: None,
-        }],
+        CatalogPlan::SingleServer => {
+            let (server, session, _) = crate::application::routing::resolve_server(
+                &preprocessed.context.backends.sessions,
+                &preprocessed.body_analysis,
+                state,
+                &preprocessed.original_request,
+                preprocessed.context.access_scope.as_ref(),
+            )
+            .await
+            .map_err(super::input::input_error_typed)?;
+            vec![CatalogFetchTarget {
+                session: session.ok_or_else(|| {
+                    ApplicationError::MissingIdentity("facet session")
+                        .with_status(StatusCode::UNAUTHORIZED)
+                })?,
+                server,
+                parent_id: None,
+                member_parent_id: None,
+                resolved_parent_id: None,
+            }]
+        }
         CatalogPlan::Virtual { targets, .. }
         | CatalogPlan::Interleaved(targets)
         | CatalogPlan::AutomaticRoot(targets)
         | CatalogPlan::ConfiguredRoot(targets) => targets,
     };
-    let token = preprocessed.auth.as_ref().and_then(|auth| auth.token_ref());
+    let token = preprocessed
+        .context
+        .auth
+        .as_ref()
+        .and_then(|auth| auth.token_ref());
     let timeout = std::time::Duration::from_secs(state.config.read().await.timeout.clamp(1, 300));
     let fetches = targets.into_iter().map(|target| {
-        let state = &state;
         let preprocessed = &preprocessed;
         async move {
             let mut request = preprocessed
                 .original_request
                 .try_clone()
-                .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-            if let (Some(parent), Some(resolved)) = (&target.parent_id, &target.resolved_parent_id)
+                .ok_or(ApplicationError::MissingIdentity("cloneable facet request"))?;
+            if let (Some(parent), Some(resolved)) =
+                (&target.member_parent_id, &target.resolved_parent_id)
             {
                 *request.url_mut() = replace_aggregate_parent_id(request.url(), resolved, parent);
             }
-            let session = Some(target.session);
-            let auth = remap_authorization(&preprocessed.auth, &session)
-                .await
-                .map_err(|_| StatusCode::UNAUTHORIZED)?;
-            apply_to_request(
-                &mut request,
-                &target.server,
-                &session,
-                &auth,
-                state,
-                preprocessed.access_scope.as_ref(),
+            let authorized = preprocessed
+                .context
+                .target(target.server.id)
+                .map_err(|error| {
+                    let status = match &error {
+                        crate::application::context::TargetError::UnavailableOwner => {
+                            StatusCode::SERVICE_UNAVAILABLE
+                        }
+                        _ => StatusCode::FORBIDDEN,
+                    };
+                    ApplicationError::Internal(error.into()).with_status(status)
+                })?;
+            let prefix = state.get_url_prefix().await;
+            let request = crate::upstream::jellyfin::request::UpstreamRequestBuilder::new(
+                &state.processors.url_processor,
+                prefix.as_deref(),
             )
-            .await;
+            .build(&authorized, &request)
+            .await
+            .map_err(|error| ApplicationError::Internal(error.into()))?;
             tokio::time::timeout(
                 timeout,
-                execute_processed_json_request(
+                execute_processed_json_request_typed(
                     state,
                     request,
                     &target.server,
@@ -137,14 +156,27 @@ pub async fn get_filters(
                 ),
             )
             .await
-            .map_err(|_| StatusCode::GATEWAY_TIMEOUT)?
+            .map_err(|error| {
+                ApplicationError::Internal(error.into()).with_status(StatusCode::GATEWAY_TIMEOUT)
+            })?
         }
     });
     let mut merged = serde_json::Map::new();
     let mut successful = false;
+    let mut failures = Vec::new();
     for result in futures_util::future::join_all(fetches).await {
-        let Ok(Value::Object(fields)) = result else {
-            continue;
+        let fields = match result {
+            Ok(Value::Object(fields)) => fields,
+            Ok(_) => {
+                failures.push(ApplicationError::InvalidUpstreamPayload(
+                    "facet response must be an object",
+                ));
+                continue;
+            }
+            Err(error) => {
+                failures.push(error);
+                continue;
+            }
         };
         successful = true;
         for (key, value) in fields {
@@ -168,7 +200,7 @@ pub async fn get_filters(
         }
     }
     if !successful {
-        return Err(StatusCode::SERVICE_UNAVAILABLE);
+        return Err(ApplicationError::SourcesFailed(failures));
     }
-    Ok(Json(Value::Object(merged)))
+    Ok(Value::Object(merged))
 }

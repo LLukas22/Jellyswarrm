@@ -39,13 +39,13 @@ impl ResponseProcessor {
         }
     }
 
-    async fn virtual_media_id(&self, id: &str, server: &Server) -> Result<String, String> {
+    async fn virtual_media_id(&self, id: &str, server: &Server) -> anyhow::Result<String> {
         self.data_context
             .media_storage
             .get_or_create_media_mapping(id, server)
             .await
             .map(|mapping| mapping.virtual_media_id)
-            .map_err(|e| format!("failed to create media mapping for {id}: {e}"))
+            .map_err(anyhow::Error::from)
     }
 
     // Never return a partial permission list that a client could save back as
@@ -129,11 +129,10 @@ impl ResponseProcessor {
         &self,
         value: &str,
         context: &ResponseProcessingContext,
-    ) -> Result<Option<String>, String> {
+    ) -> anyhow::Result<Option<String>> {
         self.url_processor
             .server_to_client_delivery_url(value, &context.server, context.proxy_api_key.as_deref())
             .await
-            .map_err(|e| e.to_string())
     }
 }
 
@@ -211,7 +210,7 @@ impl JsonProcessor<ResponseProcessingContext> for ResponseProcessor {
                         *value = Value::String(virtual_id);
                         result = result.mark_modified();
                     }
-                    Err(e) => result = result.add_error(e),
+                    Err(e) => result = result.add_cause(e),
                 }
             }
             return result;
@@ -225,7 +224,7 @@ impl JsonProcessor<ResponseProcessingContext> for ResponseProcessor {
                         *value = Value::String(virtual_id);
                         result = result.mark_modified();
                     }
-                    Err(e) => result = result.add_error(e),
+                    Err(e) => result = result.add_cause(e),
                 }
             }
             return result;
@@ -243,7 +242,7 @@ impl JsonProcessor<ResponseProcessingContext> for ResponseProcessor {
                     );
                     result = result.rename_key(virtual_id);
                 }
-                Err(e) => result = result.add_error(e),
+                Err(e) => result = result.add_cause(e),
             }
             return result;
         }
@@ -262,7 +261,7 @@ impl JsonProcessor<ResponseProcessingContext> for ResponseProcessor {
                         *value = Value::String(virtual_id);
                         result = result.mark_modified();
                     }
-                    Err(e) => result = result.add_error(e),
+                    Err(e) => result = result.add_cause(e),
                 }
             }
         } else if DELIVERY_URL_FIELDS.contains(&json_context.key) {
@@ -273,7 +272,7 @@ impl JsonProcessor<ResponseProcessingContext> for ResponseProcessor {
                         result = result.mark_modified();
                     }
                     Ok(None) => {}
-                    Err(e) => result = result.add_error(e),
+                    Err(e) => result = result.add_cause(e),
                 }
             }
         } else if context.rewrites_media_fields()

@@ -2,18 +2,18 @@
 //! In particular, playback queues must not expand an aggregate into its copies.
 use std::collections::{HashMap, HashSet};
 
-use axum::Json;
+use crate::application::error::ApplicationError;
 use hyper::StatusCode;
 
 use crate::{
+    application::catalog::input::CatalogRequest,
     media_catalog::{merge_media_group, TaggedMediaItem},
     media_storage_service::{MediaMapping, MediaStorageService},
-    request_preprocessing::PreprocessedRequest,
     AppState,
 };
 
 use super::{
-    finalize_items_response,
+    finalize_items_response_typed,
     library_resolution::CatalogFetchTarget,
     postprocessing::{FederatedItems, ResponseShape, SortPolicy},
     request_policy::CatalogRequestPolicy,
@@ -32,8 +32,8 @@ pub(super) struct RequestedItems(Vec<RequestedItem>);
 impl RequestedItems {
     pub async fn resolve(
         state: &AppState,
-        request: &PreprocessedRequest,
-    ) -> Result<Option<Self>, StatusCode> {
+        request: &CatalogRequest,
+    ) -> Result<Option<Self>, ApplicationError> {
         let url = request.original_request.url();
         if !url
             .path()
@@ -60,9 +60,9 @@ impl RequestedItems {
         for id in ids.into_iter().filter(|id| seen.insert(id.clone())) {
             let library = state
                 .virtual_library_service
-                .resolve(&id, request.access_scope.as_ref())
+                .resolve(&id, request.context.access_scope.as_ref())
                 .await
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                .map_err(ApplicationError::Storage)?;
             if let crate::virtual_library_service::VirtualLibraryResolution::Resolved(library) =
                 library
             {
@@ -82,14 +82,14 @@ impl RequestedItems {
                 .media_storage
                 .get_media_version_group(&id)
                 .await
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                .map_err(ApplicationError::Storage)?;
             let aggregate = group.is_some();
             let members = if let Some(group) = group {
                 state
                     .media_storage
                     .get_media_version_members(group.id)
                     .await
-                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+                    .map_err(ApplicationError::Storage)?
                     .into_iter()
                     .map(|member| member.mapping)
                     .collect::<Vec<_>>()
@@ -98,7 +98,7 @@ impl RequestedItems {
                     .media_storage
                     .get_media_mapping_by_virtual(&id)
                     .await
-                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+                    .map_err(ApplicationError::Storage)?
                     .into_iter()
                     .collect()
             };
@@ -106,6 +106,7 @@ impl RequestedItems {
                 .into_iter()
                 .filter(|member| {
                     request
+                        .context
                         .access_scope
                         .as_ref()
                         .is_some_and(|scope| scope.allows(member.server_id))
@@ -124,8 +125,8 @@ impl RequestedItems {
     pub async fn fetch(
         self,
         state: &AppState,
-        request: PreprocessedRequest,
-    ) -> Result<Json<serde_json::Value>, StatusCode> {
+        request: CatalogRequest,
+    ) -> Result<serde_json::Value, ApplicationError> {
         let mut policy = CatalogRequestPolicy::from_url(request.original_request.url());
         if !request
             .original_request
@@ -135,12 +136,15 @@ impl RequestedItems {
         {
             policy.sort = SortPolicy::PreserveUpstream;
         }
-        let sessions = request.sessions.as_ref().ok_or(StatusCode::UNAUTHORIZED)?;
+        let sessions = request.context.backends.sessions.as_ref().ok_or_else(|| {
+            ApplicationError::MissingIdentity("batch lookup sessions")
+                .with_status(StatusCode::UNAUTHORIZED)
+        })?;
         let source_generation = state
             .media_storage
             .begin_media_reconciliation()
             .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            .map_err(ApplicationError::Storage)?;
         let mut seen_servers = HashSet::new();
         let mut fetches = Vec::new();
         for (session, server) in sessions
@@ -162,7 +166,7 @@ impl RequestedItems {
             let mut upstream_request = request
                 .original_request
                 .try_clone()
-                .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+                .ok_or(ApplicationError::MissingIdentity("cloneable batch request"))?;
             let pairs = upstream_request
                 .url()
                 .query_pairs()
@@ -179,6 +183,7 @@ impl RequestedItems {
                 session: session.clone(),
                 server: server.clone(),
                 parent_id: None,
+                member_parent_id: None,
                 resolved_parent_id: None,
             };
             let policy = &policy;
@@ -196,13 +201,18 @@ impl RequestedItems {
         }
         let had_targets = !fetches.is_empty();
         if !had_targets && self.0.iter().any(|entry| !entry.members.is_empty()) {
-            return Err(StatusCode::SERVICE_UNAVAILABLE);
+            return Err(ApplicationError::UnavailableOwner);
         }
         let mut successful = false;
+        let mut failures = Vec::new();
         let mut fetched = HashMap::new();
         for result in futures_util::future::join_all(fetches).await {
-            let Ok(catalog) = result else {
-                continue;
+            let catalog = match result {
+                Ok(catalog) => catalog,
+                Err(error) => {
+                    failures.push(error);
+                    continue;
+                }
             };
             successful = true;
             for source in catalog.server_items {
@@ -219,7 +229,7 @@ impl RequestedItems {
             }
         }
         if had_targets && !successful {
-            return Err(StatusCode::SERVICE_UNAVAILABLE);
+            return Err(ApplicationError::SourcesFailed(failures));
         }
         let mut items: Vec<crate::media_presentation::CatalogItem> = Vec::new();
         for entry in self.0 {
@@ -246,7 +256,7 @@ impl RequestedItems {
                             .iter()
                             .find(|mapping| mapping.virtual_media_id == member.item.id)
                             .expect("fetched member belongs to requested item");
-                        crate::handlers::media_versions::record_playback_sources(
+                        crate::application::playback::selection::record_playback_sources(
                             state,
                             &entry.id,
                             &member.server,
@@ -262,17 +272,18 @@ impl RequestedItems {
                 items.extend(members.into_iter().map(|member| member.item.into()));
             }
         }
-        if let Some(scope) = &request.access_scope {
+        if let Some(scope) = &request.context.access_scope {
             for item in &mut items {
-                crate::handlers::media_versions::preserve_media_parent_groups(
+                crate::application::details::sources::preserve_media_parent_groups_typed(
                     state,
                     item,
                     scope.user_id(),
+                    None,
                 )
                 .await?;
             }
         }
-        let response = finalize_items_response(
+        let response = finalize_items_response_typed(
             state,
             &request.original_request,
             FederatedItems::from_merged_items(items),
@@ -280,10 +291,15 @@ impl RequestedItems {
             ResponseShape::Counted,
         )
         .await?;
-        if let Some(token) = request.auth.as_ref().and_then(|auth| auth.token_ref()) {
+        if let Some(token) = request
+            .context
+            .auth
+            .as_ref()
+            .and_then(|auth| auth.token_ref())
+        {
             state
                 .client_sessions
-                .cache_media_response(token, &response.0)
+                .cache_media_response(token, &response)
                 .await;
         }
         Ok(response)

@@ -3,11 +3,8 @@ use hyper::StatusCode;
 use tracing::error;
 
 use crate::{
-    request_preprocessing::{
-        preprocess_request, resolve_request_identity_from_headers_uri, PreprocessedRequest,
-    },
-    user_authorization_service::{AuthorizationSession, User},
-    AppState,
+    request_preprocessing::resolve_request_identity_from_headers_uri,
+    user_authorization_service::User, AppState,
 };
 
 pub struct RequirePrimaryUser(pub User);
@@ -37,108 +34,91 @@ impl FromRequest<AppState> for RequirePrimaryUser {
     }
 }
 
-pub struct Preprocessed(pub PreprocessedRequest);
+/// A caller-scoped operation that has not selected or encoded a backend request.
+pub struct OperationInput(pub(crate) crate::application::input::OperationRequest);
+pub use OperationInput as PlaybackInput;
 
-pub struct CatalogPreprocessed(pub PreprocessedRequest);
-
-impl FromRequest<AppState> for CatalogPreprocessed {
+impl FromRequest<AppState> for OperationInput {
     type Rejection = StatusCode;
 
     async fn from_request(req: Request, state: &AppState) -> Result<Self, Self::Rejection> {
-        crate::request_preprocessing::preprocess_catalog_request(req, state)
+        use crate::application::{
+            context::RequestContext,
+            input::{input_status, OperationRequest},
+        };
+        let (original_request, auth, user, sessions, body_analysis, access_scope) =
+            crate::request_preprocessing::extract_request_infos(req, state, None)
+                .await
+                .map_err(input_status)?;
+        let context = RequestContext::new(&original_request, auth, user, sessions, access_scope);
+        Ok(Self(OperationRequest {
+            original_request,
+            context,
+            body_analysis,
+        }))
+    }
+}
+
+pub struct LiveInput(pub(crate) crate::application::playback::live::LiveRequest);
+
+/// Catalog authentication and scope collection without selecting or rewriting a backend.
+pub struct CatalogInput(pub(crate) crate::application::catalog::input::CatalogRequest);
+
+impl FromRequest<AppState> for CatalogInput {
+    type Rejection = StatusCode;
+
+    async fn from_request(req: Request, state: &AppState) -> Result<Self, Self::Rejection> {
+        use crate::application::{
+            catalog::input::{input_error, CatalogRequest},
+            context::RequestContext,
+        };
+        let (original_request, auth, user, sessions, body_analysis, access_scope) =
+            crate::request_preprocessing::extract_request_infos(req, state, None)
+                .await
+                .map_err(input_error)?;
+        let context = RequestContext::new(&original_request, auth, user, sessions, access_scope);
+        tracing::debug!(principal = ?context.principal, device_present = context.device.is_some(), "Collected catalog context");
+        let request = CatalogRequest::new(original_request, context, body_analysis);
+        request
+            .validate(state)
             .await
-            .map(Self)
-            .map_err(|error| {
-                error!("Failed to resolve catalog request: {error}");
-                if error.is::<crate::request_preprocessing::NoAvailableBackend>() {
-                    StatusCode::SERVICE_UNAVAILABLE
-                } else if error.is::<crate::request_preprocessing::MediaAccessDenied>() {
-                    StatusCode::FORBIDDEN
-                } else {
+            .map_err(|error| error.detail_status())?;
+        Ok(Self(request))
+    }
+}
+
+impl FromRequest<AppState> for LiveInput {
+    type Rejection = StatusCode;
+
+    async fn from_request(req: Request, state: &AppState) -> Result<Self, Self::Rejection> {
+        use crate::application::{
+            catalog::input::input_error, context::RequestContext, playback::live::LiveRequest,
+        };
+        let (original_request, auth, user, sessions, body_analysis, access_scope) =
+            crate::request_preprocessing::extract_request_infos(req, state, None)
+                .await
+                .map_err(input_error)?;
+        let context = RequestContext::new(&original_request, auth, user, sessions, access_scope);
+        context
+            .validate_media_ids(
+                original_request.url(),
+                body_analysis.as_ref(),
+                &state.processors.url_processor,
+            )
+            .await
+            .map_err(input_error)?;
+        if let Some(scope) = &context.access_scope {
+            if context.backends.sessions.as_ref().is_none_or(Vec::is_empty) {
+                return Err(if scope.server_ids().is_empty() {
                     StatusCode::BAD_REQUEST
-                }
-            })
-    }
-}
-
-impl FromRequest<AppState> for Preprocessed {
-    type Rejection = StatusCode;
-
-    async fn from_request(req: Request, state: &AppState) -> Result<Self, Self::Rejection> {
-        preprocess_request(req, state).await.map(Self).map_err(|e| {
-            error!("Failed to preprocess request: {}", e);
-            if e.is::<crate::request_preprocessing::NoAvailableBackend>() {
-                StatusCode::SERVICE_UNAVAILABLE
-            } else if e.is::<crate::request_preprocessing::MediaAccessDenied>() {
-                StatusCode::FORBIDDEN
-            } else {
-                StatusCode::BAD_REQUEST
+                } else {
+                    StatusCode::SERVICE_UNAVAILABLE
+                });
             }
-        })
-    }
-}
-
-pub struct RequireUser {
-    pub preprocessed: PreprocessedRequest,
-    pub user: User,
-}
-
-impl FromRequest<AppState> for RequireUser {
-    type Rejection = StatusCode;
-
-    async fn from_request(req: Request, state: &AppState) -> Result<Self, Self::Rejection> {
-        let Preprocessed(preprocessed) = Preprocessed::from_request(req, state).await?;
-        let user = preprocessed.user.clone().ok_or_else(|| {
-            error!("User not found in request preprocessing");
-            StatusCode::UNAUTHORIZED
-        })?;
-
-        Ok(Self { preprocessed, user })
-    }
-}
-
-pub struct RequireSession {
-    pub preprocessed: PreprocessedRequest,
-    pub session: AuthorizationSession,
-}
-
-impl FromRequest<AppState> for RequireSession {
-    type Rejection = StatusCode;
-
-    async fn from_request(req: Request, state: &AppState) -> Result<Self, Self::Rejection> {
-        let Preprocessed(preprocessed) = Preprocessed::from_request(req, state).await?;
-        let session = preprocessed.session.clone().ok_or_else(|| {
-            error!("Session not found in request preprocessing");
-            StatusCode::UNAUTHORIZED
-        })?;
-
-        Ok(Self {
-            preprocessed,
-            session,
-        })
-    }
-}
-
-pub struct RequireUserSession {
-    pub preprocessed: PreprocessedRequest,
-    pub user: User,
-    pub session: AuthorizationSession,
-}
-
-impl FromRequest<AppState> for RequireUserSession {
-    type Rejection = StatusCode;
-
-    async fn from_request(req: Request, state: &AppState) -> Result<Self, Self::Rejection> {
-        let RequireUser { preprocessed, user } = RequireUser::from_request(req, state).await?;
-        let session = preprocessed.session.clone().ok_or_else(|| {
-            error!("Session not found in request preprocessing");
-            StatusCode::UNAUTHORIZED
-        })?;
-
-        Ok(Self {
-            preprocessed,
-            user,
-            session,
-        })
+        }
+        Ok(Self(LiveRequest {
+            original_request,
+            context,
+        }))
     }
 }

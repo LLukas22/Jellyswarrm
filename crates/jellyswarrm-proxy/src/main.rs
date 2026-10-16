@@ -1,7 +1,7 @@
 use axum::{
     body::Body,
     extract::{Request, State},
-    http::{header, HeaderValue, Method, StatusCode},
+    http::{Method, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{any, get, post},
@@ -19,7 +19,7 @@ use tower::ServiceBuilder;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tower_sessions::cookie::Key;
 use tower_sessions_sqlx_store::SqliteStore;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use axum_login::{
@@ -27,6 +27,7 @@ use axum_login::{
     AuthManagerLayerBuilder,
 };
 
+mod application;
 mod client_api_routes;
 mod config;
 #[cfg(debug_assertions)]
@@ -55,6 +56,7 @@ mod server_url;
 mod session_storage;
 mod sessions;
 mod ui;
+mod upstream;
 mod url_helper;
 mod user_authorization_service;
 mod virtual_library_service;
@@ -69,24 +71,22 @@ use virtual_library_service::VirtualLibraryService;
 
 use crate::{
     config::{AppConfig, MIGRATOR},
-    handlers::common::set_json_body,
     handlers::quick_connect::{self, QuickConnectStorage},
     processors::{
-        request_analyzer::{PlaybackSessionAction, RequestAnalyzer},
+        request_analyzer::RequestAnalyzer,
         request_processor::{RequestProcessingContext, RequestProcessor},
         response_processor::{
             ResponseProcessingContext, ResponseProcessingProfile, ResponseProcessor,
         },
         url_processor::UrlProcessor,
     },
-    proxy_headers::is_hop_by_hop_header,
     request_preprocessing::body_to_json,
     ui::Backend,
+    upstream::jellyfin::json::set_json_body,
 };
 use crate::{
     config::{MediaStreamingMode, DATA_DIR},
     encryption::Password,
-    request_preprocessing::preprocess_request,
     session_storage::SessionStorage,
     ui::ui_routes,
 };
@@ -107,7 +107,7 @@ pub struct AppState {
     pub federated_users: Arc<FederatedUserService>,
     pub syncplay: Arc<SyncPlayService>,
     pub client_sessions: Arc<sessions::ClientSessionService>,
-    pub(crate) catalog_snapshots: Arc<handlers::federated::snapshots::CatalogSnapshots>,
+    pub(crate) catalog_snapshots: Arc<application::catalog::snapshots::CatalogSnapshots>,
 }
 
 impl AppState {
@@ -142,7 +142,9 @@ impl AppState {
             federated_users,
             syncplay: Arc::new(SyncPlayService::with_transport(transport.clone())),
             client_sessions: Arc::new(sessions::ClientSessionService::new(transport)),
-            catalog_snapshots: Arc::new(handlers::federated::snapshots::CatalogSnapshots::default()),
+            catalog_snapshots: Arc::new(
+                application::catalog::snapshots::CatalogSnapshots::default(),
+            ),
         }
     }
 
@@ -201,6 +203,18 @@ impl AppState {
         profile: ResponseProcessingProfile,
         proxy_api_key: Option<&str>,
     ) -> Result<bool, StatusCode> {
+        self.process_response_json_typed(payload, server, profile, proxy_api_key)
+            .await
+            .map_err(|error| error.detail_status())
+    }
+
+    pub(crate) async fn process_response_json_typed(
+        &self,
+        payload: &mut serde_json::Value,
+        server: &Server,
+        profile: ResponseProcessingProfile,
+        proxy_api_key: Option<&str>,
+    ) -> Result<bool, application::error::ApplicationError> {
         let config = self.config.read().await;
         let context = ResponseProcessingContext {
             server: server.clone(),
@@ -212,7 +226,7 @@ impl AppState {
 
         let modified = self
             .processors
-            .process_response_json(payload, &context)
+            .process_response_json_typed(payload, &context)
             .await?;
         Ok(modified)
     }
@@ -280,6 +294,17 @@ impl ProxyProcessors {
         payload: &mut serde_json::Value,
         context: &ResponseProcessingContext,
     ) -> Result<bool, StatusCode> {
+        self.process_response_json_typed(payload, context)
+            .await
+            .map_err(|error| error.detail_status())
+    }
+
+    pub(crate) async fn process_response_json_typed(
+        &self,
+        payload: &mut serde_json::Value,
+        context: &ResponseProcessingContext,
+    ) -> Result<bool, application::error::ApplicationError> {
+        use application::error::ApplicationError;
         let permissions_modified =
             if context.profile == ResponseProcessingProfile::PlaylistPermissions {
                 self.response_processor
@@ -288,21 +313,19 @@ impl ProxyProcessors {
                     .map_err(|error| {
                         use processors::response_processor::PlaylistResponseError;
                         error!("Failed to process playlist sharing response: {error}");
-                        match error {
+                        let status = match &error {
                             PlaylistResponseError::IncompleteSharing => StatusCode::CONFLICT,
                             PlaylistResponseError::InvalidSharing => StatusCode::BAD_GATEWAY,
                             PlaylistResponseError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
-                        }
+                        };
+                        ApplicationError::Internal(error.into()).with_status(status)
                     })?
             } else {
                 false
             };
         let processed = processors::process_json(payload, &self.response_processor, context)
             .await
-            .map_err(|e| {
-                error!("Failed to process response JSON: {}", e);
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+            .map_err(ApplicationError::Internal)?;
 
         Ok(permissions_modified || processed.was_modified)
     }
@@ -833,7 +856,32 @@ async fn proxy_handler(
             });
     }
 
-    let preprocessed = match preprocess_request(req, &state).await {
+    let prepared = async {
+        let action =
+            request_preprocessing::playback_session_action(req.method(), req.uri().path(), &state)
+                .await;
+        let (original_request, auth, user, sessions, body_analysis, access_scope) =
+            request_preprocessing::extract_request_infos(req, &state, action).await?;
+        let context = application::context::RequestContext::new(
+            &original_request,
+            auth,
+            user,
+            sessions,
+            access_scope,
+        );
+        application::proxy::prepare(
+            &state,
+            application::input::OperationRequest {
+                original_request,
+                context,
+                body_analysis,
+            },
+            action,
+        )
+        .await
+    }
+    .await;
+    let prepared = match prepared {
         Ok(request) => request,
         Err(error) => {
             error!("Failed to preprocess request: {}", error);
@@ -848,184 +896,10 @@ async fn proxy_handler(
         }
     };
 
-    let request_url = preprocessed.request.url().clone();
-    if let Some(response) = handlers::played_state::update_aggregate(&state, &preprocessed).await? {
-        return Ok(response.into_response());
-    }
-    let mutation_viewer = (!matches!(*preprocessed.request.method(), Method::GET | Method::HEAD))
-        .then(|| preprocessed.user.as_ref().map(|user| user.id.clone()))
-        .flatten();
-    let pending_playback_session_update = preprocessed.pending_playback_session_update.clone();
-    let original_session_request = preprocessed.original_request.try_clone();
-    let response_server = preprocessed.server.clone();
-    let response_proxy_api_key = preprocessed
-        .auth
-        .as_ref()
-        .and_then(|auth| auth.token_ref())
-        .map(str::to_string);
-    trace!(
-        "Proxy request details:\n  Original: {:?}\n  Target URL: {}\n  Transformed: {:?}",
-        preprocessed.original_request,
-        preprocessed.request.url(),
-        preprocessed.request
-    );
-
-    let request_processing_context = RequestProcessingContext::new(&preprocessed);
-    let mut request = preprocessed.request;
-    if let Err(error) = state
-        .processors
-        .process_request_body(&mut request, &request_processing_context, &request_url)
+    let response = application::proxy::forward(&state, prepared, response_profile)
         .await
-    {
-        return Ok(error.into_response());
-    }
-    let response = state.reqwest_client.execute(request).await.map_err(|e| {
-        error!("Failed to execute proxy request: {}", e);
-        StatusCode::BAD_GATEWAY
-    })?;
-
-    let status = response.status();
-    if status.is_success() {
-        if let Some(viewer) = mutation_viewer {
-            state.catalog_snapshots.invalidate_viewer(&viewer);
-        }
-        if let Some(original) = &original_session_request {
-            sessions::observe_playback(&state, original).await;
-        }
-    }
-    if !status.is_success() {
-        warn!(
-            "Upstream server returned error status: {} for Request to: {}",
-            status, request_url
-        );
-    }
-    let mut headers = response.headers().clone();
-    let mut body_bytes = response.bytes().await.map_err(|e| {
-        error!("Failed to read response body: {}", e);
-        StatusCode::BAD_GATEWAY
-    })?;
-
-    if status.is_success()
-        && response_profile.requires_json()
-        && (!is_json_response(&headers) || body_bytes.is_empty())
-    {
-        return Err(StatusCode::BAD_GATEWAY);
-    }
-    if is_json_response(&headers) && !body_bytes.is_empty() {
-        match serde_json::from_slice::<serde_json::Value>(&body_bytes) {
-            Ok(mut json_value) => {
-                let was_modified = state
-                    .process_response_json(
-                        &mut json_value,
-                        &response_server,
-                        if status.is_success() {
-                            response_profile
-                        } else {
-                            ResponseProcessingProfile::BestEffortMedia
-                        },
-                        response_proxy_api_key.as_deref(),
-                    )
-                    .await?;
-
-                if status.is_success() && response_profile != ResponseProcessingProfile::Disabled {
-                    if let Some(token) = response_proxy_api_key.as_deref() {
-                        state
-                            .client_sessions
-                            .cache_media_response(token, &json_value)
-                            .await;
-                    }
-                }
-
-                if was_modified {
-                    let processed_body = serde_json::to_vec(&json_value).map_err(|e| {
-                        error!("Failed to serialize processed response JSON: {}", e);
-                        StatusCode::INTERNAL_SERVER_ERROR
-                    })?;
-
-                    debug!("Modified JSON response body for request to {}", request_url);
-                    headers.remove(header::CONTENT_LENGTH);
-                    headers.remove(header::TRANSFER_ENCODING);
-                    headers.insert(
-                        header::CONTENT_LENGTH,
-                        HeaderValue::from_str(&processed_body.len().to_string()).map_err(|e| {
-                            error!("Failed to build response Content-Length header: {}", e);
-                            StatusCode::INTERNAL_SERVER_ERROR
-                        })?,
-                    );
-                    body_bytes = processed_body.into();
-                }
-            }
-            Err(e) => {
-                if status.is_success() && response_profile.requires_json() {
-                    error!("Invalid JSON response for {}: {}", request_url, e);
-                    return Err(StatusCode::BAD_GATEWAY);
-                }
-                warn!(
-                    "Skipping JSON response processing for {} because body parsing failed: {}",
-                    request_url, e
-                );
-            }
-        }
-    }
-
-    let mut response_builder = Response::builder().status(status);
-
-    // Copy headers, filtering out hop-by-hop headers
-    for (name, value) in headers.iter() {
-        if !is_hop_by_hop_header(name) {
-            response_builder = response_builder.header(name, value);
-        }
-    }
-
-    let response = response_builder.body(Body::from(body_bytes)).map_err(|e| {
-        error!("Failed to build response: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    if status.is_success() {
-        if let Some(update) = pending_playback_session_update {
-            match update.action {
-                PlaybackSessionAction::Start => {
-                    state.play_sessions.add_session(update.session).await;
-                }
-                PlaybackSessionAction::Refresh => {
-                    let Some(revision) = update.revision else {
-                        return Ok(response);
-                    };
-                    state
-                        .play_sessions
-                        .refresh_session_for_user(
-                            &update.session.session_id,
-                            &update.session.user_id,
-                            revision,
-                        )
-                        .await;
-                }
-                PlaybackSessionAction::Remove => {
-                    let Some(revision) = update.revision else {
-                        return Ok(response);
-                    };
-                    state
-                        .play_sessions
-                        .remove_session_for_user(
-                            &update.session.session_id,
-                            &update.session.user_id,
-                            revision,
-                        )
-                        .await;
-                }
-            }
-        }
-    }
-
-    Ok(response)
-}
-
-fn is_json_response(headers: &axum::http::HeaderMap) -> bool {
-    headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|content_type| content_type.contains("application/json"))
+        .map_err(|error| error.detail_status())?;
+    Ok(response.map(Body::from))
 }
 
 /// Map a request path to the embedded asset key. Clients like the official WebOS

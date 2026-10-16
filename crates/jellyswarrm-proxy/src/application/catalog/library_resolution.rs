@@ -1,18 +1,20 @@
+//! Catalog target planning.
 use std::collections::HashSet;
 
+use crate::application::error::ApplicationError;
 use hyper::StatusCode;
 use tracing::{debug, error};
 
 use crate::{
+    application::catalog::input::CatalogRequest,
     media_scope::{MediaCatalogScope, MediaScopeKind},
-    request_preprocessing::PreprocessedRequest,
     server_storage::Server,
     user_authorization_service::AuthorizationSession,
     virtual_library_service::{normalize_library_id, LibraryGrouping, VirtualLibraryResolution},
     AppState,
 };
 
-pub(super) enum CatalogPlan {
+pub(crate) enum CatalogPlan {
     EmptyVirtual,
     SingleServer,
     Virtual {
@@ -25,39 +27,43 @@ pub(super) enum CatalogPlan {
     ConfiguredRoot(Vec<CatalogFetchTarget>),
 }
 
-pub(super) struct CatalogFetchTarget {
-    pub(super) session: AuthorizationSession,
-    pub(super) server: Server,
-    pub(super) parent_id: Option<String>,
-    pub(super) resolved_parent_id: Option<String>,
+pub(crate) struct CatalogFetchTarget {
+    pub(crate) session: AuthorizationSession,
+    pub(crate) server: Server,
+    pub(crate) parent_id: Option<String>,
+    /// Member client identity for the single upstream-builder translation.
+    /// `parent_id` remains the backend identity used by reconciliation.
+    pub(crate) member_parent_id: Option<String>,
+    pub(crate) resolved_parent_id: Option<String>,
 }
 
 pub(super) fn unavailable_source_count(
-    preprocessed: &PreprocessedRequest,
+    preprocessed: &CatalogRequest,
     targets: &[CatalogFetchTarget],
 ) -> usize {
-    preprocessed.access_scope.as_ref().map_or(0, |scope| {
-        scope
-            .server_ids()
-            .iter()
-            .filter(|id| !targets.iter().any(|target| target.server.id == **id))
-            .count()
-    })
+    preprocessed
+        .context
+        .access_scope
+        .as_ref()
+        .map_or(0, |scope| {
+            scope
+                .server_ids()
+                .iter()
+                .filter(|id| !targets.iter().any(|target| target.server.id == **id))
+                .count()
+        })
 }
 
-pub(super) async fn resolve_catalog_plan(
+pub(crate) async fn resolve_catalog_plan(
     state: &AppState,
-    preprocessed: &PreprocessedRequest,
-) -> Result<CatalogPlan, StatusCode> {
+    preprocessed: &CatalogRequest,
+) -> Result<CatalogPlan, ApplicationError> {
     if let Some(parent_id) = parent_id(preprocessed.original_request.url()) {
         let resolution = state
             .virtual_library_service
-            .resolve(&parent_id, preprocessed.access_scope.as_ref())
+            .resolve(&parent_id, preprocessed.context.access_scope.as_ref())
             .await
-            .map_err(|error| {
-                error!("Failed to resolve virtual library for {parent_id}: {error}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+            .map_err(ApplicationError::Storage)?;
 
         match resolution {
             VirtualLibraryResolution::Resolved(resolved) => {
@@ -85,6 +91,7 @@ pub(super) async fn resolve_catalog_plan(
                             session,
                             server: member.server,
                             parent_id: Some(member.mapping.original_media_id),
+                            member_parent_id: Some(member.mapping.virtual_media_id),
                             resolved_parent_id: Some(parent_id.clone()),
                         })
                     })
@@ -108,7 +115,7 @@ pub(super) async fn resolve_catalog_plan(
                 if let Some(plan) = resolve_aggregate_plan(state, preprocessed, &parent_id).await? {
                     return Ok(plan);
                 }
-                if is_single_server_parent(state, &parent_id).await {
+                if is_single_server_parent(state, &parent_id).await? {
                     return Ok(CatalogPlan::SingleServer);
                 }
             }
@@ -135,10 +142,7 @@ pub(super) async fn resolve_catalog_plan(
             .virtual_library_service
             .library_grouping(state.merge_libraries_enabled().await)
             .await
-            .map_err(|error| {
-                error!("Failed to determine library grouping: {error}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?
+            .map_err(ApplicationError::Storage)?
     } else {
         LibraryGrouping::None
     };
@@ -149,6 +153,7 @@ pub(super) async fn resolve_catalog_plan(
             session,
             server,
             parent_id: None,
+            member_parent_id: None,
             resolved_parent_id: None,
         })
         .collect();
@@ -176,11 +181,21 @@ pub(super) async fn resolve_catalog_plan(
         && state.deduplicate_media_enabled().await
     {
         let viewer = preprocessed
+            .context
             .access_scope
             .as_ref()
             .map(|scope| scope.user_id())
-            .or_else(|| preprocessed.user.as_ref().map(|user| user.id.as_str()))
-            .ok_or(StatusCode::UNAUTHORIZED)?;
+            .or_else(|| {
+                preprocessed
+                    .context
+                    .user
+                    .as_ref()
+                    .map(|user| user.id.as_str())
+            })
+            .ok_or_else(|| {
+                ApplicationError::MissingIdentity("catalog viewer")
+                    .with_status(StatusCode::UNAUTHORIZED)
+            })?;
         // Latest and search are additive feeds, not inventories. Keep their
         // identity scopes stable across windows, terms and missing sessions.
         return Ok(CatalogPlan::Virtual {
@@ -211,12 +226,17 @@ pub(super) async fn resolve_catalog_plan(
 }
 
 fn available_sessions(
-    preprocessed: &PreprocessedRequest,
-) -> Result<Vec<(AuthorizationSession, Server)>, StatusCode> {
+    preprocessed: &CatalogRequest,
+) -> Result<Vec<(AuthorizationSession, Server)>, ApplicationError> {
     let sessions = preprocessed
+        .context
+        .backends
         .sessions
         .as_ref()
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+        .ok_or_else(|| {
+            ApplicationError::MissingIdentity("catalog sessions")
+                .with_status(StatusCode::UNAUTHORIZED)
+        })?;
     let mut seen_servers = HashSet::new();
     let sessions = sessions
         .iter()
@@ -225,7 +245,8 @@ fn available_sessions(
         .collect::<Vec<_>>();
 
     if sessions.is_empty() {
-        Err(StatusCode::UNAUTHORIZED)
+        Err(ApplicationError::MissingIdentity("active catalog session")
+            .with_status(StatusCode::UNAUTHORIZED))
     } else {
         Ok(sessions)
     }
@@ -247,9 +268,9 @@ fn series_parent_id(url: &url::Url) -> Option<String> {
 
 async fn resolve_aggregate_plan(
     state: &AppState,
-    preprocessed: &PreprocessedRequest,
+    preprocessed: &CatalogRequest,
     parent_id: &str,
-) -> Result<Option<CatalogPlan>, StatusCode> {
+) -> Result<Option<CatalogPlan>, ApplicationError> {
     // A collapsed series/season (aggregate version group) fans out to its
     // member items so seasons/episodes merge across backends the same way
     // movies merge at the library level.
@@ -257,10 +278,7 @@ async fn resolve_aggregate_plan(
         .media_storage
         .get_media_version_group(parent_id)
         .await
-        .map_err(|error| {
-            error!("Failed to resolve version aggregate for {parent_id}: {error}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?
+        .map_err(ApplicationError::Storage)?
     else {
         return Ok(None);
     };
@@ -268,10 +286,7 @@ async fn resolve_aggregate_plan(
         .media_storage
         .get_media_version_members(group.id)
         .await
-        .map_err(|error| {
-            error!("Failed to load version aggregate members: {error}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+        .map_err(ApplicationError::Storage)?;
     if members.is_empty() {
         return Ok(None);
     }
@@ -280,6 +295,7 @@ async fn resolve_aggregate_plan(
     let mut targets = Vec::new();
     for member in members {
         if preprocessed
+            .context
             .access_scope
             .as_ref()
             .is_some_and(|scope| !scope.allows(member.server.id))
@@ -298,6 +314,7 @@ async fn resolve_aggregate_plan(
             session,
             server,
             parent_id: Some(member.mapping.original_media_id),
+            member_parent_id: Some(member.mapping.virtual_media_id),
             resolved_parent_id: Some(parent_id.to_string()),
         });
     }
@@ -305,6 +322,7 @@ async fn resolve_aggregate_plan(
         return Ok(None);
     }
     let viewer = preprocessed
+        .context
         .access_scope
         .as_ref()
         .map(|scope| scope.user_id())
@@ -327,15 +345,17 @@ async fn resolve_aggregate_plan(
     }))
 }
 
-async fn is_single_server_parent(state: &AppState, parent_id: &str) -> bool {
+async fn is_single_server_parent(
+    state: &AppState,
+    parent_id: &str,
+) -> Result<bool, ApplicationError> {
     let parent_id = normalize_library_id(parent_id);
-    state
+    Ok(state
         .media_storage
         .get_media_mapping_by_virtual(&parent_id)
         .await
-        .ok()
-        .flatten()
-        .is_some()
+        .map_err(ApplicationError::Storage)?
+        .is_some())
 }
 
 pub(super) fn is_library_root_request(url: &url::Url, url_prefix: Option<&str>) -> bool {

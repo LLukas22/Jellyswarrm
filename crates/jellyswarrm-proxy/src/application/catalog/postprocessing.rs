@@ -1,3 +1,4 @@
+//! Catalog grouping, ordering and presentation.
 use std::collections::VecDeque;
 use std::str::FromStr;
 
@@ -60,7 +61,7 @@ impl Pagination {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ResponseShape {
+pub(crate) enum ResponseShape {
     Bare,
     Counted,
 }
@@ -96,13 +97,13 @@ impl ResponseShape {
     }
 }
 
-pub(super) struct ServerItems {
-    pub(super) response: ItemsResponseVariants,
-    pub(super) server: Server,
+pub(crate) struct ServerItems {
+    pub(crate) response: ItemsResponseVariants,
+    pub(crate) server: Server,
 }
 
 #[derive(Default)]
-pub(super) struct FederatedItems {
+pub(crate) struct FederatedItems {
     items: Vec<CatalogItem>,
 }
 
@@ -126,7 +127,7 @@ impl FederatedItems {
         Self::from_merged_items(label_duplicates(items))
     }
 
-    pub(super) fn from_merged_items(items: Vec<CatalogItem>) -> Self {
+    pub(crate) fn from_merged_items(items: Vec<CatalogItem>) -> Self {
         Self { items }
     }
 
@@ -152,7 +153,7 @@ impl FederatedItems {
     }
 
     #[cfg(test)]
-    pub(super) fn into_response(
+    pub(crate) fn into_response(
         self,
         url: &url::Url,
         shape: ResponseShape,
@@ -371,6 +372,43 @@ fn interleave_catalog(responses: Vec<Vec<CatalogItem>>) -> Vec<CatalogItem> {
 
 fn to_i32(value: usize) -> i32 {
     value.min(i32::MAX as usize) as i32
+}
+
+/// Page an already grouped/sorted materialization without reconstructing DTOs.
+/// Unknown item and envelope fields survive unchanged.
+pub(super) fn page_materialized_response(
+    snapshot: &serde_json::Value,
+    pagination: Pagination,
+) -> Result<serde_json::Value, crate::application::error::ApplicationError> {
+    use crate::application::error::ApplicationError;
+    let slice = |items: &[serde_json::Value]| {
+        items
+            .iter()
+            .skip(pagination.start_index)
+            .take(pagination.limit.unwrap_or(usize::MAX))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    if let Some(items) = snapshot.as_array() {
+        return Ok(serde_json::Value::Array(slice(items)));
+    }
+    let mut response = snapshot
+        .as_object()
+        .ok_or_else(|| {
+            ApplicationError::Internal(anyhow::anyhow!("invalid materialized catalog envelope"))
+        })?
+        .clone();
+    let items = snapshot["Items"].as_array().ok_or_else(|| {
+        ApplicationError::Internal(anyhow::anyhow!(
+            "materialized catalog Items must be an array"
+        ))
+    })?;
+    response.insert("Items".into(), serde_json::Value::Array(slice(items)));
+    response.insert(
+        "StartIndex".into(),
+        serde_json::json!(pagination.start_index.min(i32::MAX as usize)),
+    );
+    Ok(serde_json::Value::Object(response))
 }
 
 #[cfg(test)]

@@ -1,204 +1,14 @@
-use std::fs;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use hyper::StatusCode;
-use reqwest::header::{HeaderValue, CONTENT_LENGTH, TRANSFER_ENCODING};
-use serde::Serialize;
-use tracing::{error, info};
+use crate::application::error::ApplicationError;
+use tracing::info;
 
 use crate::{
     models::{MediaSource, PlaybackRequest, PlaybackResponse},
     processors::response_processor::ResponseProcessingProfile,
     server_storage::Server,
-    session_storage::PlaybackSession,
+    upstream::jellyfin::json::response_json_to_payload_typed,
     user_authorization_service::AuthorizationSession,
     AppState,
 };
-
-pub fn payload_from_request<T>(request: &reqwest::Request) -> Result<T, StatusCode>
-where
-    T: serde::de::DeserializeOwned,
-{
-    let bytes = request
-        .body()
-        .ok_or(StatusCode::BAD_REQUEST)?
-        .as_bytes()
-        .ok_or(StatusCode::BAD_REQUEST)?;
-    match serde_json::from_slice::<T>(bytes) {
-        Ok(val) => Ok(val),
-        Err(e) => {
-            if let Ok(body_str) = std::str::from_utf8(bytes) {
-                error!("Failed to parse JSON body: {e}\nBody: {body_str}");
-            } else {
-                error!("Failed to parse JSON body: {e}\nBody (non-UTF8)");
-            }
-            Err(StatusCode::BAD_REQUEST)
-        }
-    }
-}
-
-pub fn set_json_body<T>(request: &mut reqwest::Request, payload: &T) -> Result<(), StatusCode>
-where
-    T: Serialize,
-{
-    let json = serde_json::to_vec(payload).map_err(|e| {
-        error!("Failed to serialize JSON request body: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    let len = json.len();
-    *request.body_mut() = Some(reqwest::Body::from(json));
-    request.headers_mut().insert(
-        CONTENT_LENGTH,
-        HeaderValue::from_str(&len.to_string()).map_err(|e| {
-            error!("Failed to build Content-Length header: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?,
-    );
-    request.headers_mut().remove(TRANSFER_ENCODING);
-
-    Ok(())
-}
-
-/// Execute a reqwest request and parse the JSON response with comprehensive error handling
-pub async fn execute_json_request<T>(
-    client: &reqwest::Client,
-    request: reqwest::Request,
-) -> Result<T, StatusCode>
-where
-    T: serde::de::DeserializeOwned,
-{
-    let response = client.execute(request).await.map_err(|e| {
-        error!("Failed to execute request: {}", e);
-        StatusCode::BAD_GATEWAY
-    })?;
-    let status = response.status();
-    if !status.is_success() {
-        error!(
-            "Upstream request to {} failed with status {}",
-            response.url(),
-            status
-        );
-        return Err(status);
-    }
-
-    let response_text = response.text().await.map_err(|e| {
-        error!("Failed to get response text: {}", e);
-        StatusCode::BAD_GATEWAY
-    })?;
-
-    match serde_json::from_str::<T>(&response_text) {
-        Ok(val) => Ok(val),
-        Err(_original_error) => {
-            // First, try to parse as generic JSON to get a pretty-printed version
-            let pretty_json = match serde_json::from_str::<serde_json::Value>(&response_text) {
-                Ok(val) => {
-                    // JSON is structurally valid, pretty-print it
-                    match serde_json::to_string_pretty(&val) {
-                        Ok(pretty) => pretty,
-                        Err(_) => response_text.clone(),
-                    }
-                }
-                Err(_) => {
-                    // JSON is completely invalid, use original
-                    response_text.clone()
-                }
-            };
-
-            // Now try to parse the pretty JSON as our target type to get better error info
-            let parse_error = match serde_json::from_str::<T>(&pretty_json) {
-                Ok(_) => _original_error, // Shouldn't happen, but use original error
-                Err(e) => e,
-            };
-
-            // Optional file dump in debug builds
-            if cfg!(debug_assertions) {
-                let dump_dir = crate::config::DATA_DIR.join("json_dumps");
-                if fs::create_dir_all(&dump_dir).is_ok() {
-                    let ts = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map(|d| d.as_millis())
-                        .unwrap_or(0);
-                    let filename = format!(
-                        "json_parse_error_{}_{}.json",
-                        ts,
-                        std::any::type_name::<T>().replace("::", "_")
-                    );
-                    let path = dump_dir.join(filename);
-                    if fs::write(&path, &pretty_json).is_ok() {
-                        info!("Debug: JSON dump saved to {:?}", path);
-                    }
-                }
-            }
-
-            let line = parse_error.line();
-            let col = parse_error.column();
-            if line > 0 || col > 0 {
-                let lines: Vec<&str> = pretty_json.lines().collect();
-                let line_idx = line.saturating_sub(1);
-                let col_idx = col.saturating_sub(1);
-
-                let mut snippet = String::new();
-                let context_before = 3;
-                let context_after = 3;
-                let start_idx = line_idx.saturating_sub(context_before);
-                let end_idx = std::cmp::min(lines.len(), line_idx + context_after + 1);
-
-                for i in start_idx..end_idx {
-                    let line_num = i + 1;
-                    let line_content = lines.get(i).unwrap_or(&"");
-
-                    if i == line_idx {
-                        snippet.push_str(&format!(">>> {line_num:>4} | {line_content}\n"));
-                        let visible_col = std::cmp::min(col_idx, line_content.chars().count());
-                        let spaces = " ".repeat(visible_col);
-                        snippet.push_str(&format!("         | {spaces}^ (column {col})\n"));
-                    } else {
-                        snippet.push_str(&format!("    {line_num:>4} | {line_content}\n"));
-                    }
-                }
-
-                error!(
-                    "JSON parsing failed: {}\nAt line {}, column {}:\n{}",
-                    parse_error, line, col, snippet
-                );
-                return Err(StatusCode::BAD_GATEWAY);
-            }
-
-            // Fallback if no line/column info
-            error!("JSON parsing failed: {}", parse_error);
-            Err(StatusCode::BAD_GATEWAY)
-        }
-    }
-}
-
-pub async fn execute_processed_json_request(
-    state: &AppState,
-    request: reqwest::Request,
-    server: &Server,
-    profile: ResponseProcessingProfile,
-    proxy_api_key: Option<&str>,
-) -> Result<serde_json::Value, StatusCode> {
-    let mut response = execute_json_request::<serde_json::Value>(&state.reqwest_client, request)
-        .await
-        .inspect_err(|e| error!("Failed to get upstream JSON: {:?}", e))?;
-
-    state
-        .process_response_json(&mut response, server, profile, proxy_api_key)
-        .await?;
-
-    Ok(response)
-}
-
-pub fn response_json_to_payload<T>(payload: serde_json::Value) -> Result<T, StatusCode>
-where
-    T: serde::de::DeserializeOwned,
-{
-    serde_json::from_value(payload).map_err(|e| {
-        error!("Failed to deserialize processed response JSON: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })
-}
 
 fn parse_delivery_url(value: &str) -> Option<url::Url> {
     if let Ok(url) = url::Url::parse(value) {
@@ -219,7 +29,7 @@ pub async fn remap_playback_request(
     state: &AppState,
     session: &AuthorizationSession,
     server: &Server,
-) -> Result<(), StatusCode> {
+) -> Result<(), ApplicationError> {
     if payload.user_id.is_some() {
         payload.user_id = Some(session.original_user_id.clone());
     }
@@ -229,10 +39,7 @@ pub async fn remap_playback_request(
             .media_storage
             .get_media_mapping_by_virtual(media_source_id)
             .await
-            .map_err(|e| {
-                error!("Failed to resolve media source id mapping: {}", e);
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?
+            .map_err(ApplicationError::Storage)?
         {
             payload.media_source_id = Some(media_mapping.original_media_id);
         }
@@ -245,9 +52,11 @@ pub async fn remap_playback_request(
                     .play_sessions
                     .live_stream(id, &session.user_id)
                     .await
-                    .ok_or(StatusCode::BAD_REQUEST)?;
+                    .ok_or(ApplicationError::InvalidInput("unknown live identity"))?;
                 if binding.server_id != server.id {
-                    return Err(StatusCode::BAD_REQUEST);
+                    return Err(ApplicationError::InvalidInput(
+                        "live identity belongs to another backend",
+                    ));
                 }
                 *value = serde_json::Value::String(binding.original_id);
             }
@@ -262,18 +71,25 @@ pub async fn process_playback_response(
     server: &Server,
     session: &AuthorizationSession,
     proxy_api_key: Option<&str>,
-) -> Result<(), StatusCode> {
+) -> Result<Vec<std::sync::Arc<crate::session_storage::PreparedLiveStream>>, ApplicationError> {
+    let mut plans = Vec::new();
     for source in &mut response.media_sources {
-        crate::handlers::livestreams::bind_live_source(state, source, &session.user_id, server)
-            .await?;
+        if let Some(plan) = crate::application::playback::live::prepare_live_source(
+            state,
+            source,
+            &session.user_id,
+            server,
+        )
+        .await?
+        {
+            plans.push(plan);
+        }
     }
-    let mut response_json = serde_json::to_value(&*response).map_err(|e| {
-        error!("Failed to serialize playback response JSON: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let mut response_json =
+        serde_json::to_value(&*response).map_err(ApplicationError::Serialization)?;
 
     state
-        .process_response_json(
+        .process_response_json_typed(
             &mut response_json,
             server,
             ResponseProcessingProfile::Media,
@@ -281,20 +97,9 @@ pub async fn process_playback_response(
         )
         .await?;
 
-    *response = response_json_to_payload(response_json)?;
+    *response = response_json_to_payload_typed(response_json)?;
 
-    for item in &response.media_sources {
-        track_play_session(
-            item,
-            &response.play_session_id,
-            &session.user_id,
-            server,
-            state,
-        )
-        .await?;
-    }
-
-    Ok(())
+    Ok(plans)
 }
 
 pub async fn track_play_session(
@@ -303,7 +108,7 @@ pub async fn track_play_session(
     user_id: &str,
     server: &Server,
     state: &AppState,
-) -> Result<(), StatusCode> {
+) {
     let mut session_ids = vec![session_id.to_string()];
     let mut item_ids = vec![item.id.clone()];
 
@@ -345,8 +150,6 @@ pub async fn track_play_session(
             add_tracked_play_session(item_id, &tracked_session_id, user_id, server, state).await;
         }
     }
-
-    Ok(())
 }
 
 fn collect_delivery_url_tracking_values(
@@ -384,16 +187,11 @@ async fn add_tracked_play_session(
         "Tracking play session for item: {}, server: {}",
         item_id, server.name
     );
-    state
-        .play_sessions
-        .add_session(PlaybackSession {
-            item_id: item_id.to_string(),
-            session_id: session_id.to_string(),
-            user_id: user_id.to_string(),
-            server_id: server.id,
-            original_item_id: None,
-        })
-        .await;
+    super::lifecycle::PlaybackLifecycle {
+        sessions: &state.play_sessions,
+    }
+    .alias(item_id, session_id, user_id, server.id)
+    .await;
 }
 
 /// Associates an aggregate client-facing item ID with the upstream play
@@ -441,7 +239,6 @@ mod tests {
 
     use serde_json::json;
     use sqlx::SqlitePool;
-    use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
 
     use super::*;
     use crate::{
@@ -514,25 +311,10 @@ mod tests {
                 reqwest::Client::new(),
                 data_context,
                 processors,
-                crate::handlers::quick_connect::QuickConnectStorage::new(),
+                Default::default(),
             ),
             server,
         )
-    }
-
-    #[tokio::test]
-    async fn execute_json_request_preserves_upstream_not_found_status() {
-        let upstream = MockServer::start().await;
-        Mock::given(method("GET"))
-            .respond_with(ResponseTemplate::new(404))
-            .mount(&upstream)
-            .await;
-        let client = reqwest::Client::new();
-        let request = client.get(upstream.uri()).build().unwrap();
-
-        let result = execute_json_request::<serde_json::Value>(&client, request).await;
-
-        assert_eq!(result.unwrap_err(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
@@ -892,9 +674,7 @@ mod tests {
         }))
         .unwrap();
 
-        track_play_session(&source, "session-1", "user-1", &server, &state)
-            .await
-            .unwrap();
+        track_play_session(&source, "session-1", "user-1", &server, &state).await;
 
         let source_session = state
             .play_sessions
@@ -932,9 +712,7 @@ mod tests {
         }))
         .unwrap();
 
-        track_play_session(&source, "response-session", "user-1", &server, &state)
-            .await
-            .unwrap();
+        track_play_session(&source, "response-session", "user-1", &server, &state).await;
 
         for session_id in [
             "response-session",

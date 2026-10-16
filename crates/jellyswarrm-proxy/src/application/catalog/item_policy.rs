@@ -1,3 +1,4 @@
+//! Catalog item eligibility policies.
 use crate::models::{
     enums::{BaseItemKind, CollectionType},
     MediaItem,

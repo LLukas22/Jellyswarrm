@@ -90,6 +90,23 @@ pub(super) async fn setup() -> (
     (state, pool, sessions, upstreams)
 }
 
+pub(super) async fn fixture_member_parent_ids(
+    state: &AppState,
+    sessions: &[(AuthorizationSession, Server)],
+    original_parent_id: &str,
+) -> std::collections::HashMap<crate::server_id::ServerId, String> {
+    let mut ids = std::collections::HashMap::new();
+    for (_, server) in sessions {
+        let mapping = state
+            .media_storage
+            .get_or_create_media_mapping(original_parent_id, server)
+            .await
+            .unwrap();
+        ids.insert(server.id, mapping.virtual_media_id);
+    }
+    ids
+}
+
 pub(super) fn request(
     path: &str,
     sessions: &[(AuthorizationSession, Server)],
@@ -113,6 +130,230 @@ pub(super) fn request(
         )),
         server_matched_request: false,
         pending_playback_session_update: None,
+    }
+}
+
+#[tokio::test]
+async fn request_independent_refresh_shares_paging_reconciliation_and_interactive_identity() {
+    use crate::application::catalog::refresh::{refresh, CatalogRefresh};
+    let (state, _pool, sessions, upstreams) = setup().await;
+    let library = state
+        .virtual_library_service
+        .create_group("Refresh movies")
+        .await
+        .unwrap();
+    for (index, (_, server)) in sessions.iter().enumerate() {
+        // Same-backend ID collision also applies to refresh input: only virtual
+        // member IDs may enter the shared request construction stage.
+        let decoy = state
+            .media_storage
+            .get_or_create_media_mapping("wrong-parent", server)
+            .await
+            .unwrap();
+        let original_parent = decoy.virtual_media_id;
+        state
+            .virtual_library_service
+            .add_member(
+                &library.virtual_id,
+                server.id,
+                &original_parent,
+                "Movies",
+                "movies",
+            )
+            .await
+            .unwrap();
+        Mock::given(method("GET")).and(path("/Items"))
+            .and(query_param("ParentId", original_parent))
+            .and(query_param("Recursive", "true"))
+            .respond_with(move |request: &wiremock::Request| {
+                let start = request.url.query_pairs().find(|(key, _)| key == "StartIndex").unwrap().1.parse::<usize>().unwrap();
+                let items = if start < 2 { vec![json!({"Id": format!("refresh-{index}-{start}"), "Type":"Movie", "Name":format!("Movie {start}"), "ProviderIds":{"Tmdb":format!("{}", 8000 + start)}})] } else { vec![] };
+                ResponseTemplate::new(200).set_body_json(json!({"Items":items,"StartIndex":start,"TotalRecordCount":2}))
+            }).mount(&upstreams[index]).await;
+    }
+    let make_input = || CatalogRefresh {
+        library_id: library.virtual_id.clone(),
+        access_scope: VirtualLibraryAccessScope::new(
+            "viewer",
+            sessions.iter().map(|(_, server)| server.id),
+        ),
+        sessions: sessions
+            .iter()
+            .map(|(session, _)| session.clone())
+            .collect(),
+    };
+    // No reqwest/http request is constructed for either refresh invocation.
+    let first = refresh(&state, make_input()).await.unwrap();
+    assert!(first.complete);
+    assert_eq!(first.outcomes.len(), sessions.len());
+    assert_eq!(first.response["Items"].as_array().unwrap().len(), 2);
+    for upstream in &upstreams {
+        assert_eq!(upstream.received_requests().await.unwrap().len(), 2);
+    }
+    let Json(interactive) = get_items_from_all_servers_preprocessed(
+        &state,
+        request(
+            &format!(
+                "/Items?ParentId={}&Recursive=true&IncludeItemTypes=Movie,Series,Season,Episode",
+                library.virtual_id
+            ),
+            &sessions,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(interactive, first.response);
+    let first_ids = first.response["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["Id"].clone())
+        .collect::<Vec<_>>();
+    // Losing a source does not turn a partial refresh into a pruning inventory.
+    upstreams[1].reset().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&upstreams[1])
+        .await;
+    let partial = refresh(&state, make_input()).await.unwrap();
+    assert!(!partial.complete);
+    let ids = partial.response["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["Id"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(ids, first_ids);
+    for id in first_ids {
+        let group = state
+            .media_storage
+            .get_media_version_group(id.as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            state
+                .media_storage
+                .get_media_version_members(group.id)
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+    // The earlier interactive response was materialized. A refresh must fence
+    // it so the next interactive request does not silently return stale cache.
+    let before = upstreams[0].received_requests().await.unwrap().len();
+    let _ = get_items_from_all_servers_preprocessed(
+        &state,
+        request(
+            &format!(
+                "/Items?ParentId={}&Recursive=true&IncludeItemTypes=Movie,Series,Season,Episode",
+                library.virtual_id
+            ),
+            &sessions,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        upstreams[0].received_requests().await.unwrap().len(),
+        before + 2
+    );
+}
+
+#[tokio::test]
+async fn request_independent_refresh_rejects_foreign_viewer_credentials_before_traffic() {
+    use crate::application::{
+        catalog::refresh::{refresh, CatalogRefresh},
+        error::ApplicationError,
+    };
+    let (state, _pool, sessions, upstreams) = setup().await;
+    let result = refresh(
+        &state,
+        CatalogRefresh {
+            library_id: "unresolved".into(),
+            access_scope: VirtualLibraryAccessScope::new(
+                "other-viewer",
+                sessions.iter().map(|(_, server)| server.id),
+            ),
+            sessions: sessions
+                .iter()
+                .map(|(session, _)| session.clone())
+                .collect(),
+        },
+    )
+    .await;
+    assert!(matches!(result, Err(ApplicationError::AccessDenied)));
+    for upstream in upstreams {
+        assert!(upstream.received_requests().await.unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn catalog_service_boundaries_preserve_source_and_storage_causes() {
+    use crate::application::catalog::{
+        filters::get_filters_typed, get_catalog, input::CatalogRequest,
+    };
+    let (state, pool, sessions, upstreams) = setup().await;
+    let mut ids = Vec::new();
+    for (_, server) in &sessions {
+        ids.push(
+            state
+                .media_storage
+                .get_or_create_media_mapping("movie", server)
+                .await
+                .unwrap()
+                .virtual_media_id,
+        );
+    }
+    for upstream in &upstreams {
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("private-invalid-catalog"))
+            .mount(upstream)
+            .await;
+    }
+    for path in [
+        "/Users/viewer/Views".to_string(),
+        "/Items/Filters".to_string(),
+        format!("/Items?Ids={}", ids.join(",")),
+    ] {
+        let input: CatalogRequest = request(&path, &sessions).into();
+        let result = if path.ends_with("/Filters") {
+            get_filters_typed(&state, input).await
+        } else {
+            get_catalog(&state, input).await
+        };
+        let error = result.unwrap_err();
+        assert_eq!(error.detail_status(), StatusCode::SERVICE_UNAVAILABLE);
+        let mut cause: &(dyn std::error::Error + 'static) = &error;
+        while !cause.is::<serde_json::Error>() {
+            cause = cause
+                .source()
+                .expect("source JSON cause must survive catalog boundary");
+        }
+        assert!(!format!("{error:?}").contains("private-invalid-catalog"));
+    }
+    pool.close().await;
+    for path in [
+        "/Items?ParentId=library",
+        "/Items/Filters?ParentId=library",
+        "/Items?Ids=unknown",
+    ] {
+        let input: CatalogRequest = request(path, &sessions).into();
+        let result = if path.contains("/Filters") {
+            get_filters_typed(&state, input).await
+        } else {
+            get_catalog(&state, input).await
+        };
+        let error = result.unwrap_err();
+        assert_eq!(error.detail_status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let mut cause: &(dyn std::error::Error + 'static) = &error;
+        while !cause.is::<sqlx::Error>() {
+            cause = cause
+                .source()
+                .expect("storage cause must survive catalog boundary");
+        }
     }
 }
 
@@ -929,6 +1170,11 @@ async fn client_pages_are_applied_after_scanning_capped_catalogs() {
     ] {
         let (state, _pool, sessions, upstreams) = setup().await;
         state.config.write().await.deduplicate_media = kind != "unmerged";
+        let member_parent_ids = if matches!(kind, "episodes" | "seasons") {
+            fixture_member_parent_ids(&state, &sessions, "show").await
+        } else {
+            std::collections::HashMap::new()
+        };
         for (server_index, upstream) in upstreams.iter().enumerate() {
             let upstream_path = match kind {
                 "episodes" => "/Shows/show/Episodes",
@@ -969,6 +1215,11 @@ async fn client_pages_are_applied_after_scanning_capped_catalogs() {
                             None
                         },
                         resolved_parent_id: None,
+                        member_parent_id: if matches!(kind, "episodes" | "seasons") {
+                            Some(member_parent_ids[&server.id].clone())
+                        } else {
+                            None
+                        },
                     })
                     .collect()
             };
@@ -1043,6 +1294,7 @@ async fn catalog_pagination_follows_backend_caps_and_detects_stalled_pages() {
                 session: session.clone(),
                 server: server.clone(),
                 parent_id: None,
+                member_parent_id: None,
                 resolved_parent_id: None,
             })
             .collect();
@@ -1056,7 +1308,9 @@ async fn catalog_pagination_follows_backend_caps_and_detects_stalled_pages() {
         )
         .await;
         if stalled {
-            assert!(matches!(catalog, Err(StatusCode::SERVICE_UNAVAILABLE)));
+            assert!(
+                matches!(catalog, Err(error) if error.detail_status() == StatusCode::SERVICE_UNAVAILABLE)
+            );
         } else {
             for result in catalog.unwrap().server_items {
                 assert_eq!(result.server_items.response.len(), 5);
@@ -1277,6 +1531,7 @@ async fn item_catalog_seasons_use_their_provider_matched_series_parent() {
                 session: session.clone(),
                 server: server.clone(),
                 parent_id: None,
+                member_parent_id: None,
                 resolved_parent_id: None,
             })
             .collect()
@@ -1365,6 +1620,7 @@ async fn first_recursive_catalog_merges_series_and_numbered_seasons_together() {
                 session: session.clone(),
                 server: server.clone(),
                 parent_id: None,
+                member_parent_id: None,
                 resolved_parent_id: None,
             })
             .collect();
@@ -1413,6 +1669,7 @@ async fn first_recursive_catalog_merges_series_and_numbered_seasons_together() {
             session: session.clone(),
             server: server.clone(),
             parent_id: None,
+            member_parent_id: None,
             resolved_parent_id: None,
         })
         .collect();
@@ -1441,6 +1698,7 @@ async fn numbered_seasons_with_same_server_duplicates_are_not_hidden() {
         library_resolution::CatalogFetchTarget, media_reconciliation::get_aggregate_show_items,
     };
     let (state, _pool, sessions, upstreams) = setup().await;
+    let member_parent_ids = fixture_member_parent_ids(&state, &sessions, "series").await;
     let aggregate = "00000000000000000000000000000100";
     for (index, upstream) in upstreams.iter().enumerate() {
         let mut seasons =
@@ -1462,6 +1720,7 @@ async fn numbered_seasons_with_same_server_duplicates_are_not_hidden() {
             session: session.clone(),
             server: server.clone(),
             parent_id: Some("series".into()),
+            member_parent_id: Some(member_parent_ids[&server.id].clone()),
             resolved_parent_id: Some(aggregate.into()),
         })
         .collect();
@@ -1498,6 +1757,7 @@ async fn check_show_season_navigation(with_provider_ids: bool) {
     use wiremock::matchers::{path, query_param};
 
     let (state, _pool, sessions, upstreams) = setup().await;
+    let member_parent_ids = fixture_member_parent_ids(&state, &sessions, "series").await;
     let aggregate = "00000000000000000000000000000100";
     for (server_index, (upstream, available_seasons)) in [
         (&upstreams[0], &[(1, "season-one"), (2, "season-two")][..]),
@@ -1549,6 +1809,7 @@ async fn check_show_season_navigation(with_provider_ids: bool) {
                 session: session.clone(),
                 server: server.clone(),
                 parent_id: Some("series".into()),
+                member_parent_id: Some(member_parent_ids[&server.id].clone()),
                 resolved_parent_id: Some(aggregate.into()),
             })
             .collect()
@@ -1602,9 +1863,9 @@ async fn check_show_season_navigation(with_provider_ids: bool) {
         "MediaSources": [{"Id": "selected-source"}]
     });
     let preprocessed = request("/Items/selected-episode", &sessions);
-    crate::handlers::media_versions::merge_media_detail(
+    crate::application::details::sources::merge_media_detail(
         &state,
-        crate::handlers::media_versions::DetailMergeContext {
+        crate::application::details::sources::DetailMergeContext {
             requested_item_id: "selected-episode",
             selected_group: None,
             base_server: &sessions[0].1,

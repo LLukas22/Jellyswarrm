@@ -2,9 +2,101 @@
 mod tests {
     use crate::encryption::Password;
     use crate::models::jellyfin::enums::BaseItemKind;
-    use crate::models::jellyfin::{AuthenticateRequest, MediaItem};
+    use crate::models::jellyfin::{AuthenticateRequest, MediaItem, MediaSource};
     use crate::models::{ItemsResponseWithCount, PlaybackRequest, PlaybackResponse};
+    use serde_json::{json, Value};
     use std::fs;
+
+    fn live_source_with_extensions() -> Value {
+        json!({
+            "Id": "backend-source",
+            "Type": "Default",
+            "LiveStreamId": "backend-live-stream",
+            "OpenToken": "opaque-open-token",
+            "RequiresOpening": true,
+            "RequiresClosing": false,
+            "FutureSourceOptions": {
+                "Modes": ["direct", "transcode"],
+                "Nullable": null,
+                "CaseSensitiveKey": "preserve"
+            },
+            "MediaStreams": [{
+                "Index": 0,
+                "Type": "Audio",
+                "Codec": "aac",
+                "FutureStreamMetadata": {
+                    "Flags": [true, false],
+                    "VendorData": {"ExactKey": "opaque"}
+                }
+            }]
+        })
+    }
+
+    #[test]
+    fn media_detail_roundtrip_preserves_source_stream_and_live_extensions() {
+        // These DTOs have flatten maps. This does not promise the same contract
+        // for other nested DTOs such as Chapter or UserData, which lack them.
+        let source_json = live_source_with_extensions();
+        let mut source: MediaSource = serde_json::from_value(source_json.clone()).unwrap();
+        source.id = "proxy-source".into();
+        let mut expected_source = source_json;
+        expected_source["Id"] = json!("proxy-source");
+        let serialized_source = serde_json::to_value(&source).unwrap();
+        assert_eq!(serialized_source, expected_source);
+
+        let item_json = json!({
+            "Id": "backend-item",
+            "Type": "Movie",
+            "FutureItemMetadata": {
+                "Version": 2,
+                "Values": [null, "opaque", {"Enabled": false}]
+            },
+            "MediaSources": [serialized_source],
+            "MediaStreams": [{
+                "Index": 1,
+                "Type": "Subtitle",
+                "FutureSubtitleMetadata": {"Styles": ["positioned"], "Nullable": null}
+            }]
+        });
+        let mut item: MediaItem = serde_json::from_value(item_json.clone()).unwrap();
+        item.id = "proxy-item".into();
+        item.media_sources.as_mut().unwrap()[0].name = Some("Selected version".into());
+        let mut expected_item = item_json;
+        expected_item["Id"] = json!("proxy-item");
+        expected_item["MediaSources"][0]["Name"] = json!("Selected version");
+        assert_eq!(serde_json::to_value(&item).unwrap(), expected_item);
+    }
+
+    #[test]
+    fn playback_roundtrip_preserves_request_response_and_nested_live_extensions() {
+        let request_json = json!({
+            "MediaSourceId": "proxy-source",
+            "AutoOpenLiveStream": true,
+            "AudioStreamIndex": 0,
+            "DeviceProfile": {
+                "Name": "Future client",
+                "FutureProfileOptions": {"Values": [null, false, "opaque"]}
+            },
+            "FuturePlaybackOptions": {"Modes": ["live"], "Nullable": null},
+            "FuturePlaybackFlag": false
+        });
+        let mut request: PlaybackRequest = serde_json::from_value(request_json.clone()).unwrap();
+        request.media_source_id = Some("backend-source".into());
+        let mut expected_request = request_json;
+        expected_request["MediaSourceId"] = json!("backend-source");
+        assert_eq!(serde_json::to_value(&request).unwrap(), expected_request);
+
+        let response_json = json!({
+            "PlaySessionId": "play-session",
+            "MediaSources": [live_source_with_extensions()],
+            "FutureNegotiationMetadata": {"Capabilities": ["live"], "Nullable": null}
+        });
+        let mut response: PlaybackResponse = serde_json::from_value(response_json.clone()).unwrap();
+        response.media_sources[0].id = "proxy-source".into();
+        let mut expected_response = response_json;
+        expected_response["MediaSources"][0]["Id"] = json!("proxy-source");
+        assert_eq!(serde_json::to_value(&response).unwrap(), expected_response);
+    }
 
     /// Regression test: canonical Jellyfin casing ("Pw") must deserialize correctly.
     #[test]

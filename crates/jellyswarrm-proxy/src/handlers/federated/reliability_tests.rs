@@ -1,5 +1,5 @@
 use super::{
-    tests::{request, setup},
+    tests::{fixture_member_parent_ids, request, setup},
     *,
 };
 use serde_json::json;
@@ -64,6 +64,159 @@ async fn counted_scans_apply_timeout_to_each_page_instead_of_the_whole_catalog()
     assert_eq!(upstreams[0].received_requests().await.unwrap().len(), 3);
 }
 
+/// This request used to fail while initializing an arbitrary single backend:
+/// its first source-owned facet belongs to an authorized but offline source.
+#[tokio::test]
+async fn http_catalog_input_validates_offline_ids_without_initial_backend_selection() {
+    use tower::ServiceExt;
+
+    let (state, _, sessions, upstreams) = setup().await;
+    let user = state
+        .user_authorization
+        .create_user("catalog-input", &"password".into())
+        .await
+        .unwrap();
+    let authorization = crate::models::Authorization {
+        client: "test".into(),
+        device: "test".into(),
+        device_id: "test".into(),
+        version: "1".into(),
+        token: None,
+    };
+    for (_, server) in &sessions {
+        state
+            .user_authorization
+            .add_server_mapping(&user.id, server, "catalog-input", &"password".into(), None)
+            .await
+            .unwrap();
+        state
+            .user_authorization
+            .store_authorization_session(
+                &user.id,
+                server,
+                &authorization,
+                "upstream-token".into(),
+                "backend-user".into(),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    Mock::given(path("/System/Info/Public"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ServerName":"Online"})))
+        .mount(&upstreams[1])
+        .await;
+    Mock::given(path("/Items"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "Items":[{"Id":"movie","Type":"Movie"}], "TotalRecordCount":1,"StartIndex":0,
+        })))
+        .mount(&upstreams[1])
+        .await;
+    state.server_storage.check_servers_health().await;
+    let mut facets = Vec::new();
+    for (_, server) in &sessions {
+        facets.push(
+            state
+                .media_storage
+                .get_or_create_media_mapping("genre", server)
+                .await
+                .unwrap()
+                .virtual_media_id,
+        );
+    }
+    let app = axum::Router::new()
+        .route(
+            "/Items",
+            axum::routing::get(get_items_from_all_servers_if_not_restricted),
+        )
+        .with_state(state.clone());
+    let send = |uri: String| {
+        let app = app.clone();
+        let auth = format!("MediaBrowser Client=\"test\", Device=\"test\", DeviceId=\"test\", Version=\"1\", Token=\"{}\"", user.virtual_key);
+        async move {
+            app.oneshot(
+                axum::http::Request::builder()
+                    .uri(uri)
+                    .header("Authorization", auth)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let response = send(format!("/Items?GenreIds={},{}", facets[0], facets[1])).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let online = upstreams[1].received_requests().await.unwrap();
+    let catalog_requests = online
+        .iter()
+        .filter(|request| request.url.path() == "/Items")
+        .collect::<Vec<_>>();
+    assert_eq!(catalog_requests.len(), 1);
+    assert!(catalog_requests[0]
+        .url
+        .query_pairs()
+        .any(|(key, value)| key == "GenreIds" && value == "genre"));
+    let before = online.len();
+
+    // A concrete offline owner still has the legacy FORBIDDEN contract,
+    // rather than being redirected to the healthy source.
+    assert_eq!(
+        send(format!("/Items?SeriesId={}", facets[0]))
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        upstreams[1].received_requests().await.unwrap().len(),
+        before
+    );
+
+    // Removing access to the offline source rejects its IDs before any fan-out.
+    let mapping = state
+        .user_authorization
+        .get_server_mapping_by_server_id(&user.id, sessions[0].1.id)
+        .await
+        .unwrap()
+        .unwrap();
+    state
+        .user_authorization
+        .delete_server_mapping(mapping.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        send(format!("/Items?GenreIds={},{}", facets[0], facets[1]))
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        upstreams[1].received_requests().await.unwrap().len(),
+        before
+    );
+
+    // All unavailable is still 503, including an otherwise federated query.
+    upstreams[1].reset().await;
+    state.server_storage.check_servers_health().await;
+    let before = upstreams[1].received_requests().await.unwrap().len();
+    for uri in [
+        "/Items".to_string(),
+        format!("/Items?SeriesId={}", facets[1]),
+    ] {
+        assert_eq!(send(uri).await.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+    assert_eq!(
+        upstreams[1].received_requests().await.unwrap().len(),
+        before
+    );
+    assert!(upstreams[0]
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .all(|request| request.url.path() == "/System/Info/Public"));
+}
+
 #[tokio::test]
 async fn partial_search_membership_does_not_veto_recursive_catalog_parent_identity() {
     let (state, pool, mut sessions, mut upstreams) = setup().await;
@@ -107,6 +260,7 @@ async fn partial_search_membership_does_not_veto_recursive_catalog_parent_identi
                 session: session.clone(),
                 server: server.clone(),
                 parent_id: None,
+                member_parent_id: None,
                 resolved_parent_id: None,
             })
             .collect();
@@ -245,6 +399,7 @@ async fn incomplete_sources_are_discarded_without_caching_degraded_results_or_pr
                 session: session.clone(),
                 server: server.clone(),
                 parent_id: None,
+                member_parent_id: None,
                 resolved_parent_id: None,
             })
             .collect()
@@ -359,9 +514,11 @@ fn sorting_uses_original_names_then_stable_ids_before_display_labels() {
 #[tokio::test]
 async fn numbered_episode_versions_keep_ranges_distinct_and_route_same_server_copies() {
     use crate::{
-        handlers::media_versions::{
-            merge_media_detail, record_playback_sources, resolve_playback_route,
-            DetailMergeContext, PlaybackRouteDecision,
+        application::{
+            details::sources::{merge_media_detail, DetailMergeContext},
+            playback::selection::{
+                record_playback_sources, resolve_playback_route, PlaybackRouteDecision,
+            },
         },
         models::MediaSource,
         server_storage::Server,
@@ -412,12 +569,14 @@ async fn numbered_episode_versions_keep_ranges_distinct_and_route_same_server_co
         }
     }
     state.server_storage.check_servers_health().await;
+    let member_parent_ids = fixture_member_parent_ids(&state, &sessions, "series").await;
     let targets = sessions
         .iter()
         .map(|(session, server)| CatalogFetchTarget {
             session: session.clone(),
             server: server.clone(),
             parent_id: Some("series".into()),
+            member_parent_id: Some(member_parent_ids[&server.id].clone()),
             resolved_parent_id: Some(aggregate.into()),
         })
         .collect();
@@ -523,15 +682,16 @@ async fn numbered_episode_versions_keep_ranges_distinct_and_route_same_server_co
         .original_request
         .url_mut()
         .set_path(&format!("/Items/{single_id}/PlaybackInfo"));
-    *detail_request.request.url_mut() = url::Url::parse(&format!(
-        "{}/Items/{}/PlaybackInfo",
-        upstreams[0].uri(),
-        owner(100)
-    ))
-    .unwrap();
+    let context = crate::application::context::RequestContext::new(
+        &detail_request.original_request,
+        detail_request.auth.clone(),
+        detail_request.user.clone(),
+        detail_request.sessions.clone(),
+        detail_request.access_scope.clone(),
+    );
     let route = resolve_playback_route(
         &state,
-        &detail_request,
+        &context,
         single_id,
         Some(&selected.virtual_media_id),
     )
@@ -540,9 +700,22 @@ async fn numbered_episode_versions_keep_ranges_distinct_and_route_same_server_co
     let PlaybackRouteDecision::Rerouted(route) = route else {
         panic!("same-server copy must reroute its item ID");
     };
-    assert_eq!(route.server.id, sessions[0].1.id);
+    assert_eq!(route.target.server().id, sessions[0].1.id);
+    assert_eq!(route.member_virtual_id, sibling.mapping.virtual_media_id);
+    let mut normalized = detail_request.original_request.try_clone().unwrap();
+    *normalized.url_mut() =
+        crate::url_helper::replace_path_id(normalized.url(), "Items", &route.member_virtual_id)
+            .unwrap();
+    let prefix = state.get_url_prefix().await;
+    let built = crate::upstream::jellyfin::request::UpstreamRequestBuilder::new(
+        &state.processors.url_processor,
+        prefix.as_deref(),
+    )
+    .build(&route.target, &normalized)
+    .await
+    .unwrap();
     assert_eq!(
-        route.request.url().path(),
+        built.url().path(),
         format!("/Items/{}/PlaybackInfo", owner(101))
     );
     let mut sources: Vec<MediaSource> =
@@ -556,7 +729,7 @@ async fn numbered_episode_versions_keep_ranges_distinct_and_route_same_server_co
     record_playback_sources(
         &state,
         single_id,
-        &route.server,
+        route.target.server(),
         &owner(101),
         generation,
         &mut sources,
