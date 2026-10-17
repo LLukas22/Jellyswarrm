@@ -1,16 +1,17 @@
+//! Translate virtual IDs and sharing permissions in outgoing JSON request bodies.
 use async_trait::async_trait;
 use serde_json::Value;
 use tracing::debug;
 
+use crate::auth::service::{AuthorizationSession, User};
+use crate::http::preprocessing::JellyfinAuthorization;
 use crate::processors::field_matcher::{
     ID_FIELDS, MEDIA_ID_LIST_PARENT_FIELDS, SESSION_FIELDS, USER_FIELDS,
 };
 use crate::processors::json_processor::{
     JsonProcessingContext, JsonProcessingResult, JsonProcessor,
 };
-use crate::request_preprocessing::{JellyfinAuthorization, PreprocessedRequest};
-use crate::server_storage::Server;
-use crate::user_authorization_service::{AuthorizationSession, User};
+use crate::servers::storage::Server;
 use crate::DataContext;
 
 pub struct RequestProcessor {
@@ -55,19 +56,6 @@ pub struct RequestProcessingContext {
     pub auth: Option<JellyfinAuthorization>,
     pub session: Option<AuthorizationSession>,
     pub new_auth: Option<JellyfinAuthorization>,
-}
-
-impl RequestProcessingContext {
-    pub fn new(preprocessed_request: &PreprocessedRequest) -> Self {
-        Self {
-            user: preprocessed_request.user.clone(),
-            server: preprocessed_request.server.clone(),
-            sessions: preprocessed_request.sessions.clone(),
-            auth: preprocessed_request.auth.clone(),
-            session: preprocessed_request.session.clone(),
-            new_auth: preprocessed_request.new_auth.clone(),
-        }
-    }
 }
 
 #[async_trait]
@@ -178,16 +166,16 @@ mod tests {
 
     use super::*;
     use crate::{
+        application::playback::sessions::SessionStorage,
+        auth::service::{Device, UserAuthorizationService},
         config::{AppConfig, MediaStreamingMode, MIGRATOR},
-        media_identity::{MediaAlias, MediaKind, MediaObservation, MediaProvider},
-        media_storage_service::{MediaCatalogSnapshot, MediaStorageService},
+        libraries::service::VirtualLibraryService,
+        media::identity::{MediaAlias, MediaKind, MediaObservation, MediaProvider},
+        media::storage::{MediaCatalogSnapshot, MediaStorageService},
         processors::process_json,
-        server_id::ServerId,
-        server_storage::ServerStorageService,
-        server_url::ServerUrl,
-        session_storage::SessionStorage,
-        user_authorization_service::{Device, UserAuthorizationService},
-        virtual_library_service::VirtualLibraryService,
+        servers::id::ServerId,
+        servers::storage::ServerStorageService,
+        servers::url::ServerUrl,
     };
 
     async fn test_data_context() -> (DataContext, SqlitePool) {
@@ -292,8 +280,6 @@ mod tests {
             proxy_server_id: "proxy".into(),
             proxy_api_key: None,
             profile: ResponseProcessingProfile::Media,
-            should_change_name: false,
-            can_change_item_names: false,
         };
         let responses = ResponseProcessor::new(data.clone());
         let requests = RequestProcessor::new(data.clone());
@@ -596,6 +582,7 @@ mod tests {
                     complete: true,
                     observations: vec![MediaObservation {
                         virtual_media_id: mapping.virtual_media_id.clone(),
+                        kind: MediaKind::Movie,
                         aliases: BTreeSet::from([alias]),
                     }],
                 }],

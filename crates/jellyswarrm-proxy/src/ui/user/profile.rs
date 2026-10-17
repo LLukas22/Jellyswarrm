@@ -1,3 +1,4 @@
+//! Manage local profile credentials and safely rekey backend mappings after password changes.
 use askama::Template;
 use axum::{
     extract::State,
@@ -8,22 +9,23 @@ use axum::{
 use serde::Deserialize;
 use tracing::error;
 
-use crate::{encryption::Password, ui::auth::AuthenticatedUser, AppState};
+use crate::{auth::encryption::Password, ui::auth::AuthenticatedUser, AppState};
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
+        application::playback::sessions::SessionStorage,
+        auth::encryption::{HashedPassword, MappingEncryptionKey},
+        auth::service::{CredentialFormat, UserAuthorizationService},
         config::{AppConfig, MIGRATOR},
-        encryption::{HashedPassword, MappingEncryptionKey},
-        handlers::quick_connect::QuickConnectStorage,
-        media_storage_service::MediaStorageService,
-        server_storage::{Server, ServerStorageService},
-        session_storage::SessionStorage,
+        http::handlers::quick_connect::QuickConnectStorage,
+        libraries::service::VirtualLibraryService,
+        media::storage::MediaStorageService,
+        processors::ProxyProcessors,
+        servers::storage::{Server, ServerStorageService},
         ui::auth::{User, UserRole},
-        user_authorization_service::{CredentialFormat, UserAuthorizationService},
-        virtual_library_service::VirtualLibraryService,
-        DataContext, ProxyProcessors,
+        DataContext,
     };
     use sqlx::SqlitePool;
     use std::sync::Arc;

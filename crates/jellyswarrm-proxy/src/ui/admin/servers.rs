@@ -1,3 +1,4 @@
+//! Render and mutate configured backend servers from the administrative UI.
 use askama::Template;
 use axum::{
     extract::{Path, State},
@@ -9,10 +10,10 @@ use serde::Deserialize;
 use tracing::{error, info};
 
 use crate::{
+    auth::encryption::{encrypt_password, Password},
     config::MediaStreamingMode,
-    encryption::{encrypt_password, Password},
-    server_id::ServerId,
-    server_storage::Server,
+    servers::id::ServerId,
+    servers::storage::Server,
     AppState,
 };
 

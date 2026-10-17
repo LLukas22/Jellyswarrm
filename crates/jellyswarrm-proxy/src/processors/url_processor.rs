@@ -1,19 +1,21 @@
+//! Translate client/backend URL paths, query IDs, delivery credentials, and route ownership.
 use anyhow::Result;
 use tracing::debug;
 
 use crate::{
-    media_storage_service::{MediaMapping, MediaVersionMember},
-    server_id::ServerId,
-    server_storage::Server,
-    url_helper::{contains_id, decoded_path_segments, is_id_like, replace_id},
-    user_authorization_service::AuthorizationSession,
-    virtual_library_service::compare_virtual_library_routes,
-    virtual_library_service::{VirtualLibraryAccessScope, VirtualLibraryResolution},
+    auth::service::AuthorizationSession,
+    libraries::service::compare_virtual_library_routes,
+    libraries::service::{VirtualLibraryAccessScope, VirtualLibraryResolution},
+    media::storage::{MediaMapping, MediaVersionMember},
+    servers::id::ServerId,
+    servers::storage::Server,
+    upstream::url::{contains_id, decoded_path_segments, is_id_like, replace_id},
     DataContext,
 };
 
 pub static MEDIA_ID_PATH_TAGS: &[&str] = &[
     "Items",
+    "Items/RemoteSearch/Apply",
     "Audio",
     "Shows",
     "Videos",
@@ -44,7 +46,9 @@ pub static MEDIA_ID_QUERY_TAGS: &[&str] = &[
     "SeriesId",
     "LibrarySeriesId",
     "ChannelIds",
+    "ProgramId",
     "GenreIds",
+    "StudioIds",
     "ExcludeItemIds",
     "SeriesTimerId",
     "MediaSourceId",
@@ -65,6 +69,64 @@ pub static USER_ID_PATH_TAGS: &[&str] = &["Users"];
 pub static USER_ID_QUERY_TAGS: &[&str] = &["UserId"];
 pub static API_KEY_QUERY_TAGS: &[&str] = &["api_key", "ApiKey"];
 
+fn path_media_source_id(url: &url::Url) -> Option<String> {
+    decoded_path_segments(url.path())
+        .windows(4)
+        .find_map(|parts| {
+            (parts[0].eq_ignore_ascii_case("Videos")
+                && is_id_like(&parts[1])
+                && is_id_like(&parts[2])
+                && (parts[3].eq_ignore_ascii_case("Subtitles")
+                    || parts[3].eq_ignore_ascii_case("Attachments")))
+            .then(|| parts[2].clone())
+        })
+}
+
+/// Path and query source selections have identical authority. Reject conflicting
+/// selections before choosing a server or rewriting any IDs.
+pub(crate) fn selected_media_source(url: &url::Url) -> Result<Option<String>> {
+    let mut selected = None;
+    let query_sources = url
+        .query_pairs()
+        .filter(|(key, _)| key.eq_ignore_ascii_case("MediaSourceId"))
+        .flat_map(|(_, value)| value.split(',').map(str::to_string).collect::<Vec<_>>());
+    for source in path_media_source_id(url).into_iter().chain(query_sources) {
+        let source = source.trim();
+        if source.is_empty() {
+            continue;
+        }
+        let source = crate::media::storage::MediaStorageService::normalize_uuid(source);
+        if selected
+            .as_ref()
+            .is_some_and(|previous| previous != &source)
+        {
+            anyhow::bail!("conflicting media source selections");
+        }
+        selected = Some(source);
+    }
+    Ok(selected)
+}
+
+pub(crate) fn play_session_id(url: &url::Url) -> Result<Option<String>> {
+    let mut selected = None;
+    for (key, value) in url.query_pairs() {
+        if !(key.eq_ignore_ascii_case("PlaySessionId") || key.eq_ignore_ascii_case("SessionId"))
+            || value.is_empty()
+        {
+            continue;
+        }
+        if selected
+            .as_deref()
+            .is_some_and(|previous| previous != value)
+        {
+            anyhow::bail!("conflicting playback session IDs");
+        }
+        selected = Some(value.into_owned());
+    }
+    Ok(selected)
+}
+
+#[derive(Clone)]
 pub struct UrlProcessor {
     data_context: DataContext,
 }
@@ -116,11 +178,101 @@ impl UrlProcessor {
         Ok(Some(format_delivery_url(url, style)))
     }
 
+    /// HLS references are resolved against the upstream playlist, then returned
+    /// as proxy-root paths. Never send a proxy credential to an external origin.
+    pub(crate) async fn server_to_client_hls_url(
+        &self,
+        value: &str,
+        playlist: &url::Url,
+        server: &Server,
+        proxy_api_key: Option<&str>,
+        viewer: Option<&str>,
+    ) -> Result<String> {
+        let mut url = playlist.join(value)?;
+        if url.origin() != server.url.origin() {
+            return Ok(value.to_string());
+        }
+        self.remap_delivery_url_path(&mut url, server).await?;
+        self.remap_delivery_url_query(&mut url, server, proxy_api_key)
+            .await?;
+
+        let mut pairs = Vec::new();
+        for (key, value) in url.query_pairs() {
+            let value = if key.eq_ignore_ascii_case("LiveStreamId") {
+                match viewer {
+                    Some(user) => self
+                        .data_context
+                        .play_sessions
+                        .register_live_binding(&value.as_ref().into(), &user.into(), server.id)
+                        .await
+                        .as_str()
+                        .to_owned(),
+                    None => continue,
+                }
+            } else {
+                value.into_owned()
+            };
+            pairs.push((key.into_owned(), value));
+        }
+        if let Some(key) = proxy_api_key {
+            if !pairs
+                .iter()
+                .any(|(key, _)| matches_case_insensitive(key, API_KEY_QUERY_TAGS))
+            {
+                pairs.push(("ApiKey".into(), key.into()));
+            }
+        }
+        url.query_pairs_mut().clear().extend_pairs(pairs);
+
+        let backend_prefix = server.url.path().trim_end_matches('/');
+        let path = url
+            .path()
+            .strip_prefix(backend_prefix)
+            .filter(|path| path.is_empty() || path.starts_with('/'))
+            .unwrap_or(url.path());
+        let prefix = self
+            .data_context
+            .config
+            .read()
+            .await
+            .url_prefix
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        let path = if prefix.trim_matches('/').is_empty() {
+            path.to_string()
+        } else {
+            format!(
+                "/{}/{}",
+                prefix.trim_matches('/'),
+                path.trim_start_matches('/')
+            )
+        };
+        url.set_path(&path);
+        Ok(relative_url_from_parts(&url))
+    }
+
     pub async fn server_from_client_url(
         &self,
         url: &url::Url,
         access_scope: Option<&VirtualLibraryAccessScope>,
     ) -> Result<Option<Server>> {
+        // Explicit source selection chooses a route, not permission to ignore
+        // another protected identity in the same request.
+        if let Some(scope) = access_scope {
+            for tag in MEDIA_ID_PATH_TAGS {
+                if let Some(id) = contains_id(url, tag) {
+                    self.validate_media_access(&id, scope).await?;
+                }
+            }
+            for (key, value) in url.query_pairs() {
+                if matches_case_insensitive(&key, MEDIA_ID_QUERY_TAGS) {
+                    for id in value.split(',') {
+                        self.validate_media_access(id, scope).await?;
+                    }
+                }
+            }
+        }
         if let Some(server) = self
             .server_from_explicit_media_source(url, access_scope)
             .await?
@@ -134,11 +286,40 @@ impl UrlProcessor {
         self.server_from_query_media_ids(url, access_scope).await
     }
 
+    pub(crate) async fn validate_media_access(
+        &self,
+        id: &str,
+        scope: &VirtualLibraryAccessScope,
+    ) -> Result<()> {
+        if let Some(mapping) = self
+            .data_context
+            .media_storage
+            .get_media_mapping_by_virtual(id)
+            .await?
+        {
+            if !scope.allows(mapping.server_id) {
+                return Err(crate::http::preprocessing::MediaAccessDenied.into());
+            }
+        }
+        let members = self
+            .data_context
+            .media_storage
+            .get_media_version_members_by_virtual_id(id)
+            .await?;
+        if !members.is_empty() && members.iter().all(|member| !scope.allows(member.server.id)) {
+            return Err(crate::http::preprocessing::MediaAccessDenied.into());
+        }
+        Ok(())
+    }
+
     async fn server_from_explicit_media_source(
         &self,
         url: &url::Url,
         access_scope: Option<&VirtualLibraryAccessScope>,
     ) -> Result<Option<Server>> {
+        let Some(source_id) = selected_media_source(url)? else {
+            return Ok(None);
+        };
         let mut aggregate_group = None;
         for path_segment in MEDIA_ID_PATH_TAGS {
             let Some(media_id) = contains_id(url, path_segment) else {
@@ -155,39 +336,29 @@ impl UrlProcessor {
             }
         }
 
-        for (name, value) in url.query_pairs() {
-            if !name.eq_ignore_ascii_case("MediaSourceId") {
-                continue;
+        if let Some(group) = &aggregate_group {
+            let route = self
+                .data_context
+                .media_storage
+                .get_media_version_source_route(group.id, &source_id)
+                .await?
+                .ok_or_else(|| {
+                    anyhow::anyhow!("media source does not belong to the requested media aggregate")
+                })?;
+            if access_scope.is_some_and(|scope| !scope.allows(route.member_mapping.server_id)) {
+                return Err(crate::http::preprocessing::MediaAccessDenied.into());
             }
-            for source_id in value.split(',').map(str::trim).filter(|id| !id.is_empty()) {
-                if let Some(group) = &aggregate_group {
-                    let route = self
-                        .data_context
-                        .media_storage
-                        .get_media_version_source_route(group.id, source_id)
-                        .await?
-                        .filter(|route| {
-                            access_scope
-                                .is_none_or(|scope| scope.allows(route.member_mapping.server_id))
-                        })
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "media source does not belong to the requested media aggregate"
-                            )
-                        })?;
-                    return Ok(self
-                        .data_context
-                        .server_storage
-                        .get_server_by_id(route.member_mapping.server_id)
-                        .await?);
-                }
-                if let Some(server) = self
-                    .server_from_client_media_id(source_id, access_scope)
-                    .await?
-                {
-                    return Ok(Some(server));
-                }
-            }
+            return Ok(self
+                .data_context
+                .server_storage
+                .get_server_by_id(route.member_mapping.server_id)
+                .await?);
+        }
+        if let Some(server) = self
+            .server_from_client_media_id(&source_id, access_scope)
+            .await?
+        {
+            return Ok(Some(server));
         }
         Ok(None)
     }
@@ -320,8 +491,40 @@ impl UrlProcessor {
         access_scope: Option<&VirtualLibraryAccessScope>,
         required_server_id: Option<ServerId>,
     ) {
+        // These endpoints carry a second ID after the item. Capture it before
+        // rewriting the item (item/source IDs may be identical on the backend).
+        let source_id = path_media_source_id(url);
+        let selected_source = selected_media_source(url).ok().flatten();
         for &path_segment in MEDIA_ID_PATH_TAGS {
             if let Some(media_id) = contains_id(url, path_segment) {
+                if let Some(source) = selected_source.as_deref() {
+                    if let Ok(Some(group)) = self
+                        .data_context
+                        .media_storage
+                        .get_media_version_group(&media_id)
+                        .await
+                    {
+                        if let Ok(Some(route)) = self
+                            .data_context
+                            .media_storage
+                            .get_media_version_source_route(group.id, source)
+                            .await
+                        {
+                            if server_is_allowed(
+                                route.member_mapping.server_id,
+                                access_scope,
+                                required_server_id,
+                            ) {
+                                *url = replace_id(
+                                    url.clone(),
+                                    &media_id,
+                                    &route.member_mapping.original_media_id,
+                                );
+                                continue;
+                            }
+                        }
+                    }
+                }
                 if let Some(media_mapping) = self
                     .client_media_mapping(&media_id, access_scope, required_server_id)
                     .await
@@ -332,6 +535,14 @@ impl UrlProcessor {
                     );
                     *url = replace_id(url.clone(), &media_id, &media_mapping.original_media_id);
                 }
+            }
+        }
+        if let Some(source_id) = source_id {
+            if let Some(mapping) = self
+                .client_media_mapping(&source_id, access_scope, required_server_id)
+                .await
+            {
+                *url = replace_id(url.clone(), &source_id, &mapping.original_media_id);
             }
         }
     }
@@ -359,6 +570,17 @@ impl UrlProcessor {
                 }
             } else if matches_case_insensitive(name, API_KEY_QUERY_TAGS) {
                 *value = session.jellyfin_token.clone();
+            } else if name.eq_ignore_ascii_case("LiveStreamId") {
+                if let Some(binding) = self
+                    .data_context
+                    .play_sessions
+                    .live_binding(&value.as_str().into(), &session.user_id.as_str().into())
+                    .await
+                {
+                    if Some(binding.server_id) == server_id {
+                        *value = binding.original_id.as_str().to_owned();
+                    }
+                }
             }
         }
     }
@@ -622,9 +844,7 @@ impl UrlProcessor {
             .await?
         {
             if !server_is_allowed(server.id, access_scope, None) {
-                return Err(anyhow::anyhow!(
-                    "media ID is not available in the current user's server scope"
-                ));
+                return Err(crate::http::preprocessing::MediaAccessDenied.into());
             }
             return Ok(Some(server));
         }
@@ -642,6 +862,16 @@ impl UrlProcessor {
             .await?
             .is_some()
         {
+            let members = self
+                .data_context
+                .media_storage
+                .get_media_version_members_by_virtual_id(media_id)
+                .await?;
+            if access_scope
+                .is_some_and(|scope| members.iter().all(|member| !scope.allows(member.server.id)))
+            {
+                return Err(crate::http::preprocessing::MediaAccessDenied.into());
+            }
             return Err(anyhow::anyhow!(
                 "media aggregate has no healthy authorized version"
             ));
@@ -777,12 +1007,12 @@ mod tests {
 
     use super::*;
     use crate::{
+        application::playback::sessions::SessionStorage,
+        auth::service::UserAuthorizationService,
         config::{AppConfig, MediaStreamingMode, MIGRATOR},
-        media_storage_service::MediaStorageService,
-        server_storage::ServerStorageService,
-        session_storage::SessionStorage,
-        user_authorization_service::UserAuthorizationService,
-        virtual_library_service::VirtualLibraryService,
+        libraries::service::VirtualLibraryService,
+        media::storage::MediaStorageService,
+        servers::storage::ServerStorageService,
     };
 
     #[tokio::test]

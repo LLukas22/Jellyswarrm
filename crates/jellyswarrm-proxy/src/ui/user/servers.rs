@@ -1,3 +1,4 @@
+//! Manage the current user’s backend server mappings and authentication methods.
 use askama::Template;
 use axum::{
     extract::{Path, State},
@@ -16,9 +17,9 @@ use tracing::{error, info};
 use uuid::Uuid;
 
 use crate::{
-    encryption::Password,
-    server_id::ServerId,
-    server_storage::Server,
+    auth::encryption::Password,
+    servers::id::ServerId,
+    servers::storage::Server,
     ui::{auth::AuthenticatedUser, user::common::authenticate_user_on_server},
     AppState,
 };
@@ -79,7 +80,7 @@ pub async fn initiate_quick_connect(
     let client = JellyfinClient::new(
         server.url.as_str(),
         jellyfin_api::ClientInfo {
-            device_id: crate::mapping_auth::mapping_device_id(&server, &user.id),
+            device_id: crate::auth::mapping_authentication::mapping_device_id(&server, &user.id),
             ..crate::config::CLIENT_INFO.clone()
         },
     )
@@ -137,7 +138,7 @@ pub async fn finish_quick_connect(
     let client = JellyfinClient::new(
         server.url.as_str(),
         jellyfin_api::ClientInfo {
-            device_id: crate::mapping_auth::mapping_device_id(&server, &user.id),
+            device_id: crate::auth::mapping_authentication::mapping_device_id(&server, &user.id),
             ..crate::config::CLIENT_INFO.clone()
         },
     )
@@ -170,7 +171,7 @@ pub async fn finish_quick_connect(
     if auth.access_token.is_empty() || auth.user.id.is_empty() {
         return Err(StatusCode::BAD_GATEWAY);
     }
-    let encryption_key: crate::encryption::HashedPassword =
+    let encryption_key: crate::auth::encryption::HashedPassword =
         (&state.get_admin_password().await).into();
     state
         .user_authorization

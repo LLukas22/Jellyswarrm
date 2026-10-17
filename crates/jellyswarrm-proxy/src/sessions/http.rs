@@ -1,3 +1,4 @@
+//! Expose client-session discovery, capabilities, playback reports, and remote-control HTTP routes.
 use super::{
     models::{Capabilities, GeneralCommand, MessageCommand},
     service::ClientSession,
@@ -24,9 +25,9 @@ pub fn router() -> Router<AppState> {
         .route("/Sessions", get(list))
         .route("/Sessions/", get(list))
         // Playback telemetry continues through the existing media pipeline.
-        .route("/Sessions/Playing", post(crate::proxy_handler))
-        .route("/Sessions/Playing/Progress", post(crate::proxy_handler))
-        .route("/Sessions/Playing/Stopped", post(crate::proxy_handler))
+        .route("/Sessions/Playing", post(crate::http::proxy::proxy_handler))
+        .route("/Sessions/Playing/Progress", post(crate::http::proxy::proxy_handler))
+        .route("/Sessions/Playing/Stopped", post(crate::http::proxy::proxy_handler))
         // All other session operations are local, including unsupported ones.
         .route("/Sessions/{*path}", any(dispatch))
     }

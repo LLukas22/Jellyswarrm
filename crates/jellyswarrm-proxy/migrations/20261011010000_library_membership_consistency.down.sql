@@ -1,0 +1,3 @@
+DROP TRIGGER reset_empty_library_group_type;
+DROP TABLE library_viewer_members;
+DROP TABLE library_viewer_inventories;

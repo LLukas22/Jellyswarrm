@@ -1,3 +1,4 @@
+//! Centralize JSON field names and matching rules used by payload translation.
 use std::{collections::HashSet, sync::LazyLock};
 
 /// A struct for case-insensitive field name matching
@@ -30,6 +31,7 @@ pub static ID_FIELDS: LazyLock<FieldMatcher> = LazyLock::new(|| {
         "ParentId",
         "SeriesId",
         "ChannelId",
+        "ProgramId",
         "TimerId",
         "SeriesTimerId",
         "SeasonId",
@@ -51,6 +53,7 @@ pub static RESPONSE_MEDIA_ID_FIELDS: LazyLock<FieldMatcher> = LazyLock::new(|| {
         "ParentId",
         "SeriesId",
         "ChannelId",
+        "ProgramId",
         "TimerId",
         "SeriesTimerId",
         "SeasonId",
@@ -94,6 +97,3 @@ pub static MEDIA_ID_MAP_KEY_FIELDS: LazyLock<FieldMatcher> =
 
 pub static MEDIA_ID_NESTED_MAP_KEY_FIELDS: LazyLock<FieldMatcher> =
     LazyLock::new(|| FieldMatcher::new(&["ImageBlurHashes"]));
-
-pub static NAME_FIELDS: LazyLock<FieldMatcher> =
-    LazyLock::new(|| FieldMatcher::new(&["Name", "SeriesName"]));

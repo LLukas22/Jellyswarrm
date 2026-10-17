@@ -1,3 +1,4 @@
+//! Client presence, playback state, capabilities, and remote-control wire records.
 use serde::Deserialize;
 use serde_json::Value;
 

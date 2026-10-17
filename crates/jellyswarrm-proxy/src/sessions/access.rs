@@ -1,4 +1,5 @@
-use crate::{virtual_library_service::VirtualLibraryAccessScope, AppState};
+//! Authorize client-session discovery and remote-control operations for the current user.
+use crate::{libraries::service::VirtualLibraryAccessScope, AppState};
 use axum::http::StatusCode;
 
 /// Uses the existing virtual-media resolver and local authorization mappings only.

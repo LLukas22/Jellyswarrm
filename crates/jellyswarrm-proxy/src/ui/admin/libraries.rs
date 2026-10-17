@@ -1,3 +1,4 @@
+//! Manage virtual-library grouping, discovery, and member assignments in the administrative UI.
 use std::collections::HashMap;
 
 use askama::Template;
@@ -12,17 +13,17 @@ use serde::Deserialize;
 use tracing::{error, info};
 
 use crate::{
+    auth::encryption::{decrypt_password, HashedPassword},
     config::{save_config, CLIENT_INFO},
-    encryption::{decrypt_password, HashedPassword},
-    server_id::ServerId,
-    server_storage::Server,
+    libraries::service::{
+        normalize_library_id, AssignLibraryError, DiscoveredLibrary as StoredLibrary,
+        LibraryGroupMemberRecord,
+    },
+    servers::id::ServerId,
+    servers::storage::Server,
     ui::{
         auth::{User, UserRole},
         user::common::authenticate_user_with_mapping,
-    },
-    virtual_library_service::{
-        normalize_library_id, AssignLibraryError, DiscoveredLibrary as StoredLibrary,
-        LibraryGroupMemberRecord,
     },
     AppState,
 };

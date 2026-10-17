@@ -1,3 +1,4 @@
+//! Management UI authentication backend, user roles, and authenticated route context.
 use std::sync::Arc;
 
 use axum::{
@@ -10,8 +11,8 @@ use tokio::{sync::RwLock, task};
 use tracing::info;
 
 use crate::{
+    auth::service::{LocalCredential, UserAuthorizationService},
     config::AppConfig,
-    user_authorization_service::{LocalCredential, UserAuthorizationService},
 };
 
 mod routes;
