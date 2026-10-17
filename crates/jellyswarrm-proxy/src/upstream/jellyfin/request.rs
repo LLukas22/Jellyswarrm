@@ -54,11 +54,9 @@ impl<'a> UpstreamRequestBuilder<'a> {
         access_scope: Option<&VirtualLibraryAccessScope>,
     ) {
         remove_hop_by_hop_headers(request.headers_mut());
-        if let Some(host) = server.url.host_str() {
-            if let Ok(value) = reqwest::header::HeaderValue::from_str(host) {
-                request.headers_mut().insert(reqwest::header::HOST, value);
-            }
-        }
+        // Let reqwest derive Host from the target URL, including its port. An explicit
+        // Host header would otherwise survive redirects to external image hosts.
+        request.headers_mut().remove(reqwest::header::HOST);
         apply_authorization_header(request, auth);
         let mut url = request.url().clone();
         self.urls
@@ -288,7 +286,7 @@ mod tests {
             assert_eq!(built.body().unwrap().as_bytes().unwrap(), body.as_bytes());
             assert_eq!(built.headers()["x-extension"], "opaque-header");
             assert_eq!(built.headers()["content-type"], "application/json");
-            assert_eq!(built.headers()["host"], "chosen.example");
+            assert!(!built.headers().contains_key(reqwest::header::HOST));
             assert_eq!(built.headers()["x-mediabrowser-token"], "chosen-token");
             for name in [
                 "connection",
