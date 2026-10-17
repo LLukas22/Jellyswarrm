@@ -1,19 +1,19 @@
 //! Explicit playback capabilities. No authentication/account services, catalog
 //! caches, SyncPlay, Quick Connect, or catch-all application state are available.
 use crate::{
+    application::playback::sessions::SessionStorage,
     application::{
         error::ApplicationError,
         routing::RoutingServices,
         upstream::{execute_payload, JsonUpstream},
     },
     config::AppConfig,
-    media_storage_service::MediaStorageService,
+    media::storage::MediaStorageService,
     processors::{
         response_processor::{ResponseProcessingProfile, ResponseProcessor},
         url_processor::UrlProcessor,
     },
-    server_storage::{Server, ServerStorageService},
-    session_storage::SessionStorage,
+    servers::storage::{Server, ServerStorageService},
 };
 
 pub(crate) struct PlaybackProcessors<'a> {

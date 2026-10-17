@@ -109,7 +109,7 @@ pub(crate) async fn get_show_children(
     state: &CatalogService,
     preprocessed: CatalogRequest,
 ) -> Result<serde_json::Value, ApplicationError> {
-    use crate::url_helper::contains_id;
+    use crate::upstream::url::contains_id;
 
     let aggregate_id = contains_id(preprocessed.original_request.url(), "Shows");
     let Some(aggregate_id) = aggregate_id else {
@@ -315,9 +315,9 @@ async fn get_interleaved_root_uncached(
     .await?;
     let server_count = server_items.len();
     let name_policy = if state.config.read().await.include_server_name_in_media {
-        crate::media_presentation::ItemNamePolicy::IncludeServerName
+        crate::media::presentation::ItemNamePolicy::IncludeServerName
     } else {
-        crate::media_presentation::ItemNamePolicy::Preserve
+        crate::media::presentation::ItemNamePolicy::Preserve
     };
     let items = FederatedItems::from_servers(
         server_items
@@ -355,8 +355,7 @@ pub(super) async fn finalize_items_response_typed(
         request.url(),
         state.get_url_prefix().await.as_deref(),
     ) {
-        if let Some(auth) =
-            crate::request_preprocessing::JellyfinAuthorization::from_request(request)
+        if let Some(auth) = crate::http::preprocessing::JellyfinAuthorization::from_request(request)
         {
             if let Some(token) = auth.token_ref() {
                 crate::application::response::media_response(

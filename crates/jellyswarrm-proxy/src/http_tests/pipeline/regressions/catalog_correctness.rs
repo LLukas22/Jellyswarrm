@@ -1,3 +1,4 @@
+//! Client HTTP regressions for catalog identity, ordering, completeness, and deduplication.
 use super::*;
 
 #[tokio::test]

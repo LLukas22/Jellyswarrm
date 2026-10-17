@@ -1,3 +1,4 @@
+//! Reconcile fetched media observations and validated inventory evidence before catalog presentation.
 use crate::application::error::ApplicationError;
 #[cfg(test)]
 use hyper::StatusCode;
@@ -6,10 +7,10 @@ use std::collections::BTreeSet;
 use super::services::CatalogService;
 use crate::{
     application::catalog::input::CatalogRequest,
-    media_catalog::{MediaDedupPlan, TaggedMediaItem},
-    media_identity::{MediaAlias, MediaKind, MediaObservation},
-    media_scope::{MediaCatalogScope, MediaScopeKind},
-    media_storage_service::{
+    media::catalog::{MediaDedupPlan, TaggedMediaItem},
+    media::identity::{MediaAlias, MediaKind, MediaObservation},
+    media::scope::{MediaCatalogScope, MediaScopeKind},
+    media::storage::{
         InventorySourceEvidence, InventorySourceStatus, InventoryUpdate, MediaCatalogSnapshot,
         ReconciliationMode,
     },
@@ -486,9 +487,7 @@ pub(super) async fn get_aggregate_show_items_typed(
 mod tests {
     use super::*;
     use crate::application::catalog::request_policy::is_authoritative_media_inventory_request;
-    use crate::{
-        config::MIGRATOR, media_storage_service::MediaStorageService, server_storage::Server,
-    };
+    use crate::{config::MIGRATOR, media::storage::MediaStorageService, servers::storage::Server};
 
     #[tokio::test]
     async fn partial_inventories_retain_sightings_until_a_full_inventory_removes_them() {

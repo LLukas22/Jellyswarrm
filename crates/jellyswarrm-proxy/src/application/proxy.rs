@@ -1,3 +1,4 @@
+//! Prepare authorized fallback requests and forward responses through the proxy workflow.
 use hyper::{
     header::{self, HeaderValue},
     Method, Response, StatusCode,
@@ -13,16 +14,16 @@ use crate::{
         playback::{lifecycle::PendingPlaybackSessionUpdate, reports},
         response, routing,
     },
+    libraries::service::compare_virtual_library_routes,
     processors::request_analyzer::PlaybackSessionAction,
     processors::request_processor::RequestProcessingContext,
     processors::response_processor::ResponseProcessingProfile,
-    proxy_headers::is_hop_by_hop_header,
+    upstream::headers::is_hop_by_hop_header,
     upstream::jellyfin::{
         json::execute_json_request,
         request::{remap_authorization, UpstreamRequestBuilder},
     },
-    url_helper::{decoded_path_segments, replace_path_id},
-    virtual_library_service::compare_virtual_library_routes,
+    upstream::url::{decoded_path_segments, replace_path_id},
     AppState,
 };
 
@@ -406,16 +407,17 @@ mod tests {
     use super::*;
     use crate::{
         application::context::RequestContext,
-        config::{AppConfig, MediaStreamingMode, MIGRATOR},
-        media_storage_service::MediaStorageService,
-        processors::request_analyzer::RequestBodyAnalysisResult,
-        server_storage::ServerStorageService,
-        session_storage::SessionStorage,
-        user_authorization_service::{
+        application::playback::sessions::SessionStorage,
+        auth::service::{
             AuthorizationSession, Device, LocalCredential, User, UserAuthorizationService,
         },
-        virtual_library_service::{VirtualLibraryAccessScope, VirtualLibraryService},
-        DataContext, ProxyProcessors,
+        config::{AppConfig, MediaStreamingMode, MIGRATOR},
+        libraries::service::{VirtualLibraryAccessScope, VirtualLibraryService},
+        media::storage::MediaStorageService,
+        processors::request_analyzer::RequestBodyAnalysisResult,
+        processors::ProxyProcessors,
+        servers::storage::ServerStorageService,
+        DataContext,
     };
 
     async fn report_fixture() -> (AppState, OperationRequest, wiremock::MockServer) {

@@ -4,11 +4,13 @@ Jellyswarrm is a Jellyfin-aware reverse proxy. Clients see Jellyswarrm user IDs,
 
 The code keeps three concerns separate:
 
-- Request preprocessing chooses the upstream server/session and rewrites the outgoing URL/auth.
+- Incoming preprocessing resolves identity, scope, backend sessions, and body hints; application workflows select the upstream destination, then outgoing request builders rewrite its URL/auth.
 - Request and response JSON processing rewrites IDs inside bodies.
 - URL processing rewrites IDs and credentials in request URLs and embedded media delivery URLs.
 
-Handlers should use the `extractors` module, `ProxyProcessors`, and `AppState::process_response_json` instead of calling low-level processors directly.
+Handlers use `http/extractors.rs`, application workflows, `processors::ProxyProcessors`,
+and `AppState::process_response_json` rather than duplicating low-level translation.
+See [the proxy architecture](../crates/jellyswarrm-proxy/ARCHITECTURE.md) for ownership.
 
 ## Request Flow
 
@@ -16,10 +18,10 @@ Handlers should use the `extractors` module, `ProxyProcessors`, and `AppState::p
 flowchart TD
     A[Incoming Axum request] --> B{Route handler type}
 
-    B -->|Routed handler| C[Preprocessed / RequireUser / RequireSession / RequireUserSession]
+    B -->|Routed handler| C[OperationInput / PlaybackInput / CatalogInput / LiveInput]
     B -->|Catch-all proxy_handler| D[Static asset check]
     D -->|Asset found| E[Return asset]
-    D -->|No asset| F[preprocess_request]
+    D -->|No asset| F[Incoming preprocessing]
     C --> F
 
     F --> G[axum_to_reqwest]
@@ -35,11 +37,11 @@ flowchart TD
     N --> O
     J --> O
 
-    O --> P[resolve_server]
-    P --> Q[UrlProcessor.server_from_client_url]
+    O --> P[Application request context and workflow]
+    P --> Q[Authorized routing / playback target selection]
     Q --> R[Pick upstream server/session]
-    R --> S[remap_authorization]
-    S --> T[apply_to_request]
+    R --> S[UpstreamRequestBuilder]
+    S --> T[Translate outgoing request]
     T --> U[Remove hop-by-hop headers]
     T --> V[Set Host/Auth headers]
     T --> W[UrlProcessor.client_to_server_url]
@@ -100,25 +102,29 @@ flowchart TD
 
 - `Media`: full media response rewriting for explicitly routed media/item/playback/federated handlers.
 - `BestEffortMedia`: full media-like rewriting for catch-all JSON responses. This keeps less common Jellyfin endpoints working even when they are not explicitly routed.
+- `PlaylistPermissions`: translate playlist sharing users and validate the sharing response before returning it.
 - `Disabled`: no response rewriting.
 
-`Media` and `BestEffortMedia` currently rewrite the same fields. The main difference is how they are selected: explicit handlers use `Media`; the generic fallback uses `BestEffortMedia`. Name suffixing is still controlled separately by `should_change_name` and config.
+`Media` and `BestEffortMedia` currently rewrite the same fields. The main difference is how they are selected: explicit media handlers use `Media`; generic fallback selects a profile for the operation, including `BestEffortMedia` or `PlaylistPermissions`. Presentation policies and configuration separately control client-facing names.
 
 ## Component Boundaries
 
-- `extractors.rs`: Axum extractors that run preprocessing and optionally require a resolved user, session, or both.
-- `request_preprocessing.rs`: request identity extraction, session lookup, server selection, auth remapping, and outgoing URL/header rewriting.
+- `http/extractors.rs`: Axum extractors that collect request inputs and optionally require an authenticated user.
+- `http/preprocessing/`: authentication/device identity, session lookup, body analysis, HTTP conversion, and playback-report recognition.
+- `application/routing.rs` and `application/playback/`: authorized backend selection and playback ownership/lifecycle decisions.
+- `upstream/jellyfin/request.rs`: outgoing URL, credential and header translation after backend selection.
+- `http/proxy.rs` and `http/assets.rs`: fallback forwarding and embedded web-asset serving.
 - `processors/url_processor.rs`: all path/query URL rewriting for client-to-server request URLs, server-to-client delivery URLs, and request server detection.
 - `processors/request_analyzer.rs`: scans incoming JSON bodies for media IDs, user IDs, and session IDs that help pick the upstream server/session.
 - `processors/request_processor.rs`: rewrites JSON request body IDs from Jellyswarrm virtual IDs to upstream Jellyfin IDs.
 - `processors/response_processor.rs`: rewrites JSON response fields from upstream Jellyfin IDs to Jellyswarrm virtual IDs and delegates embedded URL rewriting to `UrlProcessor`.
 - `processors/json_processor.rs`: generic recursive JSON walker used by analyzers and processors.
 - `processors/field_matcher.rs`: centralized field-name groups for JSON rewrite rules.
-- `ProxyProcessors`: facade that constructs and coordinates request, response, analyzer, and URL processors.
+- `processors/pipeline.rs`: `ProxyProcessors`, which constructs and coordinates request, response, analyzer, and URL processors.
 
 ## Design Rules
 
 - Prefer `serde_json::Value` for pass-through media/item responses so unknown Jellyfin schema changes are preserved.
 - Keep typed models where the proxy performs behavior beyond simple transformation, such as playback session tracking and federated item interleaving.
 - Keep URL rewriting centralized in `UrlProcessor`; request URL rules and embedded delivery URL rules should not drift.
-- Keep handler signatures expressive: use `Preprocessed`, `RequireUser`, `RequireSession`, or `RequireUserSession` instead of manually calling `preprocess_request` in routed handlers.
+- Keep handler signatures expressive: use `OperationInput`, `PlaybackInput`, `CatalogInput`, or `LiveInput` for application workflows, and `RequirePrimaryUser` for primary-key-only API-key management.

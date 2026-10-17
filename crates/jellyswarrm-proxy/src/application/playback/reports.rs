@@ -5,12 +5,12 @@ use super::target::MediaTargetResolver;
 use anyhow::{anyhow, Result};
 
 use crate::{
-    media_storage_service::{MediaMapping, MediaStorageService},
+    application::playback::sessions::SessionStorage,
+    auth::service::AuthorizationSession,
+    libraries::service::VirtualLibraryAccessScope,
+    media::storage::{MediaMapping, MediaStorageService},
     processors::request_analyzer::RequestBodyAnalysisResult,
-    server_storage::Server,
-    session_storage::SessionStorage,
-    user_authorization_service::AuthorizationSession,
-    virtual_library_service::VirtualLibraryAccessScope,
+    servers::storage::Server,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -148,11 +148,11 @@ pub(crate) async fn resolve_cancellation(
 mod tests {
     use super::*;
     use crate::{
+        application::playback::sessions::PlaybackSession,
+        auth::service::Device,
         config::{MediaStreamingMode, MIGRATOR},
-        server_id::ServerId,
-        server_storage::ServerStorageService,
-        session_storage::PlaybackSession,
-        user_authorization_service::Device,
+        servers::id::ServerId,
+        servers::storage::ServerStorageService,
     };
 
     fn binding(server_id: ServerId, original_item_id: &str) -> PlaybackSession {

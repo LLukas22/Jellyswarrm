@@ -12,14 +12,14 @@ use tracing::info;
 #[cfg(test)]
 use crate::AppState;
 use crate::{
+    application::playback::sessions::PlaybackSession,
     application::{
         context::{AuthorizedTarget, RequestContext},
         input::OperationRequest,
     },
     config::MediaStreamingMode,
-    request_preprocessing::JellyfinAuthorization,
-    server_storage::Server,
-    session_storage::PlaybackSession,
+    http::preprocessing::JellyfinAuthorization,
+    servers::storage::Server,
     upstream::jellyfin::{
         delivery::{self, DeliveryResponse},
         request::UpstreamRequestBuilder,
@@ -111,7 +111,7 @@ async fn delivery_target(
     tracing::debug!(reason = ?plan.reason, "Playback delivery planned");
     if let Some(member) = plan.target.member {
         for tag in ["Videos", "Audio"] {
-            if let Some(url) = crate::url_helper::replace_path_id(
+            if let Some(url) = crate::upstream::url::replace_path_id(
                 operation.original_request.url(),
                 tag,
                 &member.virtual_media_id,
@@ -336,7 +336,7 @@ pub(crate) async fn get_stream_typed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::server_id::ServerId;
+    use crate::servers::id::ServerId;
 
     async fn direct_fixture(
         mode: MediaStreamingMode,
@@ -348,13 +348,14 @@ mod tests {
         wiremock::MockServer,
     ) {
         use crate::{
+            application::playback::sessions::SessionStorage,
+            auth::service::{LocalCredential, User, UserAuthorizationService},
             config::{AppConfig, MIGRATOR},
-            media_storage_service::MediaStorageService,
-            server_storage::ServerStorageService,
-            session_storage::SessionStorage,
-            user_authorization_service::{LocalCredential, User, UserAuthorizationService},
-            virtual_library_service::VirtualLibraryService,
-            DataContext, ProxyProcessors,
+            libraries::service::VirtualLibraryService,
+            media::storage::MediaStorageService,
+            processors::ProxyProcessors,
+            servers::storage::ServerStorageService,
+            DataContext,
         };
         use std::sync::Arc;
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();

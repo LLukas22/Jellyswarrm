@@ -1,3 +1,4 @@
+//! Translate and validate PlaybackInfo media sources before publishing retained bindings.
 use super::services::PlaybackService;
 use crate::application::error::ApplicationError;
 use tracing::info;
@@ -5,11 +6,11 @@ use tracing::info;
 #[cfg(test)]
 use crate::AppState;
 use crate::{
+    auth::service::AuthorizationSession,
     models::{MediaSource, PlaybackRequest, PlaybackResponse},
     processors::response_processor::ResponseProcessingProfile,
-    server_storage::Server,
+    servers::storage::Server,
     upstream::jellyfin::json::response_json_to_payload_typed,
-    user_authorization_service::AuthorizationSession,
 };
 
 fn parse_delivery_url(value: &str) -> Option<url::Url> {
@@ -73,7 +74,10 @@ pub async fn process_playback_response(
     server: &Server,
     session: &AuthorizationSession,
     proxy_api_key: Option<&str>,
-) -> Result<Vec<std::sync::Arc<crate::session_storage::PreparedLiveStream>>, ApplicationError> {
+) -> Result<
+    Vec<std::sync::Arc<crate::application::playback::sessions::PreparedLiveStream>>,
+    ApplicationError,
+> {
     let mut plans = Vec::new();
     for source in &mut response.media_sources {
         if let Some(plan) = crate::application::playback::live::prepare_live_source(
@@ -242,15 +246,16 @@ mod tests {
 
     use super::*;
     use crate::{
+        application::playback::sessions::SessionStorage,
+        auth::service::UserAuthorizationService,
         config::{AppConfig, MediaStreamingMode, MIGRATOR},
-        media_storage_service::MediaStorageService,
-        server_id::ServerId,
-        server_storage::ServerStorageService,
-        server_url::ServerUrl,
-        session_storage::SessionStorage,
-        user_authorization_service::UserAuthorizationService,
-        virtual_library_service::VirtualLibraryService,
-        DataContext, ProxyProcessors,
+        libraries::service::VirtualLibraryService,
+        media::storage::MediaStorageService,
+        processors::ProxyProcessors,
+        servers::id::ServerId,
+        servers::storage::ServerStorageService,
+        servers::url::ServerUrl,
+        DataContext,
     };
 
     async fn create_test_state() -> (AppState, Server) {
@@ -470,7 +475,7 @@ mod tests {
 
     #[tokio::test]
     async fn item_name_policy_preserves_titles_or_decorates_only_listing_items() {
-        use crate::media_presentation::ItemNamePolicy;
+        use crate::media::presentation::ItemNamePolicy;
         let (state, server) = create_test_state().await;
         let title = format!("Original title [{}]", server.name);
         for enabled in [false, true] {

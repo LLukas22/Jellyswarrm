@@ -2,12 +2,12 @@
 //! availability/status policy; this module never falls back from an explicit owner.
 use crate::{
     application::context::{AuthorizedTarget, RequestContext, TargetError},
-    media_storage_service::{MediaMapping, MediaStorageService},
-    server_id::ServerId,
-    server_storage::ServerStorageService,
-    session_storage::{
+    application::playback::sessions::{
         LiveStreamBinding, PlaybackSession, RevisionedPlaybackSession, SessionStorage,
     },
+    media::storage::{MediaMapping, MediaStorageService},
+    servers::id::ServerId,
+    servers::storage::ServerStorageService,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -155,7 +155,7 @@ impl MediaTargetResolver<'_> {
                     .into_iter()
                     .filter(|member| member.server.id == backend.server().id)
                     .max_by(|left, right| {
-                        crate::virtual_library_service::compare_virtual_library_routes(
+                        crate::libraries::service::compare_virtual_library_routes(
                             &left.server,
                             &left.mapping.original_media_id,
                             &right.server,

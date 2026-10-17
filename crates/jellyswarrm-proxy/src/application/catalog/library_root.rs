@@ -1,3 +1,4 @@
+//! Build visible virtual-library roots and merge library metadata for catalog responses.
 use std::collections::HashMap;
 
 use crate::application::error::ApplicationError;
@@ -7,16 +8,16 @@ use tracing::{error, warn};
 use super::services::CatalogService;
 use crate::{
     application::catalog::input::CatalogRequest,
-    media_presentation::{CatalogItem, ItemNamePolicy},
-    models::MediaItem,
-    processors::response_processor::ResponseProcessingProfile,
-    server_id::ServerId,
-    server_storage::Server,
-    upstream::jellyfin::json::response_json_to_payload_typed,
-    virtual_library_service::{
+    libraries::service::{
         compare_virtual_library_routes, normalize_library_id, VirtualLibraryAccessScope,
         VirtualLibraryResolution,
     },
+    media::presentation::{CatalogItem, ItemNamePolicy},
+    models::MediaItem,
+    processors::response_processor::ResponseProcessingProfile,
+    servers::id::ServerId,
+    servers::storage::Server,
+    upstream::jellyfin::json::response_json_to_payload_typed,
 };
 
 use super::{
@@ -51,7 +52,7 @@ struct LibraryRootInventory {
     non_library_per_server: Vec<Vec<CatalogItem>>,
 }
 
-type ServerMediaItem = crate::media_catalog::TaggedMediaItem;
+type ServerMediaItem = crate::media::catalog::TaggedMediaItem;
 
 async fn process_library_group_individually(
     state: &CatalogService,
@@ -606,7 +607,7 @@ async fn process_media_item_for_server(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{config::MediaStreamingMode, server_url::ServerUrl};
+    use crate::{config::MediaStreamingMode, servers::url::ServerUrl};
     use serde_json::json;
 
     fn typed_media_item(id: &str, item_type: &str, collection_type: Option<&str>) -> MediaItem {

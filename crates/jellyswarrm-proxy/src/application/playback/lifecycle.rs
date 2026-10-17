@@ -1,11 +1,11 @@
 //! Local playback report transitions. Planning never mutates session storage;
 //! callers commit only after upstream success and response construction.
 use crate::{
-    processors::request_analyzer::{PlaybackSessionAction, RequestBodyAnalysisResult},
-    server_id::ServerId,
-    session_storage::{
+    application::playback::sessions::{
         PlaybackSession, PreparedLiveStream, RevisionedPlaybackSession, SessionStorage,
     },
+    processors::request_analyzer::{PlaybackSessionAction, RequestBodyAnalysisResult},
+    servers::id::ServerId,
 };
 
 /// The sole application owner of local binding writes. Call only at the

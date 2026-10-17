@@ -23,7 +23,7 @@ pub(crate) enum FetchOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SourceOutcome {
-    pub server_id: crate::server_id::ServerId,
+    pub server_id: crate::servers::id::ServerId,
     pub parent_id: Option<crate::application::identity::BackendItemId>,
     pub outcome: FetchOutcome,
 }
@@ -181,7 +181,7 @@ mod tests {
     #[test]
     fn report_derives_completeness_without_losing_unavailable_targets() {
         let source = |outcome| SourceOutcome {
-            server_id: crate::server_id::ServerId::new(1),
+            server_id: crate::servers::id::ServerId::new(1),
             parent_id: Some("opaque-library".into()),
             outcome,
         };

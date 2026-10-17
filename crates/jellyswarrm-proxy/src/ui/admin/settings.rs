@@ -1,3 +1,4 @@
+//! Render and save proxy settings from the administrative UI.
 use askama::Template;
 use axum::{
     extract::State,

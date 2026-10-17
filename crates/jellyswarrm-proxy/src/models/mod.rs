@@ -1,3 +1,4 @@
+//! Jellyfin protocol DTOs, authorization headers, and shared token generation.
 mod authorization;
 mod jellyfin;
 

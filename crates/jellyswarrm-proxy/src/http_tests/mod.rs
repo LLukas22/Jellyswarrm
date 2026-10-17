@@ -38,3 +38,5 @@ use axum::http::StatusCode;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use support::{auth, Fixture, Scenario};
+
+mod playlists;

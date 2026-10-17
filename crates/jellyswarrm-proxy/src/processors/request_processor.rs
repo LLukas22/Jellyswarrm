@@ -1,16 +1,17 @@
+//! Translate virtual IDs and sharing permissions in outgoing JSON request bodies.
 use async_trait::async_trait;
 use serde_json::Value;
 use tracing::debug;
 
+use crate::auth::service::{AuthorizationSession, User};
+use crate::http::preprocessing::JellyfinAuthorization;
 use crate::processors::field_matcher::{
     ID_FIELDS, MEDIA_ID_LIST_PARENT_FIELDS, SESSION_FIELDS, USER_FIELDS,
 };
 use crate::processors::json_processor::{
     JsonProcessingContext, JsonProcessingResult, JsonProcessor,
 };
-use crate::request_preprocessing::JellyfinAuthorization;
-use crate::server_storage::Server;
-use crate::user_authorization_service::{AuthorizationSession, User};
+use crate::servers::storage::Server;
 use crate::DataContext;
 
 pub struct RequestProcessor {
@@ -165,16 +166,16 @@ mod tests {
 
     use super::*;
     use crate::{
+        application::playback::sessions::SessionStorage,
+        auth::service::{Device, UserAuthorizationService},
         config::{AppConfig, MediaStreamingMode, MIGRATOR},
-        media_identity::{MediaAlias, MediaKind, MediaObservation, MediaProvider},
-        media_storage_service::{MediaCatalogSnapshot, MediaStorageService},
+        libraries::service::VirtualLibraryService,
+        media::identity::{MediaAlias, MediaKind, MediaObservation, MediaProvider},
+        media::storage::{MediaCatalogSnapshot, MediaStorageService},
         processors::process_json,
-        server_id::ServerId,
-        server_storage::ServerStorageService,
-        server_url::ServerUrl,
-        session_storage::SessionStorage,
-        user_authorization_service::{Device, UserAuthorizationService},
-        virtual_library_service::VirtualLibraryService,
+        servers::id::ServerId,
+        servers::storage::ServerStorageService,
+        servers::url::ServerUrl,
     };
 
     async fn test_data_context() -> (DataContext, SqlitePool) {

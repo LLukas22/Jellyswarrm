@@ -5,11 +5,11 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     application::input::OperationRequest,
-    encryption::{HashedPassword, Password},
+    auth::encryption::{HashedPassword, Password},
+    auth::service::{LocalCredential, MappingAuth},
     models::{AuthenticateRequest, AuthenticateResponse, Authorization, SyncPlayUserAccessType},
     upstream::jellyfin::{json::execute_json_request, request::UpstreamRequestBuilder},
-    url_helper::join_server_url,
-    user_authorization_service::{LocalCredential, MappingAuth},
+    upstream::url::join_server_url,
     AppState,
 };
 
@@ -17,7 +17,7 @@ use anyhow::Result;
 
 async fn process_user(
     server_user: crate::models::User,
-    user: &crate::user_authorization_service::User,
+    user: &crate::auth::service::User,
     state: &AppState,
 ) -> Result<crate::models::User> {
     let mut server_user = server_user;
@@ -140,7 +140,7 @@ pub(crate) async fn server_info(
     // enabled this response, not X-Emby-Authorization after remapping.
     let is_seerr = matches!(
         input.context.authorization(),
-        Some(crate::request_preprocessing::JellyfinAuthorization::Authorization(authorization))
+        Some(crate::http::preprocessing::JellyfinAuthorization::Authorization(authorization))
             if is_seerr_client(authorization)
     );
     if !is_seerr {
@@ -386,7 +386,7 @@ async fn resolve_or_create_login_user(
     state: &AppState,
     username: &str,
     password: &Password,
-) -> Result<crate::user_authorization_service::User, StatusCode> {
+) -> Result<crate::auth::service::User, StatusCode> {
     state
         .user_authorization
         .resolve_or_create_login_user(username, password)
@@ -400,7 +400,7 @@ async fn resolve_or_create_login_user(
 
 async fn persist_successful_auths(
     state: &AppState,
-    user: &crate::user_authorization_service::User,
+    user: &crate::auth::service::User,
     login_authorization: &Authorization,
     successful_auths: &[SuccessfulServerAuth],
 ) -> Result<(), StatusCode> {
@@ -449,7 +449,7 @@ async fn persist_successful_auths(
 
 async fn decorate_auth_response(
     state: &AppState,
-    user: &crate::user_authorization_service::User,
+    user: &crate::auth::service::User,
     login_username: &str,
     login_authorization: &Authorization,
     successful_auth: &SuccessfulServerAuth,
@@ -485,9 +485,9 @@ mod tests {
         reported_server_version,
     };
     use crate::{
-        encryption::{HashedPassword, Password},
+        auth::encryption::{HashedPassword, Password},
+        auth::service::LocalCredential,
         models::Authorization,
-        user_authorization_service::LocalCredential,
     };
 
     fn authorization(client: &str, device: &str) -> Authorization {
@@ -595,8 +595,8 @@ async fn authenticate_on_server(
     state: AppState,
     authorization: Authorization,
     payload: AuthenticateRequest,
-    server: crate::server_storage::Server,
-    server_mapping: Option<crate::user_authorization_service::ServerMapping>,
+    server: crate::servers::storage::Server,
+    server_mapping: Option<crate::auth::service::ServerMapping>,
 ) -> Result<SuccessfulServerAuth, AuthError> {
     let auth_url = join_server_url(&server.url, "/Users/AuthenticateByName");
 
@@ -622,14 +622,15 @@ async fn authenticate_on_server(
                 .await
                 .map_err(|_| AuthError::InternalError)?
                 .ok_or(AuthError::InvalidCredentials)?;
-            let (token, remote_user) = crate::mapping_auth::validated_quick_connect_token(
-                &state,
-                &local_user,
-                &server,
-                mapping,
-            )
-            .await
-            .map_err(|_| AuthError::InvalidCredentials)?;
+            let (token, remote_user) =
+                crate::auth::mapping_authentication::validated_quick_connect_token(
+                    &state,
+                    &local_user,
+                    &server,
+                    mapping,
+                )
+                .await
+                .map_err(|_| AuthError::InvalidCredentials)?;
             let server_id = state.config.read().await.server_id.clone();
             return Ok(SuccessfulServerAuth {
                 server,
@@ -790,8 +791,8 @@ enum AuthError {
 
 #[derive(Debug, Clone)]
 struct SuccessfulServerAuth {
-    server: crate::server_storage::Server,
+    server: crate::servers::storage::Server,
     auth_response: AuthenticateResponse,
     final_username: String,
-    final_password: Option<crate::encryption::Password>,
+    final_password: Option<crate::auth::encryption::Password>,
 }

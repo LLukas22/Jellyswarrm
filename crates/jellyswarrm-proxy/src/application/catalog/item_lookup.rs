@@ -7,8 +7,8 @@ use crate::application::error::ApplicationError;
 use super::services::CatalogService;
 use crate::{
     application::catalog::input::CatalogRequest,
-    media_catalog::{merge_media_group, TaggedMediaItem},
-    media_storage_service::{MediaMapping, MediaStorageService},
+    media::catalog::{merge_media_group, TaggedMediaItem},
+    media::storage::{MediaMapping, MediaStorageService},
 };
 
 use super::{
@@ -62,8 +62,7 @@ impl RequestedItems {
                 .resolve(&id, request.context.access_scope().as_ref())
                 .await
                 .map_err(ApplicationError::Storage)?;
-            if let crate::virtual_library_service::VirtualLibraryResolution::Resolved(library) =
-                library
+            if let crate::libraries::service::VirtualLibraryResolution::Resolved(library) = library
             {
                 entries.push(RequestedItem {
                     id,
@@ -233,7 +232,7 @@ impl RequestedItems {
         if had_targets && !successful {
             return Err(ApplicationError::SourcesFailed(failures));
         }
-        let mut items: Vec<crate::media_presentation::CatalogItem> = Vec::new();
+        let mut items: Vec<crate::media::presentation::CatalogItem> = Vec::new();
         for entry in self.0 {
             let mut members = entry
                 .members

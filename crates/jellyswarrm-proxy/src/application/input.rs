@@ -87,7 +87,7 @@ impl OperationRequest {
 }
 
 fn routing_error(error: anyhow::Error) -> ApplicationError {
-    if error.is::<crate::request_preprocessing::MediaAccessDenied>() {
+    if error.is::<crate::http::preprocessing::MediaAccessDenied>() {
         ApplicationError::AccessDenied
     } else if error.is::<crate::application::playback::reports::NoAvailableBackend>() {
         ApplicationError::UnavailableOwner

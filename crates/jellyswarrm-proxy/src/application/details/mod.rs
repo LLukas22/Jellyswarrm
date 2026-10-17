@@ -18,10 +18,10 @@ use crate::{
     },
     application::error::ApplicationError,
     application::{context::TargetError, input::OperationRequest},
+    libraries::service::VirtualLibraryResolution,
     processors::response_processor::ResponseProcessingProfile,
     upstream::jellyfin::request::UpstreamRequestBuilder,
-    url_helper::{contains_id, ensure_query_list_value},
-    virtual_library_service::VirtualLibraryResolution,
+    upstream::url::{contains_id, ensure_query_list_value},
 };
 
 /// Retry ordered virtual-library members only for an upstream response failure.
@@ -33,9 +33,9 @@ impl VirtualLibraryFallbackPolicy {
         error.allows_detail_fallback()
     }
 
-    fn order(members: &mut [crate::virtual_library_service::VirtualLibraryMember]) {
+    fn order(members: &mut [crate::libraries::service::VirtualLibraryMember]) {
         members.sort_by(|left, right| {
-            crate::virtual_library_service::compare_virtual_library_routes(
+            crate::libraries::service::compare_virtual_library_routes(
                 &right.server,
                 &right.mapping.original_media_id,
                 &left.server,

@@ -1,3 +1,4 @@
+//! Parse and render Jellyfin authorization headers and their client/device metadata.
 use percent_encoding::percent_decode_str;
 use std::fmt;
 

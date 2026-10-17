@@ -5,14 +5,14 @@ use anyhow::{anyhow, Result};
 use tracing::debug;
 
 use crate::application::playback::reports;
+use crate::auth::service::AuthorizationSession;
+use crate::libraries::service::{compare_virtual_library_routes, VirtualLibraryAccessScope};
 use crate::processors::request_analyzer::RequestBodyAnalysisResult;
-use crate::server_storage::Server;
-use crate::user_authorization_service::AuthorizationSession;
-use crate::virtual_library_service::{compare_virtual_library_routes, VirtualLibraryAccessScope};
+use crate::servers::storage::Server;
 use crate::{
-    config::AppConfig, media_storage_service::MediaStorageService,
-    processors::url_processor::UrlProcessor, server_storage::ServerStorageService,
-    session_storage::SessionStorage,
+    application::playback::sessions::SessionStorage, config::AppConfig,
+    media::storage::MediaStorageService, processors::url_processor::UrlProcessor,
+    servers::storage::ServerStorageService,
 };
 
 pub(crate) struct RoutingServices<'a> {
@@ -31,7 +31,7 @@ pub async fn resolve_server(
     access_scope: Option<&VirtualLibraryAccessScope>,
 ) -> Result<(Server, Option<AuthorizationSession>, bool)> {
     let config = state.config.read().await;
-    let path = crate::url_helper::decoded_path_segments(match &config.url_prefix {
+    let path = crate::upstream::url::decoded_path_segments(match &config.url_prefix {
         Some(prefix) => request
             .url()
             .path()

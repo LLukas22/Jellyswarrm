@@ -2,9 +2,9 @@
 use super::services::CatalogService;
 use crate::{
     application::error::ApplicationError,
-    media_storage_service::ReconciliationMode,
-    user_authorization_service::AuthorizationSession,
-    virtual_library_service::{VirtualLibraryAccessScope, VirtualLibraryResolution},
+    auth::service::AuthorizationSession,
+    libraries::service::{VirtualLibraryAccessScope, VirtualLibraryResolution},
+    media::storage::ReconciliationMode,
 };
 
 use super::{

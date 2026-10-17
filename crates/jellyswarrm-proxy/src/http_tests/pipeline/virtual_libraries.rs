@@ -1,3 +1,4 @@
+//! HTTP regressions for virtual-library grouping, discovery, access, and item details.
 use super::*;
 
 const LIBRARY: &str = "11111111111111111111111111111111";
@@ -253,7 +254,7 @@ async fn failed_viewer_refresh_preserves_members_and_recovery_updates_them() {
             .mount(upstream)
             .await;
     }
-    let scope = crate::virtual_library_service::VirtualLibraryAccessScope::new(
+    let scope = crate::libraries::service::VirtualLibraryAccessScope::new(
         &f.user.id,
         f.state
             .server_storage
@@ -272,7 +273,7 @@ async fn failed_viewer_refresh_preserves_members_and_recovery_updates_them() {
         fail.store(failing, Ordering::SeqCst);
         removed.store(missing, Ordering::SeqCst);
         assert_eq!(catalog(&f, "/UserViews").await["Items"][0]["Id"], id);
-        let crate::virtual_library_service::VirtualLibraryResolution::Resolved(library) = f
+        let crate::libraries::service::VirtualLibraryResolution::Resolved(library) = f
             .state
             .virtual_library_service
             .resolve(&id, Some(&scope))

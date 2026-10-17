@@ -3,13 +3,13 @@ use std::collections::VecDeque;
 use std::str::FromStr;
 
 use crate::{
-    media_catalog::{label_duplicates, TaggedMediaItem},
-    media_presentation::{CatalogItem, ItemNamePolicy},
+    media::catalog::{label_duplicates, TaggedMediaItem},
+    media::presentation::{CatalogItem, ItemNamePolicy},
     models::{
         enums::{ItemSortBy, SortOrder},
         ItemsResponseVariants, ItemsResponseWithCount, MediaItem,
     },
-    server_storage::Server,
+    servers::storage::Server,
 };
 
 use super::library_resolution::is_live_tv_user_view;

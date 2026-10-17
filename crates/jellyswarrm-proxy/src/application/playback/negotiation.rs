@@ -27,7 +27,7 @@ use crate::{
         json::{payload_from_request_typed, set_json_body_typed},
         request::UpstreamRequestBuilder,
     },
-    url_helper::{contains_id, replace_path_id},
+    upstream::url::{contains_id, replace_path_id},
 };
 
 /// Negotiate sources, register their routes, and bind the successful playback.
@@ -60,18 +60,16 @@ pub(crate) async fn post_playback_info_typed(
             }),
     ) {
         (Some(item), Some(source))
-            if crate::media_storage_service::MediaStorageService::normalize_uuid(&source)
-                == crate::media_storage_service::MediaStorageService::normalize_uuid(&item)
+            if crate::media::storage::MediaStorageService::normalize_uuid(&source)
+                == crate::media::storage::MediaStorageService::normalize_uuid(&item)
                 && input
                     .original_request
                     .url()
                     .query_pairs()
                     .filter(|(key, _)| key.eq_ignore_ascii_case("MediaSourceId"))
                     .all(|(_, value)| {
-                        crate::media_storage_service::MediaStorageService::normalize_uuid(&value)
-                            == crate::media_storage_service::MediaStorageService::normalize_uuid(
-                                &item,
-                            )
+                        crate::media::storage::MediaStorageService::normalize_uuid(&value)
+                            == crate::media::storage::MediaStorageService::normalize_uuid(&item)
                     }) =>
         {
             state
@@ -120,10 +118,8 @@ pub(crate) async fn post_playback_info_typed(
     // its own: let the already selected member negotiate its default sources.
     let default_aggregate_source = default_aggregate_query
         || selected_source.as_deref().is_some_and(|source| {
-            crate::media_storage_service::MediaStorageService::normalize_uuid(source)
-                == crate::media_storage_service::MediaStorageService::normalize_uuid(
-                    &requested_item_id,
-                )
+            crate::media::storage::MediaStorageService::normalize_uuid(source)
+                == crate::media::storage::MediaStorageService::normalize_uuid(&requested_item_id)
         }) && state
             .media_storage
             .get_media_version_group(&requested_item_id)
@@ -197,11 +193,10 @@ pub(crate) async fn post_playback_info_typed(
                     .media_sources
                     .iter()
                     .position(|source| {
-                        crate::media_storage_service::MediaStorageService::normalize_uuid(
-                            &source.id,
-                        ) == crate::media_storage_service::MediaStorageService::normalize_uuid(
-                            &original_item_id,
-                        )
+                        crate::media::storage::MediaStorageService::normalize_uuid(&source.id)
+                            == crate::media::storage::MediaStorageService::normalize_uuid(
+                                &original_item_id,
+                            )
                     })
                     .unwrap_or(0);
                 let source = response.media_sources.remove(index);

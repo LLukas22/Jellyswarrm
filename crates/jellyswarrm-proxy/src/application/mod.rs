@@ -1,5 +1,5 @@
 //! Application workflows shared by HTTP adapters and future background callers.
-//! Read `../DATA_FLOW.md` for route dispatch, request/response shapes, and commit points.
+//! See [the architecture map](../../ARCHITECTURE.md) for ownership and request paths.
 pub(crate) mod accounts;
 pub(crate) mod catalog;
 pub(crate) mod context;

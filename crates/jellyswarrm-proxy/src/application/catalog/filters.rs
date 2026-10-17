@@ -1,3 +1,4 @@
+//! Apply access-scoped catalog filters and translate named or requested media IDs.
 use crate::application::error::ApplicationError;
 use serde_json::{json, Value};
 
@@ -16,7 +17,7 @@ use crate::{
 pub(super) async fn restrict_named_ids(
     state: &CatalogService,
     url: &mut url::Url,
-    server_id: crate::server_id::ServerId,
+    server_id: crate::servers::id::ServerId,
 ) -> Result<bool, ApplicationError> {
     let guide = url
         .path()

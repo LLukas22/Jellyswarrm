@@ -1,3 +1,4 @@
+//! Verify Jellyfin Web route compatibility through the production client API surface.
 use super::*;
 
 const LIBRARY_ID: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";

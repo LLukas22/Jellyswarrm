@@ -1,3 +1,4 @@
+//! Cache and materialize catalog snapshots with query-aware pagination and refresh policy.
 use super::services::CatalogService;
 use super::{
     library_resolution::CatalogFetchTarget, postprocessing::Pagination,
@@ -5,7 +6,7 @@ use super::{
 };
 use crate::application::error::ApplicationError;
 use crate::{
-    application::catalog::input::CatalogRequest, request_preprocessing::JellyfinAuthorization,
+    application::catalog::input::CatalogRequest, http::preprocessing::JellyfinAuthorization,
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -279,7 +280,7 @@ mod materialization_tests {
             response: serde_json::json!({"Items": [{"Id": "a", "Future": {"kept": true}}, {"Id": "b"}], "TotalRecordCount": 2, "FutureEnvelope": 42}),
             report: crate::application::catalog::scan::CatalogReport::new(
                 vec![SourceOutcome {
-                    server_id: crate::server_id::ServerId::new(1),
+                    server_id: crate::servers::id::ServerId::new(1),
                     parent_id: Some("library".into()),
                     outcome,
                 }],
@@ -301,7 +302,10 @@ mod materialization_tests {
             None,
             None,
             None,
-            Some(crate::virtual_library_service::VirtualLibraryAccessScope::new(viewer, [])),
+            Some(crate::libraries::service::VirtualLibraryAccessScope::new(
+                viewer,
+                [],
+            )),
         );
         let request = CatalogRequest::new(request, context, None);
         let mut hash = Sha256::new();

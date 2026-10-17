@@ -1,3 +1,4 @@
+//! Jellyfin protocol request and response DTOs used by typed proxy behavior.
 pub mod enums;
 
 use std::collections::HashMap;
@@ -7,7 +8,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use serde_with::skip_serializing_none;
 
 use crate::{
-    encryption::Password,
+    auth::encryption::Password,
     models::{enums::CollectionType, jellyfin::enums::BaseItemKind},
 };
 

@@ -1,3 +1,4 @@
+//! Centralize JSON field names and matching rules used by payload translation.
 use std::{collections::HashSet, sync::LazyLock};
 
 /// A struct for case-insensitive field name matching

@@ -1,3 +1,4 @@
+//! Load and validate process configuration, persisted secrets, and SQL migrations.
 use serde::{Deserialize, Serialize};
 use serde_default::DefaultFromSerde;
 use sqlx::migrate::Migrator;
@@ -15,7 +16,7 @@ use jellyfin_api::ClientInfo;
 
 use base64::prelude::*;
 
-use crate::encryption::Password;
+use crate::auth::encryption::Password;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MediaStreamingMode {

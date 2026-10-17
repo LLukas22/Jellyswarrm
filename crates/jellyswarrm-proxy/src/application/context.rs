@@ -2,11 +2,11 @@
 //!
 //! Credentials deliberately have no derived Debug/Serialize implementation.
 use crate::{
-    request_preprocessing::{request_device, JellyfinAuthorization},
-    server_id::ServerId,
-    server_storage::Server,
-    user_authorization_service::{AuthorizationSession, Device, User},
-    virtual_library_service::VirtualLibraryAccessScope,
+    auth::service::{AuthorizationSession, Device, User},
+    http::preprocessing::{request_device, JellyfinAuthorization},
+    libraries::service::VirtualLibraryAccessScope,
+    servers::id::ServerId,
+    servers::storage::Server,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,7 +118,7 @@ impl RequestContext {
         use crate::processors::url_processor::{MEDIA_ID_PATH_TAGS, MEDIA_ID_QUERY_TAGS};
         if let Some(scope) = &self.access_scope {
             for tag in MEDIA_ID_PATH_TAGS {
-                if let Some(id) = crate::url_helper::contains_id(url, tag) {
+                if let Some(id) = crate::upstream::url::contains_id(url, tag) {
                     urls.validate_media_access(&id, scope).await?;
                 }
             }
@@ -231,7 +231,7 @@ impl AuthorizedTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{config::MediaStreamingMode, user_authorization_service::LocalCredential};
+    use crate::{auth::service::LocalCredential, config::MediaStreamingMode};
 
     fn user() -> User {
         User {
@@ -248,7 +248,7 @@ mod tests {
         let server = Server {
             id: ServerId::new(id),
             name: format!("Backend {id}"),
-            url: crate::server_url::ServerUrl::parse(&format!("http://backend-{id}.example"))
+            url: crate::servers::url::ServerUrl::parse(&format!("http://backend-{id}.example"))
                 .unwrap(),
             priority: 100,
             media_streaming_mode: MediaStreamingMode::Redirect,

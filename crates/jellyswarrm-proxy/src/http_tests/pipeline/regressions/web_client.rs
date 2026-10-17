@@ -1,3 +1,4 @@
+//! Jellyfin Web HTTP regressions spanning routes and playback lifecycle behavior.
 use super::*;
 mod lifecycle;
 mod routes;

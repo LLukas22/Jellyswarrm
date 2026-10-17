@@ -1,3 +1,4 @@
+//! Federated catalog snapshot regressions through the owning HTTP handler.
 use super::tests::{request, setup};
 use crate::application::catalog::snapshots::{SnapshotRequest, SnapshotResponse};
 
@@ -7,8 +8,10 @@ async fn a_mutation_fences_inflight_builds_without_invalidating_another_viewer()
     let state = state.catalog_service();
     let prepare = |viewer: &str| {
         let mut request = request("/Items?Limit=1", &sessions);
-        request.access_scope =
-            Some(crate::virtual_library_service::VirtualLibraryAccessScope::new(viewer, []));
+        request.access_scope = Some(crate::libraries::service::VirtualLibraryAccessScope::new(
+            viewer,
+            [],
+        ));
         crate::application::catalog::input::CatalogRequest::from(request)
     };
     let old = prepare("viewer");

@@ -1,19 +1,19 @@
 //! Catalog-only capabilities, owned so bounded source tasks can share them.
 use crate::{
+    application::playback::sessions::SessionStorage,
     application::{
         error::ApplicationError,
         routing::RoutingServices,
         upstream::{execute_payload, JsonUpstream},
     },
     config::AppConfig,
-    media_storage_service::MediaStorageService,
+    libraries::service::VirtualLibraryService,
+    media::storage::MediaStorageService,
     processors::{
         response_processor::{ResponseProcessingProfile, ResponseProcessor},
         url_processor::UrlProcessor,
     },
-    server_storage::{Server, ServerStorageService},
-    session_storage::SessionStorage,
-    virtual_library_service::VirtualLibraryService,
+    servers::storage::{Server, ServerStorageService},
 };
 use std::sync::Arc;
 

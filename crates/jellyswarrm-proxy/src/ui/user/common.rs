@@ -1,13 +1,14 @@
+//! Shared user-page helpers for mapping validation, credentials, and rendering context.
 use std::sync::Arc;
 
 use jellyfin_api::JellyfinClient;
 use tracing::info;
 
 use crate::{
+    auth::encryption::{HashedPassword, Password},
+    auth::service::{CredentialFormat, MappingAuth, ServerMapping},
     config::CLIENT_STORAGE,
-    encryption::{HashedPassword, Password},
-    server_storage::Server,
-    user_authorization_service::{CredentialFormat, MappingAuth, ServerMapping},
+    servers::storage::Server,
     AppState,
 };
 
@@ -138,15 +139,22 @@ pub(in crate::ui) async fn authenticate_user_with_mapping(
             .map_err(|e| e.to_string())?
             .ok_or("Local user not found")?;
         let (token, remote_user) =
-            crate::mapping_auth::validated_quick_connect_token(state, &local_user, server, mapping)
-                .await?;
+            crate::auth::mapping_authentication::validated_quick_connect_token(
+                state,
+                &local_user,
+                server,
+                mapping,
+            )
+            .await?;
         // Use a fresh client: the shared cache evicts by calling Logout, which
         // would revoke this mapping's persistent credential.
         let qc_client = Arc::new(
             JellyfinClient::new(
                 server.url.as_str(),
                 jellyfin_api::ClientInfo {
-                    device_id: crate::mapping_auth::mapping_device_id(server, &user.id),
+                    device_id: crate::auth::mapping_authentication::mapping_device_id(
+                        server, &user.id,
+                    ),
                     ..crate::config::CLIENT_INFO.clone()
                 },
             )

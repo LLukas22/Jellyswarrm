@@ -1,3 +1,4 @@
+//! Handle management UI login/logout and authenticated-session redirects.
 use askama::Template;
 use axum::{
     extract::Query,

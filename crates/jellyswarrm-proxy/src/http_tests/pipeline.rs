@@ -1,10 +1,11 @@
+//! End-to-end HTTP pipeline regressions for routing, virtual libraries, and web clients.
 use super::*;
 mod media_paths;
 mod regressions;
 mod virtual_libraries;
 use crate::{
-    media_identity::{MediaAlias, MediaObservation},
-    media_storage_service::{MediaCatalogSnapshot, MediaVersionSourceObservation},
+    media::identity::{MediaAlias, MediaObservation},
+    media::storage::{MediaCatalogSnapshot, MediaVersionSourceObservation},
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use wiremock::{
@@ -96,7 +97,7 @@ async fn same_server_episode_selection_survives_streams_and_all_playback_reports
                     .iter()
                     .map(|member| MediaObservation {
                         virtual_media_id: member.virtual_media_id.clone(),
-                        kind: crate::media_identity::MediaKind::Episode,
+                        kind: crate::media::identity::MediaKind::Episode,
                         aliases: aliases.clone(),
                     })
                     .collect(),
@@ -518,11 +519,11 @@ async fn automatic_library_keeps_its_id_and_surviving_member_during_an_outage() 
         .get_user_sessions(&f.user.id, None)
         .await
         .unwrap();
-    let scope = crate::virtual_library_service::VirtualLibraryAccessScope::new(
+    let scope = crate::libraries::service::VirtualLibraryAccessScope::new(
         &f.user.id,
         sessions.iter().map(|(_, server)| server.id),
     );
-    let crate::virtual_library_service::VirtualLibraryResolution::Resolved(resolved) = f
+    let crate::libraries::service::VirtualLibraryResolution::Resolved(resolved) = f
         .state
         .virtual_library_service
         .resolve(id, Some(&scope))

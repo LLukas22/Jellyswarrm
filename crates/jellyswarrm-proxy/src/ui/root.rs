@@ -1,3 +1,4 @@
+//! Render the management UI landing page and its common layout context.
 use askama::Template;
 use axum::{
     extract::State,

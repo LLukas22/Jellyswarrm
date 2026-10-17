@@ -6,7 +6,6 @@ use super::services::CatalogService;
 use crate::{
     application::{context::RequestContext, input::OperationRequest},
     processors::request_analyzer::RequestBodyAnalysisResult,
-    request_preprocessing,
 };
 
 pub(crate) struct CatalogRequest {
@@ -20,9 +19,9 @@ pub(crate) fn input_error(error: anyhow::Error) -> StatusCode {
 }
 
 pub(super) fn input_error_typed(error: anyhow::Error) -> ApplicationError {
-    if error.is::<request_preprocessing::NoAvailableBackend>() {
+    if error.is::<crate::http::preprocessing::NoAvailableBackend>() {
         ApplicationError::UnavailableOwner
-    } else if error.is::<request_preprocessing::MediaAccessDenied>() {
+    } else if error.is::<crate::http::preprocessing::MediaAccessDenied>() {
         ApplicationError::AccessDenied
     } else {
         ApplicationError::InvalidRouting(error)
@@ -108,8 +107,8 @@ impl From<CatalogRequest> for OperationRequest {
 // Existing handler unit fixtures intentionally keep their legacy construction.
 // Production catalog extraction never creates a PreprocessedRequest.
 #[cfg(test)]
-impl From<request_preprocessing::PreprocessedRequest> for CatalogRequest {
-    fn from(request: request_preprocessing::PreprocessedRequest) -> Self {
+impl From<crate::http::preprocessing::PreprocessedRequest> for CatalogRequest {
+    fn from(request: crate::http::preprocessing::PreprocessedRequest) -> Self {
         let context = RequestContext::new(
             &request.original_request,
             request.auth,

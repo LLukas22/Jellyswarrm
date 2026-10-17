@@ -1,3 +1,4 @@
+//! Regression coverage for persisted mappings, version groups, and reconciliation evidence.
 use std::str::FromStr;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -29,8 +30,8 @@ fn tmdb_movie_observation(virtual_media_id: &str, provider_id: &str) -> MediaObs
         virtual_media_id: virtual_media_id.to_string(),
         kind: MediaKind::Movie,
         aliases: BTreeSet::from([MediaAlias {
-            provider: crate::media_identity::MediaProvider::Tmdb,
-            kind: crate::media_identity::MediaKind::Movie,
+            provider: crate::media::identity::MediaProvider::Tmdb,
+            kind: crate::media::identity::MediaKind::Movie,
             provider_id: provider_id.to_string(),
         }]),
     }
@@ -530,8 +531,8 @@ async fn parent_navigation_accepts_filtered_subsets_but_rejects_incomparable_gro
                 virtual_media_id: mapping.virtual_media_id,
                 kind: MediaKind::Series,
                 aliases: BTreeSet::from([MediaAlias {
-                    provider: crate::media_identity::MediaProvider::Tmdb,
-                    kind: crate::media_identity::MediaKind::Series,
+                    provider: crate::media::identity::MediaProvider::Tmdb,
+                    kind: crate::media::identity::MediaKind::Series,
                     provider_id: "42".into(),
                 }]),
             }],
@@ -1511,8 +1512,8 @@ async fn rebuilding_one_scope_does_not_move_another_scopes_source_routes() {
     let split_generation = service.begin_media_reconciliation().await.unwrap();
     let mut split_snapshots = snapshots();
     split_snapshots[1].observations[0].aliases = BTreeSet::from([MediaAlias {
-        provider: crate::media_identity::MediaProvider::Tmdb,
-        kind: crate::media_identity::MediaKind::Movie,
+        provider: crate::media::identity::MediaProvider::Tmdb,
+        kind: crate::media::identity::MediaKind::Movie,
         provider_id: "99".to_string(),
     }]);
     service

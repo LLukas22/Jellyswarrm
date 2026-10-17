@@ -1,9 +1,9 @@
 //! HTTP/WebSocket integration tests with real SQLite authorization and zero-upstream assertions.
 use super::*;
 use crate::{
+    auth::service::Device,
     http_tests::support::{device, Fixture},
     models::Authorization,
-    user_authorization_service::Device,
 };
 use axum::http::StatusCode;
 use futures_util::{SinkExt, StreamExt};
@@ -655,7 +655,7 @@ async fn encoded_session_paths_do_not_escape_local_handling() {
 
 #[test]
 fn discovery_filter_does_not_change_the_callers_device_identity() {
-    let auth = crate::request_preprocessing::JellyfinAuthorization::Authorization(Authorization {
+    let auth = crate::http::preprocessing::JellyfinAuthorization::Authorization(Authorization {
         client: "Test".into(),
         device: "Web".into(),
         device_id: "web".into(),
@@ -667,7 +667,7 @@ fn discovery_filter_does_not_change_the_callers_device_identity() {
         url::Url::parse("http://local/Sessions?DeviceId=tv").unwrap(),
     );
     assert_eq!(
-        crate::request_preprocessing::request_device(&request, Some(&auth))
+        crate::http::preprocessing::request_device(&request, Some(&auth))
             .unwrap()
             .device_id,
         "web"
@@ -676,9 +676,9 @@ fn discovery_filter_does_not_change_the_callers_device_identity() {
         reqwest::Method::GET,
         url::Url::parse("http://local/socket?deviceId=tv").unwrap(),
     );
-    let token = crate::request_preprocessing::JellyfinAuthorization::XEmbyToken("token".into());
+    let token = crate::http::preprocessing::JellyfinAuthorization::XEmbyToken("token".into());
     assert_eq!(
-        crate::request_preprocessing::request_device(&request, Some(&token))
+        crate::http::preprocessing::request_device(&request, Some(&token))
             .unwrap()
             .device_id,
         "tv"

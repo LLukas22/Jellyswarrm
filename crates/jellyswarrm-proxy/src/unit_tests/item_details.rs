@@ -1,17 +1,19 @@
+//! Regression coverage for item-detail workflows, access scope, and backend selection.
 use std::sync::Arc;
 
 use super::*;
 use crate::{
     application::context::RequestContext,
+    application::playback::sessions::SessionStorage,
+    auth::service::{AuthorizationSession, Device, UserAuthorizationService},
     config::{AppConfig, MediaStreamingMode, MIGRATOR},
-    handlers::quick_connect::QuickConnectStorage,
-    media_storage_service::MediaStorageService,
-    request_preprocessing::JellyfinAuthorization,
-    server_storage::{Server, ServerStorageService},
-    session_storage::SessionStorage,
-    user_authorization_service::{AuthorizationSession, Device, UserAuthorizationService},
-    virtual_library_service::{VirtualLibraryAccessScope, VirtualLibraryService},
-    DataContext, ProxyProcessors,
+    http::handlers::quick_connect::QuickConnectStorage,
+    http::preprocessing::JellyfinAuthorization,
+    libraries::service::{VirtualLibraryAccessScope, VirtualLibraryService},
+    media::storage::MediaStorageService,
+    processors::ProxyProcessors,
+    servers::storage::{Server, ServerStorageService},
+    DataContext,
 };
 use serde_json::json;
 use wiremock::{

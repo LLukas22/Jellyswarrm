@@ -1,6 +1,7 @@
+//! Verify Jellyfin model serialization and deserialization against representative payloads.
 #[cfg(test)]
 mod tests {
-    use crate::encryption::Password;
+    use crate::auth::encryption::Password;
     use crate::models::jellyfin::enums::BaseItemKind;
     use crate::models::jellyfin::{AuthenticateRequest, MediaItem, MediaSource};
     use crate::models::{ItemsResponseWithCount, PlaybackRequest, PlaybackResponse};

@@ -1,3 +1,4 @@
+//! Federated handler regressions for incomplete results and backend failure handling.
 use super::{
     tests::{fixture_member_parent_ids, request, setup},
     *,
@@ -228,7 +229,7 @@ async fn partial_search_membership_does_not_veto_recursive_catalog_parent_identi
     session.server_url = third.uri();
     sessions.push((
         session,
-        crate::server_storage::Server::from_row(row).unwrap(),
+        crate::servers::storage::Server::from_row(row).unwrap(),
     ));
     upstreams.push(third);
     for (index, upstream) in upstreams.iter().enumerate() {
@@ -344,16 +345,15 @@ async fn snapshots_coalesce_builds_and_keep_random_and_tied_pages_stable() {
 #[tokio::test]
 async fn snapshots_are_scoped_to_viewer_token_targets_and_display_configuration() {
     use crate::{
-        request_preprocessing::JellyfinAuthorization,
-        virtual_library_service::VirtualLibraryAccessScope,
+        http::preprocessing::JellyfinAuthorization, libraries::service::VirtualLibraryAccessScope,
     };
     let (state, _, sessions, upstreams) = setup().await;
     mount_catalog(&upstreams, "SortName").await;
     let build_request = |viewer: &str,
                          token: &str,
                          selected: &[(
-        crate::user_authorization_service::AuthorizationSession,
-        crate::server_storage::Server,
+        crate::auth::service::AuthorizationSession,
+        crate::servers::storage::Server,
     )]| {
         let mut req = request("/Items?SearchTerm=equal&Limit=1", selected);
         req.auth = Some(JellyfinAuthorization::XEmbyToken(token.to_string()));
@@ -489,7 +489,7 @@ async fn incomplete_sources_are_discarded_without_caching_degraded_results_or_pr
 #[test]
 fn sorting_uses_original_names_then_stable_ids_before_display_labels() {
     use super::postprocessing::{FederatedItems, ResponseShape};
-    use crate::{media_presentation::ItemNamePolicy, models::MediaItem};
+    use crate::{media::presentation::ItemNamePolicy, models::MediaItem};
     let item = |id: &str| {
         serde_json::from_value::<MediaItem>(json!({"Id": id, "Name": "Equal", "Type": "Movie"}))
             .unwrap()
@@ -517,7 +517,7 @@ async fn numbered_episode_versions_keep_ranges_distinct_and_route_same_server_co
             },
         },
         models::MediaSource,
-        server_storage::Server,
+        servers::storage::Server,
     };
     let (state, pool, mut sessions, mut upstreams) = setup().await;
     let third = wiremock::MockServer::start().await;
@@ -704,7 +704,7 @@ async fn numbered_episode_versions_keep_ranges_distinct_and_route_same_server_co
     assert_eq!(route.member_virtual_id, sibling.mapping.virtual_media_id);
     let mut normalized = detail_request.original_request.try_clone().unwrap();
     *normalized.url_mut() =
-        crate::url_helper::replace_path_id(normalized.url(), "Items", &route.member_virtual_id)
+        crate::upstream::url::replace_path_id(normalized.url(), "Items", &route.member_virtual_id)
             .unwrap();
     let prefix = state.get_url_prefix().await;
     let built = crate::upstream::jellyfin::request::UpstreamRequestBuilder::new(

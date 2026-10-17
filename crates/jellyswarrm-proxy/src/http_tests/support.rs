@@ -1,15 +1,16 @@
 //! Real SQLite identity/session state, real production media routes, and two
 //! independently observable backends. Unmatched upstream requests return 404.
 use crate::{
+    application::playback::sessions::SessionStorage,
+    auth::service::{Device, User, UserAuthorizationService},
     config::{AppConfig, MediaStreamingMode, MIGRATOR},
-    handlers::quick_connect::QuickConnectStorage,
-    media_storage_service::MediaStorageService,
+    http::handlers::quick_connect::QuickConnectStorage,
+    libraries::service::VirtualLibraryService,
+    media::storage::MediaStorageService,
     models::Authorization,
-    server_storage::ServerStorageService,
-    session_storage::SessionStorage,
-    user_authorization_service::{Device, User, UserAuthorizationService},
-    virtual_library_service::VirtualLibraryService,
-    AppState, DataContext, ProxyProcessors,
+    processors::ProxyProcessors,
+    servers::storage::ServerStorageService,
+    AppState, DataContext,
 };
 use axum::{http::StatusCode, routing::get, Router};
 use futures_util::StreamExt;
@@ -169,15 +170,15 @@ impl Fixture {
         }
         let routes = jellyswarrm_macros::lowercase_routes! {
             Router::new().merge(crate::sessions::router())
-                .merge(crate::client_api_routes::router())
+                .merge(crate::http::client_routes::router())
                 .route("/socket", get(crate::sessions::websocket))
-                .route("/SyncPlay/New", axum::routing::post(crate::handlers::syncplay::create_group))
-                .route("/{*path}", axum::routing::any(crate::proxy_handler))
-                .fallback(crate::proxy_handler)
+                .route("/SyncPlay/New", axum::routing::post(crate::http::handlers::syncplay::create_group))
+                .route("/{*path}", axum::routing::any(crate::http::proxy::proxy_handler))
+                .fallback(crate::http::proxy::proxy_handler)
         };
         let routes = routes.layer(axum::middleware::from_fn_with_state(
             state.clone(),
-            crate::enforce_read_only_api_keys,
+            crate::http::middleware::enforce_read_only_api_keys,
         ));
         let app = Router::new()
             .nest("/proxy", routes)

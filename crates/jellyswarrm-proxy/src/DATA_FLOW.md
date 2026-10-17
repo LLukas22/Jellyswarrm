@@ -1,11 +1,13 @@
 # Request and data flow
 
-Paths are relative to `src/`. Start with `main.rs` for exact routes and aliases.
+Paths are relative to `src/`. Start with `http/router.rs` for routes and
+`app/bootstrap.rs` for layer ordering and the explicit `/GetUTCTime` alias.
+See [the architecture map](../ARCHITECTURE.md) for module ownership and startup.
 
 ## Request routing
 
 ```text
-Client → main.rs → extractors.rs → handlers/
+Client → http/router.rs → http/extractors.rs → http/handlers/
                                   ├─ federated.rs  → application/catalog/mod.rs
                                   ├─ items.rs      → application/details/mod.rs
                                   │                → application/playback/negotiation.rs
@@ -18,7 +20,7 @@ Workflow → select authorized backend → upstream/jellyfin/request.rs
 ```
 
 Extractors collect caller identity and scope. Workflows select backends; the
-request builder translates IDs and credentials. `handlers/pipeline_error.rs`
+request builder translates IDs and credentials. `http/handlers/pipeline_error.rs`
 maps application failures to HTTP responses.
 
 ## Catalog
@@ -77,6 +79,7 @@ sequenceDiagram
 | PlaybackInfo translation | `application/playback/response.rs` |
 | Live open/refresh/close | `application/playback/live.rs` |
 | Binding commits and revision fences | `application/playback/lifecycle.rs` |
+| Playback sessions and live-stream bindings | `application/playback/sessions.rs` |
 | Reports and cancellation | `application/playback/reports.rs` |
 | Streaming and HLS rewriting | `upstream/jellyfin/delivery.rs`, `hls.rs` |
 | JSON adapter and wire normalization | `upstream/jellyfin/json.rs` |

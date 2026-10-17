@@ -1,16 +1,18 @@
+//! Federated catalog regressions for merging, pagination, scoping, and backend failures.
 use std::sync::Arc;
 
 use super::*;
 use crate::application::catalog::library_resolution::ResolvedCatalogParent;
 use crate::{
+    application::playback::sessions::SessionStorage,
+    auth::service::{AuthorizationSession, Device, UserAuthorizationService},
     config::{AppConfig, MIGRATOR},
-    handlers::quick_connect::QuickConnectStorage,
-    media_storage_service::MediaStorageService,
-    server_storage::{Server, ServerStorageService},
-    session_storage::SessionStorage,
-    user_authorization_service::{AuthorizationSession, Device, UserAuthorizationService},
-    virtual_library_service::{VirtualLibraryAccessScope, VirtualLibraryService},
-    DataContext, ProxyProcessors,
+    http::handlers::quick_connect::QuickConnectStorage,
+    libraries::service::{VirtualLibraryAccessScope, VirtualLibraryService},
+    media::storage::MediaStorageService,
+    processors::ProxyProcessors,
+    servers::storage::{Server, ServerStorageService},
+    DataContext,
 };
 use serde_json::{json, Value};
 use wiremock::{
@@ -95,7 +97,7 @@ pub(super) async fn fixture_member_parent_ids(
     state: &AppState,
     sessions: &[(AuthorizationSession, Server)],
     original_parent_id: &str,
-) -> std::collections::HashMap<crate::server_id::ServerId, String> {
+) -> std::collections::HashMap<crate::servers::id::ServerId, String> {
     let mut ids = std::collections::HashMap::new();
     for (_, server) in sessions {
         let mapping = state
@@ -488,7 +490,7 @@ async fn admin_library_page_discovers_mapped_users_without_prior_catalog_request
     let (mut state, pool, sessions, upstreams) = setup().await;
     state.user_authorization = Arc::new(UserAuthorizationService::with_mapping_key(
         pool,
-        crate::encryption::MappingEncryptionKey::from_session_key(&[7; 64]).unwrap(),
+        crate::auth::encryption::MappingEncryptionKey::from_session_key(&[7; 64]).unwrap(),
         (&state.get_admin_password().await).into(),
     ));
     let server = &sessions[0].1;
@@ -857,7 +859,7 @@ async fn series_tv_schedule_only_queries_the_series_server() {
     );
     preprocessed.server = server.clone();
     preprocessed.session = Some(sessions[1].0.clone());
-    crate::request_preprocessing::apply_to_request(
+    crate::http::preprocessing::apply_to_request(
         &mut preprocessed.request,
         &server,
         &preprocessed.session,
@@ -915,7 +917,7 @@ async fn channel_tv_schedule_only_queries_the_channel_server() {
     );
     preprocessed.server = server.clone();
     preprocessed.session = Some(sessions[1].0.clone());
-    crate::request_preprocessing::apply_to_request(
+    crate::http::preprocessing::apply_to_request(
         &mut preprocessed.request,
         &server,
         &preprocessed.session,

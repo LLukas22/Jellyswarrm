@@ -1,3 +1,4 @@
+//! Choose authorized playback routes using owner, version, and session evidence.
 #[cfg(test)]
 use super::target::{MediaTargetResolver, ResolutionError};
 use crate::application::error::ApplicationError;
@@ -12,9 +13,9 @@ use crate::application::context::{AuthorizedTarget, RequestContext, TargetError}
 use crate::AppState;
 use crate::{
     application::details::sources::version_name,
-    media_storage_service::{MediaStorageService, MediaVersionSourceObservation},
+    media::storage::{MediaStorageService, MediaVersionSourceObservation},
     models::MediaSource,
-    server_storage::Server,
+    servers::storage::Server,
 };
 
 #[cfg(test)]
@@ -36,7 +37,7 @@ pub(crate) async fn record_playback_sources(
     aggregate_id: &str,
     server: &Server,
     original_item_id: &str,
-    source_generation: crate::media_storage_service::ReconciliationGeneration,
+    source_generation: crate::media::storage::ReconciliationGeneration,
     sources: &mut Vec<MediaSource>,
 ) -> Result<(), ApplicationError> {
     let Some(group) = media

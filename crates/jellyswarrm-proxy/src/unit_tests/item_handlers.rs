@@ -1,17 +1,19 @@
+//! HTTP item-handler regressions using the owning handler module and shared fixtures.
 use std::{collections::BTreeSet, sync::Arc};
 
 use super::*;
 use crate::{
+    application::playback::sessions::SessionStorage,
     application::{context::RequestContext, input::OperationRequest},
+    auth::service::{AuthorizationSession, Device, UserAuthorizationService},
     config::{AppConfig, MediaStreamingMode, MIGRATOR},
-    handlers::quick_connect::QuickConnectStorage,
-    media_identity::{MediaAlias, MediaKind, MediaObservation, MediaProvider},
-    media_storage_service::{MediaCatalogSnapshot, MediaStorageService},
-    server_storage::ServerStorageService,
-    session_storage::SessionStorage,
-    user_authorization_service::{AuthorizationSession, Device, UserAuthorizationService},
-    virtual_library_service::{VirtualLibraryAccessScope, VirtualLibraryService},
-    DataContext, ProxyProcessors,
+    http::handlers::quick_connect::QuickConnectStorage,
+    libraries::service::{VirtualLibraryAccessScope, VirtualLibraryService},
+    media::identity::{MediaAlias, MediaKind, MediaObservation, MediaProvider},
+    media::storage::{MediaCatalogSnapshot, MediaStorageService},
+    processors::ProxyProcessors,
+    servers::storage::ServerStorageService,
+    DataContext,
 };
 use serde_json::json;
 use wiremock::{

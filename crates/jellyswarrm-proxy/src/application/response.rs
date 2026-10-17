@@ -7,7 +7,7 @@ use crate::{
     processors::response_processor::{
         ResponseProcessingContext, ResponseProcessingProfile, ResponseProcessor,
     },
-    server_storage::Server,
+    servers::storage::Server,
 };
 
 pub(crate) async fn project_media_json(

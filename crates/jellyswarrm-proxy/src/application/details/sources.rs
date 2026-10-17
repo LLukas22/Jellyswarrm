@@ -1,3 +1,4 @@
+//! Resolve authorized media-source detail routes and project backend item details.
 use std::collections::HashSet;
 
 use serde_json::Value;
@@ -8,18 +9,18 @@ use crate::application::catalog::services::CatalogService;
 use crate::{
     application::context::{RequestContext, TargetError},
     application::error::ApplicationError,
-    media_storage_service::{
+    auth::service::AuthorizationSession,
+    http::preprocessing::JellyfinAuthorization,
+    libraries::service::{compare_virtual_library_routes, VirtualLibraryAccessScope},
+    media::storage::{
         MediaMapping, MediaVersionGroup, MediaVersionMember, MediaVersionSourceObservation,
     },
     models::{MediaItem, MediaSource},
     processors::response_processor::ResponseProcessingProfile,
-    request_preprocessing::JellyfinAuthorization,
-    server_storage::Server,
+    servers::storage::Server,
     upstream::jellyfin::json::response_json_to_payload_typed,
     upstream::jellyfin::request::UpstreamRequestBuilder,
-    url_helper::{ensure_query_list_value, replace_path_id},
-    user_authorization_service::AuthorizationSession,
-    virtual_library_service::{compare_virtual_library_routes, VirtualLibraryAccessScope},
+    upstream::url::{ensure_query_list_value, replace_path_id},
 };
 
 const MEDIA_SOURCES_FIELD: &str = "MediaSources";
@@ -31,8 +32,8 @@ struct PreserveActiveNegotiatedSources;
 
 impl PreserveActiveNegotiatedSources {
     fn retain(
-        session: &crate::session_storage::PlaybackSession,
-        route: &crate::media_storage_service::MediaVersionSourceRoute,
+        session: &crate::application::playback::sessions::PlaybackSession,
+        route: &crate::media::storage::MediaVersionSourceRoute,
         refreshed_members: &[i64],
     ) -> bool {
         route.member_mapping.server_id == session.server_id
@@ -60,7 +61,7 @@ pub(crate) struct DetailMergeContext<'a> {
     pub access_scope: Option<&'a VirtualLibraryAccessScope>,
     pub sessions: Option<&'a [(AuthorizationSession, Server)]>,
     pub original_request: &'a reqwest::Request,
-    pub source_generation: crate::media_storage_service::ReconciliationGeneration,
+    pub source_generation: crate::media::storage::ReconciliationGeneration,
 }
 
 #[derive(Debug)]
@@ -147,10 +148,10 @@ pub(crate) async fn merge_media_detail(
     }
     if is_aggregate {
         item.id = group.virtual_media_id.clone();
-        if crate::media_identity::MediaKind::from_item_kind(&item.item_type)
+        if crate::media::identity::MediaKind::from_item_kind(&item.item_type)
             .is_some_and(|kind| kind.has_media_sources())
         {
-            crate::media_catalog::merge_playback_user_data(
+            crate::media::catalog::merge_playback_user_data(
                 &mut item.user_data,
                 hosted_sources
                     .iter()
@@ -460,7 +461,7 @@ fn storage_error(error: sqlx::Error) -> ApplicationError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{config::MediaStreamingMode, server_id::ServerId, server_url::ServerUrl};
+    use crate::{config::MediaStreamingMode, servers::id::ServerId, servers::url::ServerUrl};
     use serde_json::json;
 
     fn server(server_id: i64, name: &str) -> Server {
@@ -480,7 +481,7 @@ mod tests {
             id,
             virtual_media_id: format!("virtual-{id}"),
             original_media_id: format!("original-{id}"),
-            server_id: crate::server_id::ServerId::new(server_id),
+            server_id: crate::servers::id::ServerId::new(server_id),
             server_url: "http://example:8096".to_string(),
             created_at: chrono::Utc::now(),
         }
@@ -502,11 +503,11 @@ mod tests {
     #[test]
     fn active_source_preservation_requires_exact_owner_item_and_refreshed_member() {
         let member = mapping(1, 1);
-        let route = crate::media_storage_service::MediaVersionSourceRoute {
+        let route = crate::media::storage::MediaVersionSourceRoute {
             source_mapping: mapping(2, 1),
             member_mapping: member.clone(),
         };
-        let mut session = crate::session_storage::PlaybackSession {
+        let mut session = crate::application::playback::sessions::PlaybackSession {
             session_id: "player".into(),
             item_id: route.source_mapping.virtual_media_id.clone(),
             user_id: "viewer".into(),
@@ -530,7 +531,7 @@ mod tests {
             &[member.id]
         ));
         session.original_item_id = Some(member.original_media_id.clone());
-        session.server_id = crate::server_id::ServerId::new(99);
+        session.server_id = crate::servers::id::ServerId::new(99);
         assert!(!PreserveActiveNegotiatedSources::retain(
             &session,
             &route,

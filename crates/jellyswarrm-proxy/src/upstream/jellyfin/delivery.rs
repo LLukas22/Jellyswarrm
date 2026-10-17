@@ -7,7 +7,7 @@ use futures_util::{Stream, StreamExt};
 use hyper::{body::Bytes, header, HeaderMap, StatusCode};
 
 use super::hls;
-use crate::proxy_headers::remove_hop_by_hop_headers;
+use crate::upstream::headers::remove_hop_by_hop_headers;
 
 /// Concrete transport dependencies, with authorization resolved by the caller.
 pub struct DeliveryContext<'a> {

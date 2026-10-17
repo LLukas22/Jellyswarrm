@@ -1,3 +1,4 @@
+//! Manage local users and backend federation from the administrative UI.
 use askama::Template;
 use axum::{
     extract::{Path, State},
@@ -11,11 +12,11 @@ use std::collections::HashMap;
 use tracing::{error, info};
 
 use crate::{
-    encryption::Password,
-    federated_users::ServerSyncResult,
-    server_id::ServerId,
-    server_storage::Server,
-    user_authorization_service::{ServerMapping, User},
+    auth::encryption::Password,
+    auth::federation::ServerSyncResult,
+    auth::service::{ServerMapping, User},
+    servers::id::ServerId,
+    servers::storage::Server,
     AppState,
 };
 

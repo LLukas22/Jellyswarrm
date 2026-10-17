@@ -1,3 +1,4 @@
+//! Present backend registry health and availability to the management UI.
 use askama::Template;
 use axum::{
     extract::{Path, State},
@@ -6,7 +7,7 @@ use axum::{
 };
 use tracing::error;
 
-use crate::{server_id::ServerId, server_storage::ServerHealthStatus, AppState};
+use crate::{servers::id::ServerId, servers::storage::ServerHealthStatus, AppState};
 
 #[derive(Template)]
 #[template(path = "admin/server_status.html")]

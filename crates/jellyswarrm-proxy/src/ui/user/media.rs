@@ -1,3 +1,4 @@
+//! Render user-facing media/version information and access-scoped library details.
 use askama::Template;
 use axum::{
     body::Body,
@@ -9,7 +10,7 @@ use jellyfin_api::models::{BaseItem, IncludeItemTypes};
 use tracing::error;
 
 use crate::{
-    server_id::ServerId,
+    servers::id::ServerId,
     ui::{auth::AuthenticatedUser, user::common::authenticate_user_on_server},
     AppState,
 };

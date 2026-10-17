@@ -22,11 +22,12 @@ use crate::{
 
 /// Virtualize opaque live IDs and their delivery URL references together.
 pub(crate) async fn prepare_live_source(
-    state: &crate::session_storage::SessionStorage,
+    state: &crate::application::playback::sessions::SessionStorage,
     source: &mut MediaSource,
     user: &str,
-    server: &crate::server_storage::Server,
-) -> Result<Option<Arc<crate::session_storage::PreparedLiveStream>>, ApplicationError> {
+    server: &crate::servers::storage::Server,
+) -> Result<Option<Arc<crate::application::playback::sessions::PreparedLiveStream>>, ApplicationError>
+{
     let mut value = serde_json::to_value(&*source).map_err(ApplicationError::Serialization)?;
     let Some(original) = value
         .as_object()
@@ -295,7 +296,7 @@ pub(crate) async fn post_livestream_open_typed(
         ))?;
     let item_id = field(&preprocessed.original_request, &payload, "ItemId")?
         .ok_or(ApplicationError::InvalidInput("missing live item"))?;
-    let item_id = crate::media_storage_service::MediaStorageService::normalize_uuid(&item_id);
+    let item_id = crate::media::storage::MediaStorageService::normalize_uuid(&item_id);
     let item_id = &item_id;
     let binding = (MediaTargetResolver {
         media: state.media_storage,

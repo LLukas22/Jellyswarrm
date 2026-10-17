@@ -1,14 +1,15 @@
+//! Translate client/backend URL paths, query IDs, delivery credentials, and route ownership.
 use anyhow::Result;
 use tracing::debug;
 
 use crate::{
-    media_storage_service::{MediaMapping, MediaVersionMember},
-    server_id::ServerId,
-    server_storage::Server,
-    url_helper::{contains_id, decoded_path_segments, is_id_like, replace_id},
-    user_authorization_service::AuthorizationSession,
-    virtual_library_service::compare_virtual_library_routes,
-    virtual_library_service::{VirtualLibraryAccessScope, VirtualLibraryResolution},
+    auth::service::AuthorizationSession,
+    libraries::service::compare_virtual_library_routes,
+    libraries::service::{VirtualLibraryAccessScope, VirtualLibraryResolution},
+    media::storage::{MediaMapping, MediaVersionMember},
+    servers::id::ServerId,
+    servers::storage::Server,
+    upstream::url::{contains_id, decoded_path_segments, is_id_like, replace_id},
     DataContext,
 };
 
@@ -94,7 +95,7 @@ pub(crate) fn selected_media_source(url: &url::Url) -> Result<Option<String>> {
         if source.is_empty() {
             continue;
         }
-        let source = crate::media_storage_service::MediaStorageService::normalize_uuid(source);
+        let source = crate::media::storage::MediaStorageService::normalize_uuid(source);
         if selected
             .as_ref()
             .is_some_and(|previous| previous != &source)
@@ -297,7 +298,7 @@ impl UrlProcessor {
             .await?
         {
             if !scope.allows(mapping.server_id) {
-                return Err(crate::request_preprocessing::MediaAccessDenied.into());
+                return Err(crate::http::preprocessing::MediaAccessDenied.into());
             }
         }
         let members = self
@@ -306,7 +307,7 @@ impl UrlProcessor {
             .get_media_version_members_by_virtual_id(id)
             .await?;
         if !members.is_empty() && members.iter().all(|member| !scope.allows(member.server.id)) {
-            return Err(crate::request_preprocessing::MediaAccessDenied.into());
+            return Err(crate::http::preprocessing::MediaAccessDenied.into());
         }
         Ok(())
     }
@@ -345,7 +346,7 @@ impl UrlProcessor {
                     anyhow::anyhow!("media source does not belong to the requested media aggregate")
                 })?;
             if access_scope.is_some_and(|scope| !scope.allows(route.member_mapping.server_id)) {
-                return Err(crate::request_preprocessing::MediaAccessDenied.into());
+                return Err(crate::http::preprocessing::MediaAccessDenied.into());
             }
             return Ok(self
                 .data_context
@@ -843,7 +844,7 @@ impl UrlProcessor {
             .await?
         {
             if !server_is_allowed(server.id, access_scope, None) {
-                return Err(crate::request_preprocessing::MediaAccessDenied.into());
+                return Err(crate::http::preprocessing::MediaAccessDenied.into());
             }
             return Ok(Some(server));
         }
@@ -869,7 +870,7 @@ impl UrlProcessor {
             if access_scope
                 .is_some_and(|scope| members.iter().all(|member| !scope.allows(member.server.id)))
             {
-                return Err(crate::request_preprocessing::MediaAccessDenied.into());
+                return Err(crate::http::preprocessing::MediaAccessDenied.into());
             }
             return Err(anyhow::anyhow!(
                 "media aggregate has no healthy authorized version"
@@ -1006,12 +1007,12 @@ mod tests {
 
     use super::*;
     use crate::{
+        application::playback::sessions::SessionStorage,
+        auth::service::UserAuthorizationService,
         config::{AppConfig, MediaStreamingMode, MIGRATOR},
-        media_storage_service::MediaStorageService,
-        server_storage::ServerStorageService,
-        session_storage::SessionStorage,
-        user_authorization_service::UserAuthorizationService,
-        virtual_library_service::VirtualLibraryService,
+        libraries::service::VirtualLibraryService,
+        media::storage::MediaStorageService,
+        servers::storage::ServerStorageService,
     };
 
     #[tokio::test]

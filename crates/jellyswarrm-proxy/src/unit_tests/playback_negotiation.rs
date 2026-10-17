@@ -1,20 +1,20 @@
+//! Regression coverage for playback negotiation, source reconciliation, and binding commits.
 use std::{collections::BTreeSet, sync::Arc};
 
 use super::*;
 use crate::{
     application::context::RequestContext,
+    application::playback::sessions::SessionStorage,
+    auth::service::{AuthorizationSession, Device, UserAuthorizationService},
     config::{AppConfig, MediaStreamingMode, MIGRATOR},
-    handlers::quick_connect::QuickConnectStorage,
-    media_identity::{MediaAlias, MediaKind, MediaObservation, MediaProvider},
-    media_storage_service::{
-        MediaCatalogSnapshot, MediaStorageService, MediaVersionSourceObservation,
-    },
-    request_preprocessing::JellyfinAuthorization,
-    server_storage::{Server, ServerStorageService},
-    session_storage::SessionStorage,
-    user_authorization_service::{AuthorizationSession, Device, UserAuthorizationService},
-    virtual_library_service::{VirtualLibraryAccessScope, VirtualLibraryService},
-    DataContext, ProxyProcessors,
+    http::handlers::quick_connect::QuickConnectStorage,
+    http::preprocessing::JellyfinAuthorization,
+    libraries::service::{VirtualLibraryAccessScope, VirtualLibraryService},
+    media::identity::{MediaAlias, MediaKind, MediaObservation, MediaProvider},
+    media::storage::{MediaCatalogSnapshot, MediaStorageService, MediaVersionSourceObservation},
+    processors::ProxyProcessors,
+    servers::storage::{Server, ServerStorageService},
+    DataContext,
 };
 use serde_json::json;
 use wiremock::{
@@ -515,8 +515,8 @@ async fn failed_negotiation_does_not_commit_playback_binding() {
 
 #[tokio::test]
 async fn shared_resolution_keeps_implicit_ambiguity_and_explicit_binding_conflicts_distinct() {
+    use crate::application::playback::sessions::PlaybackSession;
     use crate::application::playback::target::SelectionReason;
-    use crate::session_storage::PlaybackSession;
     let fixture = fixture().await;
     let input = operation(&fixture, "", json!({}));
     let resolver = MediaTargetResolver {
@@ -677,11 +677,11 @@ async fn shared_explicit_source_plan_never_falls_back_from_offline_owner() {
 
 #[tokio::test]
 async fn invalid_live_open_and_failed_refresh_do_not_commit_playback_transitions() {
+    use crate::application::playback::sessions::PlaybackSession;
     use crate::application::playback::{
         lifecycle::PlaybackLifecycle,
         live::{self, LiveRequest},
     };
-    use crate::session_storage::PlaybackSession;
     let fixture = fixture().await;
     let owner = &fixture.sessions[0].1;
     PlaybackLifecycle::new(&fixture.state.play_sessions)
@@ -781,7 +781,7 @@ async fn live_open_input(
     fixture
         .state
         .play_sessions
-        .add_session(crate::session_storage::PlaybackSession {
+        .add_session(crate::application::playback::sessions::PlaybackSession {
             session_id: "live-player".into(),
             item_id: fixture.aggregate.clone(),
             user_id: "viewer".into(),

@@ -1,3 +1,4 @@
+//! Jellyfin protocol enumeration types and wire-compatible representations.
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

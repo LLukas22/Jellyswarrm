@@ -1,3 +1,4 @@
+//! Translate backend IDs, permissions, and embedded delivery URLs in JSON responses.
 use async_trait::async_trait;
 use serde_json::Value;
 use tracing::debug;
@@ -12,7 +13,7 @@ use crate::{
         json_processor::{JsonProcessingContext, JsonProcessingResult, JsonProcessor},
         url_processor::UrlProcessor,
     },
-    server_storage::Server,
+    servers::storage::Server,
     DataContext,
 };
 
@@ -154,7 +155,7 @@ pub enum ResponseProcessingProfile {
 
 impl ResponseProcessingProfile {
     pub fn for_proxy_request(method: &hyper::Method, path: &str) -> Self {
-        let segments = crate::url_helper::decoded_path_segments(path.trim_end_matches('/'));
+        let segments = crate::upstream::url::decoded_path_segments(path.trim_end_matches('/'));
         let permission_read = match segments.as_slice() {
             [tag, _] => tag.eq_ignore_ascii_case("Playlists"),
             [tag, _, users] | [tag, _, users, _] => {

@@ -1,3 +1,4 @@
+//! Fetch catalog pages from authorized backends with bounded scans and completeness evidence.
 use std::time::Duration;
 
 use crate::application::error::ApplicationError;
@@ -8,14 +9,14 @@ use tracing::{debug, error, trace, warn};
 
 use super::services::CatalogService;
 use crate::{
+    auth::service::AuthorizationSession,
+    http::preprocessing::JellyfinAuthorization,
+    libraries::service::DiscoveredLibrary,
     models::{ItemsResponseVariants, ItemsResponseWithCount},
     processors::response_processor::ResponseProcessingProfile,
-    request_preprocessing::JellyfinAuthorization,
-    server_id::ServerId,
-    server_storage::Server,
+    servers::id::ServerId,
+    servers::storage::Server,
     upstream::jellyfin::json::response_json_to_payload_typed,
-    user_authorization_service::AuthorizationSession,
-    virtual_library_service::DiscoveredLibrary,
 };
 
 use super::{
@@ -28,7 +29,7 @@ use super::{
     },
     scan::{CatalogReport, FetchOutcome, PartialReason, ScanProgress, SourceOutcome},
 };
-use crate::url_helper::replace_path_id;
+use crate::upstream::url::replace_path_id;
 
 pub(crate) struct FetchedCatalog<T = ServerItems> {
     pub(crate) server_items: Vec<FetchedServerItems<T>>,
@@ -868,17 +869,18 @@ mod tests {
     async fn collision_fixture() -> (
         AppState,
         CatalogFetchTarget,
-        crate::media_storage_service::MediaMapping,
+        crate::media::storage::MediaMapping,
         wiremock::MockServer,
     ) {
         use crate::{
+            application::playback::sessions::SessionStorage,
+            auth::service::{Device, UserAuthorizationService},
             config::{AppConfig, MediaStreamingMode, MIGRATOR},
-            media_storage_service::MediaStorageService,
-            server_storage::ServerStorageService,
-            session_storage::SessionStorage,
-            user_authorization_service::{Device, UserAuthorizationService},
-            virtual_library_service::VirtualLibraryService,
-            DataContext, ProxyProcessors,
+            libraries::service::VirtualLibraryService,
+            media::storage::MediaStorageService,
+            processors::ProxyProcessors,
+            servers::storage::ServerStorageService,
+            DataContext,
         };
         use std::sync::Arc;
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();

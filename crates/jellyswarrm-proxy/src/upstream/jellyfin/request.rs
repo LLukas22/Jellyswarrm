@@ -1,10 +1,9 @@
 //! Target-bound request construction. This module never selects a backend.
 use crate::{
-    application::context::AuthorizedTarget, processors::url_processor::UrlProcessor,
-    proxy_headers::remove_hop_by_hop_headers, request_preprocessing::JellyfinAuthorization,
-    server_storage::Server, url_helper::join_server_url,
-    user_authorization_service::AuthorizationSession,
-    virtual_library_service::VirtualLibraryAccessScope,
+    application::context::AuthorizedTarget, auth::service::AuthorizationSession,
+    http::preprocessing::JellyfinAuthorization, libraries::service::VirtualLibraryAccessScope,
+    processors::url_processor::UrlProcessor, servers::storage::Server,
+    upstream::headers::remove_hop_by_hop_headers, upstream::url::join_server_url,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -138,12 +137,12 @@ mod tests {
 
     use super::*;
     use crate::{
+        application::playback::sessions::SessionStorage,
+        auth::service::UserAuthorizationService,
         config::{AppConfig, MediaStreamingMode, MIGRATOR},
-        media_storage_service::MediaStorageService,
-        server_storage::ServerStorageService,
-        session_storage::SessionStorage,
-        user_authorization_service::UserAuthorizationService,
-        virtual_library_service::VirtualLibraryService,
+        libraries::service::VirtualLibraryService,
+        media::storage::MediaStorageService,
+        servers::storage::ServerStorageService,
         DataContext,
     };
 

@@ -1,3 +1,4 @@
+//! Client HTTP regressions for streaming routing, credentials, and playback ownership.
 use super::*;
 
 async fn playback_fixture() -> (Fixture, String, Vec<String>) {
@@ -125,7 +126,7 @@ async fn ambiguous_implicit_delivery_preserves_deterministic_mapping_default() {
     let default = members
         .iter()
         .max_by(|left, right| {
-            crate::virtual_library_service::compare_virtual_library_routes(
+            crate::libraries::service::compare_virtual_library_routes(
                 &left.server,
                 &left.mapping.original_media_id,
                 &right.server,
@@ -667,7 +668,7 @@ async fn cancellation_rejects_unknown_foreign_and_unavailable_sessions() {
         .unwrap();
     f.state
         .play_sessions
-        .add_session(crate::session_storage::PlaybackSession {
+        .add_session(crate::application::playback::sessions::PlaybackSession {
             session_id: "foreign".into(),
             item_id: aggregate.clone(),
             user_id: f.other.id.clone(),

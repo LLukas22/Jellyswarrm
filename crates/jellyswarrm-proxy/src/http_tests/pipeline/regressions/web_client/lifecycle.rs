@@ -1,3 +1,4 @@
+//! Verify Jellyfin Web playback lifecycle transitions and backend routing over HTTP.
 use super::*;
 
 const OPENED_SOURCE: &str = "dddddddddddddddddddddddddddddddd";

@@ -1,16 +1,17 @@
+//! Analyze request body IDs and playback hints without mutating the payload.
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::{
+    application::playback::sessions::RevisionedPlaybackSession,
+    auth::service::User,
+    libraries::service::compare_virtual_library_routes,
     processors::{
         field_matcher::{ID_FIELDS, MEDIA_ID_LIST_PARENT_FIELDS, SESSION_FIELDS, USER_FIELDS},
         json_processor::{JsonAnalyzer, JsonProcessingContext},
     },
-    server_storage::Server,
-    session_storage::RevisionedPlaybackSession,
-    user_authorization_service::User,
-    virtual_library_service::compare_virtual_library_routes,
+    servers::storage::Server,
     DataContext,
 };
 

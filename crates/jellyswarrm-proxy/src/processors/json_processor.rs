@@ -1,3 +1,4 @@
+//! Walk JSON recursively and apply field analyzers or request/response transformations.
 use anyhow::{anyhow, Result};
 use async_recursion::async_recursion;
 use async_trait::async_trait;

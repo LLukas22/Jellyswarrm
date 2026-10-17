@@ -1,6 +1,6 @@
 //! Existing query policy retained during service extraction.
 use super::postprocessing::Pagination;
-use crate::media_identity::MediaKind;
+use crate::media::identity::MediaKind;
 use std::collections::BTreeSet;
 
 /// One interpretation of the client query, shared by fetching and finalization.
@@ -264,7 +264,7 @@ fn ensure_global_sort_fields(url: &mut url::Url) {
 
 fn ensure_item_fields(url: &mut url::Url, required_fields: &[&str]) {
     for required_field in required_fields {
-        crate::url_helper::ensure_query_list_value(url, "Fields", required_field);
+        crate::upstream::url::ensure_query_list_value(url, "Fields", required_field);
     }
 }
 

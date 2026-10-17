@@ -12,10 +12,10 @@ use tracing::{debug, error};
 use super::services::CatalogService;
 use crate::{
     application::catalog::input::CatalogRequest,
-    media_scope::{MediaCatalogScope, MediaScopeKind},
-    server_storage::Server,
-    user_authorization_service::AuthorizationSession,
-    virtual_library_service::{normalize_library_id, LibraryGrouping, VirtualLibraryResolution},
+    auth::service::AuthorizationSession,
+    libraries::service::{normalize_library_id, LibraryGrouping, VirtualLibraryResolution},
+    media::scope::{MediaCatalogScope, MediaScopeKind},
+    servers::storage::Server,
 };
 
 pub(crate) enum CatalogPlan {

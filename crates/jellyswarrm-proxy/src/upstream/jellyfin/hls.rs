@@ -4,8 +4,8 @@ use hyper::StatusCode;
 use std::{sync::LazyLock, time::Duration};
 
 use crate::{
-    processors::url_processor::UrlProcessor, proxy_headers::remove_hop_by_hop_headers,
-    server_storage::Server,
+    processors::url_processor::UrlProcessor, servers::storage::Server,
+    upstream::headers::remove_hop_by_hop_headers,
 };
 
 /// Already-authorized dependencies for rewriting a selected backend's playlist.
@@ -206,13 +206,13 @@ mod tests {
     use std::sync::Arc;
 
     use crate::{
+        application::playback::sessions::SessionStorage,
+        auth::service::UserAuthorizationService,
         config::{AppConfig, MediaStreamingMode, MIGRATOR},
-        media_storage_service::MediaStorageService,
-        server_id::ServerId,
-        server_storage::ServerStorageService,
-        session_storage::SessionStorage,
-        user_authorization_service::UserAuthorizationService,
-        virtual_library_service::VirtualLibraryService,
+        libraries::service::VirtualLibraryService,
+        media::storage::MediaStorageService,
+        servers::id::ServerId,
+        servers::storage::ServerStorageService,
         DataContext,
     };
 
@@ -233,7 +233,7 @@ mod tests {
         let server = Server {
             id: ServerId::new(1),
             name: "Backend".into(),
-            url: crate::server_url::ServerUrl::parse("http://backend.example/base").unwrap(),
+            url: crate::servers::url::ServerUrl::parse("http://backend.example/base").unwrap(),
             priority: 1,
             media_streaming_mode: MediaStreamingMode::Proxy,
             created_at: chrono::Utc::now(),
