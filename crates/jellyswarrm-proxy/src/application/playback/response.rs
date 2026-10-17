@@ -1,13 +1,15 @@
+use super::services::PlaybackService;
 use crate::application::error::ApplicationError;
 use tracing::info;
 
+#[cfg(test)]
+use crate::AppState;
 use crate::{
     models::{MediaSource, PlaybackRequest, PlaybackResponse},
     processors::response_processor::ResponseProcessingProfile,
     server_storage::Server,
     upstream::jellyfin::json::response_json_to_payload_typed,
     user_authorization_service::AuthorizationSession,
-    AppState,
 };
 
 fn parse_delivery_url(value: &str) -> Option<url::Url> {
@@ -26,7 +28,7 @@ fn parse_delivery_url(value: &str) -> Option<url::Url> {
 
 pub async fn remap_playback_request(
     payload: &mut PlaybackRequest,
-    state: &AppState,
+    state: &PlaybackService<'_>,
     session: &AuthorizationSession,
     server: &Server,
 ) -> Result<(), ApplicationError> {
@@ -50,7 +52,7 @@ pub async fn remap_playback_request(
             if let Some(id) = value.as_str().filter(|id| !id.is_empty()) {
                 let binding = state
                     .play_sessions
-                    .live_stream(id, &session.user_id)
+                    .live_binding(&id.into(), &session.user_id.as_str().into())
                     .await
                     .ok_or(ApplicationError::InvalidInput("unknown live identity"))?;
                 if binding.server_id != server.id {
@@ -58,7 +60,7 @@ pub async fn remap_playback_request(
                         "live identity belongs to another backend",
                     ));
                 }
-                *value = serde_json::Value::String(binding.original_id);
+                *value = serde_json::Value::String(binding.original_id.as_str().to_owned());
             }
         }
     }
@@ -67,7 +69,7 @@ pub async fn remap_playback_request(
 
 pub async fn process_playback_response(
     response: &mut PlaybackResponse,
-    state: &AppState,
+    state: &PlaybackService<'_>,
     server: &Server,
     session: &AuthorizationSession,
     proxy_api_key: Option<&str>,
@@ -75,7 +77,7 @@ pub async fn process_playback_response(
     let mut plans = Vec::new();
     for source in &mut response.media_sources {
         if let Some(plan) = crate::application::playback::live::prepare_live_source(
-            state,
+            state.play_sessions,
             source,
             &session.user_id,
             server,
@@ -107,7 +109,7 @@ pub async fn track_play_session(
     session_id: &str,
     user_id: &str,
     server: &Server,
-    state: &AppState,
+    state: &PlaybackService<'_>,
 ) {
     let mut session_ids = vec![session_id.to_string()];
     let mut item_ids = vec![item.id.clone()];
@@ -181,17 +183,15 @@ async fn add_tracked_play_session(
     session_id: &str,
     user_id: &str,
     server: &Server,
-    state: &AppState,
+    state: &PlaybackService<'_>,
 ) {
     info!(
         "Tracking play session for item: {}, server: {}",
         item_id, server.name
     );
-    super::lifecycle::PlaybackLifecycle {
-        sessions: &state.play_sessions,
-    }
-    .alias(item_id, session_id, user_id, server.id)
-    .await;
+    super::lifecycle::PlaybackLifecycle::new(state.play_sessions)
+        .alias(item_id, session_id, user_id, server.id)
+        .await;
 }
 
 /// Associates an aggregate client-facing item ID with the upstream play
@@ -203,7 +203,7 @@ pub async fn track_playback_alias(
     session_id: &str,
     user_id: &str,
     server: &Server,
-    state: &AppState,
+    state: &PlaybackService<'_>,
 ) {
     add_tracked_play_session(item_id, session_id, user_id, server, state).await;
 }
@@ -674,7 +674,14 @@ mod tests {
         }))
         .unwrap();
 
-        track_play_session(&source, "session-1", "user-1", &server, &state).await;
+        track_play_session(
+            &source,
+            "session-1",
+            "user-1",
+            &server,
+            &state.playback_service(),
+        )
+        .await;
 
         let source_session = state
             .play_sessions
@@ -712,7 +719,14 @@ mod tests {
         }))
         .unwrap();
 
-        track_play_session(&source, "response-session", "user-1", &server, &state).await;
+        track_play_session(
+            &source,
+            "response-session",
+            "user-1",
+            &server,
+            &state.playback_service(),
+        )
+        .await;
 
         for session_id in [
             "response-session",

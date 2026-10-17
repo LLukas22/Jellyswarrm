@@ -1,6 +1,12 @@
+use super::services::PlaybackService;
+#[cfg(test)]
+use super::target::ResolutionError;
+#[cfg(test)]
 use hyper::StatusCode;
 use tracing::{debug, error, warn};
 
+#[cfg(test)]
+use crate::AppState;
 use crate::{
     application::{
         error::ApplicationError,
@@ -11,16 +17,15 @@ use crate::{
                 track_playback_alias,
             },
             selection::record_playback_sources,
-            target::{MediaTargetResolver, PlaybackIntent, ResolutionError, SelectionPolicy},
+            target::{MediaTargetResolver, PlaybackIntent, SelectionPolicy},
         },
     },
     models::{PlaybackRequest, PlaybackResponse},
     upstream::jellyfin::{
-        json::{execute_json_request_typed, payload_from_request_typed, set_json_body_typed},
+        json::{payload_from_request_typed, set_json_body_typed},
         request::UpstreamRequestBuilder,
     },
     url_helper::{contains_id, replace_path_id},
-    AppState,
 };
 
 /// Negotiate sources, register their routes, and bind the successful playback.
@@ -29,13 +34,13 @@ pub(crate) async fn post_playback_info(
     state: AppState,
     input: OperationRequest,
 ) -> Result<PlaybackResponse, StatusCode> {
-    post_playback_info_typed(state, input)
+    post_playback_info_typed(&state.playback_service(), input)
         .await
         .map_err(|error| error.detail_status())
 }
 
 pub(crate) async fn post_playback_info_typed(
-    state: AppState,
+    state: &PlaybackService<'_>,
     mut input: OperationRequest,
 ) -> Result<PlaybackResponse, ApplicationError> {
     // An aggregate ID means "use the member's default source", not a recorded
@@ -81,15 +86,16 @@ pub(crate) async fn post_playback_info_typed(
     }
     // Keep the old early routing errors and RequireSession boundary, including
     // rejection of backend-token passthrough without a proxy device session.
-    let initial = input.resolve_target_typed(&state).await?;
+    let initial = input
+        .resolve_target_using(&state.routing_services())
+        .await?;
     if initial.target.session().is_none() {
         return Err(ApplicationError::MissingIdentity("proxy playback session")
-            .with_status(StatusCode::UNAUTHORIZED));
+            .at(crate::application::error::FailureStage::CallerAuthentication));
     }
     let proxy_api_key = input
         .context
-        .auth
-        .as_ref()
+        .authorization()
         .and_then(|auth| auth.token_ref())
         .map(str::to_string);
     let payload: PlaybackRequest = payload_from_request_typed(&input.original_request)?;
@@ -126,40 +132,27 @@ pub(crate) async fn post_playback_info_typed(
         payload.media_source_id = None;
     }
 
-    let plan =
-        (MediaTargetResolver {
-            media: &state.media_storage,
-        })
-        .plan(
-            &input.context,
-            initial.target,
-            PlaybackIntent {
-                item: &requested_item_id,
-                source: selected_source
-                    .as_deref()
-                    .filter(|_| !default_aggregate_source),
-                binding: None,
-            },
-            &state.server_storage,
-            SelectionPolicy::Negotiation,
-        )
-        .await
-        .map_err(|error| {
-            let status = match &error {
-                ResolutionError::OfflineOwner
-                | ResolutionError::MissingOwner
-                | ResolutionError::Target(
-                    crate::application::context::TargetError::UnavailableOwner,
-                ) => StatusCode::SERVICE_UNAVAILABLE,
-                ResolutionError::Target(
-                    crate::application::context::TargetError::ViewerMismatch,
-                )
-                | ResolutionError::ViewerMismatch(_) => StatusCode::FORBIDDEN,
-                ResolutionError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
-                _ => StatusCode::BAD_REQUEST,
-            };
-            ApplicationError::PlaybackResolution(error).with_status(status)
-        })?;
+    let plan = (MediaTargetResolver {
+        media: state.media_storage,
+    })
+    .plan(
+        &input.context,
+        initial.target,
+        PlaybackIntent {
+            item: &requested_item_id,
+            source: selected_source
+                .as_deref()
+                .filter(|_| !default_aggregate_source),
+            binding: None,
+        },
+        state.server_storage,
+        SelectionPolicy::Negotiation,
+    )
+    .await
+    .map_err(|error| {
+        ApplicationError::PlaybackResolution(error)
+            .at(crate::application::error::FailureStage::NegotiationSelection)
+    })?;
     let mut request = input.original_request;
     debug!(reason = ?plan.reason, "Playback selection planned");
     if let Some(member) = plan.target.member {
@@ -173,14 +166,14 @@ pub(crate) async fn post_playback_info_typed(
     let server = target.server();
     let session = target.session().as_ref().ok_or_else(|| {
         ApplicationError::MissingIdentity("selected playback session")
-            .with_status(StatusCode::UNAUTHORIZED)
+            .at(crate::application::error::FailureStage::CallerAuthentication)
     })?;
-    remap_playback_request(&mut payload, &state, session, server).await?;
+    remap_playback_request(&mut payload, state, session, server).await?;
     debug!(server_id = %server.id, "Forwarding playback negotiation");
     set_json_body_typed(&mut request, &payload)?;
 
     let prefix = state.get_url_prefix().await;
-    let request = UpstreamRequestBuilder::new(&state.processors.url_processor, prefix.as_deref())
+    let request = UpstreamRequestBuilder::new(state.processors.url_processor, prefix.as_deref())
         .build(&target, &request)
         .await
         .map_err(|error| ApplicationError::InvalidRouting(error.into()))?;
@@ -188,7 +181,12 @@ pub(crate) async fn post_playback_info_typed(
     let original_item_id = contains_id(request.url(), "Items").ok_or(
         ApplicationError::InvalidInput("missing upstream playback item"),
     )?;
-    match execute_json_request_typed::<PlaybackResponse>(&state.reqwest_client, request).await {
+    match crate::application::upstream::execute_payload::<PlaybackResponse>(
+        state.upstream.as_ref(),
+        request,
+    )
+    .await
+    {
         Ok(mut response) => {
             // Preserve the client's intent to use the member's own source.
             // Web otherwise may select a different version with other tracks.
@@ -209,14 +207,14 @@ pub(crate) async fn post_playback_info_typed(
             }
             let mut live_plans = process_playback_response(
                 &mut response,
-                &state,
+                state,
                 server,
                 session,
                 proxy_api_key.as_deref(),
             )
             .await?;
             record_playback_sources(
-                &state,
+                state.media_storage,
                 &requested_item_id,
                 server,
                 &original_item_id,
@@ -243,14 +241,13 @@ pub(crate) async fn post_playback_info_typed(
                         })
                     })
             });
-            if !(super::lifecycle::PlaybackLifecycle {
-                sessions: &state.play_sessions,
-            })
-            .commit_live(&live_plans)
-            .await
-            {
-                return Err(ApplicationError::UnavailableOwner);
-            }
+            super::lifecycle::PlaybackLifecycle::new(state.play_sessions)
+                .commit_live(&live_plans)
+                .await
+                .map_err(|error| {
+                    ApplicationError::Internal(error.into())
+                        .at(crate::application::error::FailureStage::PlaybackCommit)
+                })?;
             // Register routable identities before publishing playback bindings.
             // A stale reconciliation may have removed unadvertisable sources.
             for source in &response.media_sources {
@@ -259,7 +256,7 @@ pub(crate) async fn post_playback_info_typed(
                     &response.play_session_id,
                     &session.user_id,
                     server,
-                    &state,
+                    state,
                 )
                 .await;
             }
@@ -268,23 +265,21 @@ pub(crate) async fn post_playback_info_typed(
                 &response.play_session_id,
                 &session.user_id,
                 server,
-                &state,
+                state,
             )
             .await;
-            super::lifecycle::PlaybackLifecycle {
-                sessions: &state.play_sessions,
-            }
-            .bind_original(
-                &response.play_session_id,
-                &session.user_id,
-                server.id,
-                &original_item_id,
-            )
-            .await;
+            super::lifecycle::PlaybackLifecycle::new(state.play_sessions)
+                .bind_original(
+                    &response.play_session_id,
+                    &session.user_id,
+                    server.id,
+                    &original_item_id,
+                )
+                .await;
             debug!(server_id = %server.id, source_count = response.media_sources.len(), "Playback negotiation completed");
             if let Some(token) = proxy_api_key.as_deref() {
                 crate::application::observation::media_response(
-                    &state,
+                    state.client_sessions,
                     Some(token),
                     &final_payload,
                 )

@@ -16,7 +16,7 @@ pub async fn post_live_stream_action(
     State(state): State<AppState>,
     LiveInput(preprocessed): LiveInput,
 ) -> Result<Response, StatusCode> {
-    let result = live::post_live_stream_action_typed(state, preprocessed)
+    let result = live::post_live_stream_action_typed(&state.playback_service(), preprocessed)
         .await
         .map_err(|error| error.detail_status())?;
     Ok(match result {
@@ -29,7 +29,7 @@ pub async fn post_livestream_open(
     State(state): State<AppState>,
     LiveInput(preprocessed): LiveInput,
 ) -> Result<Json<Value>, StatusCode> {
-    live::post_livestream_open_typed(state, preprocessed)
+    live::post_livestream_open_typed(&state.playback_service(), preprocessed)
         .await
         .map(Json)
         .map_err(|error| error.detail_status())

@@ -17,13 +17,19 @@ use crate::{
 #[error("no authorized backend is currently available")]
 pub(crate) struct NoAvailableBackend;
 
+#[derive(Debug)]
+pub(crate) struct ResolvedReportTarget {
+    pub server: Server,
+    pub session: AuthorizationSession,
+}
+
 // Reports must not use the generic best-server fallback: a wrong destination can
 // update another copy's playback state. Only top-level item/source fields route them.
 pub(crate) async fn resolve_server(
     sessions: &Option<Vec<(AuthorizationSession, Server)>>,
     analysis: &RequestBodyAnalysisResult,
     media_storage: &MediaStorageService,
-) -> Result<(Server, Option<AuthorizationSession>, bool)> {
+) -> Result<ResolvedReportTarget> {
     let sessions = sessions
         .as_ref()
         .ok_or_else(|| anyhow!("no authorization sessions available"))?;
@@ -38,7 +44,10 @@ pub(crate) async fn resolve_server(
         .owners(
             item_id,
             analysis.requested_play_source_id.as_deref(),
-            analysis.authoritative_play_session.as_ref(),
+            analysis
+                .authoritative_play_session
+                .as_ref()
+                .map(|binding| binding.session()),
         )
         .await?;
     candidates.retain(|id| sessions.iter().any(|(_, server)| server.id == *id));
@@ -53,7 +62,10 @@ pub(crate) async fn resolve_server(
         .iter()
         .find(|(_, server)| server.id == candidates[0])
         .ok_or_else(|| anyhow!("playback server is unavailable"))?;
-    Ok((server.clone(), Some(session.clone()), true))
+    Ok(ResolvedReportTarget {
+        server: server.clone(),
+        session: session.clone(),
+    })
 }
 
 pub(crate) async fn resolve_member(
@@ -71,7 +83,10 @@ pub(crate) async fn resolve_member(
     .member(
         item_id,
         analysis.requested_play_source_id.as_deref(),
-        analysis.authoritative_play_session.as_ref(),
+        analysis
+            .authoritative_play_session
+            .as_ref()
+            .map(|binding| binding.session()),
         server.id,
     )
     .await?)
@@ -85,7 +100,7 @@ pub(crate) async fn resolve_cancellation(
     request: &reqwest::Request,
     path: &[String],
     access_scope: Option<&VirtualLibraryAccessScope>,
-) -> Result<Option<(Server, Option<AuthorizationSession>, bool)>> {
+) -> Result<Option<ResolvedReportTarget>> {
     if request.method() != reqwest::Method::DELETE
         || !matches!(path, [videos, action] if videos.eq_ignore_ascii_case("Videos") && action.eq_ignore_ascii_case("ActiveEncodings"))
     {
@@ -104,10 +119,14 @@ pub(crate) async fn resolve_cancellation(
     {
         return Err(anyhow!("transcoder cancellation requires PlaySessionId"));
     }
-    let (play_session, _) =
-        super::target::owned_session(play_sessions, &session_id, scope.user_id())
-            .await?
-            .ok_or_else(|| anyhow!("unknown transcoder playback session"))?;
+    let binding = super::target::owned_session(
+        play_sessions,
+        &session_id.as_str().into(),
+        &scope.user_id().into(),
+    )
+    .await?
+    .ok_or_else(|| anyhow!("unknown transcoder playback session"))?;
+    let play_session = binding.session();
     if !scope.allows(play_session.server_id) {
         return Err(anyhow!("playback session server is no longer authorized"));
     }
@@ -119,7 +138,10 @@ pub(crate) async fn resolve_cancellation(
                 .find(|(_, server)| server.id == play_session.server_id)
         })
         .ok_or(NoAvailableBackend)?;
-    Ok(Some((server.clone(), Some(session.clone()), true)))
+    Ok(Some(ResolvedReportTarget {
+        server: server.clone(),
+        session: session.clone(),
+    }))
 }
 
 #[cfg(test)]
@@ -181,7 +203,7 @@ mod tests {
             .unwrap();
         let mut analysis = RequestBodyAnalysisResult {
             requested_play_item_id: Some(item.virtual_media_id.clone()),
-            authoritative_play_session: Some(binding(id, "different-member")),
+            authoritative_play_session: Some(binding(id, "different-member").into()),
             ..Default::default()
         };
         assert_eq!(
@@ -191,7 +213,7 @@ mod tests {
                 .to_string(),
             "conflicting playback session and item/source authority"
         );
-        analysis.authoritative_play_session = Some(binding(id, "item"));
+        analysis.authoritative_play_session = Some(binding(id, "item").into());
         assert_eq!(
             resolve_member(&analysis, &media, &server).await.unwrap().id,
             item.id
@@ -208,7 +230,7 @@ mod tests {
             resolve_server(&sessions, &analysis, &media)
                 .await
                 .unwrap()
-                .0
+                .server
                 .id,
             id
         );

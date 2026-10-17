@@ -77,10 +77,10 @@ impl FromRequest<AppState> for CatalogInput {
                 .await
                 .map_err(input_error)?;
         let context = RequestContext::new(&original_request, auth, user, sessions, access_scope);
-        tracing::debug!(principal = ?context.principal, device_present = context.device.is_some(), "Collected catalog context");
+        tracing::debug!(principal = ?context.principal(), device_present = context.device().is_some(), "Collected catalog context");
         let request = CatalogRequest::new(original_request, context, body_analysis);
         request
-            .validate(state)
+            .validate(&state.catalog_service())
             .await
             .map_err(|error| error.detail_status())?;
         Ok(Self(request))
@@ -107,8 +107,13 @@ impl FromRequest<AppState> for LiveInput {
             )
             .await
             .map_err(input_error)?;
-        if let Some(scope) = &context.access_scope {
-            if context.backends.sessions.as_ref().is_none_or(Vec::is_empty) {
+        if let Some(scope) = context.access_scope().as_ref() {
+            if context
+                .backends()
+                .sessions
+                .as_ref()
+                .is_none_or(Vec::is_empty)
+            {
                 return Err(if scope.server_ids().is_empty() {
                     StatusCode::BAD_REQUEST
                 } else {

@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
 use crate::application::error::ApplicationError;
-use hyper::StatusCode;
 use tokio::task::JoinSet;
 use tracing::{error, warn};
 
+use super::services::CatalogService;
 use crate::{
     application::catalog::input::CatalogRequest,
     media_presentation::{CatalogItem, ItemNamePolicy},
@@ -17,7 +17,6 @@ use crate::{
         compare_virtual_library_routes, normalize_library_id, VirtualLibraryAccessScope,
         VirtualLibraryResolution,
     },
-    AppState,
 };
 
 use super::{
@@ -55,7 +54,7 @@ struct LibraryRootInventory {
 type ServerMediaItem = crate::media_catalog::TaggedMediaItem;
 
 async fn process_library_group_individually(
-    state: &AppState,
+    state: &CatalogService,
     group: Vec<ServerMediaItem>,
 ) -> Result<Vec<CatalogItem>, ApplicationError> {
     let mut items = Vec::with_capacity(group.len());
@@ -69,7 +68,7 @@ async fn process_library_group_individually(
 }
 
 async fn present_automatic_library_group(
-    state: &AppState,
+    state: &CatalogService,
     key: String,
     group: Vec<ServerMediaItem>,
     access_scope: &VirtualLibraryAccessScope,
@@ -151,7 +150,7 @@ async fn present_automatic_library_group(
 }
 
 async fn partition_library_root_inventory(
-    state: &AppState,
+    state: &CatalogService,
     server_items: Vec<FetchedServerItems<RawServerItems>>,
 ) -> Result<LibraryRootInventory, ApplicationError> {
     let assignments = state
@@ -242,23 +241,23 @@ async fn partition_library_root_inventory(
 }
 
 pub(super) async fn get_automatic_library_root(
-    state: &AppState,
+    state: &CatalogService,
     preprocessed: CatalogRequest,
     targets: Vec<CatalogFetchTarget>,
 ) -> Result<serde_json::Value, ApplicationError> {
+    let policy = preprocessed.query().policy(false);
     let CatalogRequest {
         original_request,
         context,
         ..
     } = preprocessed;
-    let policy = preprocessed.query.policy(false);
-    let access_scope = context.access_scope.ok_or_else(|| {
+    let access_scope = context.access_scope().as_ref().ok_or_else(|| {
         ApplicationError::MissingIdentity("library viewer scope")
-            .with_status(StatusCode::UNAUTHORIZED)
+            .at(crate::application::error::FailureStage::CallerAuthentication)
     })?;
     let refresh_generation = state
         .virtual_library_service
-        .begin_automatic_library_refresh(&access_scope)
+        .begin_automatic_library_refresh(access_scope)
         .await;
 
     let FetchedCatalog {
@@ -288,8 +287,7 @@ pub(super) async fn get_automatic_library_root(
     let mut automatic_groups = library_groups.into_iter().collect::<Vec<_>>();
     automatic_groups.sort_by(|left, right| left.0.cmp(&right.0));
     for (key, group) in automatic_groups {
-        let presentation =
-            present_automatic_library_group(state, key, group, &access_scope).await?;
+        let presentation = present_automatic_library_group(state, key, group, access_scope).await?;
         library_items.extend(presentation.items);
         discovered_members.extend(presentation.discovered_members);
     }
@@ -297,7 +295,7 @@ pub(super) async fn get_automatic_library_root(
     state
         .virtual_library_service
         .reconcile_automatic_library_members(
-            &access_scope,
+            access_scope,
             refresh_generation,
             &refreshed_server_ids,
             &discovered_members,
@@ -311,7 +309,7 @@ pub(super) async fn get_automatic_library_root(
 }
 
 async fn present_configured_library_groups(
-    state: &AppState,
+    state: &CatalogService,
     configured_library_groups: HashMap<String, NamedMediaItemGroup>,
 ) -> Result<Vec<CatalogItem>, ApplicationError> {
     let mut group_entries = configured_library_groups.into_iter().collect::<Vec<_>>();
@@ -354,12 +352,12 @@ async fn present_configured_library_groups(
 }
 
 pub(super) async fn get_configured_library_root(
-    state: &AppState,
+    state: &CatalogService,
     preprocessed: CatalogRequest,
     targets: Vec<CatalogFetchTarget>,
 ) -> Result<serde_json::Value, ApplicationError> {
+    let policy = preprocessed.query().policy(false);
     let original_request = preprocessed.original_request;
-    let policy = preprocessed.query.policy(false);
     let FetchedCatalog {
         server_items,
         response_shape,
@@ -396,7 +394,7 @@ pub(super) async fn get_configured_library_root(
 
 async fn process_media_items_for_server(
     items: Vec<MediaItem>,
-    state: &AppState,
+    state: &CatalogService,
     server: &Server,
     item_name_policy: ItemNamePolicy,
 ) -> Result<Vec<CatalogItem>, ApplicationError> {
@@ -408,7 +406,7 @@ async fn process_media_items_for_server(
 }
 
 async fn build_virtual_library_item(
-    state: &AppState,
+    state: &CatalogService,
     group: Vec<ServerMediaItem>,
     display_name: String,
     virtual_id: String,
@@ -522,7 +520,7 @@ fn preferred_library_image_source_index(group: &[ServerMediaItem]) -> Option<usi
 }
 
 async fn process_library_folder(
-    state: &AppState,
+    state: &CatalogService,
     item: MediaItem,
     server: &Server,
     item_name_policy: ItemNamePolicy,
@@ -581,7 +579,7 @@ fn attach_library_folder_image_source(
 
 async fn process_media_item_for_server(
     item: MediaItem,
-    state: &AppState,
+    state: &CatalogService,
     server: &Server,
     item_name_policy: ItemNamePolicy,
 ) -> Result<CatalogItem, ApplicationError> {

@@ -1,16 +1,17 @@
 //! Explicit background inventory refresh. No scheduler or incoming HTTP request.
+use super::services::CatalogService;
 use crate::{
     application::error::ApplicationError,
+    media_storage_service::ReconciliationMode,
     user_authorization_service::AuthorizationSession,
     virtual_library_service::{VirtualLibraryAccessScope, VirtualLibraryResolution},
-    AppState,
 };
 
 use super::{
-    library_resolution::CatalogFetchTarget,
+    library_resolution::{CatalogFetchTarget, ResolvedCatalogParent},
     media_reconciliation::{reconcile_fetched_catalog, ReconciliationContext},
     query::CatalogQuery,
-    scan::SourceOutcome,
+    scan::CatalogReport,
     upstream::fetch_refresh_catalog,
 };
 
@@ -26,8 +27,7 @@ pub(crate) struct CatalogRefresh {
 // Read by future refresh callers; no scheduler is enabled by this extraction.
 #[allow(dead_code)]
 pub(crate) struct RefreshResult {
-    pub complete: bool,
-    pub outcomes: Vec<SourceOutcome>,
+    pub report: CatalogReport,
     pub response: serde_json::Value,
 }
 
@@ -35,7 +35,7 @@ pub(crate) struct RefreshResult {
 /// Scheduling is intentionally not enabled by this API.
 #[allow(dead_code)]
 pub(crate) async fn refresh(
-    state: &AppState,
+    state: &CatalogService,
     input: CatalogRefresh,
 ) -> Result<RefreshResult, ApplicationError> {
     if input
@@ -56,8 +56,7 @@ pub(crate) async fn refresh(
         // resolution as an authoritative deletion of any previous inventory.
         VirtualLibraryResolution::Empty { .. } => {
             return Ok(RefreshResult {
-                complete: false,
-                outcomes: Vec::new(),
+                report: CatalogReport::new(Vec::new(), 1),
                 response: serde_json::json!({"Items": [], "TotalRecordCount": 0, "StartIndex": 0}),
             })
         }
@@ -82,9 +81,11 @@ pub(crate) async fn refresh(
         targets.push(CatalogFetchTarget {
             session: session.clone(),
             server: member.server,
-            parent_id: Some(member.mapping.original_media_id),
-            member_parent_id: Some(member.mapping.virtual_media_id),
-            resolved_parent_id: Some(input.library_id.clone()),
+            parent: Some(ResolvedCatalogParent {
+                backend: member.mapping.original_media_id.into(),
+                member: member.mapping.virtual_media_id.into(),
+                requested: input.library_id.clone().into(),
+            }),
         });
     }
     if targets.is_empty() {
@@ -95,19 +96,18 @@ pub(crate) async fn refresh(
     policy.reconcile_playback = state.deduplicate_media_enabled().await;
     // Fence before fetching, exactly as in the interactive workflow.
     let generation = if policy.reconcile_playback {
-        Some(
-            state
+        ReconciliationMode::Enabled {
+            generation: state
                 .media_storage
                 .begin_media_reconciliation()
                 .await
                 .map_err(ApplicationError::Storage)?,
-        )
+        }
     } else {
-        None
+        ReconciliationMode::Disabled
     };
     let fetched = fetch_refresh_catalog(state, &query, &policy, targets, skipped).await?;
-    let complete = fetched.failures == 0;
-    let outcomes = fetched.outcomes.clone();
+    let report = fetched.report.clone();
     let shape = fetched.response_shape;
     let items = reconcile_fetched_catalog(
         state,
@@ -128,9 +128,5 @@ pub(crate) async fn refresh(
     state
         .catalog_snapshots
         .invalidate_viewer(input.access_scope.user_id());
-    Ok(RefreshResult {
-        complete,
-        outcomes,
-        response,
-    })
+    Ok(RefreshResult { report, response })
 }

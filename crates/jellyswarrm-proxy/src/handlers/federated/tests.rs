@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use super::*;
+use crate::application::catalog::library_resolution::ResolvedCatalogParent;
 use crate::{
     config::{AppConfig, MIGRATOR},
     handlers::quick_connect::QuickConnectStorage,
@@ -183,9 +184,11 @@ async fn request_independent_refresh_shares_paging_reconciliation_and_interactiv
             .collect(),
     };
     // No reqwest/http request is constructed for either refresh invocation.
-    let first = refresh(&state, make_input()).await.unwrap();
-    assert!(first.complete);
-    assert_eq!(first.outcomes.len(), sessions.len());
+    let first = refresh(&state.catalog_service(), make_input())
+        .await
+        .unwrap();
+    assert!(first.report.is_complete_inventory());
+    assert_eq!(first.report.outcomes().len(), sessions.len());
     assert_eq!(first.response["Items"].as_array().unwrap().len(), 2);
     for upstream in &upstreams {
         assert_eq!(upstream.received_requests().await.unwrap().len(), 2);
@@ -215,8 +218,10 @@ async fn request_independent_refresh_shares_paging_reconciliation_and_interactiv
         .respond_with(ResponseTemplate::new(503))
         .mount(&upstreams[1])
         .await;
-    let partial = refresh(&state, make_input()).await.unwrap();
-    assert!(!partial.complete);
+    let partial = refresh(&state.catalog_service(), make_input())
+        .await
+        .unwrap();
+    assert!(!partial.report.is_complete_inventory());
     let ids = partial.response["Items"]
         .as_array()
         .unwrap()
@@ -270,7 +275,7 @@ async fn request_independent_refresh_rejects_foreign_viewer_credentials_before_t
     };
     let (state, _pool, sessions, upstreams) = setup().await;
     let result = refresh(
-        &state,
+        &state.catalog_service(),
         CatalogRefresh {
             library_id: "unresolved".into(),
             access_scope: VirtualLibraryAccessScope::new(
@@ -320,9 +325,9 @@ async fn catalog_service_boundaries_preserve_source_and_storage_causes() {
     ] {
         let input: CatalogRequest = request(&path, &sessions).into();
         let result = if path.ends_with("/Filters") {
-            get_filters_typed(&state, input).await
+            get_filters_typed(&state.catalog_service(), input).await
         } else {
-            get_catalog(&state, input).await
+            get_catalog(&state.catalog_service(), input).await
         };
         let error = result.unwrap_err();
         assert_eq!(error.detail_status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -342,9 +347,9 @@ async fn catalog_service_boundaries_preserve_source_and_storage_causes() {
     ] {
         let input: CatalogRequest = request(path, &sessions).into();
         let result = if path.contains("/Filters") {
-            get_filters_typed(&state, input).await
+            get_filters_typed(&state.catalog_service(), input).await
         } else {
-            get_catalog(&state, input).await
+            get_catalog(&state.catalog_service(), input).await
         };
         let error = result.unwrap_err();
         assert_eq!(error.detail_status(), StatusCode::INTERNAL_SERVER_ERROR);
@@ -355,6 +360,23 @@ async fn catalog_service_boundaries_preserve_source_and_storage_causes() {
                 .expect("storage cause must survive catalog boundary");
         }
     }
+}
+
+#[tokio::test]
+async fn catalog_query_is_always_derived_from_the_authoritative_wire_request() {
+    let (_state, _pool, sessions, _upstreams) = setup().await;
+    let mut input: crate::application::catalog::input::CatalogRequest =
+        request("/Items?ParentId=before&Limit=10", &sessions).into();
+    *input.original_request.url_mut() = "http://localhost/Items?ParentId=after&Limit=3"
+        .parse()
+        .unwrap();
+    assert_eq!(
+        input.query().identity(),
+        crate::application::catalog::query::CatalogQuery::from_url(input.original_request.url())
+            .identity()
+    );
+    assert!(input.query().identity().contains("ParentId=after"));
+    assert!(!input.query().identity().contains("before"));
 }
 
 fn latest_items() -> Value {
@@ -1209,14 +1231,12 @@ async fn client_pages_are_applied_after_scanning_capped_catalogs() {
                     .map(|(session, server)| CatalogFetchTarget {
                         session: session.clone(),
                         server: server.clone(),
-                        parent_id: if matches!(kind, "episodes" | "seasons") {
-                            Some("show".into())
-                        } else {
-                            None
-                        },
-                        resolved_parent_id: None,
-                        member_parent_id: if matches!(kind, "episodes" | "seasons") {
-                            Some(member_parent_ids[&server.id].clone())
+                        parent: if matches!(kind, "episodes" | "seasons") {
+                            Some(ResolvedCatalogParent {
+                                backend: "show".into(),
+                                requested: "show".into(),
+                                member: member_parent_ids[&server.id].clone().into(),
+                            })
                         } else {
                             None
                         },
@@ -1293,13 +1313,11 @@ async fn catalog_pagination_follows_backend_caps_and_detects_stalled_pages() {
             .map(|(session, server)| CatalogFetchTarget {
                 session: session.clone(),
                 server: server.clone(),
-                parent_id: None,
-                member_parent_id: None,
-                resolved_parent_id: None,
+                parent: None,
             })
             .collect();
         let catalog = fetch_catalog(
-            &state,
+            &state.catalog_service(),
             &req.original_request,
             &policy,
             targets,
@@ -1530,9 +1548,7 @@ async fn item_catalog_seasons_use_their_provider_matched_series_parent() {
             .map(|(session, server)| CatalogFetchTarget {
                 session: session.clone(),
                 server: server.clone(),
-                parent_id: None,
-                member_parent_id: None,
-                resolved_parent_id: None,
+                parent: None,
             })
             .collect()
     };
@@ -1619,9 +1635,7 @@ async fn first_recursive_catalog_merges_series_and_numbered_seasons_together() {
             .map(|(session, server)| CatalogFetchTarget {
                 session: session.clone(),
                 server: server.clone(),
-                parent_id: None,
-                member_parent_id: None,
-                resolved_parent_id: None,
+                parent: None,
             })
             .collect();
         let Json(response) = get_virtual_library_items(
@@ -1668,9 +1682,7 @@ async fn first_recursive_catalog_merges_series_and_numbered_seasons_together() {
         .map(|(session, server)| CatalogFetchTarget {
             session: session.clone(),
             server: server.clone(),
-            parent_id: None,
-            member_parent_id: None,
-            resolved_parent_id: None,
+            parent: None,
         })
         .collect();
     let Json(response) = get_virtual_library_items(
@@ -1719,9 +1731,11 @@ async fn numbered_seasons_with_same_server_duplicates_are_not_hidden() {
         .map(|(session, server)| CatalogFetchTarget {
             session: session.clone(),
             server: server.clone(),
-            parent_id: Some("series".into()),
-            member_parent_id: Some(member_parent_ids[&server.id].clone()),
-            resolved_parent_id: Some(aggregate.into()),
+            parent: Some(ResolvedCatalogParent {
+                backend: "series".into(),
+                member: member_parent_ids[&server.id].clone().into(),
+                requested: aggregate.into(),
+            }),
         })
         .collect();
     let Json(response) = get_aggregate_show_items(
@@ -1808,9 +1822,11 @@ async fn check_show_season_navigation(with_provider_ids: bool) {
             .map(|(session, server)| CatalogFetchTarget {
                 session: session.clone(),
                 server: server.clone(),
-                parent_id: Some("series".into()),
-                member_parent_id: Some(member_parent_ids[&server.id].clone()),
-                resolved_parent_id: Some(aggregate.into()),
+                parent: Some(ResolvedCatalogParent {
+                    backend: "series".into(),
+                    member: member_parent_ids[&server.id].clone().into(),
+                    requested: aggregate.into(),
+                }),
             })
             .collect()
     };
@@ -1864,7 +1880,7 @@ async fn check_show_season_navigation(with_provider_ids: bool) {
     });
     let preprocessed = request("/Items/selected-episode", &sessions);
     crate::application::details::sources::merge_media_detail(
-        &state,
+        &state.catalog_service(),
         crate::application::details::sources::DetailMergeContext {
             requested_item_id: "selected-episode",
             selected_group: None,
@@ -1873,7 +1889,11 @@ async fn check_show_season_navigation(with_provider_ids: bool) {
             access_scope: preprocessed.access_scope.as_ref(),
             sessions: Some(&sessions),
             original_request: &preprocessed.original_request,
-            source_generation: 0,
+            source_generation: state
+                .media_storage
+                .begin_media_reconciliation()
+                .await
+                .unwrap(),
         },
         None,
         &mut detail,

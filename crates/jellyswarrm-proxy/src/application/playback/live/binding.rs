@@ -2,11 +2,11 @@ use crate::application::error::ApplicationError;
 use serde_json::Value;
 use std::sync::Arc;
 
-use crate::{models::MediaSource, server_storage::Server, AppState};
+use crate::{models::MediaSource, server_storage::Server};
 
 /// Virtualize opaque live IDs and their delivery URL references together.
 pub(crate) async fn prepare_live_source(
-    state: &AppState,
+    state: &crate::session_storage::SessionStorage,
     source: &mut MediaSource,
     user: &str,
     server: &Server,
@@ -26,8 +26,7 @@ pub(crate) async fn prepare_live_source(
         return Ok(None);
     };
     let plan = state
-        .play_sessions
-        .prepare_live_stream(&original, user, server.id)
+        .prepare_live_binding(&original.as_str().into(), &user.into(), server.id)
         .await;
     rewrite_live_id(&mut value, plan.virtual_id());
     *source = serde_json::from_value(value).map_err(ApplicationError::InvalidUpstreamJson)?;

@@ -8,11 +8,29 @@ use hyper::StatusCode;
 #[error("requested media is outside the caller's authorized server scope")]
 pub(crate) struct MediaAccessDenied;
 
+/// Workflow context, not a response code. Endpoint adapters own its HTTP policy.
+pub(crate) enum FailureStage {
+    CallerAuthentication,
+    CatalogEncoding,
+    CatalogDeadline,
+    NegotiationSelection,
+    DeliverySelection,
+    LiveBindingLookup,
+    LiveSessionLookup,
+    PlaybackCommit,
+    ResourceLookup,
+}
+
 pub(crate) enum ApplicationError {
     InvalidInput(&'static str),
     InvalidRequestJson(serde_json::Error),
     InvalidRouting(anyhow::Error),
     PlaybackResolution(super::playback::target::ResolutionError),
+    TargetSelection(super::context::TargetError),
+    At {
+        stage: FailureStage,
+        cause: Box<ApplicationError>,
+    },
     AccessDenied,
     MissingIdentity(&'static str),
     UnavailableOwner,
@@ -42,6 +60,12 @@ pub(crate) enum ApplicationError {
 }
 
 impl ApplicationError {
+    pub(crate) fn at(self, stage: FailureStage) -> Self {
+        Self::At {
+            stage,
+            cause: Box::new(self),
+        }
+    }
     pub(crate) fn with_status(self, status: StatusCode) -> Self {
         Self::Endpoint {
             status,
@@ -49,37 +73,11 @@ impl ApplicationError {
         }
     }
 
-    /// Existing detail-route contract, also used by transitional status wrappers.
-    pub(crate) fn detail_status(&self) -> StatusCode {
-        match self {
-            Self::InvalidInput(_)
-            | Self::InvalidRouting(_)
-            | Self::InvalidRequestJson(_)
-            | Self::PlaybackResolution(_) => StatusCode::BAD_REQUEST,
-            Self::AccessDenied => StatusCode::FORBIDDEN,
-            Self::MissingIdentity(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            Self::UnavailableOwner => StatusCode::SERVICE_UNAVAILABLE,
-            Self::SourcesFailed(_) | Self::IncompleteCatalog { .. } => {
-                StatusCode::SERVICE_UNAVAILABLE
-            }
-            Self::Shared(cause) => cause.detail_status(),
-            Self::UpstreamTransport(_)
-            | Self::InvalidUpstreamJson(_)
-            | Self::InvalidUpstreamPayload(_) => StatusCode::BAD_GATEWAY,
-            Self::UpstreamStatus(status) | Self::Compatibility(status) => *status,
-            Self::Endpoint { status, .. } => *status,
-            Self::Storage(_)
-            | Self::Serialization(_)
-            | Self::InvalidProcessedJson(_)
-            | Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
-        }
-    }
-
     /// Configured-library fallback applies to source failures, not local denial.
     /// Compatibility errors retain the old helper's eligibility until converted.
     pub(crate) fn allows_detail_fallback(&self) -> bool {
         match self {
-            Self::Endpoint { cause, .. } => cause.allows_detail_fallback(),
+            Self::Endpoint { cause, .. } | Self::At { cause, .. } => cause.allows_detail_fallback(),
             Self::Shared(cause) => cause.allows_detail_fallback(),
             Self::UpstreamTransport(_)
             | Self::InvalidUpstreamJson(_)
@@ -115,6 +113,8 @@ impl fmt::Display for ApplicationError {
             Self::InvalidRequestJson(_) => "invalid request JSON",
             Self::InvalidRouting(_) => "invalid operation routing",
             Self::PlaybackResolution(_) => "playback authority resolution failed",
+            Self::TargetSelection(_) => "target selection failed",
+            Self::At { .. } => "workflow stage failed",
             Self::AccessDenied => "access denied",
             Self::MissingIdentity(_) => "missing operation identity",
             Self::UnavailableOwner => "selected owner unavailable",
@@ -146,13 +146,14 @@ impl Error for ApplicationError {
         match self {
             Self::UpstreamTransport(error) => Some(error),
             Self::PlaybackResolution(error) => Some(error),
+            Self::TargetSelection(error) => Some(error),
             Self::InvalidRequestJson(error)
             | Self::InvalidUpstreamJson(error)
             | Self::InvalidProcessedJson(error)
             | Self::Serialization(error) => Some(error),
             Self::Storage(error) => Some(error),
             Self::Internal(error) | Self::InvalidRouting(error) => Some(error.as_ref()),
-            Self::Endpoint { cause, .. } => Some(cause.as_ref()),
+            Self::Endpoint { cause, .. } | Self::At { cause, .. } => Some(cause.as_ref()),
             Self::SourcesFailed(causes) => causes.first().map(|cause| cause as _),
             Self::Shared(cause) => Some(cause.as_ref()),
             Self::IncompleteCatalog { cause, .. } => cause.as_deref().map(|cause| cause as _),

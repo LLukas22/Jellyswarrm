@@ -79,20 +79,9 @@ where
     T: serde::de::DeserializeOwned,
 {
     super::compatibility::sync_posted_guide_body(&mut request)?;
-    let response = client
-        .execute(request)
+    super::transport::execute(client, request)
         .await
-        .map_err(|error| ApplicationError::UpstreamTransport(error.without_url()))?;
-    let status = response.status();
-    if !status.is_success() {
-        return Err(ApplicationError::UpstreamStatus(status));
-    }
-
-    let response_text = response
-        .text()
-        .await
-        .map_err(|error| ApplicationError::UpstreamTransport(error.without_url()))?;
-    serde_json::from_str::<T>(&response_text).map_err(ApplicationError::InvalidUpstreamJson)
+        .map_err(Into::into)
 }
 
 pub(crate) fn response_json_to_payload_typed<T>(

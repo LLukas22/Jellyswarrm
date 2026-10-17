@@ -4,6 +4,7 @@ use crate::application::catalog::snapshots::{SnapshotRequest, SnapshotResponse};
 #[tokio::test]
 async fn a_mutation_fences_inflight_builds_without_invalidating_another_viewer() {
     let (state, _, sessions, _) = setup().await;
+    let state = state.catalog_service();
     let prepare = |viewer: &str| {
         let mut request = request("/Items?Limit=1", &sessions);
         request.access_scope =
@@ -16,8 +17,7 @@ async fn a_mutation_fences_inflight_builds_without_invalidating_another_viewer()
     let other = SnapshotRequest::prepare(&state, &other, &[], "listing").await;
     let value = |name| SnapshotResponse {
         response: serde_json::json!({"Items": [{"Id": name}], "TotalRecordCount": 1, "StartIndex": 0}),
-        complete: true,
-        outcomes: Vec::new(),
+        report: crate::application::catalog::scan::CatalogReport::new(Vec::new(), 0),
     };
     let _ = other
         .serve(&state, async { Ok(value("other")) })

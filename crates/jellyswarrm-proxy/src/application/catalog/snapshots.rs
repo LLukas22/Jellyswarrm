@@ -1,3 +1,4 @@
+use super::services::CatalogService;
 use super::{
     library_resolution::CatalogFetchTarget, postprocessing::Pagination,
     request_policy::is_upstream_limited_catalog_request,
@@ -5,7 +6,6 @@ use super::{
 use crate::application::error::ApplicationError;
 use crate::{
     application::catalog::input::CatalogRequest, request_preprocessing::JellyfinAuthorization,
-    AppState,
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -48,11 +48,7 @@ impl CatalogSnapshots {
                 let result = build
                     .await
                     .map_err(|error| BuildFailure::Error(Arc::new(error)))?;
-                let complete = result.complete
-                    && result
-                        .outcomes
-                        .iter()
-                        .all(|source| source.outcome == super::scan::FetchOutcome::Complete);
+                let complete = result.report.is_complete_inventory();
                 let value = Arc::new(result);
                 if complete {
                     Ok(value)
@@ -88,8 +84,7 @@ impl CatalogSnapshots {
 
 pub(crate) struct SnapshotResponse {
     pub response: serde_json::Value,
-    pub complete: bool,
-    pub outcomes: Vec<super::scan::SourceOutcome>,
+    pub report: super::scan::CatalogReport,
 }
 
 enum BuildFailure {
@@ -120,10 +115,10 @@ fn hash_request_identity(
     hash.update(format!(
         "{scope}|{}|{}|{:?}|{:?}|{:?}|{:?}",
         request.original_request.method(),
-        request.query.identity(),
+        request.query().identity(),
         request.original_request.headers(),
-        request.context.access_scope,
-        request.context.user.as_ref().map(|user| &user.id),
+        request.context.access_scope(),
+        request.context.user().map(|user| &user.id),
         token,
     ));
     // Origin is HTTP cache metadata, not part of request-independent query intent.
@@ -145,22 +140,21 @@ fn hash_request_identity(
 
 impl SnapshotRequest {
     pub async fn prepare(
-        state: &AppState,
+        state: &CatalogService,
         request: &CatalogRequest,
         targets: &[CatalogFetchTarget],
         scope: &str,
     ) -> Self {
         let token = request
             .context
-            .auth
-            .as_ref()
+            .authorization()
             .and_then(|auth| auth.token_ref())
             .map(str::to_string)
             .or_else(|| {
                 JellyfinAuthorization::from_request(&request.original_request)
                     .and_then(|auth| auth.token())
             });
-        let query = &request.query;
+        let query = request.query();
         tracing::debug!(kind = ?query.kind, scope, "Planning catalog materialization");
         let pagination = query.pagination;
         // Bounded endpoints define their own result window. Do not cache across
@@ -181,10 +175,10 @@ impl SnapshotRequest {
         let mut hash = Sha256::new();
         let viewer = request
             .context
-            .access_scope
+            .access_scope()
             .as_ref()
             .map(|scope| scope.user_id())
-            .or_else(|| request.context.user.as_ref().map(|user| user.id.as_str()))
+            .or_else(|| request.context.user().map(|user| user.id.as_str()))
             .unwrap_or("anonymous");
         hash.update(state.catalog_snapshots.revision(viewer).to_le_bytes());
         hash_request_identity(&mut hash, request, scope, token.as_deref());
@@ -202,10 +196,9 @@ impl SnapshotRequest {
         drop(config);
         for target in targets {
             hash.update(format!(
-                "{:?}|{:?}|{:?}|{}|{}|{}",
+                "{:?}|{:?}|{}|{}|{}",
                 target.server,
-                target.parent_id,
-                target.resolved_parent_id,
+                target.parent,
                 target.session.id,
                 target.session.original_user_id,
                 target.session.jellyfin_token
@@ -222,12 +215,12 @@ impl SnapshotRequest {
         &self,
         request: &CatalogRequest,
     ) -> super::request_policy::CatalogRequestPolicy {
-        request.query.policy(self.key.is_some())
+        request.query().policy(self.key.is_some())
     }
 
     pub async fn serve(
         self,
-        state: &AppState,
+        state: &CatalogService,
         build: impl std::future::Future<Output = Result<SnapshotResponse, ApplicationError>>,
     ) -> Result<serde_json::Value, ApplicationError> {
         let response = if let Some(key) = self.key {
@@ -236,8 +229,12 @@ impl SnapshotRequest {
         } else {
             build.await?.response
         };
-        crate::application::observation::media_response(state, self.token.as_deref(), &response)
-            .await;
+        crate::application::observation::media_response(
+            &state.client_sessions,
+            self.token.as_deref(),
+            &response,
+        )
+        .await;
         Ok(response)
     }
 }
@@ -280,12 +277,14 @@ mod materialization_tests {
     fn result(outcome: FetchOutcome) -> SnapshotResponse {
         SnapshotResponse {
             response: serde_json::json!({"Items": [{"Id": "a", "Future": {"kept": true}}, {"Id": "b"}], "TotalRecordCount": 2, "FutureEnvelope": 42}),
-            complete: true,
-            outcomes: vec![SourceOutcome {
-                server_id: crate::server_id::ServerId::new(1),
-                parent_id: Some("library".into()),
-                outcome,
-            }],
+            report: crate::application::catalog::scan::CatalogReport::new(
+                vec![SourceOutcome {
+                    server_id: crate::server_id::ServerId::new(1),
+                    parent_id: Some("library".into()),
+                    outcome,
+                }],
+                0,
+            ),
         }
     }
 
@@ -355,7 +354,7 @@ mod materialization_tests {
                 .materialize("query".into(), async { Ok(result(outcome)) })
                 .await
                 .unwrap();
-            assert_eq!(response.outcomes[0].outcome, outcome);
+            assert_eq!(response.report.outcomes()[0].outcome, outcome);
             assert!(cache.cache.get("query").await.is_none());
         }
         cache
@@ -379,6 +378,6 @@ mod materialization_tests {
         assert_eq!(page["Items"][0]["Future"]["kept"], true);
         assert_eq!(page["FutureEnvelope"], 42);
         assert_eq!(page["TotalRecordCount"], 2);
-        assert_eq!(hit.outcomes[0].outcome, FetchOutcome::Complete);
+        assert_eq!(hit.report.outcomes()[0].outcome, FetchOutcome::Complete);
     }
 }

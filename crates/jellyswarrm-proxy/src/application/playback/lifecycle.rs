@@ -3,16 +3,26 @@
 use crate::{
     processors::request_analyzer::{PlaybackSessionAction, RequestBodyAnalysisResult},
     server_id::ServerId,
-    session_storage::{PlaybackSession, PreparedLiveStream, SessionRevision, SessionStorage},
+    session_storage::{
+        PlaybackSession, PreparedLiveStream, RevisionedPlaybackSession, SessionStorage,
+    },
 };
 
 /// The sole application owner of local binding writes. Call only at the
 /// operation's documented commit point, never during target planning.
 pub(crate) struct PlaybackLifecycle<'a> {
-    pub sessions: &'a SessionStorage,
+    sessions: &'a SessionStorage,
 }
 
-impl PlaybackLifecycle<'_> {
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[error("live stream reservation was invalidated before publication")]
+pub(crate) struct InvalidatedReservation;
+
+impl<'a> PlaybackLifecycle<'a> {
+    pub(crate) fn new(sessions: &'a SessionStorage) -> Self {
+        Self { sessions }
+    }
+
     pub async fn establish(&self, session: PlaybackSession) {
         self.sessions.add_session(session).await;
     }
@@ -59,8 +69,15 @@ impl PlaybackLifecycle<'_> {
             .await;
     }
 
-    pub async fn commit_live(&self, plans: &[std::sync::Arc<PreparedLiveStream>]) -> bool {
-        self.sessions.commit_live_streams(plans).await
+    pub async fn commit_live(
+        &self,
+        plans: &[std::sync::Arc<PreparedLiveStream>],
+    ) -> Result<(), InvalidatedReservation> {
+        if self.sessions.commit_live_streams(plans).await {
+            Ok(())
+        } else {
+            Err(InvalidatedReservation)
+        }
     }
 
     #[cfg(test)]
@@ -70,8 +87,12 @@ impl PlaybackLifecycle<'_> {
             .await
     }
 
-    pub async fn close_live(&self, id: &str, viewer: &str) {
-        self.sessions.remove_live_stream(id, viewer).await;
+    pub async fn close_live(
+        &self,
+        id: &crate::application::identity::VirtualLiveStreamId,
+        viewer: &crate::application::identity::ViewerId,
+    ) {
+        self.sessions.close_live_binding(id, viewer).await;
     }
 
     pub async fn remove_server(&self, server: ServerId) {
@@ -80,10 +101,47 @@ impl PlaybackLifecycle<'_> {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct PendingPlaybackSessionUpdate {
-    pub action: PlaybackSessionAction,
-    pub session: PlaybackSession,
-    pub revision: Option<SessionRevision>,
+pub(crate) enum PendingPlaybackSessionUpdate {
+    Start(PlaybackSession),
+    Refresh(RevisionedPlaybackSession),
+    Remove(RevisionedPlaybackSession),
+}
+
+#[cfg(test)]
+mod reservation_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn live_commit_reports_invalidation_without_consuming_shared_reservations() {
+        let storage = SessionStorage::new();
+        let lifecycle = PlaybackLifecycle::new(&storage);
+        let first = storage
+            .prepare_live_stream("backend-live", "viewer", ServerId::new(1))
+            .await;
+        let shared = storage
+            .prepare_live_stream("backend-live", "viewer", ServerId::new(1))
+            .await;
+        assert!(std::sync::Arc::ptr_eq(&first, &shared));
+        assert_eq!(
+            lifecycle.commit_live(std::slice::from_ref(&first)).await,
+            Ok(())
+        );
+        assert_eq!(
+            lifecycle.commit_live(std::slice::from_ref(&shared)).await,
+            Ok(())
+        );
+        lifecycle
+            .close_live(&first.virtual_id().into(), &"viewer".into())
+            .await;
+        assert_eq!(
+            lifecycle.commit_live(&[shared]).await,
+            Err(InvalidatedReservation)
+        );
+        assert!(storage
+            .live_stream(first.virtual_id(), "viewer")
+            .await
+            .is_none());
+    }
 }
 
 impl PendingPlaybackSessionUpdate {
@@ -96,57 +154,34 @@ impl PendingPlaybackSessionUpdate {
     ) -> Option<Self> {
         let result = analysis?;
         match action? {
-            PlaybackSessionAction::Start => Some(Self {
-                action: PlaybackSessionAction::Start,
-                revision: None,
-                session: PlaybackSession {
-                    session_id: result.requested_play_session_id.clone()?,
-                    item_id: result.requested_play_item_id.clone()?,
-                    user_id: user_id?.to_string(),
-                    server_id,
-                    original_item_id: original_item_id.map(str::to_string),
-                },
-            }),
-            action @ (PlaybackSessionAction::Refresh | PlaybackSessionAction::Remove) => {
-                Some(Self {
-                    action,
-                    session: result.authoritative_play_session.clone()?,
-                    revision: Some(result.authoritative_play_session_revision?),
-                })
+            PlaybackSessionAction::Start => Some(Self::Start(PlaybackSession {
+                session_id: result.requested_play_session_id.clone()?,
+                item_id: result.requested_play_item_id.clone()?,
+                user_id: user_id?.to_string(),
+                server_id,
+                original_item_id: original_item_id.map(str::to_string),
+            })),
+            PlaybackSessionAction::Refresh => {
+                Some(Self::Refresh(result.authoritative_play_session.clone()?))
+            }
+            PlaybackSessionAction::Remove => {
+                Some(Self::Remove(result.authoritative_play_session.clone()?))
             }
         }
     }
 
     /// Retains revision fencing: a delayed report cannot refresh or remove a
-    /// replacement session. Missing revisions remain a no-op, never an upsert.
+    /// replacement session. Every refresh/remove carries a storage-issued revision.
     pub(crate) async fn commit(self, sessions: &SessionStorage) {
-        match self.action {
-            PlaybackSessionAction::Start => {
-                PlaybackLifecycle { sessions }.establish(self.session).await
+        match self {
+            Self::Start(session) => PlaybackLifecycle::new(sessions).establish(session).await,
+            Self::Refresh(binding) => {
+                let applied = sessions.refresh_revisioned_session(&binding).await;
+                tracing::debug!(action = "refresh", applied, "Playback report commit");
             }
-            PlaybackSessionAction::Refresh => {
-                if let Some(revision) = self.revision {
-                    let applied = sessions
-                        .refresh_session_for_user(
-                            &self.session.session_id,
-                            &self.session.user_id,
-                            revision,
-                        )
-                        .await;
-                    tracing::debug!(action = "refresh", applied, "Playback report commit");
-                }
-            }
-            PlaybackSessionAction::Remove => {
-                if let Some(revision) = self.revision {
-                    sessions
-                        .remove_session_for_user(
-                            &self.session.session_id,
-                            &self.session.user_id,
-                            revision,
-                        )
-                        .await;
-                    tracing::debug!(action = "remove", "Revision-fenced playback report commit");
-                }
+            Self::Remove(binding) => {
+                sessions.remove_revisioned_session(&binding).await;
+                tracing::debug!(action = "remove", "Revision-fenced playback report commit");
             }
         }
     }
@@ -167,17 +202,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refresh_and_remove_require_a_revisioned_lookup_and_commit_current_binding() {
+        let storage = SessionStorage::new();
+        let mut analysis = RequestBodyAnalysisResult {
+            requested_play_session_id: Some("player".into()),
+            requested_play_item_id: Some("item".into()),
+            ..Default::default()
+        };
+        for action in [
+            PlaybackSessionAction::Refresh,
+            PlaybackSessionAction::Remove,
+        ] {
+            assert!(PendingPlaybackSessionUpdate::plan(
+                Some(action),
+                Some(&analysis),
+                Some("viewer"),
+                ServerId::new(1),
+                None
+            )
+            .is_none());
+        }
+        storage.add_session(session("item")).await;
+        analysis.authoritative_play_session = storage
+            .resolve_report_session("player", "viewer")
+            .await
+            .unwrap();
+        let before = analysis
+            .authoritative_play_session
+            .as_ref()
+            .unwrap()
+            .revision();
+        let refresh = PendingPlaybackSessionUpdate::plan(
+            Some(PlaybackSessionAction::Refresh),
+            Some(&analysis),
+            Some("viewer"),
+            ServerId::new(1),
+            None,
+        )
+        .unwrap();
+        assert!(matches!(refresh, PendingPlaybackSessionUpdate::Refresh(_)));
+        refresh.commit(&storage).await;
+        assert_eq!(
+            storage
+                .resolve_report_session("player", "viewer")
+                .await
+                .unwrap()
+                .unwrap()
+                .revision(),
+            before
+        );
+        let remove = PendingPlaybackSessionUpdate::plan(
+            Some(PlaybackSessionAction::Remove),
+            Some(&analysis),
+            Some("viewer"),
+            ServerId::new(1),
+            None,
+        )
+        .unwrap();
+        assert!(matches!(remove, PendingPlaybackSessionUpdate::Remove(_)));
+        remove.commit(&storage).await;
+        assert!(storage
+            .resolve_report_session("player", "viewer")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
     async fn planned_report_cannot_remove_replacement_binding() {
         let storage = SessionStorage::new();
         storage.add_session(session("old")).await;
-        let (old, revision) = storage
+        let old = storage
             .resolve_report_session("player", "viewer")
             .await
             .unwrap()
             .unwrap();
+        let revision = old.revision();
         let analysis = RequestBodyAnalysisResult {
             authoritative_play_session: Some(old),
-            authoritative_play_session_revision: Some(revision),
             ..Default::default()
         };
         let pending = PendingPlaybackSessionUpdate::plan(
@@ -196,7 +298,8 @@ mod tests {
             .resolve_report_session("player", "viewer")
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .into_parts();
         assert_eq!(current.item_id, "replacement");
         assert_ne!(current_revision, revision);
     }
@@ -205,28 +308,27 @@ mod tests {
     async fn planned_refresh_cannot_touch_replacement_revision() {
         let storage = SessionStorage::new();
         storage.add_session(session("old")).await;
-        let (old, revision) = storage
+        let old = storage
             .resolve_report_session("player", "viewer")
             .await
             .unwrap()
             .unwrap();
-        let pending = PendingPlaybackSessionUpdate {
-            action: PlaybackSessionAction::Refresh,
-            session: old,
-            revision: Some(revision),
-        };
+        let revision = old.revision();
+        let pending = PendingPlaybackSessionUpdate::Refresh(old);
         storage.add_session(session("replacement")).await;
         let (_, replacement_revision) = storage
             .resolve_report_session("player", "viewer")
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .into_parts();
         pending.commit(&storage).await;
         let (current, current_revision) = storage
             .resolve_report_session("player", "viewer")
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .into_parts();
         assert_eq!(current.item_id, "replacement");
         assert_eq!(current_revision, replacement_revision);
         assert_ne!(current_revision, revision);
@@ -258,7 +360,8 @@ mod tests {
             .resolve_report_session("player", "viewer")
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .into_parts();
         assert_eq!(current.original_item_id.as_deref(), Some("upstream-item"));
     }
 }

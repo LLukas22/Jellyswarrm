@@ -39,23 +39,29 @@ impl OperationRequest {
         &self,
         state: &AppState,
     ) -> Result<ResolvedTarget, ApplicationError> {
+        self.resolve_target_using(&state.routing_services()).await
+    }
+
+    pub(crate) async fn resolve_target_using(
+        &self,
+        state: &crate::application::routing::RoutingServices<'_>,
+    ) -> Result<ResolvedTarget, ApplicationError> {
         let (server, session, server_matched_request) =
             crate::application::routing::resolve_server(
-                &self.context.backends.sessions,
+                &self.context.backends().sessions,
                 &self.body_analysis,
                 state,
                 &self.original_request,
-                self.context.access_scope.as_ref(),
+                self.context.access_scope().as_ref(),
             )
             .await
             .map_err(routing_error)?;
         state
-            .processors
-            .url_processor
+            .urls
             .validate_container_request(
                 self.original_request.url(),
                 &session,
-                self.context.access_scope.as_ref(),
+                self.context.access_scope().as_ref(),
                 server.id,
                 self.body_analysis
                     .as_ref()
@@ -64,9 +70,9 @@ impl OperationRequest {
             )
             .await
             .map_err(routing_error)?;
-        let auth = remap_authorization(&self.context.auth, &session);
+        let auth = remap_authorization(&self.context.authorization().cloned(), &session);
         let target =
-            AuthorizedTarget::new(server, session, auth, self.context.access_scope.clone())
+            AuthorizedTarget::new(server, session, auth, self.context.access_scope().clone())
                 .map_err(|error| match error {
                     TargetError::AccessDenied | TargetError::ViewerMismatch => {
                         ApplicationError::AccessDenied

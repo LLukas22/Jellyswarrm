@@ -125,6 +125,7 @@ pub(crate) fn play_session_id(url: &url::Url) -> Result<Option<String>> {
     Ok(selected)
 }
 
+#[derive(Clone)]
 pub struct UrlProcessor {
     data_context: DataContext,
 }
@@ -198,12 +199,13 @@ impl UrlProcessor {
         for (key, value) in url.query_pairs() {
             let value = if key.eq_ignore_ascii_case("LiveStreamId") {
                 match viewer {
-                    Some(user) => {
-                        self.data_context
-                            .play_sessions
-                            .register_live_stream(&value, user, server.id)
-                            .await
-                    }
+                    Some(user) => self
+                        .data_context
+                        .play_sessions
+                        .register_live_binding(&value.as_ref().into(), &user.into(), server.id)
+                        .await
+                        .as_str()
+                        .to_owned(),
                     None => continue,
                 }
             } else {
@@ -571,11 +573,11 @@ impl UrlProcessor {
                 if let Some(binding) = self
                     .data_context
                     .play_sessions
-                    .live_stream(value, &session.user_id)
+                    .live_binding(&value.as_str().into(), &session.user_id.as_str().into())
                     .await
                 {
                     if Some(binding.server_id) == server_id {
-                        *value = binding.original_id;
+                        *value = binding.original_id.as_str().to_owned();
                     }
                 }
             }

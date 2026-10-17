@@ -17,11 +17,12 @@ pub(crate) async fn forwarded_success(
     crate::sessions::observe_playback(state, original).await;
 }
 
-pub(crate) async fn media_response(state: &AppState, token: Option<&str>, payload: &Value) {
+pub(crate) async fn media_response(
+    sessions: &crate::sessions::ClientSessionService,
+    token: Option<&str>,
+    payload: &Value,
+) {
     if let Some(token) = token {
-        state
-            .client_sessions
-            .cache_media_response(token, payload)
-            .await;
+        sessions.cache_media_response(token, payload).await;
     }
 }

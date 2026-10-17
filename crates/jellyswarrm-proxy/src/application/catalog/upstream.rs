@@ -1,20 +1,21 @@
 use std::time::Duration;
 
 use crate::application::error::ApplicationError;
+#[cfg(test)]
 use hyper::StatusCode;
 use tokio::task::JoinSet;
 use tracing::{debug, error, trace, warn};
 
+use super::services::CatalogService;
 use crate::{
     models::{ItemsResponseVariants, ItemsResponseWithCount},
     processors::response_processor::ResponseProcessingProfile,
     request_preprocessing::JellyfinAuthorization,
     server_id::ServerId,
     server_storage::Server,
-    upstream::jellyfin::json::{execute_json_request_typed, response_json_to_payload_typed},
+    upstream::jellyfin::json::response_json_to_payload_typed,
     user_authorization_service::AuthorizationSession,
     virtual_library_service::DiscoveredLibrary,
-    AppState,
 };
 
 use super::{
@@ -25,15 +26,14 @@ use super::{
         normalize_upstream_pagination, replace_aggregate_parent_id, set_upstream_page,
         CatalogRequestPolicy, UPSTREAM_PAGE_SIZE,
     },
-    scan::{FetchOutcome, PartialReason, ScanProgress, SourceOutcome},
+    scan::{CatalogReport, FetchOutcome, PartialReason, ScanProgress, SourceOutcome},
 };
 use crate::url_helper::replace_path_id;
 
 pub(crate) struct FetchedCatalog<T = ServerItems> {
     pub(crate) server_items: Vec<FetchedServerItems<T>>,
     pub(crate) response_shape: ResponseShape,
-    pub(crate) failures: usize,
-    pub(crate) outcomes: Vec<SourceOutcome>,
+    pub(crate) report: CatalogReport,
 }
 
 fn source_outcomes(targets: &[CatalogFetchTarget]) -> Vec<SourceOutcome> {
@@ -41,7 +41,7 @@ fn source_outcomes(targets: &[CatalogFetchTarget]) -> Vec<SourceOutcome> {
         .iter()
         .map(|target| SourceOutcome {
             server_id: target.server.id,
-            parent_id: target.parent_id.clone(),
+            parent_id: target.parent.as_ref().map(|parent| parent.backend.clone()),
             outcome: FetchOutcome::Partial(PartialReason::Failed),
         })
         .collect()
@@ -63,19 +63,20 @@ pub(super) struct RawServerItems {
 pub(crate) struct FetchedServerItems<T = ServerItems> {
     pub(crate) server_items: T,
     pub(crate) outcome: FetchOutcome,
-    pub(crate) source_parent_id: Option<String>,
+    pub(crate) source_parent_id: Option<crate::application::identity::BackendItemId>,
 }
 
 /// Federates `/Shows/{seriesId}/Seasons|Episodes` for a collapsed (aggregate)
 /// show by fanning out the path ID to each member's virtual series ID, which
 /// the upstream builder translates once into that member's backend identity.
 pub(super) async fn fetch_show_catalog(
-    state: &AppState,
+    state: &CatalogService,
     original_request: &reqwest::Request,
     policy: &CatalogRequestPolicy,
     targets: Vec<CatalogFetchTarget>,
     mut failures: usize,
 ) -> Result<FetchedCatalog, ApplicationError> {
+    let unavailable_targets = failures;
     let mut join_set = JoinSet::new();
     let mut outcomes = source_outcomes(&targets);
     let season_id = original_request
@@ -152,9 +153,10 @@ pub(super) async fn fetch_show_catalog(
                 .extend_pairs(pairs);
         }
         policy.prepare_upstream(request.url_mut(), true);
-        let source_parent_id = target.parent_id.clone();
-        if let Some(parent_id) = target.member_parent_id.as_deref() {
-            if let Some(replaced) = replace_path_id(request.url(), "Shows", parent_id) {
+        let source_parent_id = target.parent.as_ref().map(|parent| parent.backend.clone());
+        if let Some(parent) = target.parent.as_ref() {
+            if let Some(replaced) = replace_path_id(request.url(), "Shows", parent.member.as_str())
+            {
                 *request.url_mut() = replaced;
             }
         }
@@ -178,11 +180,10 @@ pub(super) async fn fetch_show_catalog(
         return Ok(FetchedCatalog {
             server_items: Vec::new(),
             response_shape: ResponseShape::Counted,
-            failures: 0,
-            outcomes,
+            report: CatalogReport::new(outcomes, unavailable_targets),
         });
     }
-    let (indexed_results, failures) = collect_federated_results(
+    let (indexed_results, _) = collect_federated_results(
         join_set,
         failures,
         &mut outcomes,
@@ -202,8 +203,7 @@ pub(super) async fn fetch_show_catalog(
     Ok(FetchedCatalog {
         server_items,
         response_shape,
-        failures,
-        outcomes,
+        report: CatalogReport::new(outcomes, unavailable_targets),
     })
 }
 
@@ -237,7 +237,7 @@ enum ScanPolicy {
 }
 
 pub(crate) async fn fetch_catalog(
-    state: &AppState,
+    state: &CatalogService,
     original_request: &reqwest::Request,
     policy: &CatalogRequestPolicy,
     targets: Vec<CatalogFetchTarget>,
@@ -258,7 +258,7 @@ pub(crate) async fn fetch_catalog(
 /// Background callers supply catalog intent, not a synthetic incoming request.
 /// Actual outgoing requests are constructed for each selected target here.
 pub(super) async fn fetch_refresh_catalog(
-    state: &AppState,
+    state: &CatalogService,
     query: &super::query::CatalogQuery,
     policy: &CatalogRequestPolicy,
     targets: Vec<CatalogFetchTarget>,
@@ -293,13 +293,14 @@ impl CatalogFetchInput<'_> {
 }
 
 async fn fetch_catalog_operation(
-    state: &AppState,
+    state: &CatalogService,
     input: CatalogFetchInput<'_>,
     policy: &CatalogRequestPolicy,
     targets: Vec<CatalogFetchTarget>,
     mode: FetchMode,
     mut failures: usize,
 ) -> Result<FetchedCatalog, ApplicationError> {
+    let unavailable_targets = failures;
     let mut join_set = JoinSet::new();
     let mut outcomes = source_outcomes(&targets);
 
@@ -314,14 +315,12 @@ async fn fetch_catalog_operation(
         }
         policy.prepare_upstream(
             request.url_mut(),
-            target.parent_id.is_some() || matches!(mode, FetchMode::VirtualLibrary),
+            target.parent.is_some() || matches!(mode, FetchMode::VirtualLibrary),
         );
-        let source_parent_id = target.parent_id.clone();
-        if let Some(parent_id) = target.member_parent_id.as_deref() {
-            if let Some(resolved_id) = target.resolved_parent_id.as_deref() {
-                *request.url_mut() =
-                    replace_aggregate_parent_id(request.url(), resolved_id, parent_id);
-            }
+        let source_parent_id = target.parent.as_ref().map(|parent| parent.backend.clone());
+        if let Some(parent) = target.parent.as_ref() {
+            *request.url_mut() =
+                replace_aggregate_parent_id(request.url(), &parent.requested, &parent.member);
         }
         let upstream_limited = policy.upstream_limited;
         let library_inventory =
@@ -364,11 +363,10 @@ async fn fetch_catalog_operation(
         return Ok(FetchedCatalog {
             server_items: Vec::new(),
             response_shape: ResponseShape::Counted,
-            failures: 0,
-            outcomes,
+            report: CatalogReport::new(outcomes, unavailable_targets),
         });
     }
-    let (indexed_results, failures) = collect_federated_results(
+    let (indexed_results, _) = collect_federated_results(
         join_set,
         failures,
         &mut outcomes,
@@ -388,8 +386,7 @@ async fn fetch_catalog_operation(
     Ok(FetchedCatalog {
         server_items,
         response_shape,
-        failures,
-        outcomes,
+        report: CatalogReport::new(outcomes, unavailable_targets),
     })
 }
 
@@ -444,7 +441,7 @@ async fn collect_federated_results<T: Send + 'static>(
 }
 
 pub(super) async fn fetch_inventory(
-    state: &AppState,
+    state: &CatalogService,
     request: &reqwest::Request,
     targets: Vec<CatalogFetchTarget>,
 ) -> Result<FetchedCatalog<RawServerItems>, ApplicationError> {
@@ -464,11 +461,10 @@ pub(super) async fn fetch_inventory(
             )
         });
     }
-    let (results, failures) =
-        collect_federated_results(tasks, 0, &mut outcomes, |_: &RawServerItems| {
-            FetchOutcome::Complete
-        })
-        .await?;
+    let (results, _) = collect_federated_results(tasks, 0, &mut outcomes, |_: &RawServerItems| {
+        FetchOutcome::Complete
+    })
+    .await?;
     let response_shape =
         ResponseShape::from_responses(results.iter().map(|(_, items)| &items.response));
     let server_items = results
@@ -482,14 +478,13 @@ pub(super) async fn fetch_inventory(
     Ok(FetchedCatalog {
         server_items,
         response_shape,
-        failures,
-        outcomes,
+        report: CatalogReport::new(outcomes, 0),
     })
 }
 
 async fn fetch_items_from_server(
     index: usize,
-    state: AppState,
+    state: CatalogService,
     request: reqwest::Request,
     session: AuthorizationSession,
     server: Server,
@@ -522,7 +517,7 @@ async fn fetch_items_from_server(
 
 async fn fetch_paged_items_from_server(
     index: usize,
-    state: AppState,
+    state: CatalogService,
     request: reqwest::Request,
     session: AuthorizationSession,
     server: Server,
@@ -556,7 +551,7 @@ async fn fetch_paged_items_from_server(
 
 async fn fetch_paged_raw_items_from_server(
     index: usize,
-    state: AppState,
+    state: CatalogService,
     request: reqwest::Request,
     session: AuthorizationSession,
     server: Server,
@@ -567,7 +562,7 @@ async fn fetch_paged_raw_items_from_server(
 
 async fn scan_raw_items(
     index: usize,
-    state: AppState,
+    state: CatalogService,
     request: reqwest::Request,
     server: Server,
     policy: ScanPolicy,
@@ -598,7 +593,7 @@ async fn scan_raw_items(
             Ok(Err(status)) if all_items.is_empty() => return Err(status),
             Err(error) if all_items.is_empty() => {
                 return Err(ApplicationError::Internal(error.into())
-                    .with_status(StatusCode::GATEWAY_TIMEOUT))
+                    .at(crate::application::error::FailureStage::CatalogDeadline))
             }
             Ok(Err(error)) => {
                 return Err(ApplicationError::IncompleteCatalog {
@@ -618,12 +613,9 @@ async fn scan_raw_items(
         }
         let bare_inventory = matches!(policy, ScanPolicy::LibraryInventory)
             && matches!(page, ItemsResponseVariants::Bare(_));
-        let complete = match progress.accept_typed(&page) {
-            Ok(complete) => complete,
-            Err(error) => return Err(error),
-        };
+        let step = progress.accept_typed(&page)?;
         all_items.extend(page.into_items());
-        if complete || bare_inventory {
+        if step == super::scan::ScanStep::Complete || bare_inventory {
             break FetchOutcome::Complete;
         }
     };
@@ -646,7 +638,7 @@ async fn scan_raw_items(
 
 async fn fetch_raw_items_from_server(
     index: usize,
-    state: AppState,
+    state: CatalogService,
     mut request: reqwest::Request,
     session: AuthorizationSession,
     server: Server,
@@ -666,7 +658,7 @@ async fn fetch_raw_items_from_server(
 
 async fn fetch_library_inventory(
     index: usize,
-    state: AppState,
+    state: CatalogService,
     mut request: reqwest::Request,
     session: AuthorizationSession,
     server: Server,
@@ -741,7 +733,7 @@ async fn fetch_library_inventory(
 
 async fn prepare_backend_request(
     request: reqwest::Request,
-    state: &AppState,
+    state: &CatalogService,
     session: &AuthorizationSession,
     server: &Server,
 ) -> Result<reqwest::Request, ApplicationError> {
@@ -754,7 +746,10 @@ async fn prepare_backend_request(
         Some(auth),
         None,
     )
-    .map_err(|error| ApplicationError::Internal(error.into()).with_status(StatusCode::FORBIDDEN))?;
+    .map_err(|error| {
+        ApplicationError::Internal(error.into())
+            .at(crate::application::error::FailureStage::CatalogEncoding)
+    })?;
     let prefix = state.get_url_prefix().await;
     crate::upstream::jellyfin::request::UpstreamRequestBuilder::new(
         &state.processors.url_processor,
@@ -767,15 +762,18 @@ async fn prepare_backend_request(
 
 async fn execute_raw_items_request(
     index: usize,
-    state: AppState,
+    state: CatalogService,
     request: reqwest::Request,
     server: Server,
 ) -> Result<RawServerItems, ApplicationError> {
-    let response = execute_json_request_typed::<serde_json::Value>(&state.reqwest_client, request)
-        .await
-        .inspect_err(|e| {
-            error!("Failed to get items from server '{}': {:?}", server.name, e);
-        })?;
+    let response = crate::application::upstream::execute_payload::<serde_json::Value>(
+        state.upstream.as_ref(),
+        request,
+    )
+    .await
+    .inspect_err(|e| {
+        error!("Failed to get items from server '{}': {:?}", server.name, e);
+    })?;
 
     let items_response: ItemsResponseVariants = response_json_to_payload_typed(response)?;
     debug!(
@@ -792,7 +790,7 @@ async fn execute_raw_items_request(
 }
 
 async fn track_discovered_libraries(
-    state: &AppState,
+    state: &CatalogService,
     server: &Server,
     response: &ItemsResponseVariants,
 ) {
@@ -834,7 +832,7 @@ fn discovered_libraries_from_response(
 
 async fn process_items_response_json(
     response: &mut ItemsResponseVariants,
-    state: &AppState,
+    state: &CatalogService,
     server: &Server,
     proxy_api_key: Option<&str>,
 ) -> Result<(), ApplicationError> {
@@ -864,6 +862,7 @@ async fn process_items_response_json(
 mod tests {
     use super::*;
     use crate::models::MediaItem;
+    use crate::AppState;
     use serde_json::json;
 
     async fn collision_fixture() -> (
@@ -950,9 +949,11 @@ mod tests {
             CatalogFetchTarget {
                 session,
                 server,
-                parent_id: Some(parent.original_media_id),
-                member_parent_id: Some(parent.virtual_media_id),
-                resolved_parent_id: Some("aggregate".into()),
+                parent: Some(super::super::library_resolution::ResolvedCatalogParent {
+                    backend: parent.original_media_id.into(),
+                    member: parent.virtual_media_id.into(),
+                    requested: "aggregate".into(),
+                }),
             },
             season,
             upstream,
@@ -982,7 +983,7 @@ mod tests {
             );
             let policy = CatalogRequestPolicy::from_url(request.url());
             let error = match fetch_catalog(
-                &state,
+                &state.catalog_service(),
                 &request,
                 &policy,
                 vec![target],
@@ -1030,7 +1031,7 @@ mod tests {
         };
         for key in ["pArEnTiD", "sErIeSiD", "sEaSoNiD"] {
             let (state, target, _, upstream) = collision_fixture().await;
-            let original_parent = target.parent_id.clone().unwrap();
+            let original_parent = target.parent.as_ref().unwrap().backend.as_str().to_owned();
             Mock::given(method("GET"))
                 .and(path("/Items"))
                 .and(query_param(key, &original_parent))
@@ -1047,7 +1048,7 @@ mod tests {
                 format!("http://proxy/Items?{key}=aggregate&Extension=opaque%2Fvalue&StartIndex=7&Limit=2").parse().unwrap());
             let policy = CatalogRequestPolicy::from_url(original.url());
             let fetched = fetch_catalog(
-                &state,
+                &state.catalog_service(),
                 &original,
                 &policy,
                 vec![target],
@@ -1057,11 +1058,17 @@ mod tests {
             .await
             .unwrap();
             assert_eq!(
-                fetched.outcomes[0].parent_id.as_deref(),
+                fetched.report.outcomes()[0]
+                    .parent_id
+                    .as_ref()
+                    .map(|id| id.as_str()),
                 Some(original_parent.as_str())
             );
             assert_eq!(
-                fetched.server_items[0].source_parent_id.as_deref(),
+                fetched.server_items[0]
+                    .source_parent_id
+                    .as_ref()
+                    .map(|id| id.as_str()),
                 Some(original_parent.as_str())
             );
             let traffic = upstream.received_requests().await.unwrap();
@@ -1079,7 +1086,7 @@ mod tests {
         };
         for endpoint in ["Seasons", "Episodes"] {
             let (state, target, season, upstream) = collision_fixture().await;
-            let original_parent = target.parent_id.clone().unwrap();
+            let original_parent = target.parent.as_ref().unwrap().backend.as_str().to_owned();
             Mock::given(method("GET"))
                 .and(path(format!("/Shows/{original_parent}/{endpoint}")))
                 .and(query_param("sEaSoNiD", &season.original_media_id))
@@ -1101,15 +1108,27 @@ mod tests {
                 .unwrap(),
             );
             let policy = CatalogRequestPolicy::from_url(original.url());
-            let fetched = fetch_show_catalog(&state, &original, &policy, vec![target], 0)
-                .await
-                .unwrap();
+            let fetched = fetch_show_catalog(
+                &state.catalog_service(),
+                &original,
+                &policy,
+                vec![target],
+                0,
+            )
+            .await
+            .unwrap();
             assert_eq!(
-                fetched.outcomes[0].parent_id.as_deref(),
+                fetched.report.outcomes()[0]
+                    .parent_id
+                    .as_ref()
+                    .map(|id| id.as_str()),
                 Some(original_parent.as_str())
             );
             assert_eq!(
-                fetched.server_items[0].source_parent_id.as_deref(),
+                fetched.server_items[0]
+                    .source_parent_id
+                    .as_ref()
+                    .map(|id| id.as_str()),
                 Some(original_parent.as_str())
             );
             let traffic = upstream.received_requests().await.unwrap();
@@ -1133,7 +1152,7 @@ mod tests {
         let mut outcomes = (0..3)
             .map(|index| SourceOutcome {
                 server_id: ServerId::new(index),
-                parent_id: Some(format!("library-{index}")),
+                parent_id: Some(format!("library-{index}").into()),
                 outcome: FetchOutcome::Partial(PartialReason::Failed),
             })
             .collect::<Vec<_>>();
@@ -1147,7 +1166,10 @@ mod tests {
             outcomes[1].outcome,
             FetchOutcome::Partial(PartialReason::Changed)
         );
-        assert_eq!(outcomes[1].parent_id.as_deref(), Some("library-1"));
+        assert_eq!(
+            outcomes[1].parent_id.as_ref().map(|id| id.as_str()),
+            Some("library-1")
+        );
         assert_eq!(
             outcomes[2].outcome,
             FetchOutcome::Partial(PartialReason::Failed)

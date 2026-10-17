@@ -10,7 +10,7 @@ pub async fn get_video_resource(
     PlaybackInput(operation): PlaybackInput,
 ) -> Result<Response, StatusCode> {
     delivery::response(
-        resources::get_video_resource_typed(&state, operation)
+        resources::get_video_resource_typed(&state.playback_service(), operation)
             .await
             .map_err(|error| error.detail_status())?,
     )
@@ -21,7 +21,7 @@ pub async fn get_stream(
     PlaybackInput(operation): PlaybackInput,
 ) -> Result<Response, StatusCode> {
     delivery::response(
-        resources::get_stream_typed(&state, operation)
+        resources::get_stream_typed(&state.playback_service(), operation)
             .await
             .map_err(|error| error.detail_status())?,
     )

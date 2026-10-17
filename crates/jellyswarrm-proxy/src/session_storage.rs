@@ -5,6 +5,9 @@ use std::{
 
 use tokio::sync::{RwLock, RwLockWriteGuard};
 
+use crate::application::identity::{
+    BackendLiveStreamId, PlaybackSessionId, ViewerId, VirtualLiveStreamId,
+};
 use crate::server_id::ServerId;
 
 const PLAYBACK_SESSION_TTL: Duration = Duration::from_secs(12 * 60 * 60);
@@ -20,6 +23,39 @@ pub struct PlaybackSession {
     pub server_id: ServerId,
     /// Exact backend item selected by PlaybackInfo, shared by its item aliases.
     pub original_item_id: Option<String>,
+}
+
+/// A snapshot of one binding and its fencing token. Only storage can pair them;
+/// consumers cannot replace the session while retaining an unrelated revision.
+#[derive(Debug, Clone)]
+pub struct RevisionedPlaybackSession {
+    session: PlaybackSession,
+    revision: SessionRevision,
+}
+
+impl RevisionedPlaybackSession {
+    pub fn session(&self) -> &PlaybackSession {
+        &self.session
+    }
+    #[cfg(test)]
+    pub fn revision(&self) -> SessionRevision {
+        self.revision
+    }
+
+    #[cfg(test)]
+    pub fn into_parts(self) -> (PlaybackSession, SessionRevision) {
+        (self.session, self.revision)
+    }
+}
+
+#[cfg(test)]
+impl From<PlaybackSession> for RevisionedPlaybackSession {
+    fn from(session: PlaybackSession) -> Self {
+        Self {
+            session,
+            revision: SessionRevision(uuid::Uuid::new_v4()),
+        }
+    }
 }
 
 pub struct SessionStorage {
@@ -41,15 +77,15 @@ pub struct PreparedLiveStream {
 
 impl PreparedLiveStream {
     pub fn virtual_id(&self) -> &str {
-        &self.binding.virtual_id
+        self.binding.virtual_id.as_str()
     }
 }
 
 #[derive(Clone)]
 pub struct LiveStreamBinding {
-    pub virtual_id: String,
-    pub original_id: String,
-    pub user_id: String,
+    pub virtual_id: VirtualLiveStreamId,
+    pub original_id: BackendLiveStreamId,
+    pub user_id: ViewerId,
     pub server_id: ServerId,
     updated_at: Instant,
 }
@@ -67,6 +103,47 @@ impl Default for SessionStorage {
 }
 
 impl SessionStorage {
+    // Historical fixtures keep wire-string convenience methods. Production APIs
+    // require distinct ID namespaces, especially for session/viewer arguments.
+    #[cfg(test)]
+    pub async fn register_live_stream(
+        &self,
+        original: &str,
+        viewer: &str,
+        server: ServerId,
+    ) -> String {
+        self.register_live_binding(&original.into(), &viewer.into(), server)
+            .await
+            .as_str()
+            .to_owned()
+    }
+    #[cfg(test)]
+    pub async fn prepare_live_stream(
+        &self,
+        original: &str,
+        viewer: &str,
+        server: ServerId,
+    ) -> Arc<PreparedLiveStream> {
+        self.prepare_live_binding(&original.into(), &viewer.into(), server)
+            .await
+    }
+    #[cfg(test)]
+    pub async fn live_stream(&self, id: &str, viewer: &str) -> Option<LiveStreamBinding> {
+        self.live_binding(&id.into(), &viewer.into()).await
+    }
+    #[cfg(test)]
+    pub async fn remove_live_stream(&self, id: &str, viewer: &str) {
+        self.close_live_binding(&id.into(), &viewer.into()).await;
+    }
+    #[cfg(test)]
+    pub async fn resolve_report_session(
+        &self,
+        id: &str,
+        viewer: &str,
+    ) -> anyhow::Result<Option<RevisionedPlaybackSession>> {
+        self.resolve_report_binding(&id.into(), &viewer.into())
+            .await
+    }
     pub fn new() -> Self {
         Self::with_session_ttl(PLAYBACK_SESSION_TTL)
     }
@@ -128,33 +205,33 @@ impl SessionStorage {
 
     /// Live IDs are backend-local, and may collide across servers. Keep their
     /// caller-scoped bindings independently of stop reports so close can follow stop.
-    pub async fn register_live_stream(
+    pub async fn register_live_binding(
         &self,
-        original_id: &str,
-        user_id: &str,
+        original_id: &BackendLiveStreamId,
+        user_id: &ViewerId,
         server_id: ServerId,
-    ) -> String {
+    ) -> VirtualLiveStreamId {
         loop {
             let plan = self
-                .prepare_live_stream(original_id, user_id, server_id)
+                .prepare_live_binding(original_id, user_id, server_id)
                 .await;
             if self.commit_live_streams(std::slice::from_ref(&plan)).await {
-                return plan.virtual_id().to_string();
+                return plan.binding.virtual_id.clone();
             }
         }
     }
 
-    pub async fn prepare_live_stream(
+    pub async fn prepare_live_binding(
         &self,
-        original_id: &str,
-        user_id: &str,
+        original_id: &BackendLiveStreamId,
+        user_id: &ViewerId,
         server_id: ServerId,
     ) -> Arc<PreparedLiveStream> {
         let mut streams = self.live_streams.write().await;
         streams.pending.retain(|plan| plan.strong_count() > 0);
         let matches = |stream: &LiveStreamBinding| {
-            stream.original_id == original_id
-                && stream.user_id == user_id
+            &stream.original_id == original_id
+                && &stream.user_id == user_id
                 && stream.server_id == server_id
         };
         if let Some(plan) = streams
@@ -170,12 +247,12 @@ impl SessionStorage {
             .iter()
             .find(|stream| matches(stream) && stream.updated_at.elapsed() <= self.session_ttl)
             .map(|stream| stream.virtual_id.clone())
-            .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
+            .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string().into());
         let plan = Arc::new(PreparedLiveStream {
             binding: LiveStreamBinding {
                 virtual_id,
-                original_id: original_id.into(),
-                user_id: user_id.into(),
+                original_id: original_id.clone(),
+                user_id: user_id.clone(),
                 server_id,
                 updated_at: Instant::now(),
             },
@@ -206,7 +283,7 @@ impl SessionStorage {
             if let Some(binding) = streams
                 .bindings
                 .iter_mut()
-                .find(|binding| binding.virtual_id == plan.virtual_id())
+                .find(|binding| binding.virtual_id.as_str() == plan.virtual_id())
             {
                 binding.updated_at = Instant::now();
             } else {
@@ -218,7 +295,11 @@ impl SessionStorage {
         true
     }
 
-    pub async fn live_stream(&self, id: &str, user_id: &str) -> Option<LiveStreamBinding> {
+    pub async fn live_binding(
+        &self,
+        id: &VirtualLiveStreamId,
+        user_id: &ViewerId,
+    ) -> Option<LiveStreamBinding> {
         let mut streams = self.live_streams.write().await;
         streams
             .bindings
@@ -226,20 +307,20 @@ impl SessionStorage {
         let stream = streams
             .bindings
             .iter_mut()
-            .find(|stream| stream.virtual_id == id && stream.user_id == user_id)?;
+            .find(|stream| &stream.virtual_id == id && &stream.user_id == user_id)?;
         stream.updated_at = Instant::now();
         Some(stream.clone())
     }
 
-    pub async fn remove_live_stream(&self, id: &str, user_id: &str) {
+    pub async fn close_live_binding(&self, id: &VirtualLiveStreamId, user_id: &ViewerId) {
         let mut streams = self.live_streams.write().await;
         streams
             .bindings
-            .retain(|stream| stream.virtual_id != id || stream.user_id != user_id);
+            .retain(|stream| &stream.virtual_id != id || &stream.user_id != user_id);
         streams.pending.retain(|pending| {
-            pending
-                .upgrade()
-                .is_some_and(|plan| plan.virtual_id() != id || plan.binding.user_id != user_id)
+            pending.upgrade().is_some_and(|plan| {
+                &plan.binding.virtual_id != id || &plan.binding.user_id != user_id
+            })
         });
     }
 
@@ -288,21 +369,24 @@ impl SessionStorage {
             .map(|tracked| tracked.session.clone())
     }
 
-    pub async fn resolve_report_session(
+    pub async fn resolve_report_binding(
         &self,
-        session_id: &str,
-        user_id: &str,
-    ) -> anyhow::Result<Option<(PlaybackSession, SessionRevision)>> {
+        session_id: &PlaybackSessionId,
+        user_id: &ViewerId,
+    ) -> anyhow::Result<Option<RevisionedPlaybackSession>> {
         let sessions = self.live_sessions().await;
         let matching = sessions
             .iter()
             .rev()
-            .filter(|tracked| tracked.session.session_id == session_id);
+            .filter(|tracked| tracked.session.session_id == session_id.as_str());
         if let Some(tracked) = matching
             .clone()
-            .find(|tracked| tracked.session.user_id == user_id)
+            .find(|tracked| tracked.session.user_id == user_id.as_str())
         {
-            return Ok(Some((tracked.session.clone(), tracked.revision)));
+            return Ok(Some(RevisionedPlaybackSession {
+                session: tracked.session.clone(),
+                revision: tracked.revision,
+            }));
         }
         if matching.count() != 0 {
             anyhow::bail!("playback session does not belong to the user");
@@ -310,7 +394,16 @@ impl SessionStorage {
         Ok(None)
     }
 
-    pub async fn refresh_session_for_user(
+    pub async fn refresh_revisioned_session(&self, binding: &RevisionedPlaybackSession) -> bool {
+        self.refresh_session_for_user(
+            &binding.session.session_id,
+            &binding.session.user_id,
+            binding.revision,
+        )
+        .await
+    }
+
+    async fn refresh_session_for_user(
         &self,
         session_id: &str,
         user_id: &str,
@@ -364,7 +457,16 @@ impl SessionStorage {
         sessions.retain(|tracked| tracked.session.session_id != session_id);
     }
 
-    pub async fn remove_session_for_user(
+    pub async fn remove_revisioned_session(&self, binding: &RevisionedPlaybackSession) {
+        self.remove_session_for_user(
+            &binding.session.session_id,
+            &binding.session.user_id,
+            binding.revision,
+        )
+        .await;
+    }
+
+    async fn remove_session_for_user(
         &self,
         session_id: &str,
         user_id: &str,
@@ -469,7 +571,7 @@ mod tests {
         assert_eq!(replacement, pending.virtual_id());
         let streams = storage.live_streams.read().await;
         assert_eq!(streams.bindings.len(), 1);
-        assert_eq!(streams.bindings[0].virtual_id, replacement);
+        assert_eq!(streams.bindings[0].virtual_id.as_str(), replacement);
         drop(streams);
         assert!(storage.commit_live_streams(&[pending]).await);
         assert_eq!(storage.live_streams.read().await.bindings.len(), 1);
@@ -529,7 +631,7 @@ mod tests {
             .await
             .bindings
             .iter()
-            .find(|binding| binding.virtual_id == untouched_id)
+            .find(|binding| binding.virtual_id.as_str() == untouched_id)
             .unwrap()
             .updated_at;
         let valid = storage.prepare_live_stream("new", "viewer", server).await;
@@ -549,7 +651,7 @@ mod tests {
             .await
             .bindings
             .iter()
-            .find(|binding| binding.virtual_id == replacement)
+            .find(|binding| binding.virtual_id.as_str() == replacement)
             .unwrap()
             .updated_at;
         assert!(
@@ -567,7 +669,7 @@ mod tests {
             streams
                 .bindings
                 .iter()
-                .find(|binding| binding.virtual_id == replacement)
+                .find(|binding| binding.virtual_id.as_str() == replacement)
                 .unwrap()
                 .updated_at,
             before
@@ -576,7 +678,7 @@ mod tests {
             streams
                 .bindings
                 .iter()
-                .find(|binding| binding.virtual_id == untouched_id)
+                .find(|binding| binding.virtual_id.as_str() == untouched_id)
                 .unwrap()
                 .updated_at,
             untouched_before
@@ -622,7 +724,8 @@ mod tests {
                 .resolve_report_session("session", "user")
                 .await
                 .unwrap()
-                .unwrap();
+                .unwrap()
+                .into_parts();
             storage
                 .add_session(playback_session(
                     "session",
@@ -644,7 +747,8 @@ mod tests {
                 .resolve_report_session("session", "user")
                 .await
                 .unwrap()
-                .unwrap();
+                .unwrap()
+                .into_parts();
             assert_ne!(old_revision, replacement_revision, "{case}");
             assert_eq!(replacement.server_id, server_id, "{case}");
             assert_eq!(replacement.item_id, item_id, "{case}");
@@ -660,7 +764,8 @@ mod tests {
                 .resolve_report_session("session", "user")
                 .await
                 .unwrap()
-                .unwrap();
+                .unwrap()
+                .into_parts();
             assert_ne!(old_revision, revision, "{case}");
             let before: Vec<_> = storage
                 .sessions

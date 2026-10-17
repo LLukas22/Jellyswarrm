@@ -2,16 +2,16 @@
 use std::collections::HashSet;
 
 use crate::application::error::ApplicationError;
-use hyper::StatusCode;
+use crate::application::identity::{BackendItemId, VirtualItemId};
 use tracing::{debug, error};
 
+use super::services::CatalogService;
 use crate::{
     application::catalog::input::CatalogRequest,
     media_scope::{MediaCatalogScope, MediaScopeKind},
     server_storage::Server,
     user_authorization_service::AuthorizationSession,
     virtual_library_service::{normalize_library_id, LibraryGrouping, VirtualLibraryResolution},
-    AppState,
 };
 
 pub(crate) enum CatalogPlan {
@@ -30,11 +30,16 @@ pub(crate) enum CatalogPlan {
 pub(crate) struct CatalogFetchTarget {
     pub(crate) session: AuthorizationSession,
     pub(crate) server: Server,
-    pub(crate) parent_id: Option<String>,
-    /// Member client identity for the single upstream-builder translation.
-    /// `parent_id` remains the backend identity used by reconciliation.
-    pub(crate) member_parent_id: Option<String>,
-    pub(crate) resolved_parent_id: Option<String>,
+    pub(crate) parent: Option<ResolvedCatalogParent>,
+}
+
+/// Substitution and inventory attribution are one selection, never independently
+/// optional. Only virtual identities enter the request builder.
+#[derive(Debug)]
+pub(crate) struct ResolvedCatalogParent {
+    pub requested: VirtualItemId,
+    pub member: VirtualItemId,
+    pub backend: BackendItemId,
 }
 
 pub(super) fn unavailable_source_count(
@@ -43,7 +48,7 @@ pub(super) fn unavailable_source_count(
 ) -> usize {
     preprocessed
         .context
-        .access_scope
+        .access_scope()
         .as_ref()
         .map_or(0, |scope| {
             scope
@@ -55,13 +60,13 @@ pub(super) fn unavailable_source_count(
 }
 
 pub(crate) async fn resolve_catalog_plan(
-    state: &AppState,
+    state: &CatalogService,
     preprocessed: &CatalogRequest,
 ) -> Result<CatalogPlan, ApplicationError> {
     if let Some(parent_id) = parent_id(preprocessed.original_request.url()) {
         let resolution = state
             .virtual_library_service
-            .resolve(&parent_id, preprocessed.context.access_scope.as_ref())
+            .resolve(&parent_id, preprocessed.context.access_scope().as_ref())
             .await
             .map_err(ApplicationError::Storage)?;
 
@@ -90,9 +95,11 @@ pub(crate) async fn resolve_catalog_plan(
                         Some(CatalogFetchTarget {
                             session,
                             server: member.server,
-                            parent_id: Some(member.mapping.original_media_id),
-                            member_parent_id: Some(member.mapping.virtual_media_id),
-                            resolved_parent_id: Some(parent_id.clone()),
+                            parent: Some(ResolvedCatalogParent {
+                                backend: member.mapping.original_media_id.into(),
+                                member: member.mapping.virtual_media_id.into(),
+                                requested: parent_id.clone().into(),
+                            }),
                         })
                     })
                     .collect();
@@ -152,9 +159,7 @@ pub(crate) async fn resolve_catalog_plan(
         .map(|(session, server)| CatalogFetchTarget {
             session,
             server,
-            parent_id: None,
-            member_parent_id: None,
-            resolved_parent_id: None,
+            parent: None,
         })
         .collect();
 
@@ -182,19 +187,13 @@ pub(crate) async fn resolve_catalog_plan(
     {
         let viewer = preprocessed
             .context
-            .access_scope
+            .access_scope()
             .as_ref()
             .map(|scope| scope.user_id())
-            .or_else(|| {
-                preprocessed
-                    .context
-                    .user
-                    .as_ref()
-                    .map(|user| user.id.as_str())
-            })
+            .or_else(|| preprocessed.context.user().map(|user| user.id.as_str()))
             .ok_or_else(|| {
                 ApplicationError::MissingIdentity("catalog viewer")
-                    .with_status(StatusCode::UNAUTHORIZED)
+                    .at(crate::application::error::FailureStage::CallerAuthentication)
             })?;
         // Latest and search are additive feeds, not inventories. Keep their
         // identity scopes stable across windows, terms and missing sessions.
@@ -230,12 +229,12 @@ fn available_sessions(
 ) -> Result<Vec<(AuthorizationSession, Server)>, ApplicationError> {
     let sessions = preprocessed
         .context
-        .backends
+        .backends()
         .sessions
         .as_ref()
         .ok_or_else(|| {
             ApplicationError::MissingIdentity("catalog sessions")
-                .with_status(StatusCode::UNAUTHORIZED)
+                .at(crate::application::error::FailureStage::CallerAuthentication)
         })?;
     let mut seen_servers = HashSet::new();
     let sessions = sessions
@@ -246,7 +245,7 @@ fn available_sessions(
 
     if sessions.is_empty() {
         Err(ApplicationError::MissingIdentity("active catalog session")
-            .with_status(StatusCode::UNAUTHORIZED))
+            .at(crate::application::error::FailureStage::CallerAuthentication))
     } else {
         Ok(sessions)
     }
@@ -267,7 +266,7 @@ fn series_parent_id(url: &url::Url) -> Option<String> {
 }
 
 async fn resolve_aggregate_plan(
-    state: &AppState,
+    state: &CatalogService,
     preprocessed: &CatalogRequest,
     parent_id: &str,
 ) -> Result<Option<CatalogPlan>, ApplicationError> {
@@ -296,7 +295,7 @@ async fn resolve_aggregate_plan(
     for member in members {
         if preprocessed
             .context
-            .access_scope
+            .access_scope()
             .as_ref()
             .is_some_and(|scope| !scope.allows(member.server.id))
         {
@@ -313,9 +312,11 @@ async fn resolve_aggregate_plan(
         targets.push(CatalogFetchTarget {
             session,
             server,
-            parent_id: Some(member.mapping.original_media_id),
-            member_parent_id: Some(member.mapping.virtual_media_id),
-            resolved_parent_id: Some(parent_id.to_string()),
+            parent: Some(ResolvedCatalogParent {
+                backend: member.mapping.original_media_id.into(),
+                member: member.mapping.virtual_media_id.into(),
+                requested: parent_id.into(),
+            }),
         });
     }
     if targets.is_empty() {
@@ -323,7 +324,7 @@ async fn resolve_aggregate_plan(
     }
     let viewer = preprocessed
         .context
-        .access_scope
+        .access_scope()
         .as_ref()
         .map(|scope| scope.user_id())
         .unwrap_or("anonymous");
@@ -346,7 +347,7 @@ async fn resolve_aggregate_plan(
 }
 
 async fn is_single_server_parent(
-    state: &AppState,
+    state: &CatalogService,
     parent_id: &str,
 ) -> Result<bool, ApplicationError> {
     let parent_id = normalize_library_id(parent_id);

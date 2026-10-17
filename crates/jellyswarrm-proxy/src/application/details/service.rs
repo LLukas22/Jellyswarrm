@@ -4,18 +4,19 @@ use hyper::StatusCode;
 #[cfg(test)]
 mod tests;
 
+use crate::application::catalog::services::CatalogService;
+#[cfg(test)]
+use crate::AppState;
 use crate::{
     application::details::sources::{
         merge_media_detail, normalize_detail_member, DetailMergeContext,
     },
     application::error::ApplicationError,
-    application::json::execute_processed_json_request_typed,
     application::{context::TargetError, input::OperationRequest},
     processors::response_processor::ResponseProcessingProfile,
     upstream::jellyfin::request::UpstreamRequestBuilder,
     url_helper::{contains_id, ensure_query_list_value},
     virtual_library_service::VirtualLibraryResolution,
-    AppState,
 };
 
 /// Retry ordered virtual-library members only for an upstream response failure.
@@ -41,11 +42,14 @@ impl VirtualLibraryFallbackPolicy {
 
 /// Fetch item JSON, applying the established fallback and optional source merge.
 pub(crate) async fn get_item_detail(
-    state: &AppState,
+    state: &CatalogService,
     input: OperationRequest,
     merge_media_versions: bool,
 ) -> Result<serde_json::Value, ApplicationError> {
-    let mut target = input.resolve_target_typed(state).await?.target;
+    let mut target = input
+        .resolve_target_using(&state.routing_services())
+        .await?
+        .target;
     let virtual_library = input
         .original_request
         .url()
@@ -60,7 +64,7 @@ pub(crate) async fn get_item_detail(
     if let (true, Some(item_id), Some(scope)) = (
         merge_media_versions,
         requested_item_id.as_deref(),
-        input.context.access_scope.as_ref(),
+        input.context.access_scope().as_ref(),
     ) {
         if let Some((group, owner)) = state
             .media_storage
@@ -92,8 +96,7 @@ pub(crate) async fn get_item_detail(
     let mut server = target.server().clone();
     let proxy_api_key = input
         .context
-        .auth
-        .as_ref()
+        .authorization()
         .and_then(|auth| auth.token_ref())
         .map(str::to_string);
 
@@ -107,14 +110,14 @@ pub(crate) async fn get_item_detail(
         .await
         .map_err(|error| ApplicationError::Internal(error.into()))?;
     let failed_id = contains_id(request.url(), "Items");
-    let result = execute_processed_json_request_typed(
-        state,
-        request,
-        &server,
-        ResponseProcessingProfile::Media,
-        proxy_api_key.as_deref(),
-    )
-    .await;
+    let result = state
+        .execute_processed_json(
+            request,
+            &server,
+            ResponseProcessingProfile::Media,
+            proxy_api_key.as_deref(),
+        )
+        .await;
     let mut response = match result {
         Ok(response) => response,
         Err(error) => {
@@ -126,7 +129,7 @@ pub(crate) async fn get_item_detail(
             };
             let VirtualLibraryResolution::Resolved(mut library) = state
                 .virtual_library_service
-                .resolve(id, input.context.access_scope.as_ref())
+                .resolve(id, input.context.access_scope().as_ref())
                 .await
                 .map_err(ApplicationError::Storage)?
             else {
@@ -155,14 +158,14 @@ pub(crate) async fn get_item_detail(
                     .build(&member_target, &request)
                     .await
                     .map_err(|error| ApplicationError::Internal(error.into()))?;
-                match execute_processed_json_request_typed(
-                    state,
-                    request,
-                    &member.server,
-                    ResponseProcessingProfile::Media,
-                    proxy_api_key.as_deref(),
-                )
-                .await
+                match state
+                    .execute_processed_json(
+                        request,
+                        &member.server,
+                        ResponseProcessingProfile::Media,
+                        proxy_api_key.as_deref(),
+                    )
+                    .await
                 {
                     Ok(response) => {
                         server = member.server;
@@ -187,9 +190,9 @@ pub(crate) async fn get_item_detail(
                 requested_item_id,
                 selected_group,
                 base_server: &server,
-                auth: &input.context.auth,
-                access_scope: input.context.access_scope.as_ref(),
-                sessions: input.context.backends.sessions.as_deref(),
+                auth: &input.context.authorization().cloned(),
+                access_scope: input.context.access_scope().as_ref(),
+                sessions: input.context.backends().sessions.as_deref(),
                 original_request: &input.original_request,
                 source_generation: source_generation
                     .expect("merged detail has a source generation"),
@@ -203,7 +206,7 @@ pub(crate) async fn get_item_detail(
     if let Some(virtual_id) = virtual_library {
         let resolution = state
             .virtual_library_service
-            .resolve(&virtual_id, input.context.access_scope.as_ref())
+            .resolve(&virtual_id, input.context.access_scope().as_ref())
             .await
             .map_err(ApplicationError::Storage)?;
         if let VirtualLibraryResolution::Resolved(resolved) = resolution {
@@ -215,8 +218,12 @@ pub(crate) async fn get_item_detail(
         }
     }
 
-    crate::application::observation::media_response(state, proxy_api_key.as_deref(), &response)
-        .await;
+    crate::application::observation::media_response(
+        &state.client_sessions,
+        proxy_api_key.as_deref(),
+        &response,
+    )
+    .await;
     Ok(response)
 }
 

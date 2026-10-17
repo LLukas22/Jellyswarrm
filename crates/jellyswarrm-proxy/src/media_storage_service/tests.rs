@@ -45,6 +45,171 @@ async fn assert_no_foreign_key_violations(pool: &SqlitePool) {
 }
 
 #[tokio::test]
+async fn inventory_authority_requires_matching_source_identity_and_nonempty_coverage() {
+    let snapshot = || MediaCatalogSnapshot {
+        source_key: "source".into(),
+        server_id: ServerId::new(1),
+        complete: true,
+        observations: Vec::new(),
+    };
+    let source = |key: &str, server| InventorySourceEvidence {
+        source_key: key.into(),
+        server_id: ServerId::new(server),
+        status: InventorySourceStatus::Complete,
+    };
+    let coverage = || MediaKind::ALL.into_iter().collect();
+    assert!(InventoryUpdate::validated_inventory(
+        vec![snapshot()],
+        BTreeSet::new(),
+        &[source("source", 1)],
+        0
+    )
+    .is_err());
+    assert!(InventoryUpdate::validated_inventory(vec![snapshot()], coverage(), &[], 0).is_err());
+    assert!(InventoryUpdate::validated_inventory(
+        vec![snapshot()],
+        coverage(),
+        &[source("other", 1)],
+        0
+    )
+    .is_err());
+    assert!(InventoryUpdate::validated_inventory(
+        vec![snapshot()],
+        coverage(),
+        &[source("source", 2)],
+        0
+    )
+    .is_err());
+    assert!(InventoryUpdate::validated_inventory(
+        vec![snapshot()],
+        coverage(),
+        &[source("source", 1), source("source", 1)],
+        0
+    )
+    .is_err());
+    assert!(InventoryUpdate::validated_inventory(
+        vec![snapshot(), snapshot()],
+        coverage(),
+        &[source("source", 1)],
+        0
+    )
+    .is_err());
+    assert!(InventoryUpdate::validated_inventory(
+        Vec::new(),
+        coverage(),
+        &[source("source", 1)],
+        0
+    )
+    .is_err());
+}
+
+#[tokio::test]
+async fn validated_inventory_keeps_observations_bounded_and_missing_sources_non_authoritative() {
+    let (pool, service) = migrated_service().await;
+    let servers = [
+        create_test_server_with_url(&pool, "http://authority-one:8096").await,
+        create_test_server_with_url(&pool, "http://authority-two:8096").await,
+    ];
+    let mut snapshots = Vec::new();
+    for server in &servers {
+        let mapping = service
+            .get_or_create_media_mapping("movie", server)
+            .await
+            .unwrap();
+        snapshots.push(MediaCatalogSnapshot {
+            source_key: format!("source-{}", server.id),
+            server_id: server.id,
+            complete: false,
+            observations: vec![tmdb_movie_observation(&mapping.virtual_media_id, "42")],
+        });
+    }
+    let evidence = |status| {
+        snapshots
+            .iter()
+            .map(|snapshot| InventorySourceEvidence {
+                source_key: snapshot.source_key.clone(),
+                server_id: snapshot.server_id,
+                status,
+            })
+            .collect::<Vec<_>>()
+    };
+    let coverage = || MediaKind::ALL.into_iter().collect();
+    let generation = service.begin_media_reconciliation().await.unwrap();
+    let update = InventoryUpdate::validated_inventory(
+        snapshots.clone(),
+        coverage(),
+        &evidence(InventorySourceStatus::Complete),
+        0,
+    )
+    .unwrap();
+    service
+        .apply_inventory_update("authority", generation, update)
+        .await
+        .unwrap();
+    let empty = snapshots
+        .iter()
+        .cloned()
+        .map(|mut snapshot| {
+            snapshot.complete = true; // Cannot grant authority through this old flag.
+            snapshot.observations.clear();
+            snapshot
+        })
+        .collect::<Vec<_>>();
+    let count = || sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM movie_catalog_sightings");
+    assert_eq!(count().fetch_one(&pool).await.unwrap(), 2);
+    for status in [
+        None,
+        Some(InventorySourceStatus::Bounded),
+        Some(InventorySourceStatus::Incomplete),
+    ] {
+        let generation = service.begin_media_reconciliation().await.unwrap();
+        let update = match status {
+            None => InventoryUpdate::Observations(empty.clone()),
+            Some(status) => InventoryUpdate::validated_inventory(
+                empty.clone(),
+                coverage(),
+                &evidence(status),
+                0,
+            )
+            .unwrap(),
+        };
+        service
+            .apply_inventory_update("authority", generation, update)
+            .await
+            .unwrap();
+        assert_eq!(count().fetch_one(&pool).await.unwrap(), 2);
+    }
+    // The successful source may replace its own inventory; an unavailable
+    // sibling must not be removed just because it supplied no snapshot.
+    let generation = service.begin_media_reconciliation().await.unwrap();
+    let update = InventoryUpdate::validated_inventory(
+        empty[..1].to_vec(),
+        coverage(),
+        &evidence(InventorySourceStatus::Complete)[..1],
+        1,
+    )
+    .unwrap();
+    service
+        .apply_inventory_update("authority", generation, update)
+        .await
+        .unwrap();
+    assert_eq!(count().fetch_one(&pool).await.unwrap(), 1);
+    let generation = service.begin_media_reconciliation().await.unwrap();
+    let update = InventoryUpdate::validated_inventory(
+        empty,
+        coverage(),
+        &evidence(InventorySourceStatus::Complete),
+        0,
+    )
+    .unwrap();
+    service
+        .apply_inventory_update("authority", generation, update)
+        .await
+        .unwrap();
+    assert_eq!(count().fetch_one(&pool).await.unwrap(), 0);
+}
+
+#[tokio::test]
 async fn typed_inventory_removals_fence_old_scans_without_pruning_other_types() {
     let (pool, service) = migrated_service().await;
     let server = create_test_server_with_url(&pool, "http://typed:8096").await;
@@ -563,13 +728,13 @@ async fn older_full_catalog_merges_after_newer_filtered_catalog() {
     assert_eq!(
         generations,
         vec![
-            ("filtered-only".to_string(), newer, newer),
-            ("full-only".to_string(), older, older),
-            ("shared".to_string(), newer, newer)
+            ("filtered-only".to_string(), newer.as_i64(), newer.as_i64()),
+            ("full-only".to_string(), older.as_i64(), older.as_i64()),
+            ("shared".to_string(), newer.as_i64(), newer.as_i64())
         ]
     );
     let watermarks: (i64, i64) = sqlx::query_as("SELECT scope.committed_generation, source.committed_generation FROM movie_catalog_scopes scope JOIN movie_catalog_sources source ON source.scope_id = scope.id WHERE scope.scope_key = 'scope'").fetch_one(&pool).await.unwrap();
-    assert_eq!(watermarks, (newer, older));
+    assert_eq!(watermarks, (newer.as_i64(), older.as_i64()));
 }
 
 #[tokio::test]
@@ -616,7 +781,7 @@ async fn stale_catalogs_cannot_revive_newer_full_removals() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(member_generation.0, initial);
+    assert_eq!(member_generation.0, initial.as_i64());
     let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM movie_catalog_sightings")
         .fetch_one(&pool)
         .await

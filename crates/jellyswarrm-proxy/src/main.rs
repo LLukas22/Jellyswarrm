@@ -111,6 +111,51 @@ pub struct AppState {
 }
 
 impl AppState {
+    pub(crate) fn catalog_service(&self) -> application::catalog::services::CatalogService {
+        application::catalog::services::CatalogService {
+            media_storage: self.media_storage.clone(),
+            server_storage: self.server_storage.clone(),
+            virtual_library_service: self.virtual_library_service.clone(),
+            play_sessions: self.play_sessions.clone(),
+            config: self.config.clone(),
+            processors: application::catalog::services::CatalogProcessors {
+                url_processor: self.processors.url_processor.clone(),
+                response_processor: self.processors.response_processor.clone(),
+            },
+            upstream: std::sync::Arc::new(self.json_upstream()),
+            client_sessions: self.client_sessions.clone(),
+            catalog_snapshots: self.catalog_snapshots.clone(),
+        }
+    }
+    pub(crate) fn playback_service(&self) -> application::playback::services::PlaybackService<'_> {
+        application::playback::services::PlaybackService {
+            media_storage: &self.media_storage,
+            server_storage: &self.server_storage,
+            play_sessions: &self.play_sessions,
+            config: &self.config,
+            processors: application::playback::services::PlaybackProcessors {
+                url_processor: &self.processors.url_processor,
+                response_processor: &self.processors.response_processor,
+            },
+            upstream: Box::new(self.json_upstream()),
+            streaming_reqwest_client: &self.streaming_reqwest_client,
+            client_sessions: &self.client_sessions,
+        }
+    }
+    pub(crate) fn json_upstream(&self) -> upstream::jellyfin::capabilities::JellyfinJsonUpstream {
+        upstream::jellyfin::capabilities::JellyfinJsonUpstream {
+            client: self.reqwest_client.clone(),
+        }
+    }
+    pub(crate) fn routing_services(&self) -> application::routing::RoutingServices<'_> {
+        application::routing::RoutingServices {
+            media_storage: &self.media_storage,
+            server_storage: &self.server_storage,
+            play_sessions: &self.play_sessions,
+            urls: &self.processors.url_processor,
+            config: &self.config,
+        }
+    }
     pub fn new(
         reqwest_client: reqwest::Client,
         streaming_reqwest_client: reqwest::Client,

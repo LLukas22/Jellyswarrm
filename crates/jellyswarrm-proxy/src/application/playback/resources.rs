@@ -1,15 +1,19 @@
 //! Delivery/resource selection before target-bound request construction.
 
+use super::services::PlaybackService;
 #[cfg(test)]
 use super::target::matching_session as matching_play_session;
 use super::target::{MediaTargetResolver, PlaybackIntent, ResolutionError, SelectionPolicy};
 use crate::application::error::ApplicationError;
+#[cfg(test)]
 use hyper::StatusCode;
 use tracing::info;
 
+#[cfg(test)]
+use crate::AppState;
 use crate::{
     application::{
-        context::{AuthorizedTarget, RequestContext, TargetError},
+        context::{AuthorizedTarget, RequestContext},
         input::OperationRequest,
     },
     config::MediaStreamingMode,
@@ -20,7 +24,6 @@ use crate::{
         delivery::{self, DeliveryResponse},
         request::UpstreamRequestBuilder,
     },
-    AppState,
 };
 
 fn extract_stream_item_id(path: &str) -> Option<&str> {
@@ -40,7 +43,7 @@ fn extract_play_session_id(url: &url::Url) -> Result<Option<String>, Application
 }
 
 async fn selected_play_session(
-    state: &AppState,
+    state: &PlaybackService<'_>,
     operation: &OperationRequest,
     item_id: &str,
     session_id: Option<&str>,
@@ -53,10 +56,10 @@ async fn selected_play_session(
             .map_err(ApplicationError::InvalidRouting)?
             .is_some();
     (MediaTargetResolver {
-        media: &state.media_storage,
+        media: state.media_storage,
     })
     .session(
-        &state.play_sessions,
+        state.play_sessions,
         item_id,
         session_id,
         user_id,
@@ -67,21 +70,12 @@ async fn selected_play_session(
 }
 
 fn resource_resolution_status(error: ResolutionError) -> ApplicationError {
-    let status = match &error {
-        ResolutionError::ViewerMismatch(_) => StatusCode::FORBIDDEN,
-        ResolutionError::Target(TargetError::AccessDenied | TargetError::ViewerMismatch) => {
-            StatusCode::FORBIDDEN
-        }
-        ResolutionError::Target(TargetError::UnavailableOwner) => StatusCode::UNAUTHORIZED,
-        ResolutionError::OfflineOwner | ResolutionError::MissingOwner => StatusCode::NOT_FOUND,
-        ResolutionError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
-        _ => StatusCode::BAD_REQUEST,
-    };
-    ApplicationError::PlaybackResolution(error).with_status(status)
+    ApplicationError::PlaybackResolution(error)
+        .at(crate::application::error::FailureStage::DeliverySelection)
 }
 
 async fn delivery_target(
-    state: &AppState,
+    state: &PlaybackService<'_>,
     operation: &mut OperationRequest,
     initial: AuthorizedTarget,
     item: &str,
@@ -92,7 +86,7 @@ async fn delivery_target(
         crate::processors::url_processor::selected_media_source(operation.original_request.url())
             .map_err(ApplicationError::InvalidRouting)?;
     let plan = (MediaTargetResolver {
-        media: &state.media_storage,
+        media: state.media_storage,
     })
     .plan(
         &operation.context,
@@ -102,17 +96,15 @@ async fn delivery_target(
             source: source.as_deref(),
             binding,
         },
-        &state.server_storage,
+        state.server_storage,
         policy,
     )
     .await;
     if matches!(plan, Err(ResolutionError::MissingOwner)) {
         if let Some(binding) = binding {
-            super::lifecycle::PlaybackLifecycle {
-                sessions: &state.play_sessions,
-            }
-            .remove_server(binding.server_id)
-            .await;
+            super::lifecycle::PlaybackLifecycle::new(state.play_sessions)
+                .remove_server(binding.server_id)
+                .await;
         }
     }
     let plan = plan.map_err(resource_resolution_status)?;
@@ -133,7 +125,7 @@ async fn delivery_target(
 }
 
 async fn forward_media_request(
-    state: &AppState,
+    state: &PlaybackService<'_>,
     server: &Server,
     request: reqwest::Request,
     log_label: &str,
@@ -162,9 +154,9 @@ async fn forward_media_request(
             );
             let timeout = state.config.read().await.timeout;
             let context = delivery::DeliveryContext::new(
-                &state.streaming_reqwest_client,
+                state.streaming_reqwest_client,
                 crate::upstream::jellyfin::hls::HlsContext::new(
-                    &state.processors.url_processor,
+                    state.processors.url_processor,
                     server,
                     proxy_api_key,
                     viewer,
@@ -178,54 +170,52 @@ async fn forward_media_request(
 
 fn proxy_api_key(context: &RequestContext) -> Option<String> {
     // An unrecognized/passthrough backend token is not a proxy credential.
-    context.user.as_ref()?;
-    context.auth.as_ref()?.token()
+    context.user()?;
+    context.authorization()?.token()
 }
 
 fn request_user_id(context: &RequestContext) -> Option<&str> {
-    context
-        .user
-        .as_ref()
-        .map(|user| user.id.as_str())
-        .or_else(|| {
-            context
-                .backends
-                .sessions
-                .as_ref()
-                .and_then(|sessions| sessions.first())
-                .map(|(session, _)| session.user_id.as_str())
-        })
+    context.user().map(|user| user.id.as_str()).or_else(|| {
+        context
+            .backends()
+            .sessions
+            .as_ref()
+            .and_then(|sessions| sessions.first())
+            .map(|(session, _)| session.user_id.as_str())
+    })
 }
 
 async fn build_request(
-    state: &AppState,
+    state: &PlaybackService<'_>,
     target: &AuthorizedTarget,
     request: &reqwest::Request,
 ) -> Result<reqwest::Request, ApplicationError> {
     let prefix = state.get_url_prefix().await;
-    UpstreamRequestBuilder::new(&state.processors.url_processor, prefix.as_deref())
+    UpstreamRequestBuilder::new(state.processors.url_processor, prefix.as_deref())
         .build(target, request)
         .await
         .map_err(|error| ApplicationError::InvalidRouting(error.into()))
 }
 
 pub(crate) async fn get_video_resource_typed(
-    state: &AppState,
+    state: &PlaybackService<'_>,
     mut operation: OperationRequest,
 ) -> Result<DeliveryResponse, ApplicationError> {
-    let resolved = operation.resolve_target_typed(state).await?;
+    let resolved = operation
+        .resolve_target_using(&state.routing_services())
+        .await?;
     let proxy_api_key = proxy_api_key(&operation.context);
     let id = extract_stream_item_id(operation.original_request.url().path())
         .ok_or_else(|| {
-            ApplicationError::InvalidInput("missing stream item").with_status(StatusCode::NOT_FOUND)
+            ApplicationError::InvalidInput("missing stream item")
+                .at(crate::application::error::FailureStage::ResourceLookup)
         })?
         .to_string();
     let session_id = extract_play_session_id(operation.original_request.url())?;
     let binding = selected_play_session(state, &operation, &id, session_id.as_deref()).await?;
     if binding.is_none() && !resolved.server_matched_request {
-        return Err(
-            ApplicationError::MissingIdentity("resource owner").with_status(StatusCode::NOT_FOUND)
-        );
+        return Err(ApplicationError::MissingIdentity("resource owner")
+            .at(crate::application::error::FailureStage::ResourceLookup));
     }
     let target = delivery_target(
         state,
@@ -245,8 +235,7 @@ pub(crate) async fn get_video_resource_typed(
         proxy_api_key.as_deref(),
         operation
             .context
-            .user
-            .as_ref()
+            .user()
             .filter(|_| proxy_api_key.is_some())
             .map(|user| user.id.as_str()),
     )
@@ -258,16 +247,18 @@ pub async fn get_stream(
     state: &AppState,
     operation: OperationRequest,
 ) -> Result<DeliveryResponse, StatusCode> {
-    get_stream_typed(state, operation)
+    get_stream_typed(&state.playback_service(), operation)
         .await
         .map_err(|error| error.detail_status())
 }
 
 pub(crate) async fn get_stream_typed(
-    state: &AppState,
+    state: &PlaybackService<'_>,
     mut operation: OperationRequest,
 ) -> Result<DeliveryResponse, ApplicationError> {
-    let resolved = operation.resolve_target_typed(state).await?;
+    let resolved = operation
+        .resolve_target_using(&state.routing_services())
+        .await?;
     let proxy_api_key = proxy_api_key(&operation.context);
     let item_id =
         extract_stream_item_id(operation.original_request.url().path()).map(str::to_string);
@@ -300,24 +291,21 @@ pub(crate) async fn get_stream_typed(
             proxy_api_key.as_deref(),
             operation
                 .context
-                .user
-                .as_ref()
+                .user()
                 .filter(|_| proxy_api_key.is_some())
                 .map(|user| user.id.as_str()),
         )
         .await?;
-        super::lifecycle::PlaybackLifecycle {
-            sessions: &state.play_sessions,
-        }
-        .direct_stream(
-            response.status,
-            session_id.as_deref(),
-            item_id.as_deref(),
-            user_id.as_deref(),
-            server.id,
-            original_item_id,
-        )
-        .await;
+        super::lifecycle::PlaybackLifecycle::new(state.play_sessions)
+            .direct_stream(
+                response.status,
+                session_id.as_deref(),
+                item_id.as_deref(),
+                user_id.as_deref(),
+                server.id,
+                original_item_id,
+            )
+            .await;
         return Ok(response);
     };
     let target = delivery_target(
@@ -338,8 +326,7 @@ pub(crate) async fn get_stream_typed(
         proxy_api_key.as_deref(),
         operation
             .context
-            .user
-            .as_ref()
+            .user()
             .filter(|_| proxy_api_key.is_some())
             .map(|user| user.id.as_str()),
     )
@@ -482,7 +469,7 @@ mod tests {
                     "http://proxy.example/".parse().unwrap(),
                 ),
                 None,
-                context.user.clone(),
+                context.user().cloned(),
                 None,
                 None,
             ),
@@ -521,7 +508,8 @@ mod tests {
             .resolve_report_session("direct", "viewer")
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .into_parts();
         assert_eq!(binding.server_id, server.id);
         assert_eq!(binding.item_id, item);
         assert_eq!(binding.original_item_id.as_deref(), Some("upstream-item"));
@@ -547,7 +535,8 @@ mod tests {
             .resolve_report_session("redirect", "viewer")
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .into_parts();
         assert_eq!(binding.server_id, server.id);
         assert_eq!(binding.original_item_id.as_deref(), Some("upstream-item"));
         assert!(upstream.received_requests().await.unwrap().is_empty());

@@ -3,13 +3,12 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::application::error::ApplicationError;
-use hyper::StatusCode;
 
+use super::services::CatalogService;
 use crate::{
     application::catalog::input::CatalogRequest,
     media_catalog::{merge_media_group, TaggedMediaItem},
     media_storage_service::{MediaMapping, MediaStorageService},
-    AppState,
 };
 
 use super::{
@@ -31,7 +30,7 @@ pub(super) struct RequestedItems(Vec<RequestedItem>);
 
 impl RequestedItems {
     pub async fn resolve(
-        state: &AppState,
+        state: &CatalogService,
         request: &CatalogRequest,
     ) -> Result<Option<Self>, ApplicationError> {
         let url = request.original_request.url();
@@ -60,7 +59,7 @@ impl RequestedItems {
         for id in ids.into_iter().filter(|id| seen.insert(id.clone())) {
             let library = state
                 .virtual_library_service
-                .resolve(&id, request.context.access_scope.as_ref())
+                .resolve(&id, request.context.access_scope().as_ref())
                 .await
                 .map_err(ApplicationError::Storage)?;
             if let crate::virtual_library_service::VirtualLibraryResolution::Resolved(library) =
@@ -107,7 +106,7 @@ impl RequestedItems {
                 .filter(|member| {
                     request
                         .context
-                        .access_scope
+                        .access_scope()
                         .as_ref()
                         .is_some_and(|scope| scope.allows(member.server_id))
                 })
@@ -124,7 +123,7 @@ impl RequestedItems {
 
     pub async fn fetch(
         self,
-        state: &AppState,
+        state: &CatalogService,
         request: CatalogRequest,
     ) -> Result<serde_json::Value, ApplicationError> {
         let mut policy = CatalogRequestPolicy::from_url(request.original_request.url());
@@ -136,10 +135,15 @@ impl RequestedItems {
         {
             policy.sort = SortPolicy::PreserveUpstream;
         }
-        let sessions = request.context.backends.sessions.as_ref().ok_or_else(|| {
-            ApplicationError::MissingIdentity("batch lookup sessions")
-                .with_status(StatusCode::UNAUTHORIZED)
-        })?;
+        let sessions = request
+            .context
+            .backends()
+            .sessions
+            .as_ref()
+            .ok_or_else(|| {
+                ApplicationError::MissingIdentity("batch lookup sessions")
+                    .at(crate::application::error::FailureStage::CallerAuthentication)
+            })?;
         let source_generation = state
             .media_storage
             .begin_media_reconciliation()
@@ -182,9 +186,7 @@ impl RequestedItems {
             let target = CatalogFetchTarget {
                 session: session.clone(),
                 server: server.clone(),
-                parent_id: None,
-                member_parent_id: None,
-                resolved_parent_id: None,
+                parent: None,
             };
             let policy = &policy;
             fetches.push(async move {
@@ -257,7 +259,7 @@ impl RequestedItems {
                             .find(|mapping| mapping.virtual_media_id == member.item.id)
                             .expect("fetched member belongs to requested item");
                         crate::application::playback::selection::record_playback_sources(
-                            state,
+                            &state.media_storage,
                             &entry.id,
                             &member.server,
                             &mapping.original_media_id,
@@ -272,7 +274,7 @@ impl RequestedItems {
                 items.extend(members.into_iter().map(|member| member.item.into()));
             }
         }
-        if let Some(scope) = &request.context.access_scope {
+        if let Some(scope) = request.context.access_scope().as_ref() {
             for item in &mut items {
                 crate::application::details::sources::preserve_media_parent_groups_typed(
                     state,
@@ -293,8 +295,7 @@ impl RequestedItems {
         .await?;
         if let Some(token) = request
             .context
-            .auth
-            .as_ref()
+            .authorization()
             .and_then(|auth| auth.token_ref())
         {
             state

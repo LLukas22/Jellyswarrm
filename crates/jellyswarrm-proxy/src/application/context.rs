@@ -22,13 +22,23 @@ pub(crate) struct BackendAccessSnapshot {
 }
 
 pub(crate) struct RequestContext {
-    pub principal: Principal,
-    /// Retained legacy user metadata is not, by itself, proof of authentication.
-    pub user: Option<User>,
-    pub device: Option<Device>,
-    pub auth: Option<JellyfinAuthorization>,
-    pub access_scope: Option<VirtualLibraryAccessScope>,
-    pub backends: BackendAccessSnapshot,
+    identity: CallerIdentity,
+    /// Anonymous requests can retain legacy user metadata without authenticating.
+    legacy_user: Option<User>,
+    device: Option<Device>,
+    access_scope: Option<VirtualLibraryAccessScope>,
+    backends: BackendAccessSnapshot,
+}
+
+enum CallerIdentity {
+    Anonymous,
+    BackendPassthrough {
+        authorization: JellyfinAuthorization,
+    },
+    ProxyUser {
+        user: User,
+        authorization: JellyfinAuthorization,
+    },
 }
 
 impl RequestContext {
@@ -39,20 +49,62 @@ impl RequestContext {
         sessions: Option<Vec<(AuthorizationSession, Server)>>,
         access_scope: Option<VirtualLibraryAccessScope>,
     ) -> Self {
-        let principal = match (&auth, &user) {
-            (Some(_), Some(_)) => Principal::ProxyUser,
-            (Some(_), None) => Principal::BackendPassthrough,
-            (None, _) => Principal::Anonymous,
-        };
         let device = request_device(request, auth.as_ref());
+        let (identity, legacy_user) = match (auth, user) {
+            (Some(authorization), Some(user)) => (
+                CallerIdentity::ProxyUser {
+                    user,
+                    authorization,
+                },
+                None,
+            ),
+            (Some(authorization), None) => {
+                (CallerIdentity::BackendPassthrough { authorization }, None)
+            }
+            (None, user) => (CallerIdentity::Anonymous, user),
+        };
         Self {
-            principal,
-            user,
+            identity,
+            legacy_user,
             device,
-            auth,
             access_scope,
             backends: BackendAccessSnapshot { sessions },
         }
+    }
+
+    pub(crate) fn principal(&self) -> Principal {
+        match self.identity {
+            CallerIdentity::Anonymous => Principal::Anonymous,
+            CallerIdentity::BackendPassthrough { .. } => Principal::BackendPassthrough,
+            CallerIdentity::ProxyUser { .. } => Principal::ProxyUser,
+        }
+    }
+
+    /// Includes legacy metadata. Use principal()/authorization() to establish
+    /// authentication, never the presence of this metadata alone.
+    pub(crate) fn user(&self) -> Option<&User> {
+        match &self.identity {
+            CallerIdentity::ProxyUser { user, .. } => Some(user),
+            _ => self.legacy_user.as_ref(),
+        }
+    }
+
+    pub(crate) fn authorization(&self) -> Option<&JellyfinAuthorization> {
+        match &self.identity {
+            CallerIdentity::Anonymous => None,
+            CallerIdentity::BackendPassthrough { authorization }
+            | CallerIdentity::ProxyUser { authorization, .. } => Some(authorization),
+        }
+    }
+
+    pub(crate) fn device(&self) -> &Option<Device> {
+        &self.device
+    }
+    pub(crate) fn access_scope(&self) -> &Option<VirtualLibraryAccessScope> {
+        &self.access_scope
+    }
+    pub(crate) fn backends(&self) -> &BackendAccessSnapshot {
+        &self.backends
     }
 
     /// Validate client-owned media selections before any target is built or
@@ -109,7 +161,7 @@ impl RequestContext {
             server.clone(),
             Some(session.clone()),
             crate::upstream::jellyfin::request::remap_authorization(
-                &self.auth,
+                &self.authorization().cloned(),
                 &Some(session.clone()),
             ),
             self.access_scope.clone(),
@@ -246,7 +298,7 @@ mod tests {
             ),
         ] {
             let context = RequestContext::new(&request(), auth, user, None, None);
-            assert_eq!(context.principal, expected);
+            assert_eq!(context.principal(), expected);
         }
     }
 
@@ -262,9 +314,9 @@ mod tests {
             Some(VirtualLibraryAccessScope::new("viewer", [ServerId::new(1)])),
         );
 
-        assert_eq!(context.principal, Principal::Anonymous);
-        assert_eq!(context.user.as_ref().unwrap().id, "viewer");
-        assert!(context.auth.is_none());
+        assert_eq!(context.principal(), Principal::Anonymous);
+        assert_eq!(context.user().unwrap().id, "viewer");
+        assert!(context.authorization().is_none());
     }
 
     #[test]

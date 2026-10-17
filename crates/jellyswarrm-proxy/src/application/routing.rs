@@ -9,27 +9,46 @@ use crate::processors::request_analyzer::RequestBodyAnalysisResult;
 use crate::server_storage::Server;
 use crate::user_authorization_service::AuthorizationSession;
 use crate::virtual_library_service::{compare_virtual_library_routes, VirtualLibraryAccessScope};
-use crate::AppState;
+use crate::{
+    config::AppConfig, media_storage_service::MediaStorageService,
+    processors::url_processor::UrlProcessor, server_storage::ServerStorageService,
+    session_storage::SessionStorage,
+};
+
+pub(crate) struct RoutingServices<'a> {
+    pub media_storage: &'a MediaStorageService,
+    pub server_storage: &'a ServerStorageService,
+    pub play_sessions: &'a SessionStorage,
+    pub urls: &'a UrlProcessor,
+    pub config: &'a tokio::sync::RwLock<AppConfig>,
+}
 
 pub async fn resolve_server(
     sessions: &Option<Vec<(AuthorizationSession, Server)>>,
     request_body_result: &Option<RequestBodyAnalysisResult>,
-    state: &AppState,
+    state: &RoutingServices<'_>,
     request: &reqwest::Request,
     access_scope: Option<&VirtualLibraryAccessScope>,
 ) -> Result<(Server, Option<AuthorizationSession>, bool)> {
-    let path = crate::url_helper::decoded_path_segments(
-        state.remove_prefix_from_path(request.url().path()).await,
-    );
+    let config = state.config.read().await;
+    let path = crate::url_helper::decoded_path_segments(match &config.url_prefix {
+        Some(prefix) => request
+            .url()
+            .path()
+            .trim_start_matches(&format!("/{prefix}")),
+        None => request.url().path(),
+    });
+    drop(config);
     if let Some(target) =
-        reports::resolve_cancellation(sessions, &state.play_sessions, request, &path, access_scope)
+        reports::resolve_cancellation(sessions, state.play_sessions, request, &path, access_scope)
             .await?
     {
-        return Ok(target);
+        return Ok((target.server, Some(target.session), true));
     }
     if let Some(play_session) = request_body_result
         .as_ref()
         .and_then(|result| result.authoritative_play_session.as_ref())
+        .map(|binding| binding.session())
     {
         let server = state
             .server_storage
@@ -67,11 +86,7 @@ pub async fn resolve_server(
     // fall back to an allowed server when their IDs belong to a forbidden one.
     if let (Some(scope), Some(analysis)) = (access_scope, request_body_result) {
         for id in &analysis.found_ids {
-            state
-                .processors
-                .url_processor
-                .validate_media_access(id, scope)
-                .await?;
+            state.urls.validate_media_access(id, scope).await?;
         }
     }
 
@@ -131,7 +146,7 @@ pub async fn resolve_server(
 }
 
 pub(crate) async fn server_from_body_media_aggregate_ids(
-    state: &AppState,
+    state: &RoutingServices<'_>,
     analysis: Option<&RequestBodyAnalysisResult>,
     access_scope: Option<&VirtualLibraryAccessScope>,
 ) -> Result<Option<Server>> {
@@ -170,13 +185,12 @@ pub(crate) async fn server_from_body_media_aggregate_ids(
 }
 
 pub(crate) async fn server_from_request_media_ids(
-    state: &AppState,
+    state: &RoutingServices<'_>,
     request: &reqwest::Request,
     access_scope: Option<&VirtualLibraryAccessScope>,
 ) -> Result<Option<Server>> {
     state
-        .processors
-        .url_processor
+        .urls
         .server_from_client_url(request.url(), access_scope)
         .await
 }

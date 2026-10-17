@@ -5,7 +5,9 @@ use crate::{
     media_storage_service::{MediaMapping, MediaStorageService},
     server_id::ServerId,
     server_storage::ServerStorageService,
-    session_storage::{LiveStreamBinding, PlaybackSession, SessionRevision, SessionStorage},
+    session_storage::{
+        LiveStreamBinding, PlaybackSession, RevisionedPlaybackSession, SessionStorage,
+    },
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -314,7 +316,7 @@ impl MediaTargetResolver<'_> {
     ) -> Result<Option<PlaybackSession>, ResolutionError> {
         let candidates = sessions.get_sessions_by_item_id(item).await;
         if let Some(session) = session {
-            let known = owned_session(sessions, session, viewer).await?;
+            let known = owned_session(sessions, &session.into(), &viewer.into()).await?;
             let matching = matching_session(candidates, Some(session), Some(viewer)).ok();
             if known.is_some() && matching.is_none() {
                 return Err(ResolutionError::BindingConflict);
@@ -331,11 +333,11 @@ impl MediaTargetResolver<'_> {
 /// Shared viewer authority for delivery, live-open and transcoder cancellation.
 pub(crate) async fn owned_session(
     sessions: &SessionStorage,
-    id: &str,
-    viewer: &str,
-) -> Result<Option<(PlaybackSession, SessionRevision)>, ResolutionError> {
+    id: &crate::application::identity::PlaybackSessionId,
+    viewer: &crate::application::identity::ViewerId,
+) -> Result<Option<RevisionedPlaybackSession>, ResolutionError> {
     sessions
-        .resolve_report_session(id, viewer)
+        .resolve_report_binding(id, viewer)
         .await
         .map_err(ResolutionError::ViewerMismatch)
 }
@@ -345,11 +347,11 @@ pub(crate) async fn owned_session(
 pub(crate) async fn live_target(
     context: &RequestContext,
     sessions: &SessionStorage,
-    id: &str,
-    viewer: &str,
+    id: &crate::application::identity::VirtualLiveStreamId,
+    viewer: &crate::application::identity::ViewerId,
 ) -> Result<(AuthorizedTarget, LiveStreamBinding), ResolutionError> {
     let binding = sessions
-        .live_stream(id, viewer)
+        .live_binding(id, viewer)
         .await
         .ok_or(ResolutionError::UnknownLiveBinding)?;
     let backend = context.target(binding.server_id)?;

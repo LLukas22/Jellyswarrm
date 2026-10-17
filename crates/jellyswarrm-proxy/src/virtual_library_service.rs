@@ -474,7 +474,9 @@ impl VirtualLibraryService {
 
     /// Use the shared persistent clock so in-flight inventories remain ordered
     /// across service clones and independently for each viewer/backend pair.
-    pub async fn begin_viewer_inventory(&self) -> Result<i64, sqlx::Error> {
+    pub async fn begin_viewer_inventory(
+        &self,
+    ) -> Result<crate::media_storage_service::ReconciliationGeneration, sqlx::Error> {
         self.media_storage.begin_media_reconciliation().await
     }
 
@@ -482,7 +484,7 @@ impl VirtualLibraryService {
         &self,
         user_id: &str,
         server_id: ServerId,
-        generation: i64,
+        generation: crate::media_storage_service::ReconciliationGeneration,
         libraries: &[DiscoveredLibrary],
     ) -> Result<(), sqlx::Error> {
         let mut tx = self.pool.begin().await?;
@@ -491,7 +493,7 @@ impl VirtualLibraryService {
              ON CONFLICT(user_id, server_id) DO UPDATE SET generation = excluded.generation \
              WHERE excluded.generation > library_viewer_inventories.generation",
         )
-        .bind(user_id).bind(server_id.as_i64()).bind(generation)
+        .bind(user_id).bind(server_id.as_i64()).bind(generation.as_i64())
         .execute(&mut *tx).await?;
         if updated.rows_affected() == 0 {
             return Ok(());

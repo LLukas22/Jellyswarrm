@@ -16,6 +16,7 @@ use crate::{
     DataContext,
 };
 
+#[derive(Clone)]
 pub struct ResponseProcessor {
     pub data_context: DataContext,
     url_processor: UrlProcessor,

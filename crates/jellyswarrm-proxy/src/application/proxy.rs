@@ -47,22 +47,23 @@ pub(crate) async fn prepare(
         .ok_or_else(|| anyhow::anyhow!("failed to clone preprocessed request body"))?;
     let context = &input.context;
     let (server, session, _) = if action.is_some() {
-        reports::resolve_server(
-            &context.backends.sessions,
+        let target = reports::resolve_server(
+            &context.backends().sessions,
             input
                 .body_analysis
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("missing playback report"))?,
             &state.media_storage,
         )
-        .await?
+        .await?;
+        (target.server, Some(target.session), true)
     } else {
         routing::resolve_server(
-            &context.backends.sessions,
+            &context.backends().sessions,
             &input.body_analysis,
-            state,
+            &state.routing_services(),
             &input.original_request,
-            context.access_scope.as_ref(),
+            context.access_scope().as_ref(),
         )
         .await?
     };
@@ -96,7 +97,7 @@ pub(crate) async fn prepare(
     let pending_update = PendingPlaybackSessionUpdate::plan(
         action,
         input.body_analysis.as_ref(),
-        context.user.as_ref().map(|user| user.id.as_str()),
+        context.user().map(|user| user.id.as_str()),
         server.id,
         playback_member
             .as_ref()
@@ -108,7 +109,7 @@ pub(crate) async fn prepare(
         .validate_container_request(
             request.url(),
             &session,
-            context.access_scope.as_ref(),
+            context.access_scope().as_ref(),
             server.id,
             input
                 .body_analysis
@@ -117,8 +118,8 @@ pub(crate) async fn prepare(
                 .unwrap_or_default(),
         )
         .await?;
-    let auth = remap_authorization(&context.auth, &session);
-    let target = AuthorizedTarget::new(server, session, auth, context.access_scope.clone())?;
+    let auth = remap_authorization(&context.authorization().cloned(), &session);
+    let target = AuthorizedTarget::new(server, session, auth, context.access_scope().clone())?;
     Ok(PreparedProxyOperation {
         input,
         normalized_request: request,
@@ -161,20 +162,19 @@ pub(crate) async fn forward(
             .map_err(|error| ApplicationError::Internal(error.into()))?;
     let request_url = request.url().clone();
     let mutation_viewer = (!matches!(*request.method(), Method::GET | Method::HEAD))
-        .then(|| context.user.as_ref().map(|user| user.id.clone()))
+        .then(|| context.user().map(|user| user.id.clone()))
         .flatten();
     let original = &input.original_request;
     let server = target.server().clone();
     let proxy_api_key = context
-        .auth
-        .as_ref()
+        .authorization()
         .and_then(|auth| auth.token_ref())
         .map(str::to_string);
     let processing = RequestProcessingContext {
-        user: context.user.clone(),
+        user: context.user().cloned(),
         server: server.clone(),
-        sessions: context.backends.sessions.clone(),
-        auth: context.auth.clone(),
+        sessions: context.backends().sessions.clone(),
+        auth: context.authorization().cloned(),
         session: target.session().clone(),
         new_auth: target.authorization().clone(),
     };
@@ -231,7 +231,12 @@ pub(crate) async fn forward(
                     .await
                     .map_err(ApplicationError::Compatibility)?;
                 if status.is_success() && response_profile != ResponseProcessingProfile::Disabled {
-                    observation::media_response(state, proxy_api_key.as_deref(), &value).await;
+                    observation::media_response(
+                        &state.client_sessions,
+                        proxy_api_key.as_deref(),
+                        &value,
+                    )
+                    .await;
                 }
                 if modified {
                     let processed =
@@ -311,7 +316,7 @@ pub(crate) async fn update_aggregate(
     };
     let scope = request
         .context
-        .access_scope
+        .access_scope()
         .as_ref()
         .ok_or(StatusCode::UNAUTHORIZED)?;
     let mut members = state
@@ -368,8 +373,7 @@ pub(crate) async fn update_aggregate(
                     ResponseProcessingProfile::Media,
                     request
                         .context
-                        .auth
-                        .as_ref()
+                        .authorization()
                         .and_then(|auth| auth.token_ref()),
                 )
                 .await?;
@@ -590,7 +594,8 @@ mod tests {
             .resolve_report_session("report-session", "viewer")
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .into_parts();
         assert_eq!(binding.item_id, item);
         assert_eq!(binding.original_item_id.as_deref(), Some("upstream-item"));
     }

@@ -43,11 +43,7 @@ pub(crate) async fn get_me(
 ) -> Result<crate::models::User, StatusCode> {
     // Preserve routing failures before the legacy RequireUser rejection.
     let resolved = input.resolve_target(state).await?;
-    let user = input
-        .context
-        .user
-        .as_ref()
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let user = input.context.user().ok_or(StatusCode::UNAUTHORIZED)?;
     let request = build_request(state, &resolved.target, &input.original_request).await?;
     // Execute request and parse JSON response
     let server_user: crate::models::User =
@@ -66,11 +62,7 @@ pub(crate) async fn get_user_by_id(
     mut input: OperationRequest,
 ) -> Result<crate::models::User, StatusCode> {
     let resolved = input.resolve_target(state).await?;
-    let user = input
-        .context
-        .user
-        .as_ref()
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let user = input.context.user().ok_or(StatusCode::UNAUTHORIZED)?;
     resolved
         .target
         .session()
@@ -143,15 +135,11 @@ pub(crate) async fn server_info(
     ui_version: &str,
 ) -> Result<crate::models::ServerInfo, StatusCode> {
     let resolved = input.resolve_target(state).await?;
-    input
-        .context
-        .user
-        .as_ref()
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+    input.context.user().ok_or(StatusCode::UNAUTHORIZED)?;
     // Match the legacy original authorization: only the Authorization variant
     // enabled this response, not X-Emby-Authorization after remapping.
     let is_seerr = matches!(
-        input.context.auth.as_ref(),
+        input.context.authorization(),
         Some(crate::request_preprocessing::JellyfinAuthorization::Authorization(authorization))
             if is_seerr_client(authorization)
     );

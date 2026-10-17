@@ -8,7 +8,7 @@ use crate::{
         json_processor::{JsonAnalyzer, JsonProcessingContext},
     },
     server_storage::Server,
-    session_storage::{PlaybackSession, SessionRevision},
+    session_storage::RevisionedPlaybackSession,
     user_authorization_service::User,
     virtual_library_service::compare_virtual_library_routes,
     DataContext,
@@ -62,8 +62,7 @@ pub struct RequestBodyAnalysisResult {
     pub found_user_ids: Vec<String>,
     pub servers: Vec<Server>,
     pub users: Vec<User>,
-    pub authoritative_play_session: Option<PlaybackSession>,
-    pub authoritative_play_session_revision: Option<SessionRevision>,
+    pub authoritative_play_session: Option<RevisionedPlaybackSession>,
     pub requested_play_session_id: Option<String>,
     pub requested_play_item_id: Option<String>,
     pub requested_play_source_id: Option<String>,
@@ -182,12 +181,9 @@ impl JsonAnalyzer<RequestAnalysisContext, RequestBodyAnalysisResult> for Request
                         let binding = self
                             .data_context
                             .play_sessions
-                            .resolve_report_session(session_id, user_id)
+                            .resolve_report_binding(&session_id.as_str().into(), &user_id.into())
                             .await?;
-                        (
-                            accumulator.authoritative_play_session,
-                            accumulator.authoritative_play_session_revision,
-                        ) = binding.unzip();
+                        accumulator.authoritative_play_session = binding;
                     }
                 } else if context.playback_session_action.is_none() {
                     if let Some(play_session) = match context.authenticated_user_id.as_deref() {

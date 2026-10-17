@@ -426,6 +426,7 @@ async fn resolve_playback_report_server(
 ) -> Result<(Server, Option<AuthorizationSession>, bool)> {
     crate::application::playback::reports::resolve_server(sessions, analysis, &state.media_storage)
         .await
+        .map(|target| (target.server, Some(target.session), true))
 }
 
 pub(crate) use crate::application::playback::reports::NoAvailableBackend;
@@ -898,13 +899,16 @@ mod tests {
             (
                 "conflicting session authority",
                 RequestBodyAnalysisResult {
-                    authoritative_play_session: Some(PlaybackSession {
-                        session_id: "known-session".into(),
-                        item_id: item.virtual_media_id.clone(),
-                        user_id: caller.id.clone(),
-                        server_id: ServerId::new(server.id.as_i64() + 1),
-                        original_item_id: None,
-                    }),
+                    authoritative_play_session: Some(
+                        PlaybackSession {
+                            session_id: "known-session".into(),
+                            item_id: item.virtual_media_id.clone(),
+                            user_id: caller.id.clone(),
+                            server_id: ServerId::new(server.id.as_i64() + 1),
+                            original_item_id: None,
+                        }
+                        .into(),
+                    ),
                     requested_play_item_id: Some(item.virtual_media_id.clone()),
                     ..Default::default()
                 },
@@ -1137,10 +1141,15 @@ mod tests {
                 Some("known-session")
             );
             assert_eq!(
-                analysis.authoritative_play_session.unwrap().session_id,
+                analysis
+                    .authoritative_play_session
+                    .as_ref()
+                    .unwrap()
+                    .session()
+                    .session_id,
                 "known-session"
             );
-            assert!(analysis.authoritative_play_session_revision.is_some());
+            assert!(analysis.authoritative_play_session.is_some());
         }
     }
 

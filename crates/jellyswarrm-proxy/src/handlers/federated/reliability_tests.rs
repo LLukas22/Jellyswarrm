@@ -259,9 +259,7 @@ async fn partial_search_membership_does_not_veto_recursive_catalog_parent_identi
             .map(|(session, server)| CatalogFetchTarget {
                 session: session.clone(),
                 server: server.clone(),
-                parent_id: None,
-                member_parent_id: None,
-                resolved_parent_id: None,
+                parent: None,
             })
             .collect();
         let response = get_virtual_library_items(
@@ -398,9 +396,7 @@ async fn incomplete_sources_are_discarded_without_caching_degraded_results_or_pr
             .map(|(session, server)| CatalogFetchTarget {
                 session: session.clone(),
                 server: server.clone(),
-                parent_id: None,
-                member_parent_id: None,
-                resolved_parent_id: None,
+                parent: None,
             })
             .collect()
     };
@@ -575,9 +571,13 @@ async fn numbered_episode_versions_keep_ranges_distinct_and_route_same_server_co
         .map(|(session, server)| CatalogFetchTarget {
             session: session.clone(),
             server: server.clone(),
-            parent_id: Some("series".into()),
-            member_parent_id: Some(member_parent_ids[&server.id].clone()),
-            resolved_parent_id: Some(aggregate.into()),
+            parent: Some(
+                crate::application::catalog::library_resolution::ResolvedCatalogParent {
+                    backend: "series".into(),
+                    member: member_parent_ids[&server.id].clone().into(),
+                    requested: aggregate.into(),
+                },
+            ),
         })
         .collect();
     let response = get_aggregate_show_items(
@@ -640,7 +640,7 @@ async fn numbered_episode_versions_keep_ranges_distinct_and_route_same_server_co
         .await
         .unwrap();
     merge_media_detail(
-        &state,
+        &state.catalog_service(),
         DetailMergeContext {
             requested_item_id: single_id,
             selected_group: None,
@@ -727,7 +727,7 @@ async fn numbered_episode_versions_keep_ranges_distinct_and_route_same_server_co
         .await
         .unwrap();
     record_playback_sources(
-        &state,
+        &state.media_storage,
         single_id,
         route.target.server(),
         &owner(101),

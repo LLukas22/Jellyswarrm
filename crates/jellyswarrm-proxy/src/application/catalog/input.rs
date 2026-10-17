@@ -2,17 +2,17 @@
 use crate::application::error::ApplicationError;
 use hyper::StatusCode;
 
+use super::services::CatalogService;
 use crate::{
     application::{context::RequestContext, input::OperationRequest},
     processors::request_analyzer::RequestBodyAnalysisResult,
-    request_preprocessing, AppState,
+    request_preprocessing,
 };
 
 pub(crate) struct CatalogRequest {
     pub original_request: reqwest::Request,
     pub context: RequestContext,
     pub body_analysis: Option<RequestBodyAnalysisResult>,
-    pub query: super::query::CatalogQuery,
 }
 
 pub(crate) fn input_error(error: anyhow::Error) -> StatusCode {
@@ -35,18 +35,22 @@ impl CatalogRequest {
         context: RequestContext,
         body_analysis: Option<RequestBodyAnalysisResult>,
     ) -> Self {
-        let query = super::query::CatalogQuery::from_url(original_request.url());
         Self {
             original_request,
             context,
             body_analysis,
-            query,
         }
+    }
+
+    /// The preserved wire request is authoritative. Do not retain a second,
+    /// independently mutable interpretation that can diverge after adaptation.
+    pub(crate) fn query(&self) -> super::query::CatalogQuery {
+        super::query::CatalogQuery::from_url(self.original_request.url())
     }
 
     /// Validate using the full mapped scope, not the set of healthy sessions.
     /// In particular, an offline selected ID cannot bypass access validation.
-    pub(crate) async fn validate(&self, state: &AppState) -> Result<(), ApplicationError> {
+    pub(crate) async fn validate(&self, state: &CatalogService) -> Result<(), ApplicationError> {
         let mut access_url = self.original_request.url().clone();
         if access_url
             .path()
@@ -72,10 +76,10 @@ impl CatalogRequest {
             )
             .await
             .map_err(input_error_typed)?;
-        if let Some(scope) = &self.context.access_scope {
+        if let Some(scope) = self.context.access_scope().as_ref() {
             if self
                 .context
-                .backends
+                .backends()
                 .sessions
                 .as_ref()
                 .is_none_or(Vec::is_empty)

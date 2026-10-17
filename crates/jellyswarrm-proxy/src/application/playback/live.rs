@@ -1,4 +1,5 @@
-use super::target::{MediaTargetResolver, ResolutionError};
+use super::services::PlaybackService;
+use super::target::MediaTargetResolver;
 use hyper::StatusCode;
 use serde_json::Value;
 
@@ -6,17 +7,17 @@ mod binding;
 pub(crate) use binding::prepare_live_source;
 use binding::rewrite_live_id;
 
+#[cfg(test)]
+use crate::AppState;
 use crate::{
     application::{
-        context::{RequestContext, TargetError},
+        context::RequestContext,
         error::ApplicationError,
-        json::execute_processed_json_request_typed,
         playback::{response::track_play_session, selection::record_playback_sources},
     },
     models::MediaSource,
     processors::{response_processor::ResponseProcessingProfile, url_processor::play_session_id},
     upstream::jellyfin::{json::set_json_body_typed, request::UpstreamRequestBuilder},
-    AppState,
 };
 
 /// Live commands have caller context but no arbitrary initial backend. The
@@ -94,34 +95,36 @@ pub(crate) async fn post_live_stream_action(
     state: AppState,
     preprocessed: LiveRequest,
 ) -> Result<LiveStreamActionResult, StatusCode> {
-    post_live_stream_action_typed(state, preprocessed)
+    post_live_stream_action_typed(&state.playback_service(), preprocessed)
         .await
         .map_err(|error| error.detail_status())
 }
 
 pub(crate) async fn post_live_stream_action_typed(
-    state: AppState,
+    state: &PlaybackService<'_>,
     preprocessed: LiveRequest,
 ) -> Result<LiveStreamActionResult, ApplicationError> {
-    let scope = preprocessed.context.access_scope.as_ref().ok_or_else(|| {
-        ApplicationError::MissingIdentity("live viewer scope").with_status(StatusCode::UNAUTHORIZED)
-    })?;
+    let scope = preprocessed
+        .context
+        .access_scope()
+        .as_ref()
+        .ok_or_else(|| {
+            ApplicationError::MissingIdentity("live viewer scope")
+                .at(crate::application::error::FailureStage::CallerAuthentication)
+        })?;
     let mut payload = body(&preprocessed.original_request)?;
     let id = field(&preprocessed.original_request, &payload, "LiveStreamId")?
         .ok_or(ApplicationError::InvalidInput("missing live identity"))?;
     let (target, binding) = super::target::live_target(
         &preprocessed.context,
-        &state.play_sessions,
-        &id,
-        scope.user_id(),
+        state.play_sessions,
+        &id.as_str().into(),
+        &scope.user_id().into(),
     )
     .await
     .map_err(|error| {
-        let status = match &error {
-            ResolutionError::Target(error) => target_status(error),
-            _ => StatusCode::BAD_REQUEST,
-        };
-        ApplicationError::PlaybackResolution(error).with_status(status)
+        ApplicationError::PlaybackResolution(error)
+            .at(crate::application::error::FailureStage::LiveBindingLookup)
     })?;
     let server = target.server();
     let mut request = preprocessed
@@ -152,41 +155,36 @@ pub(crate) async fn post_live_stream_action_typed(
             "live body must be an object",
         ))?;
     object.retain(|key, _| !key.eq_ignore_ascii_case("LiveStreamId"));
-    object.insert("LiveStreamId".into(), Value::String(binding.original_id));
+    object.insert(
+        "LiveStreamId".into(),
+        Value::String(binding.original_id.as_str().to_owned()),
+    );
     set_json_body_typed(&mut request, &payload)?;
     let prefix = state.get_url_prefix().await;
-    let request = UpstreamRequestBuilder::new(&state.processors.url_processor, prefix.as_deref())
+    let request = UpstreamRequestBuilder::new(state.processors.url_processor, prefix.as_deref())
         .build(&target, &request)
         .await
         .map_err(|error| ApplicationError::Internal(error.into()))?;
     if close {
-        let response = state
-            .reqwest_client
-            .execute(request)
-            .await
-            .map_err(|error| ApplicationError::UpstreamTransport(error.without_url()))?;
-        let status = response.status();
+        let status = state.upstream.execute_status(request).await?;
         if status.is_success() {
-            super::lifecycle::PlaybackLifecycle {
-                sessions: &state.play_sessions,
-            }
-            .close_live(&id, scope.user_id())
-            .await;
+            super::lifecycle::PlaybackLifecycle::new(state.play_sessions)
+                .close_live(&id.as_str().into(), &scope.user_id().into())
+                .await;
         }
         return Ok(LiveStreamActionResult::Status(status));
     }
-    let mut response = execute_processed_json_request_typed(
-        &state,
-        request,
-        server,
-        ResponseProcessingProfile::Media,
-        preprocessed
-            .context
-            .auth
-            .as_ref()
-            .and_then(|auth| auth.token_ref()),
-    )
-    .await?;
+    let mut response = state
+        .execute_processed_json(
+            request,
+            server,
+            ResponseProcessingProfile::Media,
+            preprocessed
+                .context
+                .authorization()
+                .and_then(|auth| auth.token_ref()),
+        )
+        .await?;
     rewrite_live_id(&mut response, &id);
     Ok(LiveStreamActionResult::Json(response))
 }
@@ -198,18 +196,23 @@ pub(crate) async fn post_livestream_open(
     state: AppState,
     preprocessed: LiveRequest,
 ) -> Result<Value, StatusCode> {
-    post_livestream_open_typed(state, preprocessed)
+    post_livestream_open_typed(&state.playback_service(), preprocessed)
         .await
         .map_err(|error| error.detail_status())
 }
 
 pub(crate) async fn post_livestream_open_typed(
-    state: AppState,
+    state: &PlaybackService<'_>,
     preprocessed: LiveRequest,
 ) -> Result<Value, ApplicationError> {
-    let scope = preprocessed.context.access_scope.as_ref().ok_or_else(|| {
-        ApplicationError::MissingIdentity("live viewer scope").with_status(StatusCode::UNAUTHORIZED)
-    })?;
+    let scope = preprocessed
+        .context
+        .access_scope()
+        .as_ref()
+        .ok_or_else(|| {
+            ApplicationError::MissingIdentity("live viewer scope")
+                .at(crate::application::error::FailureStage::CallerAuthentication)
+        })?;
     let mut payload = body(&preprocessed.original_request)?;
     let session_id = play_session_id(preprocessed.original_request.url())
         .map_err(ApplicationError::InvalidRouting)?
@@ -226,10 +229,10 @@ pub(crate) async fn post_livestream_open_typed(
     let item_id = crate::media_storage_service::MediaStorageService::normalize_uuid(&item_id);
     let item_id = &item_id;
     let binding = (MediaTargetResolver {
-        media: &state.media_storage,
+        media: state.media_storage,
     })
     .session(
-        &state.play_sessions,
+        state.play_sessions,
         item_id,
         Some(&session_id),
         scope.user_id(),
@@ -237,11 +240,8 @@ pub(crate) async fn post_livestream_open_typed(
     )
     .await
     .map_err(|error| {
-        let status = match &error {
-            ResolutionError::ViewerMismatch(_) => StatusCode::FORBIDDEN,
-            _ => StatusCode::BAD_REQUEST,
-        };
-        ApplicationError::PlaybackResolution(error).with_status(status)
+        ApplicationError::PlaybackResolution(error)
+            .at(crate::application::error::FailureStage::LiveSessionLookup)
     })?
     .ok_or(ApplicationError::InvalidInput(
         "unknown live playback session",
@@ -252,10 +252,7 @@ pub(crate) async fn post_livestream_open_typed(
     let target = preprocessed
         .context
         .target(binding.server_id)
-        .map_err(|error| {
-            let status = target_status(&error);
-            ApplicationError::Internal(error.into()).with_status(status)
-        })?;
+        .map_err(ApplicationError::TargetSelection)?;
     let server = target.server();
     let session = target
         .session()
@@ -320,30 +317,25 @@ pub(crate) async fn post_livestream_open_typed(
     object.insert("PlaySessionId".into(), Value::String(session_id.clone()));
     set_json_body_typed(&mut request, &payload)?;
     let prefix = state.get_url_prefix().await;
-    let request = UpstreamRequestBuilder::new(&state.processors.url_processor, prefix.as_deref())
+    let request = UpstreamRequestBuilder::new(state.processors.url_processor, prefix.as_deref())
         .build(&target, &request)
         .await
         .map_err(|error| ApplicationError::Internal(error.into()))?;
     let token = preprocessed
         .context
-        .auth
-        .as_ref()
+        .authorization()
         .and_then(|auth| auth.token_ref());
-    let mut response = execute_processed_json_request_typed(
-        &state,
-        request,
-        server,
-        ResponseProcessingProfile::Media,
-        token,
-    )
-    .await?;
+    let mut response = state
+        .execute_processed_json(request, server, ResponseProcessingProfile::Media, token)
+        .await?;
     // Jellyfin returns a singular MediaSource here, not a PlaybackResponse.
     let mut source: MediaSource = serde_json::from_value(response["MediaSource"].clone())
         .map_err(ApplicationError::InvalidUpstreamJson)?;
-    let live_plan = prepare_live_source(&state, &mut source, scope.user_id(), server).await?;
+    let live_plan =
+        prepare_live_source(state.play_sessions, &mut source, scope.user_id(), server).await?;
     let mut sources = vec![source];
     record_playback_sources(
-        &state,
+        state.media_storage,
         item_id,
         server,
         original_item_id,
@@ -356,28 +348,18 @@ pub(crate) async fn post_livestream_open_typed(
         serde_json::to_value(source).map_err(ApplicationError::Serialization)?;
     // Finish all fallible work before publishing either live or ordinary bindings.
     serde_json::to_vec(&response).map_err(ApplicationError::Serialization)?;
-    if !(super::lifecycle::PlaybackLifecycle {
-        sessions: &state.play_sessions,
-    })
-    .commit_live(&live_plan.into_iter().collect::<Vec<_>>())
-    .await
-    {
-        return Err(ApplicationError::UnavailableOwner);
-    }
-    track_play_session(source, &session_id, scope.user_id(), server, &state).await;
-    super::lifecycle::PlaybackLifecycle {
-        sessions: &state.play_sessions,
-    }
-    .bind_original(&session_id, scope.user_id(), server.id, original_item_id)
-    .await;
+    super::lifecycle::PlaybackLifecycle::new(state.play_sessions)
+        .commit_live(&live_plan.into_iter().collect::<Vec<_>>())
+        .await
+        .map_err(|error| {
+            ApplicationError::Internal(error.into())
+                .at(crate::application::error::FailureStage::PlaybackCommit)
+        })?;
+    track_play_session(source, &session_id, scope.user_id(), server, state).await;
+    super::lifecycle::PlaybackLifecycle::new(state.play_sessions)
+        .bind_original(&session_id, scope.user_id(), server.id, original_item_id)
+        .await;
     Ok(response)
-}
-
-fn target_status(error: &TargetError) -> StatusCode {
-    match error {
-        TargetError::AccessDenied | TargetError::ViewerMismatch => StatusCode::FORBIDDEN,
-        TargetError::UnavailableOwner => StatusCode::SERVICE_UNAVAILABLE,
-    }
 }
 
 #[cfg(test)]

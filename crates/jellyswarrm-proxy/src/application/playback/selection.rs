@@ -8,10 +8,13 @@ use tracing::debug;
 
 #[cfg(test)]
 use crate::application::context::{AuthorizedTarget, RequestContext, TargetError};
+#[cfg(test)]
+use crate::AppState;
 use crate::{
     application::details::sources::version_name,
-    media_storage_service::MediaVersionSourceObservation, models::MediaSource,
-    server_storage::Server, AppState,
+    media_storage_service::{MediaStorageService, MediaVersionSourceObservation},
+    models::MediaSource,
+    server_storage::Server,
 };
 
 #[cfg(test)]
@@ -29,23 +32,21 @@ pub(crate) struct ReroutedPlaybackRoute {
 }
 
 pub(crate) async fn record_playback_sources(
-    state: &AppState,
+    media: &MediaStorageService,
     aggregate_id: &str,
     server: &Server,
     original_item_id: &str,
-    source_generation: i64,
+    source_generation: crate::media_storage_service::ReconciliationGeneration,
     sources: &mut Vec<MediaSource>,
 ) -> Result<(), ApplicationError> {
-    let Some(group) = state
-        .media_storage
+    let Some(group) = media
         .get_media_version_group(aggregate_id)
         .await
         .map_err(ApplicationError::Storage)?
     else {
         return Ok(());
     };
-    let Some(member) = state
-        .media_storage
+    let Some(member) = media
         .get_media_version_members(group.id)
         .await
         .map_err(ApplicationError::Storage)?
@@ -68,8 +69,7 @@ pub(crate) async fn record_playback_sources(
     for source in sources.iter_mut() {
         source.name = Some(version_name(source, server));
     }
-    let sources_recorded = state
-        .media_storage
+    let sources_recorded = media
         .observe_media_version_sources(
             group.id,
             source_generation,
@@ -81,8 +81,7 @@ pub(crate) async fn record_playback_sources(
     if !sources_recorded {
         let mut routable_sources = Vec::new();
         for source in sources.drain(..) {
-            if state
-                .media_storage
+            if media
                 .get_media_version_source_route(group.id, &source.id)
                 .await
                 .map_err(ApplicationError::Storage)?

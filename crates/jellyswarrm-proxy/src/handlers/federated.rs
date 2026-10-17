@@ -19,7 +19,7 @@ pub async fn get_live_tv_programs(
     State(state): State<AppState>,
     CatalogInput(request): CatalogInput,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    catalog::get_live_tv_programs(&state, request)
+    catalog::get_live_tv_programs(&state.catalog_service(), request)
         .await
         .map(Json)
         .map_err(|error| error.detail_status())
@@ -29,7 +29,7 @@ pub async fn get_items_from_all_servers_if_not_restricted(
     State(state): State<AppState>,
     CatalogInput(request): CatalogInput,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    catalog::get_items_from_all_servers_if_not_restricted(&state, request)
+    catalog::get_items_from_all_servers_if_not_restricted(&state.catalog_service(), request)
         .await
         .map(Json)
         .map_err(|error| error.detail_status())
@@ -39,7 +39,7 @@ pub async fn get_items_from_all_servers(
     State(state): State<AppState>,
     CatalogInput(request): CatalogInput,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    catalog::get_items_from_all_servers(&state, request)
+    catalog::get_items_from_all_servers(&state.catalog_service(), request)
         .await
         .map(Json)
         .map_err(|error| error.detail_status())
@@ -49,7 +49,7 @@ pub async fn get_show_children_from_all_servers(
     State(state): State<AppState>,
     CatalogInput(request): CatalogInput,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    catalog::get_show_children_from_all_servers(&state, request)
+    catalog::get_show_children_from_all_servers(&state.catalog_service(), request)
         .await
         .map(Json)
         .map_err(|error| error.detail_status())
@@ -59,7 +59,7 @@ pub async fn get_media_folders(
     State(state): State<AppState>,
     CatalogInput(request): CatalogInput,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    catalog::get_media_folders(&state, request)
+    catalog::get_media_folders(&state.catalog_service(), request)
         .await
         .map(Json)
         .map_err(|error| error.detail_status())
@@ -69,7 +69,7 @@ pub async fn get_filters(
     State(state): State<AppState>,
     CatalogInput(request): CatalogInput,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    catalog::filters::get_filters_typed(&state, request)
+    catalog::filters::get_filters_typed(&state.catalog_service(), request)
         .await
         .map(Json)
         .map_err(|error| error.detail_status())
@@ -87,7 +87,7 @@ async fn get_items_from_all_servers_preprocessed(
     state: &AppState,
     request: PreprocessedRequest,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    catalog::get_items_from_all_servers_preprocessed(state, request.into())
+    catalog::get_items_from_all_servers_preprocessed(&state.catalog_service(), request.into())
         .await
         .map(Json)
         .map_err(|error| error.detail_status())
@@ -117,7 +117,7 @@ async fn resolve_catalog_plan(
         context,
         None,
     );
-    library_resolution::resolve_catalog_plan(state, &input)
+    library_resolution::resolve_catalog_plan(&state.catalog_service(), &input)
         .await
         .map_err(|error| error.detail_status())
 }
@@ -138,7 +138,7 @@ mod media_reconciliation {
         skipped: usize,
     ) -> Result<Json<serde_json::Value>, StatusCode> {
         catalog::media_reconciliation::get_virtual_library_items(
-            state,
+            &state.catalog_service(),
             request.into(),
             scope,
             targets,
@@ -156,7 +156,7 @@ mod media_reconciliation {
         skipped: usize,
     ) -> Result<Json<serde_json::Value>, StatusCode> {
         catalog::media_reconciliation::get_aggregate_show_items(
-            state,
+            &state.catalog_service(),
             request.into(),
             scope,
             targets,

@@ -400,8 +400,13 @@ async fn aggregate_default_query_keeps_member_source_and_track_preferences() {
 async fn sessionless_passthrough_is_rejected_without_negotiation() {
     let fixture = fixture().await;
     let mut input = operation(&fixture, "", json!({}));
-    input.context.backends.sessions = None;
-    input.context.access_scope = None;
+    input.context = RequestContext::new(
+        &input.original_request,
+        input.context.authorization().cloned(),
+        input.context.user().cloned(),
+        None,
+        None,
+    );
     assert_eq!(
         post_playback_info(fixture.state.clone(), input)
             .await
@@ -433,13 +438,13 @@ async fn selection_plan_distinguishes_invalid_source_and_unavailable_owner() {
         .unwrap(),
         PlaybackRouteDecision::InvalidSelectedSource
     ));
-    input
-        .context
-        .backends
-        .sessions
-        .as_mut()
-        .unwrap()
-        .truncate(1);
+    input.context = RequestContext::new(
+        &input.original_request,
+        input.context.authorization().cloned(),
+        input.context.user().cloned(),
+        Some(fixture.sessions[..1].to_vec()),
+        input.context.access_scope().clone(),
+    );
     assert!(matches!(
         resolve_playback_route(
             &fixture.state,
@@ -451,10 +456,17 @@ async fn selection_plan_distinguishes_invalid_source_and_unavailable_owner() {
         .unwrap(),
         PlaybackRouteDecision::SelectedSourceUnavailable
     ));
-    input.context.access_scope = Some(VirtualLibraryAccessScope::new(
+    let scope = Some(VirtualLibraryAccessScope::new(
         "viewer",
         [fixture.sessions[0].1.id],
     ));
+    input.context = RequestContext::new(
+        &input.original_request,
+        input.context.authorization().cloned(),
+        input.context.user().cloned(),
+        input.context.backends().sessions.clone(),
+        scope,
+    );
     // Denial wins over missing availability, without falling back to a sibling.
     assert!(matches!(
         resolve_playback_route(
@@ -672,24 +684,23 @@ async fn invalid_live_open_and_failed_refresh_do_not_commit_playback_transitions
     use crate::session_storage::PlaybackSession;
     let fixture = fixture().await;
     let owner = &fixture.sessions[0].1;
-    PlaybackLifecycle {
-        sessions: &fixture.state.play_sessions,
-    }
-    .establish(PlaybackSession {
-        session_id: "live-player".into(),
-        item_id: fixture.aggregate.clone(),
-        user_id: "viewer".into(),
-        server_id: owner.id,
-        original_item_id: Some(format!("{:032x}", 100)),
-    })
-    .await;
+    PlaybackLifecycle::new(&fixture.state.play_sessions)
+        .establish(PlaybackSession {
+            session_id: "live-player".into(),
+            item_id: fixture.aggregate.clone(),
+            user_id: "viewer".into(),
+            server_id: owner.id,
+            original_item_id: Some(format!("{:032x}", 100)),
+        })
+        .await;
     let (_, revision) = fixture
         .state
         .play_sessions
         .resolve_report_session("live-player", "viewer")
         .await
         .unwrap()
-        .unwrap();
+        .unwrap()
+        .into_parts();
     Mock::given(method("POST"))
         .and(path("/LiveStreams/Open"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"MediaSource":false})))
@@ -714,9 +725,7 @@ async fn invalid_live_open_and_failed_refresh_do_not_commit_playback_transitions
         .unwrap_err(),
         StatusCode::BAD_GATEWAY
     );
-    let lifecycle = PlaybackLifecycle {
-        sessions: &fixture.state.play_sessions,
-    };
+    let lifecycle = PlaybackLifecycle::new(&fixture.state.play_sessions);
     let live_id = lifecycle
         .register_live("backend-live", "viewer", owner.id)
         .await;
@@ -749,14 +758,15 @@ async fn invalid_live_open_and_failed_refresh_do_not_commit_playback_transitions
         .live_stream(&live_id, "viewer")
         .await
         .unwrap();
-    assert_eq!(binding.original_id, "backend-live");
+    assert_eq!(binding.original_id.as_str(), "backend-live");
     let (binding, current_revision) = fixture
         .state
         .play_sessions
         .resolve_report_session("live-player", "viewer")
         .await
         .unwrap()
-        .unwrap();
+        .unwrap()
+        .into_parts();
     assert_eq!(current_revision, revision);
     assert_eq!(
         binding.original_item_id.as_deref(),
@@ -872,14 +882,14 @@ async fn valid_live_sources_do_not_publish_when_translation_or_reconciliation_fa
                     .await;
                 let failure = if let Some(input) = input {
                     crate::application::playback::live::post_livestream_open_typed(
-                        fixture.state.clone(),
+                        &fixture.state.playback_service(),
                         input,
                     )
                     .await
                     .unwrap_err()
                 } else {
                     post_playback_info_typed(
-                        fixture.state.clone(),
+                        &fixture.state.playback_service(),
                         operation(&fixture, "", json!({"MediaSourceId":fixture.sources[0]})),
                     )
                     .await
@@ -919,7 +929,7 @@ async fn valid_live_sources_do_not_publish_when_translation_or_reconciliation_fa
                         .live_stream(&id, "viewer")
                         .await
                         .unwrap();
-                    assert_eq!(binding.original_id, "backend-live");
+                    assert_eq!(binding.original_id.as_str(), "backend-live");
                 } else {
                     assert!(fixture
                         .state
@@ -947,8 +957,8 @@ async fn valid_live_sources_do_not_publish_when_translation_or_reconciliation_fa
                     .await
                     .unwrap();
                 assert_eq!(
-                    before.as_ref().map(|(_, rev)| rev),
-                    after.as_ref().map(|(_, rev)| rev)
+                    before.as_ref().map(|binding| binding.revision()),
+                    after.as_ref().map(|binding| binding.revision())
                 );
             }
         }
@@ -998,7 +1008,7 @@ async fn stale_reconciliation_drops_live_identity_with_its_unroutable_source() {
                 .await
                 .unwrap()
                 .unwrap()
-                .1;
+                .revision();
             assert_eq!(
                 crate::application::playback::live::post_livestream_open(
                     fixture.state.clone(),
@@ -1016,7 +1026,7 @@ async fn stale_reconciliation_drops_live_identity_with_its_unroutable_source() {
                     .await
                     .unwrap()
                     .unwrap()
-                    .1,
+                    .revision(),
                 before
             );
         } else {
@@ -1260,7 +1270,7 @@ async fn successful_live_workflows_publish_the_exact_advertised_identity_and_url
                 .await
                 .unwrap()
                 .original_id,
-            "stable-live"
+            "stable-live".into()
         );
     }
 }

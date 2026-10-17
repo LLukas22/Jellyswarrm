@@ -4,10 +4,10 @@ use serde_json::Value;
 use tokio::task::JoinSet;
 use tracing::{error, warn};
 
+use crate::application::catalog::services::CatalogService;
 use crate::{
     application::context::{RequestContext, TargetError},
     application::error::ApplicationError,
-    application::json::execute_processed_json_request_typed,
     media_storage_service::{
         MediaMapping, MediaVersionGroup, MediaVersionMember, MediaVersionSourceObservation,
     },
@@ -20,7 +20,6 @@ use crate::{
     url_helper::{ensure_query_list_value, replace_path_id},
     user_authorization_service::AuthorizationSession,
     virtual_library_service::{compare_virtual_library_routes, VirtualLibraryAccessScope},
-    AppState,
 };
 
 const MEDIA_SOURCES_FIELD: &str = "MediaSources";
@@ -61,7 +60,7 @@ pub(crate) struct DetailMergeContext<'a> {
     pub access_scope: Option<&'a VirtualLibraryAccessScope>,
     pub sessions: Option<&'a [(AuthorizationSession, Server)]>,
     pub original_request: &'a reqwest::Request,
-    pub source_generation: i64,
+    pub source_generation: crate::media_storage_service::ReconciliationGeneration,
 }
 
 #[derive(Debug)]
@@ -83,7 +82,7 @@ struct HostedMediaSources {
 /// Merges all reachable members of a stable media group into one typed item
 /// response. Unknown Jellyfin fields survive through the flattened DTO fields.
 pub(crate) async fn merge_media_detail(
-    state: &AppState,
+    state: &CatalogService,
     context: DetailMergeContext<'_>,
     proxy_api_key: Option<&str>,
     payload: &mut Value,
@@ -219,7 +218,7 @@ pub(crate) async fn merge_media_detail(
 }
 
 pub(crate) async fn preserve_media_parent_groups_typed(
-    state: &AppState,
+    state: &CatalogService,
     item: &mut MediaItem,
     viewer: &str,
     catalog_scope: Option<&str>,
@@ -305,7 +304,7 @@ fn compare_hosted_sources(
 }
 
 async fn fetch_member_sources(
-    state: &AppState,
+    state: &CatalogService,
     context: &DetailMergeContext<'_>,
     proxy_api_key: Option<&str>,
     hosts: Vec<VersionHost>,
@@ -343,7 +342,7 @@ async fn fetch_member_sources(
 }
 
 async fn fetch_member_source(
-    state: AppState,
+    state: CatalogService,
     mut original_request: reqwest::Request,
     auth: Option<JellyfinAuthorization>,
     access_scope: Option<VirtualLibraryAccessScope>,
@@ -383,14 +382,14 @@ async fn fetch_member_source(
         .await
         .map_err(|error| ApplicationError::Internal(error.into()))?;
 
-    let response = execute_processed_json_request_typed(
-        &state,
-        request,
-        &host.server,
-        ResponseProcessingProfile::Media,
-        proxy_api_key.as_deref(),
-    )
-    .await?;
+    let response = state
+        .execute_processed_json(
+            request,
+            &host.server,
+            ResponseProcessingProfile::Media,
+            proxy_api_key.as_deref(),
+        )
+        .await?;
     let item: MediaItem = response_json_to_payload_typed(response)?;
 
     Ok(HostedMediaSources {

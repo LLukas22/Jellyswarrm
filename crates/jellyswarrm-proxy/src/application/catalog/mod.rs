@@ -1,9 +1,9 @@
 //! Catalog workflows with unselected inputs and explicit target planning.
 use crate::application::error::ApplicationError;
-use hyper::StatusCode;
 use tracing::debug;
 
-use crate::AppState;
+use self::services::CatalogService;
+pub(crate) mod services;
 use input::CatalogRequest;
 
 pub(crate) mod input;
@@ -22,14 +22,16 @@ pub(crate) mod scan;
 pub(crate) mod snapshots;
 pub(crate) mod upstream;
 
-use library_resolution::{resolve_catalog_plan, CatalogFetchTarget, CatalogPlan};
+use library_resolution::{
+    resolve_catalog_plan, CatalogFetchTarget, CatalogPlan, ResolvedCatalogParent,
+};
 use library_root::{get_automatic_library_root, get_configured_library_root};
 use postprocessing::{FederatedItems, ResponseShape};
 use request_policy::{has_query_key, CatalogRequestPolicy};
 use upstream::{fetch_catalog, FetchMode, FetchedCatalog};
 
 async fn get_items(
-    state: &AppState,
+    state: &CatalogService,
     request: CatalogRequest,
 ) -> Result<serde_json::Value, ApplicationError> {
     crate::application::details::service::get_item_detail(state, request.into(), false).await
@@ -38,7 +40,7 @@ async fn get_items(
 /// Series detail and single-channel/genre guides identify one upstream item.
 /// Query only its owning server so unrelated programs cannot enter the result.
 pub(crate) async fn get_live_tv_programs(
-    state: &AppState,
+    state: &CatalogService,
     preprocessed: CatalogRequest,
 ) -> Result<serde_json::Value, ApplicationError> {
     let url = preprocessed.original_request.url();
@@ -53,7 +55,7 @@ pub(crate) async fn get_live_tv_programs(
     }
 }
 
-async fn is_aggregate_id(state: &AppState, url: &url::Url) -> Result<bool, ApplicationError> {
+async fn is_aggregate_id(state: &CatalogService, url: &url::Url) -> Result<bool, ApplicationError> {
     let series_id = url.query_pairs().find_map(|(key, value)| {
         (key.eq_ignore_ascii_case("SeriesId") || key.eq_ignore_ascii_case("SeasonId"))
             .then(|| value.into_owned())
@@ -70,7 +72,7 @@ async fn is_aggregate_id(state: &AppState, url: &url::Url) -> Result<bool, Appli
 }
 
 pub(crate) async fn get_items_from_all_servers_if_not_restricted(
-    state: &AppState,
+    state: &CatalogService,
     preprocessed: CatalogRequest,
 ) -> Result<serde_json::Value, ApplicationError> {
     let original_request = &preprocessed.original_request;
@@ -85,7 +87,7 @@ pub(crate) async fn get_items_from_all_servers_if_not_restricted(
 }
 
 pub(crate) async fn get_items_from_all_servers(
-    state: &AppState,
+    state: &CatalogService,
     preprocessed: CatalogRequest,
 ) -> Result<serde_json::Value, ApplicationError> {
     get_items_from_all_servers_preprocessed(state, preprocessed).await
@@ -94,14 +96,14 @@ pub(crate) async fn get_items_from_all_servers(
 /// Federates `/Shows/{seriesId}/Seasons|Episodes` when `seriesId` is a
 /// collapsed show aggregate; otherwise falls back to single-server proxying.
 pub(crate) async fn get_show_children_from_all_servers(
-    state: &AppState,
+    state: &CatalogService,
     preprocessed: CatalogRequest,
 ) -> Result<serde_json::Value, ApplicationError> {
     get_show_children(state, preprocessed).await
 }
 
 pub(crate) async fn get_show_children(
-    state: &AppState,
+    state: &CatalogService,
     preprocessed: CatalogRequest,
 ) -> Result<serde_json::Value, ApplicationError> {
     use crate::url_helper::contains_id;
@@ -141,16 +143,16 @@ pub(crate) async fn get_show_children(
         .get_media_version_members(group.id)
         .await
         .map_err(ApplicationError::Storage)?;
-    let Some(sessions) = preprocessed.context.backends.sessions.clone() else {
+    let Some(sessions) = preprocessed.context.backends().sessions.clone() else {
         return Err(ApplicationError::MissingIdentity("show catalog sessions")
-            .with_status(StatusCode::UNAUTHORIZED));
+            .at(crate::application::error::FailureStage::CallerAuthentication));
     };
     let mut skipped_targets = 0;
     let mut targets = Vec::new();
     for member in members {
         if preprocessed
             .context
-            .access_scope
+            .access_scope()
             .as_ref()
             .is_some_and(|scope| !scope.allows(member.server.id))
         {
@@ -167,9 +169,11 @@ pub(crate) async fn get_show_children(
         targets.push(CatalogFetchTarget {
             session,
             server,
-            parent_id: Some(member.mapping.original_media_id),
-            member_parent_id: Some(member.mapping.virtual_media_id),
-            resolved_parent_id: Some(aggregate_id.clone()),
+            parent: Some(ResolvedCatalogParent {
+                backend: member.mapping.original_media_id.into(),
+                member: member.mapping.virtual_media_id.into(),
+                requested: aggregate_id.clone().into(),
+            }),
         });
     }
     if targets.is_empty() {
@@ -191,17 +195,16 @@ pub(crate) async fn get_show_children(
 }
 
 pub(crate) async fn get_media_folders(
-    state: &AppState,
+    state: &CatalogService,
     mut preprocessed: CatalogRequest,
 ) -> Result<serde_json::Value, ApplicationError> {
     let user_id = preprocessed
         .context
-        .user
-        .as_ref()
+        .user()
         .map(|user| user.id.clone())
         .ok_or_else(|| {
             ApplicationError::MissingIdentity("media folder viewer")
-                .with_status(StatusCode::UNAUTHORIZED)
+                .at(crate::application::error::FailureStage::CallerAuthentication)
         })?;
     let path = preprocessed.original_request.url().path().to_string();
     let path = path
@@ -212,13 +215,12 @@ pub(crate) async fn get_media_folders(
         .original_request
         .url_mut()
         .set_path(&format!("{path}/Users/{user_id}/Views"));
-    preprocessed.query = query::CatalogQuery::from_url(preprocessed.original_request.url());
 
     get_items_from_all_servers_preprocessed(state, preprocessed).await
 }
 
 pub(crate) async fn get_items_from_all_servers_preprocessed(
-    state: &AppState,
+    state: &CatalogService,
     preprocessed: CatalogRequest,
 ) -> Result<serde_json::Value, ApplicationError> {
     get_catalog(state, preprocessed).await
@@ -227,10 +229,10 @@ pub(crate) async fn get_items_from_all_servers_preprocessed(
 /// Cause-preserving catalog service boundary. Only HTTP adapters reduce errors
 /// to the endpoint's established status contract.
 pub(crate) async fn get_catalog(
-    state: &AppState,
+    state: &CatalogService,
     preprocessed: CatalogRequest,
 ) -> Result<serde_json::Value, ApplicationError> {
-    if preprocessed.query.kind == query::CatalogQueryKind::Batch {
+    if preprocessed.query().kind == query::CatalogQueryKind::Batch {
         if let Some(lookup) = item_lookup::RequestedItems::resolve(state, &preprocessed).await? {
             return lookup.fetch(state, preprocessed).await;
         }
@@ -253,7 +255,7 @@ pub(crate) async fn get_catalog(
                 state,
                 &preprocessed.original_request,
                 FederatedItems::default(),
-                &preprocessed.query.policy(false),
+                &preprocessed.query().policy(false),
                 response_shape,
             )
             .await
@@ -289,7 +291,7 @@ pub(crate) async fn get_catalog(
 }
 
 async fn get_interleaved_root_typed(
-    state: &AppState,
+    state: &CatalogService,
     preprocessed: CatalogRequest,
     targets: Vec<CatalogFetchTarget>,
 ) -> Result<serde_json::Value, ApplicationError> {
@@ -305,7 +307,7 @@ async fn get_interleaved_root_typed(
 }
 
 async fn get_interleaved_root_uncached(
-    state: &AppState,
+    state: &CatalogService,
     preprocessed: CatalogRequest,
     targets: Vec<CatalogFetchTarget>,
     policy: CatalogRequestPolicy,
@@ -315,8 +317,7 @@ async fn get_interleaved_root_uncached(
     let FetchedCatalog {
         server_items,
         response_shape,
-        failures,
-        outcomes,
+        report,
     } = fetch_catalog(
         state,
         &original_request,
@@ -351,13 +352,12 @@ async fn get_interleaved_root_uncached(
             response_shape,
         )
         .await?,
-        complete: failures == 0,
-        outcomes,
+        report,
     })
 }
 
 pub(super) async fn finalize_items_response_typed(
-    state: &AppState,
+    state: &CatalogService,
     request: &reqwest::Request,
     items: FederatedItems,
     policy: &CatalogRequestPolicy,
@@ -373,8 +373,12 @@ pub(super) async fn finalize_items_response_typed(
             crate::request_preprocessing::JellyfinAuthorization::from_request(request)
         {
             if let Some(token) = auth.token_ref() {
-                crate::application::observation::media_response(state, Some(token), &response)
-                    .await;
+                crate::application::observation::media_response(
+                    &state.client_sessions,
+                    Some(token),
+                    &response,
+                )
+                .await;
             }
         }
     }

@@ -15,7 +15,7 @@ pub async fn get_item(
     State(state): State<AppState>,
     OperationInput(preprocessed): OperationInput,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    details::get_item_detail(&state, preprocessed, true)
+    details::get_item_detail(&state.catalog_service(), preprocessed, true)
         .await
         .map(Json)
         .map_err(|error| error.detail_status())
@@ -25,7 +25,7 @@ pub async fn get_items(
     State(state): State<AppState>,
     OperationInput(preprocessed): OperationInput,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    details::get_item_detail(&state, preprocessed, false)
+    details::get_item_detail(&state.catalog_service(), preprocessed, false)
         .await
         .map(Json)
         .map_err(|error| error.detail_status())
@@ -35,7 +35,7 @@ pub async fn get_items_list(
     State(state): State<AppState>,
     OperationInput(preprocessed): OperationInput,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    details::get_item_detail(&state, preprocessed, false)
+    details::get_item_detail(&state.catalog_service(), preprocessed, false)
         .await
         .map(Json)
         .map_err(|error| error.detail_status())
@@ -46,7 +46,7 @@ pub async fn post_playback_info(
     State(state): State<AppState>,
     PlaybackInput(input): PlaybackInput,
 ) -> Result<Json<PlaybackResponse>, StatusCode> {
-    playback::post_playback_info_typed(state, input)
+    playback::post_playback_info_typed(&state.playback_service(), input)
         .await
         .map(Json)
         .map_err(|error| error.detail_status())

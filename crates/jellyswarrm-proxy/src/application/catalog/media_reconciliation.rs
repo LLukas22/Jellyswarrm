@@ -3,13 +3,16 @@ use crate::application::error::ApplicationError;
 use hyper::StatusCode;
 use std::collections::BTreeSet;
 
+use super::services::CatalogService;
 use crate::{
     application::catalog::input::CatalogRequest,
     media_catalog::{MediaDedupPlan, TaggedMediaItem},
     media_identity::{MediaAlias, MediaKind, MediaObservation},
     media_scope::{MediaCatalogScope, MediaScopeKind},
-    media_storage_service::MediaCatalogSnapshot,
-    AppState,
+    media_storage_service::{
+        InventorySourceEvidence, InventorySourceStatus, InventoryUpdate, MediaCatalogSnapshot,
+        ReconciliationMode,
+    },
 };
 
 use super::{
@@ -21,7 +24,7 @@ use super::{
 };
 
 async fn show_catalog_aliases(
-    state: &AppState,
+    state: &CatalogService,
     items: &[crate::models::MediaItem],
     viewer: &str,
     series_group: Option<&str>,
@@ -85,7 +88,7 @@ impl CatalogContext {
 
 #[cfg(test)]
 pub(crate) async fn get_virtual_library_items(
-    state: &AppState,
+    state: &CatalogService,
     preprocessed: CatalogRequest,
     catalog_scope_key: String,
     targets: Vec<CatalogFetchTarget>,
@@ -103,7 +106,7 @@ pub(crate) async fn get_virtual_library_items(
 }
 
 pub(super) async fn get_virtual_library_items_typed(
-    state: &AppState,
+    state: &CatalogService,
     preprocessed: CatalogRequest,
     catalog_scope_key: String,
     targets: Vec<CatalogFetchTarget>,
@@ -121,7 +124,7 @@ pub(super) async fn get_virtual_library_items_typed(
 }
 
 async fn get_reconciled_catalog(
-    state: &AppState,
+    state: &CatalogService,
     preprocessed: CatalogRequest,
     catalog_scope_key: String,
     targets: Vec<CatalogFetchTarget>,
@@ -153,7 +156,7 @@ async fn get_reconciled_catalog(
 }
 
 async fn get_reconciled_catalog_uncached(
-    state: &AppState,
+    state: &CatalogService,
     preprocessed: CatalogRequest,
     catalog_scope_key: String,
     targets: Vec<CatalogFetchTarget>,
@@ -163,15 +166,15 @@ async fn get_reconciled_catalog_uncached(
 ) -> Result<super::snapshots::SnapshotResponse, ApplicationError> {
     let deduplicate_media = state.deduplicate_media_enabled().await;
     let reconciliation_generation = if deduplicate_media {
-        Some(
-            state
+        ReconciliationMode::Enabled {
+            generation: state
                 .media_storage
                 .begin_media_reconciliation()
                 .await
                 .map_err(ApplicationError::Storage)?,
-        )
+        }
     } else {
-        None
+        ReconciliationMode::Disabled
     };
     let original_request = preprocessed.original_request;
     policy.reconcile_playback = deduplicate_media;
@@ -195,12 +198,11 @@ async fn get_reconciled_catalog_uncached(
 
     let viewer = preprocessed
         .context
-        .access_scope
+        .access_scope()
         .as_ref()
         .map(|scope| scope.user_id().to_string())
         .unwrap_or_else(|| "anonymous".to_string());
-    let complete = fetched.failures == 0;
-    let outcomes = fetched.outcomes.clone();
+    let report = fetched.report.clone();
     let response_shape = fetched.response_shape;
     let items = reconcile_fetched_catalog(
         state,
@@ -223,8 +225,7 @@ async fn get_reconciled_catalog_uncached(
             response_shape,
         )
         .await?,
-        complete,
-        outcomes,
+        report,
     })
 }
 
@@ -232,13 +233,13 @@ pub(super) struct ReconciliationContext<'a> {
     pub viewer: &'a str,
     pub catalog_scope_key: &'a str,
     pub series_group: Option<&'a str>,
-    pub generation: Option<i64>,
+    pub generation: ReconciliationMode,
 }
 
 /// Shared refresh/interactive reconciliation. No incoming request, observation,
 /// cache materialization or client pagination belongs in this stage.
 pub(super) async fn reconcile_fetched_catalog(
-    state: &AppState,
+    state: &CatalogService,
     context: ReconciliationContext<'_>,
     policy: &CatalogRequestPolicy,
     fetched: FetchedCatalog,
@@ -249,12 +250,36 @@ pub(super) async fn reconcile_fetched_catalog(
         series_group,
         generation: reconciliation_generation,
     } = context;
-    let deduplicate_media = reconciliation_generation.is_some();
+    let deduplicate_media = matches!(
+        reconciliation_generation,
+        ReconciliationMode::Enabled { .. }
+    );
     let FetchedCatalog {
         server_items,
-        failures,
+        report,
         ..
     } = fetched;
+    let evidence = report
+        .outcomes()
+        .iter()
+        .map(|source| InventorySourceEvidence {
+            source_key: format!(
+                "{}:{}",
+                source.server_id,
+                source
+                    .parent_id
+                    .as_ref()
+                    .map(|id| id.as_str())
+                    .unwrap_or_default()
+            ),
+            server_id: source.server_id,
+            status: match source.outcome {
+                super::scan::FetchOutcome::Complete => InventorySourceStatus::Complete,
+                super::scan::FetchOutcome::BoundedFeed => InventorySourceStatus::Bounded,
+                super::scan::FetchOutcome::Partial(_) => InventorySourceStatus::Incomplete,
+            },
+        })
+        .collect::<Vec<_>>();
     let authoritative_inventory = series_group.is_none() && !policy.inventory_types.is_empty();
     let mut snapshots = Vec::new();
     let mut tagged_items = Vec::new();
@@ -281,7 +306,11 @@ pub(super) async fn reconcile_fetched_catalog(
                 source_key: format!(
                     "{}:{}",
                     fetch.server_items.server.id,
-                    fetch.source_parent_id.as_deref().unwrap_or_default()
+                    fetch
+                        .source_parent_id
+                        .as_ref()
+                        .map(|id| id.as_str())
+                        .unwrap_or_default()
                 ),
                 server_id: fetch.server_items.server.id,
                 complete: false,
@@ -299,20 +328,21 @@ pub(super) async fn reconcile_fetched_catalog(
                     .collect(),
             })
             .collect::<Vec<_>>();
-        if parents
-            .iter()
-            .any(|snapshot| !snapshot.observations.is_empty())
-        {
-            state
-                .media_storage
-                .reconcile_media_catalog(
-                    catalog_scope_key,
-                    reconciliation_generation.expect("enabled reconciliation has a generation"),
-                    &parents,
-                    false,
-                )
-                .await
-                .map_err(ApplicationError::Storage)?;
+        if let ReconciliationMode::Enabled { generation } = reconciliation_generation {
+            if parents
+                .iter()
+                .any(|snapshot| !snapshot.observations.is_empty())
+            {
+                state
+                    .media_storage
+                    .apply_inventory_update(
+                        catalog_scope_key,
+                        generation,
+                        InventoryUpdate::Observations(parents),
+                    )
+                    .await
+                    .map_err(ApplicationError::Storage)?;
+            }
         }
     }
     for fetch in server_items {
@@ -326,7 +356,11 @@ pub(super) async fn reconcile_fetched_catalog(
                 source_key: format!(
                     "{}:{}",
                     server.id,
-                    fetch.source_parent_id.as_deref().unwrap_or_default()
+                    fetch
+                        .source_parent_id
+                        .as_ref()
+                        .map(|id| id.as_str())
+                        .unwrap_or_default()
                 ),
                 server_id: server.id,
                 complete: fetch.outcome == super::scan::FetchOutcome::Complete
@@ -351,17 +385,22 @@ pub(super) async fn reconcile_fetched_catalog(
         }));
     }
 
-    let mut items = if deduplicate_media {
+    let mut items = if let ReconciliationMode::Enabled { generation } = reconciliation_generation {
         let plan = MediaDedupPlan::with_aliases(tagged_items, catalog_aliases);
+        let update = if authoritative_inventory && !evidence.is_empty() {
+            InventoryUpdate::validated_inventory(
+                snapshots,
+                policy.inventory_types.clone(),
+                &evidence,
+                report.failure_count(),
+            )
+            .map_err(|error| ApplicationError::Internal(error.into()))?
+        } else {
+            InventoryUpdate::Observations(snapshots)
+        };
         let stable_group_ids = state
             .media_storage
-            .reconcile_media_catalog_with_coverage(
-                catalog_scope_key,
-                reconciliation_generation.expect("enabled reconciliation has a generation"),
-                &snapshots,
-                authoritative_inventory && failures == 0,
-                &policy.inventory_types,
-            )
+            .apply_inventory_update(catalog_scope_key, generation, update)
             .await
             .map_err(ApplicationError::Storage)?;
         FederatedItems::from_merged_items(plan.collapse(&stable_group_ids))
@@ -400,7 +439,7 @@ pub(super) async fn reconcile_fetched_catalog(
 /// series and season/episode numbers when available.
 #[cfg(test)]
 pub(crate) async fn get_aggregate_show_items(
-    state: &AppState,
+    state: &CatalogService,
     preprocessed: CatalogRequest,
     aggregate_id: String,
     targets: Vec<CatalogFetchTarget>,
@@ -412,7 +451,7 @@ pub(crate) async fn get_aggregate_show_items(
 }
 
 pub(super) async fn get_aggregate_show_items_typed(
-    state: &AppState,
+    state: &CatalogService,
     preprocessed: CatalogRequest,
     aggregate_id: String,
     targets: Vec<CatalogFetchTarget>,
@@ -420,7 +459,7 @@ pub(super) async fn get_aggregate_show_items_typed(
 ) -> Result<serde_json::Value, ApplicationError> {
     let viewer = preprocessed
         .context
-        .access_scope
+        .access_scope()
         .as_ref()
         .map(|scope| scope.user_id().to_string())
         .unwrap_or_else(|| "anonymous".to_string());

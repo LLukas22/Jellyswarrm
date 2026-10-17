@@ -6,4 +6,5 @@ pub(crate) mod resources;
 pub(crate) mod response;
 pub(crate) mod selection;
 pub(crate) mod service;
+pub(crate) mod services;
 pub(crate) mod target;

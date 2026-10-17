@@ -140,18 +140,18 @@ pub(super) const UPSTREAM_PAGE_SIZE: usize = 100;
 /// Leave other parent references for the per-server request processor.
 pub(super) fn replace_aggregate_parent_id(
     url: &url::Url,
-    resolved_id: &str,
-    new_id: &str,
+    resolved_id: &crate::application::identity::VirtualItemId,
+    new_id: &crate::application::identity::VirtualItemId,
 ) -> url::Url {
     let pairs = url
         .query_pairs()
         .map(|(key, value)| {
-            let value = if value == resolved_id
+            let value = if value == resolved_id.as_str()
                 && ["ParentId", "SeriesId", "SeasonId"]
                     .iter()
                     .any(|expected| key.eq_ignore_ascii_case(expected))
             {
-                new_id.to_string()
+                new_id.as_str().to_string()
             } else {
                 value.into_owned()
             };
@@ -481,17 +481,17 @@ mod tests {
             "http://localhost/Items?parentid=show&SeriesId=show&SeasonId=season&Other=show",
         )
         .unwrap();
-        let replaced = replace_aggregate_parent_id(&url, "show", "backend-show");
+        let replaced = replace_aggregate_parent_id(&url, &"show".into(), &"member-show".into());
         assert_eq!(
             query_pairs(&replaced),
             vec![
-                ("parentid".into(), "backend-show".into()),
-                ("SeriesId".into(), "backend-show".into()),
+                ("parentid".into(), "member-show".into()),
+                ("SeriesId".into(), "member-show".into()),
                 ("SeasonId".into(), "season".into()),
                 ("Other".into(), "show".into()),
             ]
         );
-        let replaced = replace_aggregate_parent_id(&url, "season", "backend-season");
+        let replaced = replace_aggregate_parent_id(&url, &"season".into(), &"member-season".into());
         assert_eq!(
             replaced
                 .query_pairs()
@@ -506,7 +506,7 @@ mod tests {
                 .find(|(key, _)| key == "SeasonId")
                 .unwrap()
                 .1,
-            "backend-season"
+            "member-season"
         );
     }
 

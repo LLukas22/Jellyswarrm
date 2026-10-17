@@ -24,17 +24,68 @@ pub(crate) enum FetchOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SourceOutcome {
     pub server_id: crate::server_id::ServerId,
-    pub parent_id: Option<String>,
+    pub parent_id: Option<crate::application::identity::BackendItemId>,
     pub outcome: FetchOutcome,
+}
+
+/// One authoritative fetch report. Unavailable targets are retained even when
+/// planning could not supply their source identity. Totals/completeness are
+/// derived, never independently mutable flags alongside these outcomes.
+#[derive(Debug, Clone)]
+pub(crate) struct CatalogReport {
+    outcomes: Vec<SourceOutcome>,
+    unavailable_targets: usize,
+}
+
+impl CatalogReport {
+    pub(crate) fn new(outcomes: Vec<SourceOutcome>, unavailable_targets: usize) -> Self {
+        Self {
+            outcomes,
+            unavailable_targets,
+        }
+    }
+    pub(crate) fn outcomes(&self) -> &[SourceOutcome] {
+        &self.outcomes
+    }
+    pub(crate) fn failure_count(&self) -> usize {
+        self.unavailable_targets
+            + self
+                .outcomes
+                .iter()
+                .filter(|source| matches!(source.outcome, FetchOutcome::Partial(_)))
+                .count()
+    }
+    pub(crate) fn is_successful(&self) -> bool {
+        self.failure_count() == 0
+    }
+    pub(crate) fn is_complete_inventory(&self) -> bool {
+        self.is_successful()
+            && self
+                .outcomes
+                .iter()
+                .all(|source| source.outcome == FetchOutcome::Complete)
+    }
 }
 
 /// Shared validation for catalog and library-inventory scans. An uncounted
 /// page is not proof of completion unless it is empty.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CountShape {
+    Counted,
+    Uncounted,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum ScanStep {
+    Continue,
+    Complete,
+}
+
 #[derive(Default)]
 pub(super) struct ScanProgress {
     paging: jellyfin_api::library_pagination::LibraryPagination,
     pages: usize,
-    counted: Option<bool>,
+    count_shape: Option<CountShape>,
 }
 
 impl ScanProgress {
@@ -44,20 +95,30 @@ impl ScanProgress {
 
     #[cfg(test)]
     pub fn accept(&mut self, page: &ItemsResponseVariants) -> Result<bool, PartialReason> {
-        self.accept_typed(page).map_err(|error| match error {
-            ApplicationError::IncompleteCatalog { reason, .. } => reason,
-            _ => unreachable!("scan validation only produces incomplete inventory errors"),
-        })
+        self.accept_typed(page)
+            .map(|step| step == ScanStep::Complete)
+            .map_err(|error| match error {
+                ApplicationError::IncompleteCatalog { reason, .. } => reason,
+                _ => unreachable!("scan validation only produces incomplete inventory errors"),
+            })
     }
 
-    pub fn accept_typed(&mut self, page: &ItemsResponseVariants) -> Result<bool, ApplicationError> {
+    pub fn accept_typed(
+        &mut self,
+        page: &ItemsResponseVariants,
+    ) -> Result<ScanStep, ApplicationError> {
         let counted = matches!(page, ItemsResponseVariants::WithCount(_));
-        if self.counted.is_some_and(|previous| previous != counted)
+        let shape = if counted {
+            CountShape::Counted
+        } else {
+            CountShape::Uncounted
+        };
+        if self.count_shape.is_some_and(|previous| previous != shape)
             || page.items().iter().any(|item| item.id.is_empty())
         {
             return Err(incomplete(PartialReason::Changed));
         }
-        self.counted = Some(counted);
+        self.count_shape = Some(shape);
         self.pages += 1;
         // A stable counted response already bounds the scan. Only uncounted
         // sources need a fixed work budget to detect an endless inventory.
@@ -97,7 +158,11 @@ impl ScanProgress {
         if self.offset() == old_offset && complete != Some(true) {
             return Err(incomplete(PartialReason::Stalled));
         }
-        Ok(complete == Some(true))
+        Ok(if complete == Some(true) {
+            ScanStep::Complete
+        } else {
+            ScanStep::Continue
+        })
     }
 }
 
@@ -112,6 +177,36 @@ fn incomplete(reason: PartialReason) -> ApplicationError {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn report_derives_completeness_without_losing_unavailable_targets() {
+        let source = |outcome| SourceOutcome {
+            server_id: crate::server_id::ServerId::new(1),
+            parent_id: Some("opaque-library".into()),
+            outcome,
+        };
+        let complete = CatalogReport::new(vec![source(FetchOutcome::Complete)], 0);
+        assert!(complete.is_successful());
+        assert!(complete.is_complete_inventory());
+        let bounded = CatalogReport::new(vec![source(FetchOutcome::BoundedFeed)], 0);
+        assert!(bounded.is_successful());
+        assert!(!bounded.is_complete_inventory());
+        let unavailable = CatalogReport::new(vec![source(FetchOutcome::Complete)], 2);
+        assert_eq!(unavailable.failure_count(), 2);
+        assert!(!unavailable.is_successful());
+        assert!(!unavailable.is_complete_inventory());
+        let empty = CatalogReport::new(Vec::new(), 1);
+        assert!(!empty.is_complete_inventory());
+        let partial = CatalogReport::new(
+            vec![source(FetchOutcome::Partial(PartialReason::Deadline))],
+            1,
+        );
+        assert_eq!(partial.failure_count(), 2);
+        assert_eq!(
+            partial.outcomes()[0].outcome,
+            FetchOutcome::Partial(PartialReason::Deadline)
+        );
+    }
 
     fn page(ids: &[&str], total: i32, offset: i32) -> ItemsResponseVariants {
         serde_json::from_value(json!({"Items": ids.iter().map(|id| json!({"Id": id, "Type": "Movie"})).collect::<Vec<_>>(), "TotalRecordCount": total, "StartIndex": offset})).unwrap()
