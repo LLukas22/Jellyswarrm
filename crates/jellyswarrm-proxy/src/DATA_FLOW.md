@@ -62,7 +62,7 @@ sequenceDiagram
     N->>J: Translated request
     J-->>N: MediaSources
     N->>N: Translate and validate response
-    N->>S: Reconcile sources; commit retained bindings
+    N->>S: Reconcile sources and commit retained bindings
     N-->>C: Virtual IDs and delivery URLs
     C->>D: Stream / playlist / resource
     D->>S: Resolve source/session owner
