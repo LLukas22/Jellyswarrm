@@ -21,10 +21,10 @@ use crate::{
 
 use super::{
     finalize_items_response_typed,
-    item_policy::{
+    library_resolution::CatalogFetchTarget,
+    library_resolution::{
         automatic_library_key, is_live_tv_user_view, presentable_library_collection_type,
     },
-    library_resolution::CatalogFetchTarget,
     postprocessing::FederatedItems,
     upstream::{fetch_inventory, FetchedCatalog, FetchedServerItems, RawServerItems},
 };

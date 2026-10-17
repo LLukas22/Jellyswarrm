@@ -229,7 +229,7 @@ impl SnapshotRequest {
         } else {
             build.await?.response
         };
-        crate::application::observation::media_response(
+        crate::application::response::media_response(
             &state.client_sessions,
             self.token.as_deref(),
             &response,

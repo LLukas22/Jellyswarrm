@@ -19,7 +19,7 @@ use crate::{
 };
 
 use super::{
-    item_policy::presentable_library_collection_type,
+    library_resolution::presentable_library_collection_type,
     library_resolution::{is_library_root_request, CatalogFetchTarget},
     postprocessing::{Pagination, ResponseShape, ServerItems},
     request_policy::{

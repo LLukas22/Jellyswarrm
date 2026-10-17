@@ -58,7 +58,7 @@ impl PlaybackService<'_> {
         profile: ResponseProcessingProfile,
         token: Option<&str>,
     ) -> Result<bool, ApplicationError> {
-        crate::application::json::project_media_json(
+        crate::application::response::project_media_json(
             self.processors.response_processor,
             self.config,
             payload,

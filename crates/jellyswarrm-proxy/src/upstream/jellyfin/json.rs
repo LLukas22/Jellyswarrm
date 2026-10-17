@@ -5,6 +5,48 @@ use reqwest::header::{HeaderValue, CONTENT_LENGTH, TRANSFER_ENCODING};
 use serde::Serialize;
 
 use crate::application::error::ApplicationError;
+use crate::application::upstream::JsonUpstream;
+use serde_json::Value;
+
+/// Concrete adapter for application workflows. Wire normalization, execution,
+/// and error conversion are kept together here; transport owns HTTP I/O.
+pub(crate) struct JellyfinJsonUpstream {
+    pub client: reqwest::Client,
+}
+
+#[async_trait::async_trait]
+impl JsonUpstream for JellyfinJsonUpstream {
+    async fn execute_status(
+        &self,
+        request: reqwest::Request,
+    ) -> Result<hyper::StatusCode, ApplicationError> {
+        Ok(self
+            .client
+            .execute(request)
+            .await
+            .map_err(|error| ApplicationError::UpstreamTransport(error.without_url()))?
+            .status())
+    }
+
+    async fn execute(&self, mut request: reqwest::Request) -> Result<String, ApplicationError> {
+        sync_posted_guide_body(&mut request)?;
+        super::transport::execute_document(&self.client, request)
+            .await
+            .map_err(Into::into)
+    }
+}
+
+impl From<super::transport::JsonTransportError> for ApplicationError {
+    fn from(error: super::transport::JsonTransportError) -> Self {
+        match error {
+            super::transport::JsonTransportError::Transport(error) => {
+                Self::UpstreamTransport(error)
+            }
+            super::transport::JsonTransportError::Status(status) => Self::UpstreamStatus(status),
+            super::transport::JsonTransportError::Json(error) => Self::InvalidUpstreamJson(error),
+        }
+    }
+}
 
 #[cfg(test)]
 pub fn payload_from_request<T>(request: &reqwest::Request) -> Result<T, StatusCode>
@@ -78,7 +120,7 @@ pub(crate) async fn execute_json_request_typed<T>(
 where
     T: serde::de::DeserializeOwned,
 {
-    super::compatibility::sync_posted_guide_body(&mut request)?;
+    sync_posted_guide_body(&mut request)?;
     super::transport::execute(client, request)
         .await
         .map_err(Into::into)
@@ -91,6 +133,57 @@ where
     T: serde::de::DeserializeOwned,
 {
     serde_json::from_value(payload).map_err(ApplicationError::InvalidProcessedJson)
+}
+
+/// Keep the POST guide body aligned with the translated query, including paging.
+fn sync_posted_guide_body(request: &mut reqwest::Request) -> Result<(), ApplicationError> {
+    if request.method() != reqwest::Method::POST
+        || !request
+            .url()
+            .path()
+            .trim_end_matches('/')
+            .to_ascii_lowercase()
+            .ends_with("/livetv/programs")
+    {
+        return Ok(());
+    }
+    let mut payload: Value = payload_from_request_typed(request)?;
+    let fields = payload
+        .as_object_mut()
+        .ok_or(ApplicationError::InvalidInput(
+            "guide body must be an object",
+        ))?;
+    for (key, value) in request.url().query_pairs() {
+        let pagination =
+            key.eq_ignore_ascii_case("StartIndex") || key.eq_ignore_ascii_case("Limit");
+        if let Some((_, field)) = fields
+            .iter_mut()
+            .find(|(field, _)| field.eq_ignore_ascii_case(&key))
+        {
+            *field = if pagination {
+                serde_json::from_str(&value).map_err(ApplicationError::InvalidRequestJson)?
+            } else {
+                match field {
+                    Value::Array(_) => Value::Array(
+                        value
+                            .split(',')
+                            .filter(|id| !id.is_empty())
+                            .map(|id| Value::String(id.into()))
+                            .collect(),
+                    ),
+                    Value::Bool(_) | Value::Number(_) => serde_json::from_str(&value)
+                        .map_err(ApplicationError::InvalidRequestJson)?,
+                    _ => Value::String(value.into_owned()),
+                }
+            };
+        } else if pagination {
+            fields.insert(
+                key.into_owned(),
+                serde_json::from_str(&value).map_err(ApplicationError::InvalidRequestJson)?,
+            );
+        }
+    }
+    set_json_body_typed(request, &payload)
 }
 
 #[cfg(test)]

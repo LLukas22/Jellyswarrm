@@ -1,3 +1,5 @@
+//! PlaybackInfo workflow: resolve owner → fetch sources → translate/reconcile → commit bindings.
+//! Start with `post_playback_info_typed`; delivery is handled separately in `resources`.
 use super::services::PlaybackService;
 #[cfg(test)]
 use super::target::ResolutionError;
@@ -278,7 +280,7 @@ pub(crate) async fn post_playback_info_typed(
                 .await;
             debug!(server_id = %server.id, source_count = response.media_sources.len(), "Playback negotiation completed");
             if let Some(token) = proxy_api_key.as_deref() {
-                crate::application::observation::media_response(
+                crate::application::response::media_response(
                     state.client_sessions,
                     Some(token),
                     &final_payload,

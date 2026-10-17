@@ -2,7 +2,7 @@ use axum::{extract::State, Json};
 use hyper::StatusCode;
 
 use crate::{
-    application::{details::service as details, playback::service as playback},
+    application::{details, playback::negotiation as playback},
     extractors::{OperationInput, PlaybackInput},
     models::PlaybackResponse,
     AppState,

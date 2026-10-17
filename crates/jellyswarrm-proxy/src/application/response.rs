@@ -1,5 +1,6 @@
-//! Shared media projection after wire execution. Catalog and playback profiles
-//! do not include playlist ACL processing.
+//! Shared response processing: project upstream media into client identities and
+//! record returned media for client-session observation. Callers choose when to
+//! observe; projection alone never publishes a playback binding.
 
 use crate::{
     application::error::ApplicationError,
@@ -27,4 +28,14 @@ pub(crate) async fn project_media_json(
         .await
         .map_err(ApplicationError::Internal)?;
     Ok(response.was_modified)
+}
+
+pub(crate) async fn media_response(
+    sessions: &crate::sessions::ClientSessionService,
+    token: Option<&str>,
+    payload: &serde_json::Value,
+) {
+    if let Some(token) = token {
+        sessions.cache_media_response(token, payload).await;
+    }
 }

@@ -10,9 +10,8 @@ use crate::{
         context::{AuthorizedTarget, TargetError},
         error::ApplicationError,
         input::OperationRequest,
-        observation,
         playback::{lifecycle::PendingPlaybackSessionUpdate, reports},
-        routing,
+        response, routing,
     },
     processors::request_analyzer::PlaybackSessionAction,
     processors::request_processor::RequestProcessingContext,
@@ -26,6 +25,19 @@ use crate::{
     virtual_library_service::compare_virtual_library_routes,
     AppState,
 };
+
+/// Preserve the upstream-success observation point. Playback-binding commits
+/// remain separate and revision-fenced after the required response validation.
+async fn forwarded_success(
+    state: &AppState,
+    original: &reqwest::Request,
+    mutation_viewer: Option<&str>,
+) {
+    if let Some(viewer) = mutation_viewer {
+        state.catalog_snapshots.invalidate_viewer(viewer);
+    }
+    crate::sessions::observe_playback(state, original).await;
+}
 
 /// A selected, validated operation whose client IDs have not yet been encoded.
 /// Retain the untouched input for local observation after successful delivery.
@@ -196,7 +208,7 @@ pub(crate) async fn forward(
         .map_err(|error| ApplicationError::UpstreamTransport(error.without_url()))?;
     let status = response.status();
     if status.is_success() {
-        observation::forwarded_success(state, original, mutation_viewer.as_deref()).await;
+        forwarded_success(state, original, mutation_viewer.as_deref()).await;
     } else {
         warn!("Upstream server returned error status: {}", status);
     }
@@ -231,7 +243,7 @@ pub(crate) async fn forward(
                     .await
                     .map_err(ApplicationError::Compatibility)?;
                 if status.is_success() && response_profile != ResponseProcessingProfile::Disabled {
-                    observation::media_response(
+                    response::media_response(
                         &state.client_sessions,
                         proxy_api_key.as_deref(),
                         &value,

@@ -1,4 +1,8 @@
-//! Catalog workflows with unselected inputs and explicit target planning.
+//! Catalog workflow entry points and dispatch. Start with `get_catalog`.
+//!
+//! Flow: input → library_resolution → snapshots/upstream → media_reconciliation
+//! → postprocessing. Roots, batch lookup, and facets branch to their named modules.
+//! See `../../DATA_FLOW.md`; `services` holds dependencies, not workflow steps.
 use crate::application::error::ApplicationError;
 use tracing::debug;
 
@@ -12,7 +16,6 @@ pub(crate) mod refresh;
 
 pub(crate) mod filters;
 mod item_lookup;
-mod item_policy;
 pub(crate) mod library_resolution;
 mod library_root;
 pub(crate) mod media_reconciliation;
@@ -34,7 +37,7 @@ async fn get_items(
     state: &CatalogService,
     request: CatalogRequest,
 ) -> Result<serde_json::Value, ApplicationError> {
-    crate::application::details::service::get_item_detail(state, request.into(), false).await
+    crate::application::details::get_item_detail(state, request.into(), false).await
 }
 
 /// Series detail and single-channel/genre guides identify one upstream item.
@@ -110,20 +113,12 @@ pub(crate) async fn get_show_children(
 
     let aggregate_id = contains_id(preprocessed.original_request.url(), "Shows");
     let Some(aggregate_id) = aggregate_id else {
-        return crate::application::details::service::get_item_detail(
-            state,
-            preprocessed.into(),
-            false,
-        )
-        .await;
+        return crate::application::details::get_item_detail(state, preprocessed.into(), false)
+            .await;
     };
     if !state.deduplicate_media_enabled().await {
-        return crate::application::details::service::get_item_detail(
-            state,
-            preprocessed.into(),
-            false,
-        )
-        .await;
+        return crate::application::details::get_item_detail(state, preprocessed.into(), false)
+            .await;
     }
     let Some(group) = state
         .media_storage
@@ -131,12 +126,8 @@ pub(crate) async fn get_show_children(
         .await
         .map_err(ApplicationError::Storage)?
     else {
-        return crate::application::details::service::get_item_detail(
-            state,
-            preprocessed.into(),
-            false,
-        )
-        .await;
+        return crate::application::details::get_item_detail(state, preprocessed.into(), false)
+            .await;
     };
     let members = state
         .media_storage
@@ -177,12 +168,8 @@ pub(crate) async fn get_show_children(
         });
     }
     if targets.is_empty() {
-        return crate::application::details::service::get_item_detail(
-            state,
-            preprocessed.into(),
-            false,
-        )
-        .await;
+        return crate::application::details::get_item_detail(state, preprocessed.into(), false)
+            .await;
     }
     media_reconciliation::get_aggregate_show_items_typed(
         state,
@@ -261,8 +248,7 @@ pub(crate) async fn get_catalog(
             .await
         }
         CatalogPlan::SingleServer => {
-            crate::application::details::service::get_item_detail(state, preprocessed.into(), false)
-                .await
+            crate::application::details::get_item_detail(state, preprocessed.into(), false).await
         }
         CatalogPlan::Virtual {
             catalog_scope_key,
@@ -373,7 +359,7 @@ pub(super) async fn finalize_items_response_typed(
             crate::request_preprocessing::JellyfinAuthorization::from_request(request)
         {
             if let Some(token) = auth.token_ref() {
-                crate::application::observation::media_response(
+                crate::application::response::media_response(
                     &state.client_sessions,
                     Some(token),
                     &response,

@@ -12,7 +12,7 @@ use crate::{
     server_storage::Server,
 };
 
-use super::item_policy::is_live_tv_user_view;
+use super::library_resolution::is_live_tv_user_view;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Pagination {

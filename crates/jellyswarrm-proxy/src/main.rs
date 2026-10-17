@@ -142,8 +142,8 @@ impl AppState {
             client_sessions: &self.client_sessions,
         }
     }
-    pub(crate) fn json_upstream(&self) -> upstream::jellyfin::capabilities::JellyfinJsonUpstream {
-        upstream::jellyfin::capabilities::JellyfinJsonUpstream {
+    pub(crate) fn json_upstream(&self) -> upstream::jellyfin::json::JellyfinJsonUpstream {
+        upstream::jellyfin::json::JellyfinJsonUpstream {
             client: self.reqwest_client.clone(),
         }
     }
