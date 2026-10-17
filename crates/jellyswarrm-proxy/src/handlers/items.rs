@@ -9,6 +9,7 @@ use crate::{
 };
 
 #[cfg(test)]
+#[path = "../unit_tests/item_handlers.rs"]
 mod tests;
 
 pub async fn get_item(

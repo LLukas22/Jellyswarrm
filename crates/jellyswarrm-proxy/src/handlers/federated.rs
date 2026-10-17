@@ -76,10 +76,13 @@ pub async fn get_filters(
 }
 
 #[cfg(test)]
+#[path = "../unit_tests/federated_reliability.rs"]
 mod reliability_tests;
 #[cfg(test)]
+#[path = "../unit_tests/federated_snapshots.rs"]
 mod snapshot_tests;
 #[cfg(test)]
+#[path = "../unit_tests/federated_catalog.rs"]
 mod tests;
 
 #[cfg(test)]

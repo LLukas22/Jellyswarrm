@@ -321,6 +321,7 @@ fn remove_source_query(request: &mut reqwest::Request) {
 }
 
 #[cfg(test)]
+#[path = "../../unit_tests/playback_negotiation.rs"]
 mod tests;
 #[cfg(test)]
 use super::selection::{resolve_playback_route, PlaybackRouteDecision};

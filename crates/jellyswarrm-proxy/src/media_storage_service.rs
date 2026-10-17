@@ -1700,4 +1700,5 @@ fn union_indexes(parents: &mut [usize], left: usize, right: usize) {
 }
 
 #[cfg(test)]
+#[path = "unit_tests/media_storage.rs"]
 mod tests;

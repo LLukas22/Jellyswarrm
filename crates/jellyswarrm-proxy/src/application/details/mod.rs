@@ -6,6 +6,7 @@ pub(crate) mod sources;
 use hyper::StatusCode;
 
 #[cfg(test)]
+#[path = "../../unit_tests/item_details.rs"]
 mod tests;
 
 use crate::application::catalog::services::CatalogService;
