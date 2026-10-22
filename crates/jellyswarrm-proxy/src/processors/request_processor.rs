@@ -3,8 +3,9 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tracing::debug;
 
+use super::user_ids::BackendUserIds;
+use crate::auth::identity::JellyfinAuthorization;
 use crate::auth::service::{AuthorizationSession, User};
-use crate::http::preprocessing::JellyfinAuthorization;
 use crate::processors::field_matcher::{
     ID_FIELDS, MEDIA_ID_LIST_PARENT_FIELDS, SESSION_FIELDS, USER_FIELDS,
 };
@@ -12,15 +13,23 @@ use crate::processors::json_processor::{
     JsonProcessingContext, JsonProcessingResult, JsonProcessor,
 };
 use crate::servers::storage::Server;
-use crate::DataContext;
+use crate::{auth::UserAuthorizationService, media::MediaStorageService};
+use std::sync::Arc;
 
 pub struct RequestProcessor {
-    pub data_context: DataContext,
+    media_storage: Arc<MediaStorageService>,
+    user_ids: BackendUserIds,
 }
 
 impl RequestProcessor {
-    pub fn new(data_context: DataContext) -> Self {
-        Self { data_context }
+    pub fn new(
+        media_storage: Arc<MediaStorageService>,
+        authorization: Arc<UserAuthorizationService>,
+    ) -> Self {
+        Self {
+            media_storage,
+            user_ids: BackendUserIds::new(authorization),
+        }
     }
 
     async fn upstream_media_id(
@@ -29,7 +38,6 @@ impl RequestProcessor {
         server: &Server,
     ) -> Result<Option<String>, sqlx::Error> {
         if let Some(mapping) = self
-            .data_context
             .media_storage
             .get_media_mapping_by_virtual(virtual_id)
             .await?
@@ -38,7 +46,6 @@ impl RequestProcessor {
         }
 
         Ok(self
-            .data_context
             .media_storage
             .get_media_version_members_by_virtual_id(virtual_id)
             .await?
@@ -127,10 +134,9 @@ impl JsonProcessor<RequestProcessingContext> for RequestProcessor {
         // Handle user IDs
         else if USER_FIELDS.contains(&json_context.key) {
             if let Value::String(ref virtual_id) = value {
-                let processor =
-                    crate::processors::url_processor::UrlProcessor::new(self.data_context.clone());
-                match processor
-                    .upstream_user_id(virtual_id, &context.session, context.server.id)
+                match self
+                    .user_ids
+                    .resolve(virtual_id, &context.session, context.server.id)
                     .await
                 {
                     Ok(upstream) => {
@@ -165,6 +171,7 @@ mod tests {
     use sqlx::SqlitePool;
 
     use super::*;
+    use crate::DataContext;
     use crate::{
         application::playback::sessions::SessionStorage,
         auth::service::{Device, UserAuthorizationService},
@@ -197,6 +204,31 @@ mod tests {
             config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
         };
         (data_context, pool)
+    }
+
+    #[tokio::test]
+    async fn array_object_fields_cannot_claim_top_level_playback_authority() {
+        use crate::processors::{
+            analyze_json,
+            request_analyzer::{
+                PlaybackSessionAction, RequestAnalysisContext, RequestAnalyzer,
+                RequestBodyAnalysisResult,
+            },
+        };
+        let (data, _) = test_data_context().await;
+        let analyzer = RequestAnalyzer::new(
+            data.media_storage,
+            data.server_storage,
+            data.play_sessions,
+            data.user_authorization,
+        );
+        let analyzed = analyze_json(&json!([{"ItemId":"nested-item", "MediaSourceId":"nested-source", "PlaySessionId":"nested-session"}]), &analyzer,
+            &RequestAnalysisContext { authenticated_user_id: Some("viewer".into()), playback_session_action: Some(PlaybackSessionAction::Refresh) },
+            RequestBodyAnalysisResult::default()).await.unwrap();
+        assert!(analyzed.requested_play_item_id.is_none());
+        assert!(analyzed.requested_play_source_id.is_none());
+        assert!(analyzed.requested_play_session_id.is_none());
+        assert!(analyzed.authoritative_play_session.is_none());
     }
 
     fn test_server() -> Server {
@@ -281,9 +313,11 @@ mod tests {
             proxy_api_key: None,
             profile: ResponseProcessingProfile::Media,
         };
-        let responses = ResponseProcessor::new(data.clone());
-        let requests = RequestProcessor::new(data.clone());
-        let urls = UrlProcessor::new(data.clone());
+        let responses =
+            ResponseProcessor::new(data.media_storage.clone(), data.user_authorization.clone());
+        let requests =
+            RequestProcessor::new(data.media_storage.clone(), data.user_authorization.clone());
+        let urls = UrlProcessor::from(data.clone());
         // Discover IDs from actual response processing, including two entries for the same song.
         let mut read = json!({"Id":"playlist", "Type":"Playlist", "CanDelete":true,
             "Items":[{"Id":"song", "PlaylistItemId":"entry-1"}, {"Id":"song", "PlaylistItemId":"entry-2"}],
@@ -298,7 +332,12 @@ mod tests {
         let mut create = json!({"Ids":read["Ids"]});
         let analysis = analyze_json(
             &create,
-            &RequestAnalyzer::new(data.clone()),
+            &RequestAnalyzer::new(
+                data.media_storage.clone(),
+                data.server_storage.clone(),
+                data.play_sessions.clone(),
+                data.user_authorization.clone(),
+            ),
             &RequestAnalysisContext {
                 authenticated_user_id: None,
                 playback_session_action: None,
@@ -340,7 +379,7 @@ mod tests {
             urls.validate_container_request(&url, &None, None, server.id, &[])
                 .await
                 .unwrap();
-            urls.client_to_server_url(&mut url, &None, None, Some(server.id))
+            urls.client_to_server_url(&mut url, &None, None, server.id)
                 .await;
             assert_eq!(
                 url.as_str().trim_end_matches('?'),
@@ -447,17 +486,18 @@ mod tests {
             session: Some(test_session()),
             new_auth: None,
         };
-        let requests = RequestProcessor::new(data.clone());
+        let requests =
+            RequestProcessor::new(data.media_storage.clone(), data.user_authorization.clone());
         let mut body = json!({"UserId": user.id});
         process_json(&mut body, &requests, &context).await.unwrap();
         assert_eq!(body["UserId"], "upstream-recipient");
-        let urls = UrlProcessor::new(data.clone());
+        let urls = UrlProcessor::from(data.clone());
         let mut url = url::Url::parse(&format!(
             "http://localhost/Playlists/list/Users/{}?UserId={}",
             user.id, user.id
         ))
         .unwrap();
-        urls.client_to_server_url(&mut url, &context.session, None, Some(server.id))
+        urls.client_to_server_url(&mut url, &context.session, None, server.id)
             .await;
         assert_eq!(url.path(), "/Playlists/list/Users/upstream-recipient");
         assert_eq!(url.query(), Some("UserId=upstream-recipient"));
@@ -475,7 +515,8 @@ mod tests {
 
     #[tokio::test]
     async fn user_id_rewrite_marks_request_body_modified() {
-        let processor = RequestProcessor::new(test_data_context().await.0);
+        let data = test_data_context().await.0;
+        let processor = RequestProcessor::new(data.media_storage, data.user_authorization);
         let context = RequestProcessingContext {
             user: None,
             server: test_server(),
@@ -497,7 +538,8 @@ mod tests {
     #[tokio::test]
     async fn missing_media_mapping_is_not_a_database_failure() {
         let (data_context, pool) = test_data_context().await;
-        let processor = RequestProcessor::new(data_context);
+        let processor =
+            RequestProcessor::new(data_context.media_storage, data_context.user_authorization);
         let context = RequestProcessingContext {
             user: None,
             server: test_server(),
@@ -593,16 +635,10 @@ mod tests {
             .remove(&mapping.virtual_media_id)
             .unwrap()
             .virtual_media_id;
-        let virtual_libraries =
-            VirtualLibraryService::new(pool.clone(), server_storage.clone(), media_storage.clone());
-        let processor = RequestProcessor::new(DataContext {
-            user_authorization: Arc::new(UserAuthorizationService::new(pool)),
-            server_storage: Arc::new(server_storage),
-            media_storage: Arc::new(media_storage),
-            virtual_library_service: Arc::new(virtual_libraries),
-            play_sessions: Arc::new(SessionStorage::new()),
-            config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
-        });
+        let processor = RequestProcessor::new(
+            Arc::new(media_storage),
+            Arc::new(UserAuthorizationService::new(pool)),
+        );
         let context = RequestProcessingContext {
             user: None,
             server,

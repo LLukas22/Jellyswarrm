@@ -1,17 +1,22 @@
-//! Translate client/backend URL paths, query IDs, delivery credentials, and route ownership.
+//! Target-bound URL rewriting. Backend selection belongs to application routing.
+use super::delivery::{relative_url_from_parts, DeliveryUrlTranslator};
 use anyhow::Result;
 use tracing::debug;
 
 use crate::{
+    application::playback::sessions::SessionStorage,
     auth::service::AuthorizationSession,
-    libraries::service::compare_virtual_library_routes,
-    libraries::service::{VirtualLibraryAccessScope, VirtualLibraryResolution},
+    auth::UserAuthorizationService,
+    config::SettingsView,
+    libraries::service::VirtualLibraryAccessScope,
+    libraries::VirtualLibraryService,
     media::storage::{MediaMapping, MediaVersionMember},
+    media::MediaStorageService,
     servers::id::ServerId,
     servers::storage::Server,
     upstream::url::{contains_id, decoded_path_segments, is_id_like, replace_id},
-    DataContext,
 };
+use std::sync::Arc;
 
 pub static MEDIA_ID_PATH_TAGS: &[&str] = &[
     "Items",
@@ -35,39 +40,10 @@ pub static MEDIA_ID_PATH_TAGS: &[&str] = &[
     "UserPlayedItems",
 ];
 
-// Keep ID-valued client query parameters here: this list controls both server
-// selection and translation to upstream IDs. Image `Tag` values are opaque
-// cache tokens and must not be remapped.
-pub static MEDIA_ID_QUERY_TAGS: &[&str] = &[
-    "AlbumId",
-    "AlbumIds",
-    "ParentId",
-    "ItemId",
-    "SeriesId",
-    "LibrarySeriesId",
-    "ChannelIds",
-    "ProgramId",
-    "GenreIds",
-    "StudioIds",
-    "ExcludeItemIds",
-    "SeriesTimerId",
-    "MediaSourceId",
-    "SeasonId",
-    "startItemId",
-    "IDs",
-    "EntryIds",
-    "PlaylistItemId",
-    "PlaylistItemIds",
-    "PersonIds",
-    "ArtistIds",
-    "ContributingArtistIds",
-    "AlbumArtistIds",
-    "ExcludeArtistIds",
-];
+pub use super::field_matcher::{matches_case_insensitive, API_KEY_QUERY_TAGS, MEDIA_ID_QUERY_TAGS};
 
 pub static USER_ID_PATH_TAGS: &[&str] = &["Users"];
 pub static USER_ID_QUERY_TAGS: &[&str] = &["UserId"];
-pub static API_KEY_QUERY_TAGS: &[&str] = &["api_key", "ApiKey"];
 
 fn path_media_source_id(url: &url::Url) -> Option<String> {
     decoded_path_segments(url.path())
@@ -128,12 +104,28 @@ pub(crate) fn play_session_id(url: &url::Url) -> Result<Option<String>> {
 
 #[derive(Clone)]
 pub struct UrlProcessor {
-    data_context: DataContext,
+    media_storage: Arc<MediaStorageService>,
+    virtual_library_service: Arc<VirtualLibraryService>,
+    play_sessions: Arc<SessionStorage>,
+    user_ids: super::user_ids::BackendUserIds,
+    config: SettingsView,
 }
 
 impl UrlProcessor {
-    pub fn new(data_context: DataContext) -> Self {
-        Self { data_context }
+    pub(crate) fn new(
+        media_storage: Arc<MediaStorageService>,
+        virtual_library_service: Arc<VirtualLibraryService>,
+        play_sessions: Arc<SessionStorage>,
+        authorization: Arc<UserAuthorizationService>,
+        config: SettingsView,
+    ) -> Self {
+        Self {
+            media_storage,
+            virtual_library_service,
+            play_sessions,
+            user_ids: super::user_ids::BackendUserIds::new(authorization),
+            config,
+        }
     }
 
     pub async fn client_to_server_url(
@@ -141,8 +133,9 @@ impl UrlProcessor {
         url: &mut url::Url,
         session: &Option<AuthorizationSession>,
         access_scope: Option<&VirtualLibraryAccessScope>,
-        required_server_id: Option<ServerId>,
+        server_id: ServerId,
     ) {
+        let required_server_id = Some(server_id);
         self.replace_user_ids_in_path(url, session, required_server_id)
             .await;
         self.replace_media_ids_in_path(url, access_scope, required_server_id)
@@ -167,15 +160,9 @@ impl UrlProcessor {
         server: &Server,
         proxy_api_key: Option<&str>,
     ) -> Result<Option<String>> {
-        let Some((mut url, style)) = parse_delivery_url(value) else {
-            return Ok(None);
-        };
-
-        self.remap_delivery_url_path(&mut url, server).await?;
-        self.remap_delivery_url_query(&mut url, server, proxy_api_key)
-            .await?;
-
-        Ok(Some(format_delivery_url(url, style)))
+        DeliveryUrlTranslator::new(self.media_storage.clone())
+            .translate(value, server, proxy_api_key)
+            .await
     }
 
     /// HLS references are resolved against the upstream playlist, then returned
@@ -201,7 +188,6 @@ impl UrlProcessor {
             let value = if key.eq_ignore_ascii_case("LiveStreamId") {
                 match viewer {
                     Some(user) => self
-                        .data_context
                         .play_sessions
                         .register_live_binding(&value.as_ref().into(), &user.into(), server.id)
                         .await
@@ -231,7 +217,6 @@ impl UrlProcessor {
             .filter(|path| path.is_empty() || path.starts_with('/'))
             .unwrap_or(url.path());
         let prefix = self
-            .data_context
             .config
             .read()
             .await
@@ -252,139 +237,13 @@ impl UrlProcessor {
         Ok(relative_url_from_parts(&url))
     }
 
-    pub async fn server_from_client_url(
-        &self,
-        url: &url::Url,
-        access_scope: Option<&VirtualLibraryAccessScope>,
-    ) -> Result<Option<Server>> {
-        // Explicit source selection chooses a route, not permission to ignore
-        // another protected identity in the same request.
-        if let Some(scope) = access_scope {
-            for tag in MEDIA_ID_PATH_TAGS {
-                if let Some(id) = contains_id(url, tag) {
-                    self.validate_media_access(&id, scope).await?;
-                }
-            }
-            for (key, value) in url.query_pairs() {
-                if matches_case_insensitive(&key, MEDIA_ID_QUERY_TAGS) {
-                    for id in value.split(',') {
-                        self.validate_media_access(id, scope).await?;
-                    }
-                }
-            }
-        }
-        if let Some(server) = self
-            .server_from_explicit_media_source(url, access_scope)
-            .await?
-        {
-            return Ok(Some(server));
-        }
-        if let Some(server) = self.server_from_path_media_ids(url, access_scope).await? {
-            return Ok(Some(server));
-        }
-
-        self.server_from_query_media_ids(url, access_scope).await
-    }
-
-    pub(crate) async fn validate_media_access(
-        &self,
-        id: &str,
-        scope: &VirtualLibraryAccessScope,
-    ) -> Result<()> {
-        if let Some(mapping) = self
-            .data_context
-            .media_storage
-            .get_media_mapping_by_virtual(id)
-            .await?
-        {
-            if !scope.allows(mapping.server_id) {
-                return Err(crate::http::preprocessing::MediaAccessDenied.into());
-            }
-        }
-        let members = self
-            .data_context
-            .media_storage
-            .get_media_version_members_by_virtual_id(id)
-            .await?;
-        if !members.is_empty() && members.iter().all(|member| !scope.allows(member.server.id)) {
-            return Err(crate::http::preprocessing::MediaAccessDenied.into());
-        }
-        Ok(())
-    }
-
-    async fn server_from_explicit_media_source(
-        &self,
-        url: &url::Url,
-        access_scope: Option<&VirtualLibraryAccessScope>,
-    ) -> Result<Option<Server>> {
-        let Some(source_id) = selected_media_source(url)? else {
-            return Ok(None);
-        };
-        let mut aggregate_group = None;
-        for path_segment in MEDIA_ID_PATH_TAGS {
-            let Some(media_id) = contains_id(url, path_segment) else {
-                continue;
-            };
-            if let Some(group) = self
-                .data_context
-                .media_storage
-                .get_media_version_group(&media_id)
-                .await?
-            {
-                aggregate_group = Some(group);
-                break;
-            }
-        }
-
-        if let Some(group) = &aggregate_group {
-            let route = self
-                .data_context
-                .media_storage
-                .get_media_version_source_route(group.id, &source_id)
-                .await?
-                .ok_or_else(|| {
-                    anyhow::anyhow!("media source does not belong to the requested media aggregate")
-                })?;
-            if access_scope.is_some_and(|scope| !scope.allows(route.member_mapping.server_id)) {
-                return Err(crate::http::preprocessing::MediaAccessDenied.into());
-            }
-            return Ok(self
-                .data_context
-                .server_storage
-                .get_server_by_id(route.member_mapping.server_id)
-                .await?);
-        }
-        if let Some(server) = self
-            .server_from_client_media_id(&source_id, access_scope)
-            .await?
-        {
-            return Ok(Some(server));
-        }
-        Ok(None)
-    }
-
     pub async fn upstream_user_id(
         &self,
         user_id: &str,
         session: &Option<AuthorizationSession>,
         server_id: ServerId,
     ) -> Result<String> {
-        if let Some(session) = session {
-            if user_id == session.user_id || user_id == session.original_user_id {
-                return Ok(session.original_user_id.clone());
-            }
-        }
-        self.data_context
-            .user_authorization
-            .get_user_sessions_by_user_id(user_id)
-            .await?
-            .and_then(|(_, sessions)| {
-                sessions
-                    .into_iter()
-                    .find(|(_, server)| server.id == server_id)
-                    .map(|(session, _)| session.original_user_id)
-            })
-            .ok_or_else(|| anyhow::anyhow!("Requested user has no mapping on the selected server"))
+        self.user_ids.resolve(user_id, session, server_id).await
     }
 
     pub async fn validate_container_request(
@@ -498,14 +357,10 @@ impl UrlProcessor {
         for &path_segment in MEDIA_ID_PATH_TAGS {
             if let Some(media_id) = contains_id(url, path_segment) {
                 if let Some(source) = selected_source.as_deref() {
-                    if let Ok(Some(group)) = self
-                        .data_context
-                        .media_storage
-                        .get_media_version_group(&media_id)
-                        .await
+                    if let Ok(Some(group)) =
+                        self.media_storage.get_media_version_group(&media_id).await
                     {
                         if let Ok(Some(route)) = self
-                            .data_context
                             .media_storage
                             .get_media_version_source_route(group.id, source)
                             .await
@@ -572,7 +427,6 @@ impl UrlProcessor {
                 *value = session.jellyfin_token.clone();
             } else if name.eq_ignore_ascii_case("LiveStreamId") {
                 if let Some(binding) = self
-                    .data_context
                     .play_sessions
                     .live_binding(&value.as_str().into(), &session.user_id.as_str().into())
                     .await
@@ -639,27 +493,9 @@ impl UrlProcessor {
     }
 
     async fn remap_delivery_url_path(&self, url: &mut url::Url, server: &Server) -> Result<()> {
-        let Some(segments) = url.path_segments() else {
-            return Ok(());
-        };
-
-        let mut changed = false;
-        let mut remapped_segments = Vec::new();
-
-        for segment in segments {
-            if is_id_like(segment) {
-                remapped_segments.push(self.virtual_media_id(segment, server).await?);
-                changed = true;
-            } else {
-                remapped_segments.push(segment.to_string());
-            }
-        }
-
-        if changed {
-            url.set_path(&remapped_segments.join("/"));
-        }
-
-        Ok(())
+        DeliveryUrlTranslator::new(self.media_storage.clone())
+            .remap_path(url, server)
+            .await
     }
 
     async fn remap_delivery_url_query(
@@ -668,74 +504,9 @@ impl UrlProcessor {
         server: &Server,
         proxy_api_key: Option<&str>,
     ) -> Result<()> {
-        let Some(query) = url.query() else {
-            return Ok(());
-        };
-
-        let mut changed = false;
-        let mut pairs = Vec::new();
-
-        for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
-            if matches_case_insensitive(&key, API_KEY_QUERY_TAGS) {
-                changed = true;
-                if let Some(proxy_api_key) = proxy_api_key {
-                    pairs.push((key.into_owned(), proxy_api_key.to_string()));
-                }
-                continue;
-            }
-
-            let value = if matches_case_insensitive(&key, MEDIA_ID_QUERY_TAGS) {
-                let remapped = self.remap_delivery_url_query_value(&value, server).await?;
-                if remapped != value {
-                    changed = true;
-                }
-                remapped
-            } else {
-                value.into_owned()
-            };
-
-            pairs.push((key.into_owned(), value));
-        }
-
-        if changed {
-            url.query_pairs_mut().clear().extend_pairs(pairs);
-        }
-
-        Ok(())
-    }
-
-    async fn remap_delivery_url_query_value(&self, value: &str, server: &Server) -> Result<String> {
-        let mut changed = false;
-        let mut remapped_ids = Vec::new();
-
-        for raw_id in value.split(',') {
-            let id = raw_id.trim();
-            if id.is_empty() {
-                continue;
-            }
-
-            if is_id_like(id) {
-                remapped_ids.push(self.virtual_media_id(id, server).await?);
-                changed = true;
-            } else {
-                remapped_ids.push(id.to_string());
-            }
-        }
-
-        if changed {
-            Ok(remapped_ids.join(","))
-        } else {
-            Ok(value.to_string())
-        }
-    }
-
-    async fn virtual_media_id(&self, id: &str, server: &Server) -> Result<String> {
-        self.data_context
-            .media_storage
-            .get_or_create_media_mapping(id, server)
+        DeliveryUrlTranslator::new(self.media_storage.clone())
+            .remap_query(url, server, proxy_api_key)
             .await
-            .map(|mapping| mapping.virtual_media_id)
-            .map_err(Into::into)
     }
 
     pub(crate) async fn client_media_mapping(
@@ -744,8 +515,10 @@ impl UrlProcessor {
         access_scope: Option<&VirtualLibraryAccessScope>,
         required_server_id: Option<ServerId>,
     ) -> Option<MediaMapping> {
+        // Translation never selects a backend. An already resolved target is
+        // required even when the incoming identity is an aggregate/library.
+        let required_server_id = Some(required_server_id?);
         if let Some(mapping) = self
-            .data_context
             .media_storage
             .get_media_mapping_by_virtual(virtual_media_id)
             .await
@@ -764,139 +537,12 @@ impl UrlProcessor {
             return Some(member.mapping);
         }
 
-        self.data_context
-            .virtual_library_service
+        self.virtual_library_service
             .routing_target(virtual_media_id, access_scope, required_server_id)
             .await
             .ok()
             .flatten()
             .map(|target| target.mapping)
-    }
-
-    async fn server_from_path_media_ids(
-        &self,
-        url: &url::Url,
-        access_scope: Option<&VirtualLibraryAccessScope>,
-    ) -> Result<Option<Server>> {
-        for &path_segment in MEDIA_ID_PATH_TAGS {
-            if let Some(media_id) = contains_id(url, path_segment) {
-                debug!("Found {} ID in request: {}", path_segment, media_id);
-                if let Some(server) = self
-                    .server_from_client_media_id(&media_id, access_scope)
-                    .await?
-                {
-                    debug!(
-                        "Found server for {} ID {}: {} ({})",
-                        path_segment, media_id, server.name, server.url
-                    );
-                    return Ok(Some(server));
-                }
-                debug!("No server found for {} ID: {}", path_segment, media_id);
-            }
-        }
-
-        Ok(None)
-    }
-
-    async fn server_from_query_media_ids(
-        &self,
-        url: &url::Url,
-        access_scope: Option<&VirtualLibraryAccessScope>,
-    ) -> Result<Option<Server>> {
-        for (param_name, param_value) in url.query_pairs() {
-            if !matches_case_insensitive(&param_name, MEDIA_ID_QUERY_TAGS) {
-                continue;
-            }
-
-            debug!("Found {} in query: {}", param_name, param_value);
-            for raw_id in param_value.split(',') {
-                let media_id = raw_id.trim();
-                if media_id.is_empty() {
-                    continue;
-                }
-
-                if let Some(server) = self
-                    .server_from_client_media_id(media_id, access_scope)
-                    .await?
-                {
-                    debug!(
-                        "Found server for {} {}: {} ({})",
-                        param_name, media_id, server.name, server.url
-                    );
-                    return Ok(Some(server));
-                }
-                debug!("No server found for {}: {}", param_name, media_id);
-            }
-        }
-
-        Ok(None)
-    }
-
-    async fn server_from_client_media_id(
-        &self,
-        media_id: &str,
-        access_scope: Option<&VirtualLibraryAccessScope>,
-    ) -> Result<Option<Server>> {
-        if let Some((_mapping, server)) = self
-            .data_context
-            .media_storage
-            .get_media_mapping_with_server(media_id)
-            .await?
-        {
-            if !server_is_allowed(server.id, access_scope, None) {
-                return Err(crate::http::preprocessing::MediaAccessDenied.into());
-            }
-            return Ok(Some(server));
-        }
-
-        if let Some(member) = self
-            .media_version_member(media_id, access_scope, None)
-            .await
-        {
-            return Ok(Some(member.server));
-        }
-        if self
-            .data_context
-            .media_storage
-            .get_media_version_group(media_id)
-            .await?
-            .is_some()
-        {
-            let members = self
-                .data_context
-                .media_storage
-                .get_media_version_members_by_virtual_id(media_id)
-                .await?;
-            if access_scope
-                .is_some_and(|scope| members.iter().all(|member| !scope.allows(member.server.id)))
-            {
-                return Err(crate::http::preprocessing::MediaAccessDenied.into());
-            }
-            return Err(anyhow::anyhow!(
-                "media aggregate has no healthy authorized version"
-            ));
-        }
-
-        let target = self
-            .data_context
-            .virtual_library_service
-            .routing_target(media_id, access_scope, None)
-            .await?;
-        if let Some(target) = target {
-            return Ok(Some(target.server));
-        }
-
-        match self
-            .data_context
-            .virtual_library_service
-            .resolve(media_id, access_scope)
-            .await?
-        {
-            VirtualLibraryResolution::Unknown | VirtualLibraryResolution::Empty { .. } => Ok(None),
-            VirtualLibraryResolution::Resolved(_) => Err(anyhow::anyhow!(
-                "failed to select a routing target for the resolved virtual library"
-            )),
-        }
     }
 
     async fn media_version_member(
@@ -905,35 +551,23 @@ impl UrlProcessor {
         access_scope: Option<&VirtualLibraryAccessScope>,
         required_server_id: Option<ServerId>,
     ) -> Option<MediaVersionMember> {
-        let members = self
-            .data_context
-            .media_storage
+        let server_id = required_server_id?;
+        self.media_storage
             .get_media_version_members_by_virtual_id(group_virtual_id)
             .await
             .ok()?
-            .into_iter();
-        let mut healthy_members = Vec::new();
-        for member in members {
-            if server_is_allowed(member.server.id, access_scope, required_server_id)
-                && self
-                    .data_context
-                    .server_storage
-                    .server_status(member.server.id)
-                    .await
-                    .is_healthy()
-            {
-                healthy_members.push(member);
-            }
-        }
-
-        healthy_members.into_iter().max_by(|left, right| {
-            compare_virtual_library_routes(
-                &left.server,
-                &left.mapping.original_media_id,
-                &right.server,
-                &right.mapping.original_media_id,
-            )
-        })
+            .into_iter()
+            .filter(|member| {
+                member.server.id == server_id
+                    && server_is_allowed(server_id, access_scope, Some(server_id))
+            })
+            // Multiple copies on the selected server keep the historical
+            // stable mapping tie-break, without consulting availability.
+            .max_by(|left, right| {
+                left.mapping
+                    .original_media_id
+                    .cmp(&right.mapping.original_media_id)
+            })
     }
 }
 
@@ -944,59 +578,6 @@ fn server_is_allowed(
 ) -> bool {
     required_server_id.is_none_or(|required| required == server_id)
         && access_scope.is_none_or(|scope| scope.allows(server_id))
-}
-
-#[derive(Clone, Copy)]
-enum DeliveryUrlStyle {
-    Absolute,
-    RootRelative,
-    Relative,
-}
-
-fn parse_delivery_url(value: &str) -> Option<(url::Url, DeliveryUrlStyle)> {
-    if let Ok(url) = url::Url::parse(value) {
-        return Some((url, DeliveryUrlStyle::Absolute));
-    }
-
-    let (path, style) = if value.starts_with('/') {
-        (value.to_string(), DeliveryUrlStyle::RootRelative)
-    } else {
-        (format!("/{value}"), DeliveryUrlStyle::Relative)
-    };
-
-    url::Url::parse(&format!("http://localhost{path}"))
-        .ok()
-        .map(|url| (url, style))
-}
-
-fn format_delivery_url(url: url::Url, style: DeliveryUrlStyle) -> String {
-    match style {
-        DeliveryUrlStyle::Absolute => url.to_string(),
-        DeliveryUrlStyle::RootRelative => relative_url_from_parts(&url),
-        DeliveryUrlStyle::Relative => relative_url_from_parts(&url)
-            .strip_prefix('/')
-            .unwrap_or(url.path())
-            .to_string(),
-    }
-}
-
-fn relative_url_from_parts(url: &url::Url) -> String {
-    let mut value = url.path().to_string();
-    if let Some(query) = url.query() {
-        value.push('?');
-        value.push_str(query);
-    }
-    if let Some(fragment) = url.fragment() {
-        value.push('#');
-        value.push_str(fragment);
-    }
-    value
-}
-
-pub fn matches_case_insensitive(value: &str, candidates: &[&str]) -> bool {
-    candidates
-        .iter()
-        .any(|candidate| value.eq_ignore_ascii_case(candidate))
 }
 
 #[cfg(test)]
@@ -1027,14 +608,11 @@ mod tests {
             .create_group("Empty library")
             .await
             .unwrap();
-        let processor = UrlProcessor::new(DataContext {
-            user_authorization: Arc::new(UserAuthorizationService::new(pool)),
-            server_storage: Arc::new(server_storage),
-            media_storage: Arc::new(media_storage),
-            virtual_library_service: Arc::new(virtual_libraries),
-            play_sessions: Arc::new(SessionStorage::new()),
-            config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
-        });
+        let processor = crate::application::url_selection::UrlSelection::new(
+            Arc::new(media_storage),
+            Arc::new(server_storage),
+            Arc::new(virtual_libraries),
+        );
         let scope = VirtualLibraryAccessScope::new("user", [ServerId::new(1)]);
         let url = url::Url::parse(&format!(
             "http://localhost/Users/user/Items?ParentId={}",
@@ -1076,14 +654,13 @@ mod tests {
             .unwrap();
         let virtual_libraries =
             VirtualLibraryService::new(pool.clone(), server_storage.clone(), media_storage.clone());
-        let processor = UrlProcessor::new(DataContext {
-            user_authorization: Arc::new(UserAuthorizationService::new(pool)),
-            server_storage: Arc::new(server_storage),
-            media_storage: Arc::new(media_storage),
-            virtual_library_service: Arc::new(virtual_libraries),
-            play_sessions: Arc::new(SessionStorage::new()),
-            config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
-        });
+        let processor = UrlProcessor::new(
+            Arc::new(media_storage),
+            Arc::new(virtual_libraries),
+            Arc::new(SessionStorage::new()),
+            Arc::new(UserAuthorizationService::new(pool)),
+            SettingsView::new(Arc::new(tokio::sync::RwLock::new(AppConfig::default()))),
+        );
         let mut url = url::Url::parse(&format!(
             "http://localhost/Items/{}/Images/Primary?tag={}",
             mapping.virtual_media_id, mapping.virtual_media_id
@@ -1091,7 +668,7 @@ mod tests {
         .unwrap();
 
         processor
-            .client_to_server_url(&mut url, &None, None, Some(server_id))
+            .client_to_server_url(&mut url, &None, None, server_id)
             .await;
 
         assert_eq!(url.path(), "/Items/upstream-id/Images/Primary");
@@ -1129,14 +706,13 @@ mod tests {
             .unwrap();
         let virtual_libraries =
             VirtualLibraryService::new(pool.clone(), server_storage.clone(), media_storage.clone());
-        let processor = UrlProcessor::new(DataContext {
-            user_authorization: Arc::new(UserAuthorizationService::new(pool)),
-            server_storage: Arc::new(server_storage),
-            media_storage: Arc::new(media_storage),
-            virtual_library_service: Arc::new(virtual_libraries),
-            play_sessions: Arc::new(SessionStorage::new()),
-            config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
-        });
+        let processor = UrlProcessor::new(
+            Arc::new(media_storage),
+            Arc::new(virtual_libraries),
+            Arc::new(SessionStorage::new()),
+            Arc::new(UserAuthorizationService::new(pool)),
+            SettingsView::new(Arc::new(tokio::sync::RwLock::new(AppConfig::default()))),
+        );
         let mut url = url::Url::parse(&format!(
             "http://localhost/Items?ContributingArtistIds={}",
             mapping.virtual_media_id
@@ -1144,7 +720,7 @@ mod tests {
         .unwrap();
 
         processor
-            .client_to_server_url(&mut url, &None, None, Some(server_id))
+            .client_to_server_url(&mut url, &None, None, server_id)
             .await;
 
         assert_eq!(
@@ -1199,14 +775,11 @@ mod tests {
             .unwrap();
         let virtual_libraries =
             VirtualLibraryService::new(pool.clone(), server_storage.clone(), media_storage.clone());
-        let processor = UrlProcessor::new(DataContext {
-            user_authorization: Arc::new(UserAuthorizationService::new(pool)),
-            server_storage: Arc::new(server_storage),
-            media_storage: Arc::new(media_storage),
-            virtual_library_service: Arc::new(virtual_libraries),
-            play_sessions: Arc::new(SessionStorage::new()),
-            config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
-        });
+        let processor = crate::application::url_selection::UrlSelection::new(
+            Arc::new(media_storage),
+            Arc::new(server_storage),
+            Arc::new(virtual_libraries),
+        );
         let url = url::Url::parse(&format!(
             "http://localhost/Videos/{}/stream?MediaSourceId={}",
             item.virtual_media_id, source.virtual_media_id
@@ -1252,14 +825,18 @@ mod tests {
             .unwrap();
         let virtual_libraries =
             VirtualLibraryService::new(pool.clone(), server_storage.clone(), media_storage.clone());
-        let processor = UrlProcessor::new(DataContext {
-            user_authorization: Arc::new(UserAuthorizationService::new(pool)),
-            server_storage: Arc::new(server_storage),
-            media_storage: Arc::new(media_storage),
-            virtual_library_service: Arc::new(virtual_libraries),
-            play_sessions: Arc::new(SessionStorage::new()),
-            config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
-        });
+        let selection = crate::application::url_selection::UrlSelection::new(
+            Arc::new(media_storage.clone()),
+            Arc::new(server_storage.clone()),
+            Arc::new(virtual_libraries.clone()),
+        );
+        let processor = UrlProcessor::new(
+            Arc::new(media_storage),
+            Arc::new(virtual_libraries),
+            Arc::new(SessionStorage::new()),
+            Arc::new(UserAuthorizationService::new(pool)),
+            SettingsView::new(Arc::new(tokio::sync::RwLock::new(AppConfig::default()))),
+        );
 
         // Routing must find the owning server from the playlist path ID.
         let url = url::Url::parse(&format!(
@@ -1267,7 +844,7 @@ mod tests {
             playlist.virtual_media_id
         ))
         .unwrap();
-        let selected = processor
+        let selected = selection
             .server_from_client_url(&url, None)
             .await
             .unwrap()
@@ -1281,7 +858,7 @@ mod tests {
         ))
         .unwrap();
         processor
-            .client_to_server_url(&mut url, &None, None, Some(server_id))
+            .client_to_server_url(&mut url, &None, None, server_id)
             .await;
         assert_eq!(url.path(), "/Playlists/upstream-playlist/Items");
         assert_eq!(

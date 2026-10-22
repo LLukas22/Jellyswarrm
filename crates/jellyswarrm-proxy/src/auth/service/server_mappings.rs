@@ -1,6 +1,16 @@
 //! Maintain backend account mappings and migrate or decrypt stored credentials.
 use super::*;
 
+#[derive(Debug, thiserror::Error)]
+pub enum MappingCredentialError {
+    #[error("mapping has the wrong credential kind")]
+    WrongKind,
+    #[error("mapping encryption key unavailable")]
+    MissingKey,
+    #[error("unable to decrypt saved mapping credential")]
+    Encryption(#[from] crate::auth::encryption::EncryptionError),
+}
+
 impl UserAuthorizationService {
     pub(super) fn mapping_credentials_changed(
         &self,
@@ -265,25 +275,25 @@ impl UserAuthorizationService {
         mapping: &ServerMapping,
         user_key: &HashedPassword,
         admin_key: &HashedPassword,
-    ) -> Result<String, String> {
+    ) -> Result<String, MappingCredentialError> {
         let MappingAuth::QuickConnect { token, .. } = &mapping.auth else {
-            return Err("not a Quick Connect mapping".into());
+            return Err(MappingCredentialError::WrongKind);
         };
         if mapping.credential_format == CredentialFormat::SessionV1 {
             return self
                 .mapping_key
                 .as_ref()
-                .ok_or_else(|| "mapping encryption key unavailable".to_string())?
+                .ok_or(MappingCredentialError::MissingKey)?
                 .decrypt(token)
                 .map(Password::into_inner)
-                .map_err(|_| "Unable to decrypt Quick Connect token".into());
+                .map_err(MappingCredentialError::Encryption);
         }
         // New Quick Connect links use the admin key. Try that first so routine
         // validation does not log an expected failed user-key decryption.
         decrypt_password(token, admin_key)
             .or_else(|_| decrypt_password(token, user_key))
             .map(Password::into_inner)
-            .map_err(|_| "Unable to decrypt Quick Connect token".into())
+            .map_err(MappingCredentialError::Encryption)
     }
 
     /// Decrypt a server mapping password
@@ -294,17 +304,17 @@ impl UserAuthorizationService {
         admin_password: &HashedPassword,
         user_password_plain: Option<&Password>,
         admin_password_plain: Option<&Password>,
-    ) -> Result<Password, String> {
+    ) -> Result<Password, MappingCredentialError> {
         let MappingAuth::Password { password, .. } = &mapping.auth else {
-            return Err("not a password mapping".into());
+            return Err(MappingCredentialError::WrongKind);
         };
         if mapping.credential_format == CredentialFormat::SessionV1 {
             return self
                 .mapping_key
                 .as_ref()
-                .ok_or_else(|| "mapping encryption key unavailable".to_string())?
+                .ok_or(MappingCredentialError::MissingKey)?
                 .decrypt(password)
-                .map_err(|_| "Unable to decrypt mapped password".into());
+                .map_err(MappingCredentialError::Encryption);
         }
         // Try user password first
         if let Ok(decrypted) = decrypt_password(password, user_password) {

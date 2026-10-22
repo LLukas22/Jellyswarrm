@@ -2,7 +2,9 @@
 
 pub(crate) mod encryption;
 pub(crate) mod federation;
+pub(crate) mod identity;
 pub(crate) mod mapping_authentication;
+pub(crate) mod quick_connect;
 pub(crate) mod service;
 
 pub(crate) use service::UserAuthorizationService;

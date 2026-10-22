@@ -82,12 +82,8 @@ pub async fn response(
     use crate::application::error::ApplicationError;
     // Do not leak partial, cached, compressed, or error-page playlist bodies.
     if upstream.status() != StatusCode::OK {
-        let status = if upstream.status().is_success() || upstream.status().is_redirection() {
-            StatusCode::BAD_GATEWAY
-        } else {
-            upstream.status()
-        };
-        return Err(ApplicationError::UpstreamStatus(upstream.status()).with_status(status));
+        return Err(ApplicationError::UpstreamStatus(upstream.status())
+            .at(crate::application::error::FailureStage::HlsStatus));
     }
     if upstream
         .headers()
@@ -134,12 +130,14 @@ pub async fn response(
                 bytes.extend_from_slice(&chunk);
             }
             String::from_utf8(bytes).map_err(|error| {
-                ApplicationError::Internal(error.into()).with_status(StatusCode::BAD_GATEWAY)
+                ApplicationError::Internal(error.into())
+                    .at(crate::application::error::FailureStage::HlsTranslation)
             })
         })
         .await
         .map_err(|error| {
-            ApplicationError::Internal(error.into()).with_status(StatusCode::GATEWAY_TIMEOUT)
+            ApplicationError::Internal(error.into())
+                .at(crate::application::error::FailureStage::HlsDeadline)
         })??;
         rewrite(context, &playlist, &text).await?
     };
@@ -190,7 +188,8 @@ async fn rewrite(
                     )
                     .await
                     .map_err(|error| {
-                        ApplicationError::Internal(error).with_status(StatusCode::BAD_GATEWAY)
+                        ApplicationError::Internal(error)
+                            .at(crate::application::error::FailureStage::HlsTranslation)
                     })?,
             );
             end = range.end;
@@ -222,7 +221,7 @@ mod tests {
         let servers = ServerStorageService::new(pool.clone());
         let media = MediaStorageService::new(pool.clone());
         let libraries = VirtualLibraryService::new(pool.clone(), servers.clone(), media.clone());
-        let processor = UrlProcessor::new(DataContext {
+        let processor = UrlProcessor::from(DataContext {
             user_authorization: Arc::new(UserAuthorizationService::new(pool)),
             server_storage: Arc::new(servers),
             media_storage: Arc::new(media),

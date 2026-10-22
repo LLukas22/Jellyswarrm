@@ -31,6 +31,44 @@ struct Fixture {
     sources: Vec<String>,
 }
 
+#[tokio::test]
+async fn target_bound_translation_does_not_repeat_backend_availability_selection() {
+    let fixture = fixture().await;
+    let members = fixture
+        .state
+        .media_storage
+        .get_media_version_members_by_virtual_id(&fixture.aggregate)
+        .await
+        .unwrap();
+    let member = &members[0];
+    // A fresh registry has no successful health observations. Unbound selection
+    // must reject this aggregate, but translating an already selected owner
+    // remains stable and never silently switches to another copy.
+    let registry = Arc::new(ServerStorageService::new(fixture.pool.clone()));
+    let selection = crate::application::url_selection::UrlSelection::new(
+        fixture.state.media_storage.clone(),
+        registry,
+        fixture.state.virtual_library_service.clone(),
+    );
+    let mut url: url::Url = format!("http://proxy/Items/{}", fixture.aggregate)
+        .parse()
+        .unwrap();
+    assert!(selection.server_from_client_url(&url, None).await.is_err());
+    fixture
+        .state
+        .processors
+        .url_processor
+        .client_to_server_url(&mut url, &None, None, member.server.id)
+        .await;
+    let expected = members
+        .iter()
+        .filter(|candidate| candidate.server.id == member.server.id)
+        .map(|candidate| candidate.mapping.original_media_id.as_str())
+        .max()
+        .unwrap();
+    assert_eq!(url.path(), format!("/Items/{expected}"));
+}
+
 async fn fixture() -> Fixture {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
@@ -257,7 +295,7 @@ async fn first_negotiation_selects_exact_member_before_binding() {
             .get_session_for_user("first-play", "viewer")
             .await
             .is_none());
-        let response = post_playback_info(fixture.state.clone(), input)
+        let response = post_playback_info_typed(&fixture.state.playback_service(), input)
             .await
             .unwrap();
         assert_eq!(response.media_sources[0].id, fixture.sources[selected]);
@@ -324,7 +362,7 @@ async fn query_source_selects_owner_instead_of_conflicting_body_source() {
         &format!("?MediaSourceId={}", fixture.sources[2]),
         json!({"MediaSourceId":fixture.sources[0], "AudioStreamIndex":3}),
     );
-    post_playback_info(fixture.state.clone(), input)
+    post_playback_info_typed(&fixture.state.playback_service(), input)
         .await
         .unwrap();
     let requests = fixture.upstreams[1].received_requests().await.unwrap();
@@ -373,7 +411,7 @@ async fn aggregate_default_query_keeps_member_source_and_track_preferences() {
         &format!("?MediaSourceId={}", fixture.aggregate),
         json!({"MediaSourceId":fixture.aggregate, "AudioStreamIndex":3, "SubtitleStreamIndex":5}),
     );
-    let response = post_playback_info(fixture.state.clone(), input)
+    let response = post_playback_info_typed(&fixture.state.playback_service(), input)
         .await
         .unwrap();
     assert_eq!(response.media_sources.len(), 1);
@@ -408,9 +446,10 @@ async fn sessionless_passthrough_is_rejected_without_negotiation() {
         None,
     );
     assert_eq!(
-        post_playback_info(fixture.state.clone(), input)
+        post_playback_info_typed(&fixture.state.playback_service(), input)
             .await
-            .unwrap_err(),
+            .unwrap_err()
+            .detail_status(),
         StatusCode::UNAUTHORIZED
     );
     for upstream in &fixture.upstreams {
@@ -500,9 +539,10 @@ async fn failed_negotiation_does_not_commit_playback_binding() {
         .await;
     let input = operation(&fixture, "", json!({"MediaSourceId":fixture.sources[2]}));
     assert_eq!(
-        post_playback_info(fixture.state.clone(), input)
+        post_playback_info_typed(&fixture.state.playback_service(), input)
             .await
-            .unwrap_err(),
+            .unwrap_err()
+            .detail_status(),
         StatusCode::SERVICE_UNAVAILABLE
     );
     assert!(fixture
@@ -714,15 +754,16 @@ async fn invalid_live_open_and_failed_refresh_do_not_commit_playback_transitions
         .build()
         .unwrap();
     assert_eq!(
-        live::post_livestream_open(
-            fixture.state.clone(),
+        live::post_livestream_open_typed(
+            &fixture.state.playback_service(),
             LiveRequest {
                 original_request: request,
                 context: input.context,
             }
         )
         .await
-        .unwrap_err(),
+        .unwrap_err()
+        .detail_status(),
         StatusCode::BAD_GATEWAY
     );
     let lifecycle = PlaybackLifecycle::new(&fixture.state.play_sessions);
@@ -742,14 +783,15 @@ async fn invalid_live_open_and_failed_refresh_do_not_commit_playback_transitions
         .build()
         .unwrap();
     assert!(matches!(
-        live::post_live_stream_action(
-            fixture.state.clone(),
+        live::post_live_stream_action_typed(
+            &fixture.state.playback_service(),
             LiveRequest {
                 original_request: request,
                 context: input.context,
             }
         )
-        .await,
+        .await
+        .map_err(|error| error.detail_status()),
         Err(StatusCode::SERVICE_UNAVAILABLE)
     ));
     let binding = fixture
@@ -1010,12 +1052,13 @@ async fn stale_reconciliation_drops_live_identity_with_its_unroutable_source() {
                 .unwrap()
                 .revision();
             assert_eq!(
-                crate::application::playback::live::post_livestream_open(
-                    fixture.state.clone(),
+                crate::application::playback::live::post_livestream_open_typed(
+                    &fixture.state.playback_service(),
                     input
                 )
                 .await
-                .unwrap_err(),
+                .unwrap_err()
+                .detail_status(),
                 StatusCode::SERVICE_UNAVAILABLE
             );
             assert_eq!(
@@ -1030,8 +1073,8 @@ async fn stale_reconciliation_drops_live_identity_with_its_unroutable_source() {
                 before
             );
         } else {
-            let response = post_playback_info(
-                fixture.state.clone(),
+            let response = post_playback_info_typed(
+                &fixture.state.playback_service(),
                 operation(&fixture, "", json!({"MediaSourceId":fixture.sources[0]})),
             )
             .await
@@ -1073,10 +1116,12 @@ async fn live_open_query_translates_owner_once_even_when_original_is_another_vir
         .expect(1)
         .mount(&fixture.upstreams[0])
         .await;
-    let response =
-        crate::application::playback::live::post_livestream_open(fixture.state.clone(), input)
-            .await
-            .unwrap();
+    let response = crate::application::playback::live::post_livestream_open_typed(
+        &fixture.state.playback_service(),
+        input,
+    )
+    .await
+    .unwrap();
     let requests = fixture.upstreams[0].received_requests().await.unwrap();
     let request = requests
         .iter()
@@ -1127,7 +1172,7 @@ async fn live_open_query_translates_owner_once_even_when_original_is_another_vir
 
 #[tokio::test]
 async fn live_actions_translate_colliding_live_identity_exactly_once() {
-    use crate::application::playback::live::{post_live_stream_action, LiveRequest};
+    use crate::application::playback::live::{post_live_stream_action_typed, LiveRequest};
     for action in ["Refresh", "Close"] {
         let fixture = fixture().await;
         let server = &fixture.sessions[0].1;
@@ -1154,8 +1199,8 @@ async fn live_actions_translate_colliding_live_identity_exactly_once() {
             .json(&json!({"LiveStreamId":owner}))
             .build()
             .unwrap();
-        post_live_stream_action(
-            fixture.state.clone(),
+        post_live_stream_action_typed(
+            &fixture.state.playback_service(),
             LiveRequest {
                 original_request: request,
                 context: operation(&fixture, "", json!({})).context,
@@ -1228,14 +1273,17 @@ async fn successful_live_workflows_publish_the_exact_advertised_identity_and_url
             .mount(&fixture.upstreams[0])
             .await;
         let source = if let Some(input) = input {
-            crate::application::playback::live::post_livestream_open(fixture.state.clone(), input)
-                .await
-                .unwrap()["MediaSource"]
+            crate::application::playback::live::post_livestream_open_typed(
+                &fixture.state.playback_service(),
+                input,
+            )
+            .await
+            .unwrap()["MediaSource"]
                 .clone()
         } else {
             serde_json::to_value(
-                post_playback_info(
-                    fixture.state.clone(),
+                post_playback_info_typed(
+                    &fixture.state.playback_service(),
                     operation(&fixture, "", json!({"MediaSourceId":fixture.sources[0]})),
                 )
                 .await

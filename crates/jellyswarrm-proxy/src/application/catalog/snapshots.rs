@@ -5,9 +5,7 @@ use super::{
     request_policy::is_upstream_limited_catalog_request,
 };
 use crate::application::error::ApplicationError;
-use crate::{
-    application::catalog::input::CatalogRequest, http::preprocessing::JellyfinAuthorization,
-};
+use crate::{application::catalog::input::CatalogRequest, auth::identity::JellyfinAuthorization};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
@@ -72,14 +70,25 @@ impl CatalogSnapshots {
             .revisions
             .lock()
             .expect("snapshot revisions poisoned")
-            .get(viewer)
-            .unwrap_or(&0)
+            .entry(viewer.to_owned())
+            .or_default()
     }
 
     /// A revision also fences off builds that were in flight during the write.
     pub(crate) fn invalidate_viewer(&self, viewer: &str) {
         let mut revisions = self.revisions.lock().expect("snapshot revisions poisoned");
         *revisions.entry(viewer.to_string()).or_default() += 1;
+    }
+
+    /// Registry changes affect every viewer. Registering revisions at read time
+    /// also fences builders that started before this mutation, not just entries
+    /// already present in the cache.
+    pub(crate) fn invalidate_all(&self) {
+        let mut revisions = self.revisions.lock().expect("snapshot revisions poisoned");
+        for revision in revisions.values_mut() {
+            *revision += 1;
+        }
+        self.cache.invalidate_all();
     }
 }
 
@@ -92,6 +101,20 @@ enum BuildFailure {
     Error(Arc<ApplicationError>),
     // Share a degraded response with current waiters, but never cache it.
     Degraded(Arc<SnapshotResponse>),
+}
+
+#[cfg(test)]
+mod registry_invalidation_tests {
+    use super::*;
+    #[test]
+    fn registry_mutations_fence_all_registered_viewers_including_inflight_builds() {
+        let snapshots = CatalogSnapshots::default();
+        let first = snapshots.revision("first");
+        let second = snapshots.revision("second");
+        snapshots.invalidate_all();
+        assert_ne!(snapshots.revision("first"), first);
+        assert_ne!(snapshots.revision("second"), second);
+    }
 }
 
 #[cfg(test)]

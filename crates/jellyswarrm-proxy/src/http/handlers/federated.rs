@@ -140,7 +140,7 @@ mod media_reconciliation {
         targets: Vec<CatalogFetchTarget>,
         skipped: usize,
     ) -> Result<Json<serde_json::Value>, StatusCode> {
-        catalog::media_reconciliation::get_virtual_library_items(
+        catalog::media_reconciliation::get_virtual_library_items_typed(
             &state.catalog_service(),
             request.into(),
             scope,
@@ -149,6 +149,7 @@ mod media_reconciliation {
         )
         .await
         .map(Json)
+        .map_err(|error| error.detail_status())
     }
 
     pub(super) async fn get_aggregate_show_items(
@@ -158,7 +159,7 @@ mod media_reconciliation {
         targets: Vec<CatalogFetchTarget>,
         skipped: usize,
     ) -> Result<Json<serde_json::Value>, StatusCode> {
-        catalog::media_reconciliation::get_aggregate_show_items(
+        catalog::media_reconciliation::get_aggregate_show_items_typed(
             &state.catalog_service(),
             request.into(),
             scope,
@@ -167,5 +168,6 @@ mod media_reconciliation {
         )
         .await
         .map(Json)
+        .map_err(|error| error.detail_status())
     }
 }

@@ -1,7 +1,7 @@
 //! Target-bound request construction. This module never selects a backend.
 use crate::{
-    application::context::AuthorizedTarget, auth::service::AuthorizationSession,
-    http::preprocessing::JellyfinAuthorization, libraries::service::VirtualLibraryAccessScope,
+    application::context::AuthorizedTarget, auth::identity::JellyfinAuthorization,
+    auth::service::AuthorizationSession, libraries::service::VirtualLibraryAccessScope,
     processors::url_processor::UrlProcessor, servers::storage::Server,
     upstream::headers::remove_hop_by_hop_headers, upstream::url::join_server_url,
 };
@@ -60,7 +60,7 @@ impl<'a> UpstreamRequestBuilder<'a> {
         apply_authorization_header(request, auth);
         let mut url = request.url().clone();
         self.urls
-            .client_to_server_url(&mut url, session, access_scope, Some(server.id))
+            .client_to_server_url(&mut url, session, access_scope, server.id)
             .await;
         let path = match self.proxy_prefix {
             Some(prefix) => url.path().trim_start_matches(&format!("/{prefix}")),
@@ -165,7 +165,7 @@ mod tests {
         }
         let media = MediaStorageService::new(pool.clone());
         let libraries = VirtualLibraryService::new(pool.clone(), servers.clone(), media.clone());
-        let urls = UrlProcessor::new(DataContext {
+        let urls = UrlProcessor::from(DataContext {
             user_authorization: Arc::new(UserAuthorizationService::new(pool)),
             server_storage: Arc::new(servers),
             media_storage: Arc::new(media.clone()),

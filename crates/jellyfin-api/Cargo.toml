@@ -15,7 +15,6 @@ serde_plain = { workspace = true }
 url = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-moka = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

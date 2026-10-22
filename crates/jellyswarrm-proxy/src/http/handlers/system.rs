@@ -22,4 +22,5 @@ pub async fn info(
     accounts::server_info(&state, input, &ui_version)
         .await
         .map(Json)
+        .map_err(|error| error.detail_status())
 }

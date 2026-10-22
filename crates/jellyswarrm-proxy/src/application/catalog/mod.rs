@@ -355,8 +355,7 @@ pub(super) async fn finalize_items_response_typed(
         request.url(),
         state.get_url_prefix().await.as_deref(),
     ) {
-        if let Some(auth) = crate::http::preprocessing::JellyfinAuthorization::from_request(request)
-        {
+        if let Some(auth) = crate::auth::identity::JellyfinAuthorization::from_request(request) {
             if let Some(token) = auth.token_ref() {
                 crate::application::response::media_response(
                     &state.client_sessions,

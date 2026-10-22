@@ -1,26 +1,29 @@
 //! Translate backend IDs, permissions, and embedded delivery URLs in JSON responses.
 use async_trait::async_trait;
 use serde_json::Value;
+use std::sync::Arc;
 use tracing::debug;
 
 use crate::{
+    auth::UserAuthorizationService,
+    media::MediaStorageService,
     processors::{
+        delivery::DeliveryUrlTranslator,
         field_matcher::{
             DELIVERY_URL_FIELDS, DISABLED_BOOL_FIELDS, MEDIA_ID_ARRAY_FIELDS,
             MEDIA_ID_LIST_PARENT_FIELDS, MEDIA_ID_MAP_KEY_FIELDS, MEDIA_ID_MAP_VALUE_FIELDS,
             MEDIA_ID_NESTED_MAP_KEY_FIELDS, RESPONSE_MEDIA_ID_FIELDS, SERVER_ID_FIELDS,
         },
         json_processor::{JsonProcessingContext, JsonProcessingResult, JsonProcessor},
-        url_processor::UrlProcessor,
     },
     servers::storage::Server,
-    DataContext,
 };
 
 #[derive(Clone)]
 pub struct ResponseProcessor {
-    pub data_context: DataContext,
-    url_processor: UrlProcessor,
+    media_storage: Arc<MediaStorageService>,
+    user_authorization: Arc<UserAuthorizationService>,
+    delivery: DeliveryUrlTranslator,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -34,16 +37,19 @@ pub enum PlaylistResponseError {
 }
 
 impl ResponseProcessor {
-    pub fn new(data_context: DataContext) -> Self {
+    pub fn new(
+        media_storage: Arc<MediaStorageService>,
+        user_authorization: Arc<UserAuthorizationService>,
+    ) -> Self {
         Self {
-            url_processor: UrlProcessor::new(data_context.clone()),
-            data_context,
+            delivery: DeliveryUrlTranslator::new(media_storage.clone()),
+            media_storage,
+            user_authorization,
         }
     }
 
     async fn virtual_media_id(&self, id: &str, server: &Server) -> anyhow::Result<String> {
-        self.data_context
-            .media_storage
+        self.media_storage
             .get_or_create_media_mapping(id, server)
             .await
             .map(|mapping| mapping.virtual_media_id)
@@ -118,7 +124,6 @@ impl ResponseProcessor {
             .as_str()
             .ok_or(PlaylistResponseError::InvalidSharing)?;
         let virtual_id = self
-            .data_context
             .user_authorization
             .virtual_user_id_for_backend(server.id, original_id)
             .await?
@@ -132,8 +137,8 @@ impl ResponseProcessor {
         value: &str,
         context: &ResponseProcessingContext,
     ) -> anyhow::Result<Option<String>> {
-        self.url_processor
-            .server_to_client_delivery_url(value, &context.server, context.proxy_api_key.as_deref())
+        self.delivery
+            .translate(value, &context.server, context.proxy_api_key.as_deref())
             .await
     }
 }

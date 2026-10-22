@@ -347,15 +347,13 @@ impl ServerStorageService {
         Ok(result.rows_affected() > 0)
     }
 
-    pub fn start_health_check_loop(&self, wait_time_secs: u64) {
-        let service = self.clone();
-        tokio::spawn(async move {
-            info!("Starting server health check loop");
-            loop {
-                service.check_servers_health().await;
-                tokio::time::sleep(tokio::time::Duration::from_secs(wait_time_secs)).await;
-            }
-        });
+    /// Long-lived work; the application runtime owns its spawning/cancellation.
+    pub(crate) async fn health_check_loop(&self, wait_time_secs: u64) {
+        info!("Starting server health check loop");
+        loop {
+            self.check_servers_health().await;
+            tokio::time::sleep(tokio::time::Duration::from_secs(wait_time_secs)).await;
+        }
     }
 
     pub async fn check_servers_health(&self) {

@@ -57,6 +57,7 @@ impl<'a> From<&'a &'a str> for ServerReference<'a> {
 
 mod api_keys;
 mod server_mappings;
+pub use server_mappings::MappingCredentialError;
 mod sessions;
 mod users;
 

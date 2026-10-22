@@ -428,12 +428,17 @@ pub async fn check_user_server_status(
     };
 
     match authenticate_user_on_server(&state, &user, &server).await {
-        Ok((_client, jellyfin_user, public_info)) => {
+        Ok(authenticated) => {
             let template = UserServerStatusTemplate {
-                username: Some(jellyfin_user.name),
+                username: Some(authenticated.user.name.clone()),
                 error_message: None,
-                server_version: public_info.version.unwrap_or("unknown".to_string()),
+                server_version: authenticated
+                    .system_info
+                    .version
+                    .clone()
+                    .unwrap_or("unknown".to_string()),
             };
+            authenticated.close().await;
             match template.render() {
                 Ok(html) => Html(html).into_response(),
                 Err(e) => {

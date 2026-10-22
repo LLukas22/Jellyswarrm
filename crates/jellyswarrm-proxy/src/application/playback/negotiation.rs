@@ -30,17 +30,6 @@ use crate::{
     upstream::url::{contains_id, replace_path_id},
 };
 
-/// Negotiate sources, register their routes, and bind the successful playback.
-#[cfg(test)]
-pub(crate) async fn post_playback_info(
-    state: AppState,
-    input: OperationRequest,
-) -> Result<PlaybackResponse, StatusCode> {
-    post_playback_info_typed(&state.playback_service(), input)
-        .await
-        .map_err(|error| error.detail_status())
-}
-
 pub(crate) async fn post_playback_info_typed(
     state: &PlaybackService<'_>,
     mut input: OperationRequest,

@@ -1,14 +1,16 @@
 //! Prepare authorized fallback requests and forward responses through the proxy workflow.
+#[cfg(test)]
+use hyper::StatusCode;
 use hyper::{
     header::{self, HeaderValue},
-    Method, Response, StatusCode,
+    Method, Response,
 };
 use serde_json::Value;
 use tracing::{debug, warn};
 
 use crate::{
     application::{
-        context::{AuthorizedTarget, TargetError},
+        context::AuthorizedTarget,
         error::ApplicationError,
         input::OperationRequest,
         playback::{lifecycle::PendingPlaybackSessionUpdate, reports},
@@ -19,10 +21,7 @@ use crate::{
     processors::request_processor::RequestProcessingContext,
     processors::response_processor::ResponseProcessingProfile,
     upstream::headers::is_hop_by_hop_header,
-    upstream::jellyfin::{
-        json::execute_json_request,
-        request::{remap_authorization, UpstreamRequestBuilder},
-    },
+    upstream::jellyfin::request::{remap_authorization, UpstreamRequestBuilder},
     upstream::url::{decoded_path_segments, replace_path_id},
     AppState,
 };
@@ -150,10 +149,7 @@ pub(crate) async fn forward(
     prepared: PreparedProxyOperation,
     response_profile: ResponseProcessingProfile,
 ) -> Result<Response<hyper::body::Bytes>, ApplicationError> {
-    if let Some(response) = update_aggregate(state, &prepared.input)
-        .await
-        .map_err(ApplicationError::Compatibility)?
-    {
+    if let Some(response) = update_aggregate(state, &prepared.input).await? {
         let bytes = serde_json::to_vec(&response).map_err(ApplicationError::Serialization)?;
         return Response::builder()
             .header(header::CONTENT_TYPE, "application/json")
@@ -191,17 +187,10 @@ pub(crate) async fn forward(
         session: target.session().clone(),
         new_auth: target.authorization().clone(),
     };
-    if let Err((status, message)) = state
+    state
         .processors
         .process_request_body(&mut request, &processing, &request_url)
-        .await
-    {
-        return Response::builder()
-            .status(status)
-            .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-            .body(message.into())
-            .map_err(|error| ApplicationError::Internal(error.into()));
-    }
+        .await?;
     let response = state
         .reqwest_client
         .execute(request)
@@ -231,7 +220,7 @@ pub(crate) async fn forward(
         match serde_json::from_slice::<Value>(&body) {
             Ok(mut value) => {
                 let modified = state
-                    .process_response_json(
+                    .process_response_json_typed(
                         &mut value,
                         &server,
                         if status.is_success() {
@@ -241,8 +230,7 @@ pub(crate) async fn forward(
                         },
                         proxy_api_key.as_deref(),
                     )
-                    .await
-                    .map_err(ApplicationError::Compatibility)?;
+                    .await?;
                 if status.is_success() && response_profile != ResponseProcessingProfile::Disabled {
                     response::media_response(
                         &state.client_sessions,
@@ -298,7 +286,7 @@ pub(crate) async fn forward(
 pub(crate) async fn update_aggregate(
     state: &AppState,
     request: &OperationRequest,
-) -> Result<Option<Value>, StatusCode> {
+) -> Result<Option<Value>, ApplicationError> {
     if !matches!(
         *request.original_request.method(),
         reqwest::Method::POST | reqwest::Method::DELETE
@@ -323,23 +311,25 @@ pub(crate) async fn update_aggregate(
         .media_storage
         .get_media_version_group(id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(ApplicationError::Storage)?
     else {
         return Ok(None);
     };
-    let scope = request
-        .context
-        .access_scope()
-        .as_ref()
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let scope = request.context.access_scope().as_ref().ok_or_else(|| {
+        ApplicationError::MissingIdentity("aggregate viewer")
+            .at(crate::application::error::FailureStage::CallerAuthentication)
+    })?;
     let mut members = state
         .media_storage
         .get_media_version_members(group.id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(ApplicationError::Storage)?;
     members.retain(|member| scope.allows(member.server.id));
     if members.is_empty() {
-        return Err(StatusCode::NOT_FOUND);
+        return Err(
+            ApplicationError::InvalidInput("no authorized aggregate members")
+                .at(crate::application::error::FailureStage::ResourceLookup),
+        );
     }
     members.sort_by(|left, right| {
         compare_virtual_library_routes(
@@ -354,33 +344,37 @@ pub(crate) async fn update_aggregate(
         let target = request
             .context
             .target(member.server.id)
-            .map_err(|error| match error {
-                TargetError::AccessDenied | TargetError::ViewerMismatch => StatusCode::FORBIDDEN,
-                TargetError::UnavailableOwner => StatusCode::SERVICE_UNAVAILABLE,
-            })?;
-        let mut upstream = request
-            .original_request
-            .try_clone()
-            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+            .map_err(ApplicationError::TargetSelection)?;
+        let mut upstream =
+            request
+                .original_request
+                .try_clone()
+                .ok_or(ApplicationError::MissingIdentity(
+                    "buffered aggregate request",
+                ))?;
         *upstream.url_mut() =
             replace_path_id(upstream.url(), tag, &member.mapping.virtual_media_id)
-                .ok_or(StatusCode::BAD_REQUEST)?;
+                .ok_or(ApplicationError::InvalidInput("aggregate path identity"))?;
         let prefix = state.get_url_prefix().await;
         let upstream =
             UpstreamRequestBuilder::new(&state.processors.url_processor, prefix.as_deref())
                 .build(&target, &upstream)
                 .await
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                .map_err(|error| ApplicationError::Internal(error.into()))?;
         targets.push((upstream, member.server));
     }
     let mut result = None;
     for (upstream, server) in targets {
-        let mut data: Value = execute_json_request(&state.reqwest_client, upstream).await?;
+        let mut data: Value = crate::upstream::jellyfin::json::execute_json_request_typed(
+            &state.reqwest_client,
+            upstream,
+        )
+        .await?;
         // Also invalidate after a partial write if a later member rejects it.
         state.catalog_snapshots.invalidate_viewer(scope.user_id());
         if result.is_none() {
             state
-                .process_response_json(
+                .process_response_json_typed(
                     &mut data,
                     &server,
                     ResponseProcessingProfile::Media,
@@ -390,10 +384,14 @@ pub(crate) async fn update_aggregate(
                         .and_then(|auth| auth.token_ref()),
                 )
                 .await?;
-            data.as_object_mut().ok_or(StatusCode::BAD_GATEWAY)?.insert(
-                "ItemId".into(),
-                Value::String(group.virtual_media_id.clone()),
-            );
+            data.as_object_mut()
+                .ok_or(ApplicationError::InvalidUpstreamPayload(
+                    "aggregate response must be an object",
+                ))?
+                .insert(
+                    "ItemId".into(),
+                    Value::String(group.virtual_media_id.clone()),
+                );
             result = Some(data);
         }
     }

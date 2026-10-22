@@ -1,6 +1,5 @@
 //! Unselected operation input shared by migrated detail/playback entry points.
 //! Collecting caller context never constructs a backend request.
-use hyper::StatusCode;
 
 use crate::{
     application::{
@@ -18,23 +17,28 @@ pub(crate) struct OperationRequest {
     pub body_analysis: Option<RequestBodyAnalysisResult>,
 }
 
+/// Named boundary between incoming extraction and application execution. No
+/// backend is selected or encoded while collecting these caller-owned inputs.
+pub(crate) struct CollectedRequest {
+    pub original_request: reqwest::Request,
+    pub auth: Option<crate::auth::identity::JellyfinAuthorization>,
+    pub user: Option<crate::auth::service::User>,
+    pub sessions: Option<
+        Vec<(
+            crate::auth::service::AuthorizationSession,
+            crate::servers::Server,
+        )>,
+    >,
+    pub body_analysis: Option<RequestBodyAnalysisResult>,
+    pub access_scope: Option<crate::libraries::service::VirtualLibraryAccessScope>,
+}
+
 pub(crate) struct ResolvedTarget {
     pub target: AuthorizedTarget,
     pub server_matched_request: bool,
 }
 
 impl OperationRequest {
-    /// Retain endpoint status contracts while routing moves to application
-    /// policy. No URL, header, body or credential translation occurs here.
-    pub(crate) async fn resolve_target(
-        &self,
-        state: &AppState,
-    ) -> Result<ResolvedTarget, StatusCode> {
-        self.resolve_target_typed(state)
-            .await
-            .map_err(|error| error.detail_status())
-    }
-
     pub(crate) async fn resolve_target_typed(
         &self,
         state: &AppState,
@@ -86,17 +90,12 @@ impl OperationRequest {
     }
 }
 
-fn routing_error(error: anyhow::Error) -> ApplicationError {
-    if error.is::<crate::http::preprocessing::MediaAccessDenied>() {
+pub(crate) fn routing_error(error: anyhow::Error) -> ApplicationError {
+    if error.is::<crate::application::error::MediaAccessDenied>() {
         ApplicationError::AccessDenied
     } else if error.is::<crate::application::playback::reports::NoAvailableBackend>() {
         ApplicationError::UnavailableOwner
     } else {
         ApplicationError::InvalidRouting(error)
     }
-}
-
-/// HTTP adapters retain the established pre-operation rejection contract.
-pub(crate) fn input_status(error: anyhow::Error) -> StatusCode {
-    routing_error(error).detail_status()
 }

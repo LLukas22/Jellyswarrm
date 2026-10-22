@@ -12,7 +12,7 @@ use crate::{
 
 pub(crate) async fn project_media_json(
     processor: &ResponseProcessor,
-    config: &tokio::sync::RwLock<crate::config::AppConfig>,
+    config: &crate::config::SettingsView,
     payload: &mut serde_json::Value,
     server: &Server,
     profile: ResponseProcessingProfile,

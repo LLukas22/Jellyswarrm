@@ -17,8 +17,8 @@ use crate::{
         context::{AuthorizedTarget, RequestContext},
         input::OperationRequest,
     },
+    auth::identity::JellyfinAuthorization,
     config::MediaStreamingMode,
-    http::preprocessing::JellyfinAuthorization,
     servers::storage::Server,
     upstream::jellyfin::{
         delivery::{self, DeliveryResponse},
@@ -240,16 +240,6 @@ pub(crate) async fn get_video_resource_typed(
             .map(|user| user.id.as_str()),
     )
     .await
-}
-
-#[cfg(test)]
-pub async fn get_stream(
-    state: &AppState,
-    operation: OperationRequest,
-) -> Result<DeliveryResponse, StatusCode> {
-    get_stream_typed(&state.playback_service(), operation)
-        .await
-        .map_err(|error| error.detail_status())
 }
 
 pub(crate) async fn get_stream_typed(
@@ -480,7 +470,9 @@ mod tests {
             .respond_with(wiremock::ResponseTemplate::new(503))
             .mount(&upstream)
             .await;
-        let failed = get_stream(&state, operation("direct")).await.unwrap();
+        let failed = get_stream_typed(&state.playback_service(), operation("direct"))
+            .await
+            .unwrap();
         assert_eq!(failed.status, StatusCode::SERVICE_UNAVAILABLE);
         assert!(state
             .play_sessions
@@ -497,7 +489,9 @@ mod tests {
             )
             .mount(&upstream)
             .await;
-        let delivered = get_stream(&state, operation("direct")).await.unwrap();
+        let delivered = get_stream_typed(&state.playback_service(), operation("direct"))
+            .await
+            .unwrap();
         assert_eq!(delivered.status, StatusCode::PARTIAL_CONTENT);
         assert_eq!(
             delivered.headers[hyper::header::CONTENT_RANGE],
@@ -520,7 +514,7 @@ mod tests {
     async fn unknown_direct_session_binds_on_redirect() {
         let (state, server, context, item, upstream) =
             direct_fixture(MediaStreamingMode::Redirect).await;
-        let response = get_stream(&state, OperationRequest {
+        let response = get_stream_typed(&state.playback_service(), OperationRequest {
             original_request: reqwest::Request::new(reqwest::Method::HEAD,
                 format!("http://proxy.example/Audio/{item}/universal?PlaySessionId=redirect&Extension=kept").parse().unwrap()),
             context, body_analysis: None,

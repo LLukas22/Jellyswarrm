@@ -10,7 +10,7 @@ use crate::libraries::service::{compare_virtual_library_routes, VirtualLibraryAc
 use crate::processors::request_analyzer::RequestBodyAnalysisResult;
 use crate::servers::storage::Server;
 use crate::{
-    application::playback::sessions::SessionStorage, config::AppConfig,
+    application::playback::sessions::SessionStorage, config::SettingsView,
     media::storage::MediaStorageService, processors::url_processor::UrlProcessor,
     servers::storage::ServerStorageService,
 };
@@ -20,7 +20,8 @@ pub(crate) struct RoutingServices<'a> {
     pub server_storage: &'a ServerStorageService,
     pub play_sessions: &'a SessionStorage,
     pub urls: &'a UrlProcessor,
-    pub config: &'a tokio::sync::RwLock<AppConfig>,
+    pub config: &'a SettingsView,
+    pub selection: &'a crate::application::url_selection::UrlSelection,
 }
 
 pub async fn resolve_server(
@@ -86,7 +87,7 @@ pub async fn resolve_server(
     // fall back to an allowed server when their IDs belong to a forbidden one.
     if let (Some(scope), Some(analysis)) = (access_scope, request_body_result) {
         for id in &analysis.found_ids {
-            state.urls.validate_media_access(id, scope).await?;
+            state.selection.validate_media_access(id, scope).await?;
         }
     }
 
@@ -190,7 +191,7 @@ pub(crate) async fn server_from_request_media_ids(
     access_scope: Option<&VirtualLibraryAccessScope>,
 ) -> Result<Option<Server>> {
     state
-        .urls
+        .selection
         .server_from_client_url(request.url(), access_scope)
         .await
 }

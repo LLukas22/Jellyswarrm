@@ -2,7 +2,7 @@
 use super::{
     models::{Capabilities, GeneralCommand, MessageCommand},
     service::ClientSession,
-    snapshots, user_has_media_access, valid_session, SessionContext,
+    snapshots, valid_session, SessionContext,
 };
 use crate::AppState;
 use axum::{
@@ -389,7 +389,12 @@ async fn require_media(
     items: &[String],
     source: Option<&str>,
 ) -> ApiResult<()> {
-    if !user_has_media_access(state, user_id, items, source).await? {
+    if !state
+        .media_access()
+        .allows(user_id, items, source)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    {
         return Err(StatusCode::NOT_FOUND);
     }
     Ok(())

@@ -58,8 +58,14 @@ pub(crate) async fn proxy_handler(
             &state,
         )
         .await;
-        let (original_request, auth, user, sessions, body_analysis, access_scope) =
-            crate::http::preprocessing::extract_request_infos(req, &state, action).await?;
+        let crate::application::input::CollectedRequest {
+            original_request,
+            auth,
+            user,
+            sessions,
+            body_analysis,
+            access_scope,
+        } = crate::http::preprocessing::extract_request_infos(req, &state, action).await?;
         let context = application::context::RequestContext::new(
             &original_request,
             auth,
@@ -94,8 +100,12 @@ pub(crate) async fn proxy_handler(
         }
     };
 
-    let response = application::proxy::forward(&state, prepared, response_profile)
-        .await
-        .map_err(|error| error.detail_status())?;
+    let response = match application::proxy::forward(&state, prepared, response_profile).await {
+        Ok(response) => response,
+        Err(application::error::ApplicationError::RequestBody(cause)) => {
+            return Ok((StatusCode::BAD_REQUEST, client_request_error(&cause)).into_response())
+        }
+        Err(error) => return Err(error.detail_status()),
+    };
     Ok(response.map(Body::from))
 }

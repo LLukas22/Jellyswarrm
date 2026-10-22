@@ -19,7 +19,10 @@ pub async fn handle_get_me(
     State(state): State<AppState>,
     OperationInput(input): OperationInput,
 ) -> Result<Json<crate::models::User>, StatusCode> {
-    accounts::get_me(&state, input).await.map(Json)
+    accounts::get_me(&state, input)
+        .await
+        .map(Json)
+        .map_err(|error| error.detail_status())
 }
 
 pub async fn handle_get_user_by_id(
@@ -27,7 +30,10 @@ pub async fn handle_get_user_by_id(
     Path(_user_id): Path<String>,
     OperationInput(input): OperationInput,
 ) -> Result<Json<crate::models::User>, StatusCode> {
-    accounts::get_user_by_id(&state, input).await.map(Json)
+    accounts::get_user_by_id(&state, input)
+        .await
+        .map(Json)
+        .map_err(|error| error.detail_status())
 }
 
 pub async fn handle_authenticate_by_name(
@@ -38,4 +44,5 @@ pub async fn handle_authenticate_by_name(
     accounts::authenticate_by_name(&state, headers, payload)
         .await
         .map(crate::sessions::authentication_response)
+        .map_err(|error| error.detail_status())
 }

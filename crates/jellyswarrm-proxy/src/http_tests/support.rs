@@ -2,7 +2,7 @@
 //! independently observable backends. Unmatched upstream requests return 404.
 use crate::{
     application::playback::sessions::SessionStorage,
-    auth::service::{Device, User, UserAuthorizationService},
+    auth::service::{Device, User},
     config::{AppConfig, MediaStreamingMode, MIGRATOR},
     http::handlers::quick_connect::QuickConnectStorage,
     libraries::service::VirtualLibraryService,
@@ -12,7 +12,7 @@ use crate::{
     servers::storage::ServerStorageService,
     AppState, DataContext,
 };
-use axum::{http::StatusCode, routing::get, Router};
+use axum::http::StatusCode;
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -33,6 +33,7 @@ impl Scenario {
 }
 
 pub(crate) struct Fixture {
+    pub(crate) pool: sqlx::SqlitePool,
     pub(crate) state: AppState,
     pub(crate) user: User,
     pub(crate) other: User,
@@ -89,10 +90,18 @@ impl Fixture {
         let servers = ServerStorageService::new(pool.clone());
         let media = MediaStorageService::new(pool.clone());
         let data = DataContext {
-            user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
+            user_authorization: Arc::new(
+                crate::app::authorization::build_authorization(pool.clone(), &config)
+                    .await
+                    .unwrap(),
+            ),
             server_storage: Arc::new(servers.clone()),
             media_storage: Arc::new(media.clone()),
-            virtual_library_service: Arc::new(VirtualLibraryService::new(pool, servers, media)),
+            virtual_library_service: Arc::new(VirtualLibraryService::new(
+                pool.clone(),
+                servers,
+                media,
+            )),
             play_sessions: Arc::new(SessionStorage::new()),
             config: Arc::new(tokio::sync::RwLock::new(AppConfig {
                 url_prefix: Some("proxy".into()),
@@ -168,27 +177,24 @@ impl Fixture {
             items.push(mapping.virtual_media_id);
             upstreams.push(upstream);
         }
-        let routes = jellyswarrm_macros::lowercase_routes! {
-            Router::new().merge(crate::sessions::router())
-                .merge(crate::http::client_routes::router())
-                .route("/socket", get(crate::sessions::websocket))
-                .route("/SyncPlay/New", axum::routing::post(crate::http::handlers::syncplay::create_group))
-                .route("/{*path}", axum::routing::any(crate::http::proxy::proxy_handler))
-                .fallback(crate::http::proxy::proxy_handler)
-        };
-        let routes = routes.layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            crate::http::middleware::enforce_read_only_api_keys,
-        ));
-        let app = Router::new()
-            .nest("/proxy", routes)
-            .with_state(state.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}/proxy", listener.local_addr().unwrap());
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{addr}/proxy");
+        let session_store = tower_sessions_sqlx_store::SqliteStore::new(pool.clone());
+        session_store.migrate().await.unwrap();
+        let startup = state.config.read().await.startup_config();
+        let app = crate::app::router::build_router(
+            state.clone(),
+            &startup,
+            pool.clone(),
+            session_store,
+            addr,
+        );
         let task = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
         Self {
+            pool,
             state,
             user,
             other,

@@ -6,7 +6,7 @@ use crate::{
         routing::RoutingServices,
         upstream::{execute_payload, JsonUpstream},
     },
-    config::AppConfig,
+    config::SettingsView,
     libraries::service::VirtualLibraryService,
     media::storage::MediaStorageService,
     processors::{
@@ -29,7 +29,8 @@ pub(crate) struct CatalogService {
     pub server_storage: Arc<ServerStorageService>,
     pub virtual_library_service: Arc<VirtualLibraryService>,
     pub play_sessions: Arc<SessionStorage>,
-    pub config: Arc<tokio::sync::RwLock<AppConfig>>,
+    pub config: SettingsView,
+    pub selection: crate::application::url_selection::UrlSelection,
     pub processors: CatalogProcessors,
     pub upstream: Arc<dyn JsonUpstream>,
     pub client_sessions: Arc<crate::sessions::ClientSessionService>,
@@ -43,6 +44,7 @@ impl CatalogService {
             server_storage: &self.server_storage,
             play_sessions: &self.play_sessions,
             config: &self.config,
+            selection: &self.selection,
             urls: &self.processors.url_processor,
         }
     }

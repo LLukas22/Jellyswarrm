@@ -7,7 +7,7 @@ use crate::{
         routing::RoutingServices,
         upstream::{execute_payload, JsonUpstream},
     },
-    config::AppConfig,
+    config::SettingsView,
     media::storage::MediaStorageService,
     processors::{
         response_processor::{ResponseProcessingProfile, ResponseProcessor},
@@ -25,7 +25,8 @@ pub(crate) struct PlaybackService<'a> {
     pub media_storage: &'a MediaStorageService,
     pub server_storage: &'a ServerStorageService,
     pub play_sessions: &'a SessionStorage,
-    pub config: &'a tokio::sync::RwLock<AppConfig>,
+    pub config: &'a SettingsView,
+    pub selection: &'a crate::application::url_selection::UrlSelection,
     pub processors: PlaybackProcessors<'a>,
     pub upstream: Box<dyn JsonUpstream + 'a>,
     pub streaming_reqwest_client: &'a reqwest::Client,
@@ -39,6 +40,7 @@ impl PlaybackService<'_> {
             server_storage: self.server_storage,
             play_sessions: self.play_sessions,
             config: self.config,
+            selection: self.selection,
             urls: self.processors.url_processor,
         }
     }

@@ -9,8 +9,8 @@ use tracing::{debug, error, trace, warn};
 
 use super::services::CatalogService;
 use crate::{
+    auth::identity::JellyfinAuthorization,
     auth::service::AuthorizationSession,
-    http::preprocessing::JellyfinAuthorization,
     libraries::service::DiscoveredLibrary,
     models::{ItemsResponseVariants, ItemsResponseWithCount},
     processors::response_processor::ResponseProcessingProfile,

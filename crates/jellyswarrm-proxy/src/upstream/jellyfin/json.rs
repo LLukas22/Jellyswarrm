@@ -1,5 +1,6 @@
 //! Jellyfin JSON wire encoding, execution, and response translation.
 
+#[cfg(test)]
 use hyper::StatusCode;
 use reqwest::header::{HeaderValue, CONTENT_LENGTH, TRANSFER_ENCODING};
 use serde::Serialize;
@@ -70,6 +71,7 @@ where
     serde_json::from_slice::<T>(bytes).map_err(ApplicationError::InvalidRequestJson)
 }
 
+#[cfg(test)]
 pub fn set_json_body<T>(request: &mut reqwest::Request, payload: &T) -> Result<(), StatusCode>
 where
     T: Serialize,
@@ -99,6 +101,7 @@ where
 }
 
 /// Compatibility entry point for route families not yet using application errors.
+#[cfg(test)]
 pub async fn execute_json_request<T>(
     client: &reqwest::Client,
     request: reqwest::Request,

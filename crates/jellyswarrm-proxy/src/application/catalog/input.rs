@@ -1,6 +1,5 @@
 //! Unselected catalog input. Authentication and authorization do not pick a backend.
 use crate::application::error::ApplicationError;
-use hyper::StatusCode;
 
 use super::services::CatalogService;
 use crate::{
@@ -14,14 +13,10 @@ pub(crate) struct CatalogRequest {
     pub body_analysis: Option<RequestBodyAnalysisResult>,
 }
 
-pub(crate) fn input_error(error: anyhow::Error) -> StatusCode {
-    input_error_typed(error).detail_status()
-}
-
-pub(super) fn input_error_typed(error: anyhow::Error) -> ApplicationError {
-    if error.is::<crate::http::preprocessing::NoAvailableBackend>() {
+pub(crate) fn input_error_typed(error: anyhow::Error) -> ApplicationError {
+    if error.is::<crate::application::playback::reports::NoAvailableBackend>() {
         ApplicationError::UnavailableOwner
-    } else if error.is::<crate::http::preprocessing::MediaAccessDenied>() {
+    } else if error.is::<crate::application::error::MediaAccessDenied>() {
         ApplicationError::AccessDenied
     } else {
         ApplicationError::InvalidRouting(error)
@@ -68,11 +63,7 @@ impl CatalogRequest {
             access_url.query_pairs_mut().clear().extend_pairs(pairs);
         }
         self.context
-            .validate_media_ids(
-                &access_url,
-                self.body_analysis.as_ref(),
-                &state.processors.url_processor,
-            )
+            .validate_media_ids(&access_url, self.body_analysis.as_ref(), &state.selection)
             .await
             .map_err(input_error_typed)?;
         if let Some(scope) = self.context.access_scope().as_ref() {
@@ -101,21 +92,5 @@ impl From<CatalogRequest> for OperationRequest {
             context: request.context,
             body_analysis: request.body_analysis,
         }
-    }
-}
-
-// Existing handler unit fixtures intentionally keep their legacy construction.
-// Production catalog extraction never creates a PreprocessedRequest.
-#[cfg(test)]
-impl From<crate::http::preprocessing::PreprocessedRequest> for CatalogRequest {
-    fn from(request: crate::http::preprocessing::PreprocessedRequest) -> Self {
-        let context = RequestContext::new(
-            &request.original_request,
-            request.auth,
-            request.user,
-            request.sessions,
-            request.access_scope,
-        );
-        Self::new(request.original_request, context, None)
     }
 }

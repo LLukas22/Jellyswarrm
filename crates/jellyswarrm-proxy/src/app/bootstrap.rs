@@ -3,39 +3,25 @@
 use super::debug_initialization;
 use super::shutdown::shutdown_signal;
 use crate::{
-    application::playback::sessions::SessionStorage,
-    auth::UserAuthorizationService,
-    http::{handlers::quick_connect, middleware::enforce_read_only_api_keys},
-    libraries::VirtualLibraryService,
-    media::MediaStorageService,
-    processors::ProxyProcessors,
-    servers::ServerStorageService,
-    ui::Backend,
-    AppState, DataContext,
+    application::playback::sessions::SessionStorage, auth::quick_connect,
+    libraries::VirtualLibraryService, media::MediaStorageService, processors::ProxyProcessors,
+    servers::ServerStorageService, AppState, DataContext,
 };
-use axum::{middleware, routing::get};
-use axum_login::{
-    tower_sessions::{ExpiredDeletion, Expiry, SessionManagerLayer},
-    AuthManagerLayerBuilder,
-};
-use axum_messages::MessagesManagerLayer;
 use std::{net::SocketAddr, sync::Arc, time::Duration};
-use tower::ServiceBuilder;
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
-use tower_sessions::cookie::Key;
 use tower_sessions_sqlx_store::SqliteStore;
 use tracing::{error, info, warn};
 pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let _logging_guard = super::logging::initialize();
 
     let loaded_config = crate::config::load_config()?;
+    let startup = loaded_config.startup_config();
     info!("Loaded configuration: {:?}", loaded_config);
 
     let pool = crate::persistence::database::connect().await?;
 
     // Create reqwest client for regular API traffic.
     let reqwest_client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(loaded_config.timeout))
+        .timeout(Duration::from_secs(startup.timeout))
         .build()
         .unwrap_or_else(|e| {
             error!("Failed to create reqwest client: {}", e);
@@ -46,7 +32,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Avoid a global request timeout on long-lived responses and disable automatic
     // response decompression so we forward bytes as-is with less CPU overhead.
     let streaming_reqwest_client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(loaded_config.timeout))
+        .connect_timeout(Duration::from_secs(startup.timeout))
         .tcp_nodelay(true)
         .no_gzip()
         .no_brotli()
@@ -58,21 +44,11 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
         });
 
     // Initialize user authorization service
-    let mapping_key = crate::auth::encryption::MappingEncryptionKey::from_session_key(
-        &loaded_config.session_key,
-    )?;
-    let mut user_authorization = UserAuthorizationService::with_mapping_key(
-        pool.clone(),
-        mapping_key,
-        (&loaded_config.password).into(),
-    );
-    user_authorization
-        .enable_session_encryption(&loaded_config.session_key)
-        .await?;
+    let user_authorization =
+        super::authorization::build_authorization(pool.clone(), &loaded_config).await?;
 
     // Initialize server storage service
     let server_storage = ServerStorageService::new(pool.clone());
-    server_storage.start_health_check_loop(loaded_config.server_background_check_interval_secs);
 
     // Initialize media storage service
     let media_storage = MediaStorageService::new(pool.clone());
@@ -169,54 +145,17 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
         quick_connect::QuickConnectStorage::new(),
     );
 
-    quick_connect::QuickConnectStorage::start_cleanup_task(app_state.quick_connect.clone());
-
     let session_store = SqliteStore::new(pool.clone());
     session_store.migrate().await?;
 
-    let deletion_task = tokio::task::spawn(
-        session_store
-            .clone()
-            .continuously_delete_expired(tokio::time::Duration::from_secs(60)),
+    let runtime = super::runtime::ApplicationRuntime::start(
+        &app_state,
+        session_store.clone(),
+        startup.server_background_check_interval_secs,
     );
-
-    let key = Key::from(loaded_config.session_key.as_slice());
-
-    let session_layer = SessionManagerLayer::new(session_store)
-        .with_secure(false)
-        .with_same_site(tower_sessions::cookie::SameSite::Lax)
-        .with_expiry(Expiry::OnInactivity(time::Duration::days(1))) // 24 hour
-        .with_signed(key);
-
-    let backend = Backend::new(
-        app_state.config.clone(),
-        app_state.user_authorization.clone(),
-    );
-    let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
-
-    let ui_route = loaded_config.ui_route.to_string();
-
-    let app = crate::http::router::routes(&ui_route)
-        .layer(
-            ServiceBuilder::new()
-                .layer(TraceLayer::new_for_http())
-                .layer(CorsLayer::permissive()),
-        )
-        .layer(MessagesManagerLayer)
-        .layer(middleware::from_fn_with_state(
-            app_state.clone(),
-            enforce_read_only_api_keys,
-        ))
-        .layer(auth_layer)
-        .with_state(app_state)
-        .route(
-            "/GetUTCTime",
-            get(crate::http::handlers::syncplay::get_utc_time),
-        );
 
     // Create socket address
-    let addr = match format!("{}:{}", loaded_config.host, loaded_config.port).parse::<SocketAddr>()
-    {
+    let addr = match format!("{}:{}", startup.host, startup.port).parse::<SocketAddr>() {
         Ok(addr) => addr,
         Err(e) => {
             error!(
@@ -227,13 +166,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let app = crate::http::router::wrap(
-        app,
-        loaded_config.url_prefix.map(|p| p.to_string()),
-        addr,
-        &ui_route,
-        pool,
-    );
+    let app = super::router::build_router(app_state, &startup, pool, session_store, addr);
 
     // Start the server
     let listener = match tokio::net::TcpListener::bind(addr).await {
@@ -245,9 +178,9 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     axum::serve(listener, app.into_make_service())
-        .with_graceful_shutdown(shutdown_signal(deletion_task.abort_handle()))
+        .with_graceful_shutdown(shutdown_signal())
         .await?;
 
-    deletion_task.await??;
+    runtime.shutdown().await;
     Ok(())
 }

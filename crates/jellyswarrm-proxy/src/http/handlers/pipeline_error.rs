@@ -15,7 +15,8 @@ fn target_status(error: &TargetError) -> StatusCode {
 }
 
 impl ApplicationError {
-    /// Also used by transitional status-only wrappers outside the typed pipeline.
+    /// Endpoint presentation policy; application and processor code return the
+    /// typed cause/stage and must not call this incoming-adapter method.
     pub(crate) fn detail_status(&self) -> StatusCode {
         match self {
             Self::At { stage, cause } => match stage {
@@ -24,6 +25,16 @@ impl ApplicationError {
                 FailureStage::CatalogDeadline => StatusCode::GATEWAY_TIMEOUT,
                 FailureStage::PlaybackCommit => StatusCode::SERVICE_UNAVAILABLE,
                 FailureStage::ResourceLookup => StatusCode::NOT_FOUND,
+                FailureStage::HlsDeadline => StatusCode::GATEWAY_TIMEOUT,
+                FailureStage::HlsTranslation => StatusCode::BAD_GATEWAY,
+                FailureStage::HlsStatus => match cause.as_ref() {
+                    Self::UpstreamStatus(status)
+                        if status.is_client_error() || status.is_server_error() =>
+                    {
+                        *status
+                    }
+                    _ => StatusCode::BAD_GATEWAY,
+                },
                 FailureStage::NegotiationSelection => match cause.as_ref() {
                     Self::PlaybackResolution(
                         ResolutionError::OfflineOwner
@@ -71,7 +82,19 @@ impl ApplicationError {
                 },
             },
             Self::TargetSelection(error) => target_status(error),
+            Self::PlaylistResponse(error) => match error {
+                crate::processors::response_processor::PlaylistResponseError::IncompleteSharing => {
+                    StatusCode::CONFLICT
+                }
+                crate::processors::response_processor::PlaylistResponseError::InvalidSharing => {
+                    StatusCode::BAD_GATEWAY
+                }
+                crate::processors::response_processor::PlaylistResponseError::Database(_) => {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                }
+            },
             Self::InvalidInput(_)
+            | Self::RequestBody(_)
             | Self::InvalidRouting(_)
             | Self::InvalidRequestJson(_)
             | Self::PlaybackResolution(_) => StatusCode::BAD_REQUEST,
@@ -84,8 +107,7 @@ impl ApplicationError {
             Self::UpstreamTransport(_)
             | Self::InvalidUpstreamJson(_)
             | Self::InvalidUpstreamPayload(_) => StatusCode::BAD_GATEWAY,
-            Self::UpstreamStatus(status) | Self::Compatibility(status) => *status,
-            Self::Endpoint { status, .. } => *status,
+            Self::UpstreamStatus(status) => *status,
             Self::Storage(_)
             | Self::Serialization(_)
             | Self::InvalidProcessedJson(_)

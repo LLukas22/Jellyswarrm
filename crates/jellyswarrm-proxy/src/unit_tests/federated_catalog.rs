@@ -833,8 +833,7 @@ async fn series_tv_schedule_only_queries_the_series_server() {
     let scope =
         VirtualLibraryAccessScope::new("viewer", sessions.iter().map(|(_, server)| server.id));
     let server = state
-        .processors
-        .url_processor
+        .url_selection
         .server_from_client_url(&url, Some(&scope))
         .await
         .unwrap()
@@ -891,8 +890,7 @@ async fn channel_tv_schedule_only_queries_the_channel_server() {
     let scope =
         VirtualLibraryAccessScope::new("viewer", sessions.iter().map(|(_, server)| server.id));
     let server = state
-        .processors
-        .url_processor
+        .url_selection
         .server_from_client_url(&url, Some(&scope))
         .await
         .unwrap()
@@ -1007,8 +1005,7 @@ async fn guide_programs_remap_channel_ids_on_each_server() {
         ))
         .unwrap();
         let server = state
-            .processors
-            .url_processor
+            .url_selection
             .server_from_client_url(&timer_url, None)
             .await
             .unwrap()
@@ -1017,7 +1014,7 @@ async fn guide_programs_remap_channel_ids_on_each_server() {
         state
             .processors
             .url_processor
-            .client_to_server_url(&mut timer_url, &None, None, Some(server.id))
+            .client_to_server_url(&mut timer_url, &None, None, server.id)
             .await;
         assert_eq!(
             timer_url

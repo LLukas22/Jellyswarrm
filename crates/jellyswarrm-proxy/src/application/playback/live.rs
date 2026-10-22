@@ -7,8 +7,6 @@ use serde_json::Value;
 
 use std::sync::Arc;
 
-#[cfg(test)]
-use crate::AppState;
 use crate::{
     application::{
         context::RequestContext,
@@ -160,16 +158,6 @@ fn field(
 }
 
 /// Execute a caller-owned live refresh or close against its bound owner.
-#[cfg(test)]
-pub(crate) async fn post_live_stream_action(
-    state: AppState,
-    preprocessed: LiveRequest,
-) -> Result<LiveStreamActionResult, StatusCode> {
-    post_live_stream_action_typed(&state.playback_service(), preprocessed)
-        .await
-        .map_err(|error| error.detail_status())
-}
-
 pub(crate) async fn post_live_stream_action_typed(
     state: &PlaybackService<'_>,
     preprocessed: LiveRequest,
@@ -261,16 +249,6 @@ pub(crate) async fn post_live_stream_action_typed(
 
 /// OpenToken is backend-local. Use the caller-owned negotiation binding, and
 /// retain its exact member even when an aggregate has several copies per server.
-#[cfg(test)]
-pub(crate) async fn post_livestream_open(
-    state: AppState,
-    preprocessed: LiveRequest,
-) -> Result<Value, StatusCode> {
-    post_livestream_open_typed(&state.playback_service(), preprocessed)
-        .await
-        .map_err(|error| error.detail_status())
-}
-
 pub(crate) async fn post_livestream_open_typed(
     state: &PlaybackService<'_>,
     preprocessed: LiveRequest,

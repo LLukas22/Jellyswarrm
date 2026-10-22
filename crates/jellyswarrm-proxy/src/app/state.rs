@@ -3,9 +3,9 @@ use crate::syncplay::SyncPlayService;
 use crate::{application, sessions, upstream};
 use crate::{
     application::playback::sessions::SessionStorage,
+    auth::quick_connect::QuickConnectStorage,
     auth::{encryption::Password, federation::FederatedUserService, UserAuthorizationService},
     config::{AppConfig, MediaStreamingMode},
-    http::handlers::quick_connect::QuickConnectStorage,
     libraries::VirtualLibraryService,
     media::MediaStorageService,
     processors::{
@@ -14,7 +14,6 @@ use crate::{
     },
     servers::{Server, ServerStorageService},
 };
-use axum::http::StatusCode;
 use std::sync::Arc;
 #[derive(Clone)]
 pub struct AppState {
@@ -26,6 +25,9 @@ pub struct AppState {
     pub virtual_library_service: Arc<VirtualLibraryService>,
     pub play_sessions: Arc<SessionStorage>,
     pub config: Arc<tokio::sync::RwLock<AppConfig>>,
+    configuration: crate::config::service::ConfigurationService,
+    pub(crate) settings: crate::config::SettingsView,
+    pub(crate) url_selection: application::url_selection::UrlSelection,
     pub processors: Arc<ProxyProcessors>,
     pub quick_connect: QuickConnectStorage,
     pub federated_users: Arc<FederatedUserService>,
@@ -35,13 +37,71 @@ pub struct AppState {
 }
 
 impl AppState {
+    pub(crate) fn media_access(&self) -> crate::sessions::access::MediaAccess<'_> {
+        crate::sessions::access::MediaAccess::new(
+            &self.user_authorization,
+            &self.media_storage,
+            &self.url_selection,
+        )
+    }
+    pub(crate) fn syncplay_operations(&self) -> application::syncplay::SyncPlayOperations<'_> {
+        application::syncplay::SyncPlayOperations::new(&self.syncplay, self.media_access())
+    }
+    pub(crate) async fn server_credentials(
+        &self,
+    ) -> crate::application::server_admin::ServerCredentials<'_> {
+        crate::application::server_admin::ServerCredentials::new(
+            &self.server_storage,
+            self.reqwest_client.clone(),
+            (&self.get_admin_password().await).into(),
+        )
+    }
+    pub(crate) fn server_administration(
+        &self,
+    ) -> crate::application::server_admin::ServerAdministration<'_> {
+        crate::application::server_admin::ServerAdministration::new(
+            &self.server_storage,
+            &self.play_sessions,
+            &self.catalog_snapshots,
+        )
+    }
+    pub(crate) async fn library_administration(
+        &self,
+    ) -> crate::application::library_admin::LibraryAdministration<'_> {
+        let password = self.get_admin_password().await;
+        crate::application::library_admin::LibraryAdministration::new(
+            &self.server_storage,
+            &self.user_authorization,
+            &self.virtual_library_service,
+            crate::auth::mapping_authentication::MappingAuthenticator::new(
+                &self.user_authorization,
+                self.reqwest_client.clone(),
+                password.clone(),
+            ),
+            (&password).into(),
+            self.reqwest_client.clone(),
+        )
+    }
+    pub(crate) async fn mapping_authenticator(
+        &self,
+    ) -> crate::auth::mapping_authentication::MappingAuthenticator<'_> {
+        crate::auth::mapping_authentication::MappingAuthenticator::new(
+            &self.user_authorization,
+            self.reqwest_client.clone(),
+            self.get_admin_password().await,
+        )
+    }
+    pub(crate) fn configuration_service(&self) -> crate::config::service::ConfigurationService {
+        self.configuration.clone()
+    }
     pub(crate) fn catalog_service(&self) -> application::catalog::services::CatalogService {
         application::catalog::services::CatalogService {
             media_storage: self.media_storage.clone(),
             server_storage: self.server_storage.clone(),
             virtual_library_service: self.virtual_library_service.clone(),
             play_sessions: self.play_sessions.clone(),
-            config: self.config.clone(),
+            config: self.settings.clone(),
+            selection: self.url_selection.clone(),
             processors: application::catalog::services::CatalogProcessors {
                 url_processor: self.processors.url_processor.clone(),
                 response_processor: self.processors.response_processor.clone(),
@@ -56,7 +116,8 @@ impl AppState {
             media_storage: &self.media_storage,
             server_storage: &self.server_storage,
             play_sessions: &self.play_sessions,
-            config: &self.config,
+            config: &self.settings,
+            selection: &self.url_selection,
             processors: application::playback::services::PlaybackProcessors {
                 url_processor: &self.processors.url_processor,
                 response_processor: &self.processors.response_processor,
@@ -77,7 +138,8 @@ impl AppState {
             server_storage: &self.server_storage,
             play_sessions: &self.play_sessions,
             urls: &self.processors.url_processor,
-            config: &self.config,
+            config: &self.settings,
+            selection: &self.url_selection,
         }
     }
     pub fn new(
@@ -99,12 +161,21 @@ impl AppState {
         let transport = sessions::transport::ConnectionHub::default();
         Self {
             reqwest_client,
+            url_selection: application::url_selection::UrlSelection::new(
+                data_context.media_storage.clone(),
+                data_context.server_storage.clone(),
+                data_context.virtual_library_service.clone(),
+            ),
             streaming_reqwest_client,
             user_authorization: data_context.user_authorization,
             server_storage: data_context.server_storage,
             media_storage: data_context.media_storage,
             virtual_library_service: data_context.virtual_library_service,
             play_sessions: data_context.play_sessions,
+            settings: crate::config::SettingsView::new(data_context.config.clone()),
+            configuration: crate::config::service::ConfigurationService::new(
+                data_context.config.clone(),
+            ),
             config: data_context.config,
             processors: Arc::new(proxy_processors),
             quick_connect,
@@ -165,18 +236,6 @@ impl AppState {
 
     /// Translate backend IDs, URLs and permissions without presentation or
     /// caching side effects. Handlers cache only their finalized response.
-    pub async fn process_response_json(
-        &self,
-        payload: &mut serde_json::Value,
-        server: &Server,
-        profile: ResponseProcessingProfile,
-        proxy_api_key: Option<&str>,
-    ) -> Result<bool, StatusCode> {
-        self.process_response_json_typed(payload, server, profile, proxy_api_key)
-            .await
-            .map_err(|error| error.detail_status())
-    }
-
     pub(crate) async fn process_response_json_typed(
         &self,
         payload: &mut serde_json::Value,
@@ -198,6 +257,18 @@ impl AppState {
             .process_response_json_typed(payload, &context)
             .await?;
         Ok(modified)
+    }
+}
+
+impl From<crate::DataContext> for crate::processors::url_processor::UrlProcessor {
+    fn from(context: crate::DataContext) -> Self {
+        Self::new(
+            context.media_storage,
+            context.virtual_library_service,
+            context.play_sessions,
+            context.user_authorization,
+            crate::config::SettingsView::new(context.config),
+        )
     }
 }
 

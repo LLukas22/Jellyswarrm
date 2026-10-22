@@ -1,5 +1,6 @@
 //! Incoming request identity, body translation, authorization, and playback-report regressions.
 use super::*;
+use crate::models::Authorization;
 use crate::processors::url_processor::{
     matches_case_insensitive, MEDIA_ID_PATH_TAGS, MEDIA_ID_QUERY_TAGS,
 };
@@ -346,8 +347,12 @@ async fn invalid_token_cannot_adopt_user_from_request_body() {
         serde_json::json!({ "UserId": victim.id }),
     );
 
-    let (_request, auth, user, sessions, _analysis, _scope) =
-        extract_request_infos(request, &state, None).await.unwrap();
+    let crate::application::input::CollectedRequest {
+        auth,
+        user,
+        sessions,
+        ..
+    } = extract_request_infos(request, &state, None).await.unwrap();
 
     assert!(auth.is_some());
     assert!(user.is_none());
@@ -452,7 +457,11 @@ async fn playback_reports_route_without_cached_session_authority() {
                 body["PlaySessionId"] = session_id;
             }
             let request = json_post(path, &caller.virtual_key, body.clone());
-            let (_, _, user, _, analysis, _) = extract_request_infos(request, &state, Some(action))
+            let crate::application::input::CollectedRequest {
+                user,
+                body_analysis: analysis,
+                ..
+            } = extract_request_infos(request, &state, Some(action))
                 .await
                 .unwrap_or_else(|error| panic!("{path}: {case}: {error}"));
             assert_eq!(user.expect(case).id, caller.id, "{path}: {case}");
@@ -759,10 +768,12 @@ async fn blank_session_alias_does_not_clear_known_authority() {
                 "ItemId": "item", "PlaySessionId": pascal, "playSessionId": camel
             }),
         );
-        let (_, _, _, _, analysis, _) =
-            extract_request_infos(request, &state, Some(PlaybackSessionAction::Refresh))
-                .await
-                .unwrap();
+        let crate::application::input::CollectedRequest {
+            body_analysis: analysis,
+            ..
+        } = extract_request_infos(request, &state, Some(PlaybackSessionAction::Refresh))
+            .await
+            .unwrap();
         let analysis = analysis.unwrap();
         assert_eq!(
             analysis.requested_play_session_id.as_deref(),

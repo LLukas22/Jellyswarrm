@@ -595,14 +595,15 @@ async fn playlist_mapping_database_failures_are_internal_errors() {
     let mut permissions = json!([{"UserId":"caller-0", "CanEdit":true}]);
     assert_eq!(
         f.state
-            .process_response_json(
+            .process_response_json_typed(
                 &mut permissions,
                 &f.servers[0],
                 ResponseProcessingProfile::PlaylistPermissions,
                 None
             )
             .await
-            .unwrap_err(),
+            .unwrap_err()
+            .detail_status(),
         StatusCode::INTERNAL_SERVER_ERROR
     );
 }

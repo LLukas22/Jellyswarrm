@@ -1,7 +1,6 @@
-//! Wait for termination signals and cancel expired-session cleanup during graceful shutdown.
-use tokio::task::AbortHandle;
+//! Wait for termination signals. Runtime resources stop after HTTP requests drain.
 use tracing::error;
-pub(super) async fn shutdown_signal(deletion_task_abort_handle: AbortHandle) {
+pub(super) async fn shutdown_signal() {
     let ctrl_c = async {
         if let Err(e) = tokio::signal::ctrl_c().await {
             error!("Failed to install Ctrl+C handler: {}", e);
@@ -25,7 +24,7 @@ pub(super) async fn shutdown_signal(deletion_task_abort_handle: AbortHandle) {
     let terminate = std::future::pending::<()>();
 
     tokio::select! {
-        _ = ctrl_c => { deletion_task_abort_handle.abort() },
-        _ = terminate => { deletion_task_abort_handle.abort() },
+        _ = ctrl_c => {},
+        _ = terminate => {},
     }
 }

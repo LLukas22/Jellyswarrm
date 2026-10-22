@@ -423,7 +423,7 @@ mod tests {
         });
 
         let was_modified = state
-            .process_response_json(
+            .process_response_json_typed(
                 &mut media_item,
                 &server,
                 ResponseProcessingProfile::Media,
@@ -488,7 +488,7 @@ mod tests {
                     {"Id": "live", "Type": "CollectionFolder", "CollectionType": "livetv", "Name": "Live TV"}
                 ]});
                 state
-                    .process_response_json(
+                    .process_response_json_typed(
                         &mut payload,
                         &server,
                         ResponseProcessingProfile::Media,
@@ -546,7 +546,7 @@ mod tests {
         ]);
 
         let was_modified = state
-            .process_response_json(
+            .process_response_json_typed(
                 &mut media_items,
                 &server,
                 ResponseProcessingProfile::Media,
@@ -572,7 +572,7 @@ mod tests {
         });
 
         let was_modified = state
-            .process_response_json(
+            .process_response_json_typed(
                 &mut payload,
                 &server,
                 ResponseProcessingProfile::BestEffortMedia,
@@ -599,7 +599,7 @@ mod tests {
         });
 
         state
-            .process_response_json(
+            .process_response_json_typed(
                 &mut payload,
                 &server,
                 ResponseProcessingProfile::Media,
@@ -626,7 +626,7 @@ mod tests {
         });
 
         let was_modified = state
-            .process_response_json(
+            .process_response_json_typed(
                 &mut payload,
                 &server,
                 ResponseProcessingProfile::Media,

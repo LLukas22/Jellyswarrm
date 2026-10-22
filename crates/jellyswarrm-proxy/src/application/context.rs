@@ -2,8 +2,8 @@
 //!
 //! Credentials deliberately have no derived Debug/Serialize implementation.
 use crate::{
+    auth::identity::{request_device, JellyfinAuthorization},
     auth::service::{AuthorizationSession, Device, User},
-    http::preprocessing::{request_device, JellyfinAuthorization},
     libraries::service::VirtualLibraryAccessScope,
     servers::id::ServerId,
     servers::storage::Server,
@@ -113,7 +113,7 @@ impl RequestContext {
         &self,
         url: &url::Url,
         analysis: Option<&crate::processors::request_analyzer::RequestBodyAnalysisResult>,
-        urls: &crate::processors::url_processor::UrlProcessor,
+        urls: &crate::application::url_selection::UrlSelection,
     ) -> anyhow::Result<()> {
         use crate::processors::url_processor::{MEDIA_ID_PATH_TAGS, MEDIA_ID_QUERY_TAGS};
         if let Some(scope) = &self.access_scope {

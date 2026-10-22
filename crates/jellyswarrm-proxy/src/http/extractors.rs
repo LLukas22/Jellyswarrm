@@ -42,14 +42,17 @@ impl FromRequest<AppState> for OperationInput {
     type Rejection = StatusCode;
 
     async fn from_request(req: Request, state: &AppState) -> Result<Self, Self::Rejection> {
-        use crate::application::{
-            context::RequestContext,
-            input::{input_status, OperationRequest},
-        };
-        let (original_request, auth, user, sessions, body_analysis, access_scope) =
-            crate::http::preprocessing::extract_request_infos(req, state, None)
-                .await
-                .map_err(input_status)?;
+        use crate::application::{context::RequestContext, input::OperationRequest};
+        let crate::application::input::CollectedRequest {
+            original_request,
+            auth,
+            user,
+            sessions,
+            body_analysis,
+            access_scope,
+        } = crate::http::preprocessing::extract_request_infos(req, state, None)
+            .await
+            .map_err(input_status)?;
         let context = RequestContext::new(&original_request, auth, user, sessions, access_scope);
         Ok(Self(OperationRequest {
             original_request,
@@ -68,14 +71,17 @@ impl FromRequest<AppState> for CatalogInput {
     type Rejection = StatusCode;
 
     async fn from_request(req: Request, state: &AppState) -> Result<Self, Self::Rejection> {
-        use crate::application::{
-            catalog::input::{input_error, CatalogRequest},
-            context::RequestContext,
-        };
-        let (original_request, auth, user, sessions, body_analysis, access_scope) =
-            crate::http::preprocessing::extract_request_infos(req, state, None)
-                .await
-                .map_err(input_error)?;
+        use crate::application::{catalog::input::CatalogRequest, context::RequestContext};
+        let crate::application::input::CollectedRequest {
+            original_request,
+            auth,
+            user,
+            sessions,
+            body_analysis,
+            access_scope,
+        } = crate::http::preprocessing::extract_request_infos(req, state, None)
+            .await
+            .map_err(input_error)?;
         let context = RequestContext::new(&original_request, auth, user, sessions, access_scope);
         tracing::debug!(principal = ?context.principal(), device_present = context.device().is_some(), "Collected catalog context");
         let request = CatalogRequest::new(original_request, context, body_analysis);
@@ -91,19 +97,23 @@ impl FromRequest<AppState> for LiveInput {
     type Rejection = StatusCode;
 
     async fn from_request(req: Request, state: &AppState) -> Result<Self, Self::Rejection> {
-        use crate::application::{
-            catalog::input::input_error, context::RequestContext, playback::live::LiveRequest,
-        };
-        let (original_request, auth, user, sessions, body_analysis, access_scope) =
-            crate::http::preprocessing::extract_request_infos(req, state, None)
-                .await
-                .map_err(input_error)?;
+        use crate::application::{context::RequestContext, playback::live::LiveRequest};
+        let crate::application::input::CollectedRequest {
+            original_request,
+            auth,
+            user,
+            sessions,
+            body_analysis,
+            access_scope,
+        } = crate::http::preprocessing::extract_request_infos(req, state, None)
+            .await
+            .map_err(input_error)?;
         let context = RequestContext::new(&original_request, auth, user, sessions, access_scope);
         context
             .validate_media_ids(
                 original_request.url(),
                 body_analysis.as_ref(),
-                &state.processors.url_processor,
+                &state.url_selection,
             )
             .await
             .map_err(input_error)?;
@@ -125,5 +135,31 @@ impl FromRequest<AppState> for LiveInput {
             original_request,
             context,
         }))
+    }
+}
+
+fn input_status(error: anyhow::Error) -> StatusCode {
+    crate::application::input::routing_error(error).detail_status()
+}
+
+fn input_error(error: anyhow::Error) -> StatusCode {
+    crate::application::catalog::input::input_error_typed(error).detail_status()
+}
+
+// Legacy HTTP fixtures adapt their wire-side inputs here, never in application
+// code. Production requests use the shared named extraction boundary above.
+#[cfg(test)]
+impl From<crate::http::preprocessing::PreprocessedRequest>
+    for crate::application::catalog::input::CatalogRequest
+{
+    fn from(request: crate::http::preprocessing::PreprocessedRequest) -> Self {
+        let context = crate::application::context::RequestContext::new(
+            &request.original_request,
+            request.auth,
+            request.user,
+            request.sessions,
+            request.access_scope,
+        );
+        Self::new(request.original_request, context, None)
     }
 }

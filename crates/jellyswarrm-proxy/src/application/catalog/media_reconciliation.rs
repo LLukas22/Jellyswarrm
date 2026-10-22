@@ -1,7 +1,5 @@
 //! Reconcile fetched media observations and validated inventory evidence before catalog presentation.
 use crate::application::error::ApplicationError;
-#[cfg(test)]
-use hyper::StatusCode;
 use std::collections::BTreeSet;
 
 use super::services::CatalogService;
@@ -87,26 +85,7 @@ impl CatalogContext {
     }
 }
 
-#[cfg(test)]
-pub(crate) async fn get_virtual_library_items(
-    state: &CatalogService,
-    preprocessed: CatalogRequest,
-    catalog_scope_key: String,
-    targets: Vec<CatalogFetchTarget>,
-    skipped_targets: usize,
-) -> Result<serde_json::Value, StatusCode> {
-    get_virtual_library_items_typed(
-        state,
-        preprocessed,
-        catalog_scope_key,
-        targets,
-        skipped_targets,
-    )
-    .await
-    .map_err(|error| error.detail_status())
-}
-
-pub(super) async fn get_virtual_library_items_typed(
+pub(crate) async fn get_virtual_library_items_typed(
     state: &CatalogService,
     preprocessed: CatalogRequest,
     catalog_scope_key: String,
@@ -438,20 +417,7 @@ pub(super) async fn reconcile_fetched_catalog(
 /// series of a collapsed show. Seasons and (Jellyfin v12+) episodes merge
 /// using provider identities, with children identified by their matched parent
 /// series and season/episode numbers when available.
-#[cfg(test)]
-pub(crate) async fn get_aggregate_show_items(
-    state: &CatalogService,
-    preprocessed: CatalogRequest,
-    aggregate_id: String,
-    targets: Vec<CatalogFetchTarget>,
-    skipped_targets: usize,
-) -> Result<serde_json::Value, StatusCode> {
-    get_aggregate_show_items_typed(state, preprocessed, aggregate_id, targets, skipped_targets)
-        .await
-        .map_err(|error| error.detail_status())
-}
-
-pub(super) async fn get_aggregate_show_items_typed(
+pub(crate) async fn get_aggregate_show_items_typed(
     state: &CatalogService,
     preprocessed: CatalogRequest,
     aggregate_id: String,

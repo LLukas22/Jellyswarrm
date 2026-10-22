@@ -1,16 +1,5 @@
 //! Shared user-page helpers for mapping validation, credentials, and rendering context.
-use std::sync::Arc;
-
-use jellyfin_api::JellyfinClient;
-use tracing::info;
-
-use crate::{
-    auth::encryption::{HashedPassword, Password},
-    auth::service::{CredentialFormat, MappingAuth, ServerMapping},
-    config::CLIENT_STORAGE,
-    servers::storage::Server,
-    AppState,
-};
+use crate::{auth::encryption::Password, servers::storage::Server, AppState};
 
 /// Validate ambiguous legacy values before the local password transaction.
 /// Do not accept a cached token as proof of the saved password's correctness.
@@ -19,211 +8,41 @@ pub async fn prepare_mappings_for_password_change(
     user: &crate::ui::auth::User,
     verified_password: &Password,
 ) -> Result<(), String> {
-    let admin_password = state.get_admin_password().await;
-    let mappings = state
+    let local_user = state
         .user_authorization
-        .upgrade_mappings_with_verified_password(&user.id, verified_password, Some(&admin_password))
+        .get_user_by_id(&user.id)
         .await
-        .map_err(|e| e.to_string())?;
-    for mapping in mappings {
-        if mapping.credential_format != CredentialFormat::Legacy {
-            continue;
-        }
-        let password = state.user_authorization.decrypt_server_mapping_password(
-            &mapping,
-            &user.local_credential.mapping_key(),
-            &(&admin_password).into(),
-            Some(verified_password),
-            Some(&admin_password),
-        )?;
-        let server = state
-            .server_storage
-            .get_server_by_id(mapping.server_id)
-            .await
-            .map_err(|e| e.to_string())?
-            .ok_or("Mapped server no longer exists")?;
-        let client = JellyfinClient::new_with_client(
-            server.url.as_str(),
-            jellyfin_api::ClientInfo {
-                device_id: format!("jellyswarrm-validation-{}", uuid::Uuid::new_v4()),
-                ..crate::config::CLIENT_INFO.clone()
-            },
-            state.reqwest_client.clone(),
-        )
-        .map_err(|e| e.to_string())?;
-        client
-            .authenticate_by_name(mapping.auth.username(), password.as_str())
-            .await
-            .map_err(|_| {
-                format!(
-                    "Legacy credentials could not be validated on {}",
-                    server.name
-                )
-            })?;
-        // This client is used only for validation, never for a saved session.
-        let _ = client.logout().await;
-        state
-            .user_authorization
-            .upgrade_validated_password_mapping(&mapping, &password)
-            .await
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(())
+        .map_err(|error| error.to_string())?
+        .ok_or("Local user not found")?;
+    state
+        .mapping_authenticator()
+        .await
+        .prepare_password_change(&local_user, &state.server_storage, verified_password)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 pub async fn authenticate_user_on_server(
     state: &AppState,
     user: &crate::ui::auth::User,
     server: &Server,
-) -> Result<
-    (
-        Arc<JellyfinClient>,
-        jellyfin_api::models::User,
-        jellyfin_api::models::PublicSystemInfo,
-    ),
-    String,
-> {
+) -> Result<crate::auth::mapping_authentication::AuthenticatedMapping, String> {
     let mapping = state
         .user_authorization
         .get_server_mapping(&user.id, server)
         .await
         .map_err(|error| format!("Database error: {error}"))?
         .ok_or("No mapping found for user on this server")?;
-    authenticate_user_with_mapping(state, user, server, &mapping).await
-}
-
-pub(in crate::ui) async fn authenticate_user_with_mapping(
-    state: &AppState,
-    user: &crate::ui::auth::User,
-    server: &Server,
-    mapping: &ServerMapping,
-) -> Result<
-    (
-        Arc<JellyfinClient>,
-        jellyfin_api::models::User,
-        jellyfin_api::models::PublicSystemInfo,
-    ),
-    String,
-> {
-    let client_info = crate::config::CLIENT_INFO.clone();
-    let server_url = server.url.clone();
-
-    // Check cache first
-    let client = CLIENT_STORAGE
-        .get(
-            server_url.as_ref(),
-            client_info,
-            Some(user.username.as_str()),
-        )
+    let local_user = state
+        .user_authorization
+        .get_user_by_id(&user.id)
         .await
-        .map_err(|e| format!("Failed to get client from storage: {}", e))?;
-
-    // Always check public system info first to get version and name
-    let public_info = match client.get_public_system_info().await {
-        Ok(info) => info,
-        Err(_) => return Err("Server offline or unreachable".to_string()),
-    };
-
-    let admin_password = state.get_admin_password().await;
-    let admin_password_hash: HashedPassword = (&admin_password).into();
-
-    let mapping_key = user.local_credential.mapping_key();
-    if let MappingAuth::QuickConnect {
-        backend_user_id, ..
-    } = &mapping.auth
-    {
-        let local_user = state
-            .user_authorization
-            .get_user_by_id(&user.id)
-            .await
-            .map_err(|e| e.to_string())?
-            .ok_or("Local user not found")?;
-        let (token, remote_user) =
-            crate::auth::mapping_authentication::validated_quick_connect_token(
-                state,
-                &local_user,
-                server,
-                mapping,
-            )
-            .await?;
-        // Use a fresh client: the shared cache evicts by calling Logout, which
-        // would revoke this mapping's persistent credential.
-        let qc_client = Arc::new(
-            JellyfinClient::new(
-                server.url.as_str(),
-                jellyfin_api::ClientInfo {
-                    device_id: crate::auth::mapping_authentication::mapping_device_id(
-                        server, &user.id,
-                    ),
-                    ..crate::config::CLIENT_INFO.clone()
-                },
-            )
-            .map_err(|e| e.to_string())?,
-        );
-        qc_client.with_token(token).await;
-        return Ok((
-            qc_client,
-            jellyfin_api::models::User {
-                id: backend_user_id.clone(),
-                name: remote_user.name,
-                server_id: Some(remote_user.server_id),
-                policy: None,
-            },
-            public_info,
-        ));
-    }
-    let password = state.user_authorization.decrypt_server_mapping_password(
-        mapping,
-        &mapping_key,
-        &admin_password_hash,
-        None,
-        Some(&admin_password),
-    )?;
-
-    if client.get_token().await.is_some() {
-        // Try to validate existing session
-        info!(
-            "Validating existing session for user '{}' on server '{}'.",
-            user.username, server.name
-        );
-        match client.get_me().await {
-            Ok(jellyfin_user) => {
-                return Ok((client, jellyfin_user, public_info));
-            }
-            Err(e) => {
-                tracing::warn!("Existing session invalid for server {}: {}", server.id, e);
-                // Fall through to re-authenticate
-            }
-        }
-    }
-
-    info!(
-        "Authenticating user '{}' on server '{}'.",
-        user.username, server.name
-    );
-
-    match client
-        .authenticate_by_name(mapping.auth.username(), password.as_str())
+        .map_err(|error| error.to_string())?
+        .ok_or("Local user not found")?;
+    state
+        .mapping_authenticator()
         .await
-    {
-        Ok(jellyfin_user) => {
-            if mapping.credential_format == CredentialFormat::Legacy {
-                state
-                    .user_authorization
-                    .upgrade_validated_password_mapping(mapping, &password)
-                    .await
-                    .map_err(|e| e.to_string())?;
-            }
-            Ok((client, jellyfin_user, public_info))
-        }
-        Err(e) => {
-            // Auth failed, log it but continue to check existing session
-            tracing::warn!(
-                "Failed to authenticate with mapped credentials for server {}: {}",
-                server.id,
-                e
-            );
-            Err("Failed to log in with provided credentials".to_string())
-        }
-    }
+        .authenticate(&local_user, server, &mapping)
+        .await
+        .map_err(|error| error.to_string())
 }

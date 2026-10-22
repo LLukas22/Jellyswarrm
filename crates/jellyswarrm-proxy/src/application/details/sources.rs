@@ -9,8 +9,8 @@ use crate::application::catalog::services::CatalogService;
 use crate::{
     application::context::{RequestContext, TargetError},
     application::error::ApplicationError,
+    auth::identity::JellyfinAuthorization,
     auth::service::AuthorizationSession,
-    http::preprocessing::JellyfinAuthorization,
     libraries::service::{compare_virtual_library_routes, VirtualLibraryAccessScope},
     media::storage::{
         MediaMapping, MediaVersionGroup, MediaVersionMember, MediaVersionSourceObservation,
@@ -332,7 +332,6 @@ async fn fetch_member_sources(
         match result {
             Ok(Ok(hosted)) => sources.push(hosted),
             Ok(Err(error)) => warn!(
-                status = error.detail_status().as_u16(),
                 error = %error,
                 "Media version detail fetch failed"
             ),

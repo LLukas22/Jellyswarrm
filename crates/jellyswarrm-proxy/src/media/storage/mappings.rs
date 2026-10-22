@@ -132,20 +132,15 @@ impl MediaStorageService {
         Ok(mapping)
     }
 
-    /// Get media mapping with server information by virtual media ID
+    /// Resolve against the current registry in one SQL snapshot. Mutable server
+    /// settings are never cached with stable media identity. A read that began
+    /// before a registry commit may finish with its earlier snapshot; subsequent
+    /// reads see the committed settings/deletion without invalidation races.
     pub async fn get_media_mapping_with_server(
         &self,
         virtual_media_id: &str,
     ) -> Result<Option<(MediaMapping, Server)>, sqlx::Error> {
         let virtual_media_id = Self::normalize_uuid(virtual_media_id);
-
-        if let Some(cached) = self.mapping_with_server_cache.get(&virtual_media_id).await {
-            trace!(
-                "Cache hit for media mapping with server: {}",
-                virtual_media_id
-            );
-            return Ok(Some(cached));
-        }
 
         let row = sqlx::query(
             r#"
@@ -185,9 +180,6 @@ impl MediaStorageService {
 
             let server = Server::from_session_join_row(&row)?;
 
-            self.mapping_with_server_cache
-                .insert(virtual_media_id, (mapping.clone(), server.clone()))
-                .await;
             Ok(Some((mapping, server)))
         } else {
             Ok(None)
@@ -218,10 +210,6 @@ impl MediaStorageService {
                     self.original_mapping_cache.invalidate_all();
                 }
             }
-            // Also invalidate the mapping_with_server_cache
-            self.mapping_with_server_cache
-                .invalidate(virtual_media_id)
-                .await;
             info!("Deleted media mapping: {}", virtual_media_id);
             Ok(true)
         } else {
@@ -252,7 +240,6 @@ impl MediaStorageService {
             );
         }
         self.original_mapping_cache.invalidate_all();
-        self.mapping_with_server_cache.invalidate_all();
         Ok(deleted_count)
     }
 }

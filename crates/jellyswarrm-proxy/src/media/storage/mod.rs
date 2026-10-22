@@ -42,7 +42,6 @@ struct ActiveMediaMember {
 pub struct MediaStorageService {
     pool: SqlitePool,
     original_mapping_cache: Cache<String, MediaMapping>,
-    mapping_with_server_cache: Cache<String, (MediaMapping, Server)>,
     media_version_reconciliation: Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -57,10 +56,6 @@ impl MediaStorageService {
             original_mapping_cache: Cache::builder()
                 .time_to_live(Duration::from_secs(60 * 30))
                 .max_capacity(100_000)
-                .build(),
-            mapping_with_server_cache: Cache::builder()
-                .time_to_live(Duration::from_secs(60 * 30))
-                .max_capacity(10_000)
                 .build(),
             media_version_reconciliation: Arc::new(tokio::sync::Mutex::new(())),
         }

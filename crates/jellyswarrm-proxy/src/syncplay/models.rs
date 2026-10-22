@@ -211,13 +211,13 @@ pub struct UtcTimeResponse {
 
 #[derive(Debug, Clone)]
 pub(crate) struct GroupParticipant {
-    pub user_id: String,
-    pub user_name: String,
-    pub ping: u64,
-    pub is_buffering: bool,
-    pub ignore_wait: bool,
-    pub is_connected: bool,
-    pub last_client_when: Option<DateTime<Utc>>,
+    pub(super) user_id: String,
+    pub(super) user_name: String,
+    pub(super) ping: u64,
+    pub(super) is_buffering: bool,
+    pub(super) ignore_wait: bool,
+    pub(super) is_connected: bool,
+    pub(super) last_client_when: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -229,23 +229,30 @@ pub(crate) struct SyncPlayQueueItem {
 
 #[derive(Debug, Clone)]
 pub(crate) struct SyncPlayGroup {
-    pub group_id: Uuid,
-    pub group_name: String,
-    pub state: GroupStateType,
-    pub participants: HashMap<String, GroupParticipant>,
-    pub playlist: Vec<SyncPlayQueueItem>,
-    pub playing_item_index: Option<usize>,
-    pub start_position_ticks: i64,
-    pub pending_position_ticks: Option<i64>,
-    pub position_base_when: DateTime<Utc>,
-    pub is_playing: bool,
-    pub shuffle_mode: GroupShuffleMode,
-    pub repeat_mode: GroupRepeatMode,
-    pub waiting_resume_playing: bool,
-    pub last_updated_at: DateTime<Utc>,
+    pub(super) group_id: Uuid,
+    pub(super) group_name: String,
+    pub(super) state: GroupStateType,
+    pub(super) participants: HashMap<String, GroupParticipant>,
+    pub(super) playlist: Vec<SyncPlayQueueItem>,
+    pub(super) playing_item_index: Option<usize>,
+    pub(super) start_position_ticks: i64,
+    pub(super) pending_position_ticks: Option<i64>,
+    pub(super) position_base_when: DateTime<Utc>,
+    pub(super) is_playing: bool,
+    pub(super) shuffle_mode: GroupShuffleMode,
+    pub(super) repeat_mode: GroupRepeatMode,
+    pub(super) waiting_resume_playing: bool,
+    pub(super) last_updated_at: DateTime<Utc>,
 }
 
 impl SyncPlayGroup {
+    pub(crate) fn participant_user_ids(&self) -> Vec<String> {
+        self.participants
+            .values()
+            .map(|participant| participant.user_id.clone())
+            .collect()
+    }
+
     pub fn to_group_info(&self) -> GroupInfoDto {
         let mut unique_names = HashSet::new();
         let mut participants = Vec::new();
@@ -270,11 +277,11 @@ impl SyncPlayGroup {
             .unwrap_or_else(Uuid::nil)
     }
 
-    pub fn touch(&mut self) {
+    pub(super) fn touch(&mut self) {
         self.last_updated_at = Utc::now();
     }
 
-    pub fn set_position(&mut self, position_ticks: i64, when: DateTime<Utc>) {
+    pub(super) fn set_position(&mut self, position_ticks: i64, when: DateTime<Utc>) {
         self.start_position_ticks = position_ticks.max(0);
         self.position_base_when = when;
     }
@@ -298,7 +305,7 @@ impl SyncPlayGroup {
         base.saturating_add(elapsed_ms.saturating_mul(10_000))
     }
 
-    pub fn freeze_at_estimated_position(&mut self, now: DateTime<Utc>) -> i64 {
+    pub(super) fn freeze_at_estimated_position(&mut self, now: DateTime<Utc>) -> i64 {
         let position_ticks = self.estimated_position_ticks(now);
         self.set_position(position_ticks, now);
         position_ticks
@@ -313,7 +320,7 @@ impl SyncPlayGroup {
     }
 
     /// Transition the group into the Waiting state, marking all participants as buffering.
-    pub fn transition_to_waiting(&mut self, resume_playing: bool) {
+    pub(super) fn transition_to_waiting(&mut self, resume_playing: bool) {
         self.state = GroupStateType::Waiting;
         self.waiting_resume_playing = resume_playing;
         for member in self.participants.values_mut() {

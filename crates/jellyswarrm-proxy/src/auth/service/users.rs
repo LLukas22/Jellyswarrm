@@ -398,7 +398,7 @@ impl UserAuthorizationService {
                     Some(old_password),
                     Some(admin_password),
                 )
-                .map_err(sqlx::Error::Protocol)?;
+                .map_err(|error| sqlx::Error::Decode(Box::new(error)))?;
 
             // Encrypt with new password
             let (new_encrypted_password, format) = if let Some(key) = &self.mapping_key {

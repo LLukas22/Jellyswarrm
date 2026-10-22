@@ -19,12 +19,17 @@ pub(crate) enum FailureStage {
     LiveSessionLookup,
     PlaybackCommit,
     ResourceLookup,
+    HlsStatus,
+    HlsTranslation,
+    HlsDeadline,
 }
 
 pub(crate) enum ApplicationError {
     InvalidInput(&'static str),
     InvalidRequestJson(serde_json::Error),
     InvalidRouting(anyhow::Error),
+    RequestBody(anyhow::Error),
+    PlaylistResponse(crate::processors::response_processor::PlaylistResponseError),
     PlaybackResolution(super::playback::target::ResolutionError),
     TargetSelection(super::context::TargetError),
     At {
@@ -48,15 +53,6 @@ pub(crate) enum ApplicationError {
         reason: super::catalog::scan::PartialReason,
         cause: Option<Box<ApplicationError>>,
     },
-    /// An endpoint-specific compatibility contract applied to a typed cause.
-    /// Keep the cause (and its classification), not just the selected status.
-    Endpoint {
-        status: StatusCode,
-        cause: Box<ApplicationError>,
-    },
-    /// The originating helper has not yet been converted; do not infer a
-    /// semantic category (especially access denial) from this status.
-    Compatibility(StatusCode),
 }
 
 impl ApplicationError {
@@ -66,23 +62,15 @@ impl ApplicationError {
             cause: Box::new(self),
         }
     }
-    pub(crate) fn with_status(self, status: StatusCode) -> Self {
-        Self::Endpoint {
-            status,
-            cause: Box::new(self),
-        }
-    }
-
     /// Configured-library fallback applies to source failures, not local denial.
-    /// Compatibility errors retain the old helper's eligibility until converted.
     pub(crate) fn allows_detail_fallback(&self) -> bool {
         match self {
-            Self::Endpoint { cause, .. } | Self::At { cause, .. } => cause.allows_detail_fallback(),
+            Self::At { cause, .. } => cause.allows_detail_fallback(),
             Self::Shared(cause) => cause.allows_detail_fallback(),
             Self::UpstreamTransport(_)
             | Self::InvalidUpstreamJson(_)
             | Self::InvalidUpstreamPayload(_) => true,
-            Self::UpstreamStatus(status) | Self::Compatibility(status) => {
+            Self::UpstreamStatus(status) => {
                 matches!(
                     *status,
                     StatusCode::FORBIDDEN | StatusCode::UNAUTHORIZED | StatusCode::NOT_FOUND
@@ -112,6 +100,8 @@ impl fmt::Display for ApplicationError {
             Self::InvalidInput(_) => "invalid operation input",
             Self::InvalidRequestJson(_) => "invalid request JSON",
             Self::InvalidRouting(_) => "invalid operation routing",
+            Self::RequestBody(_) => "request body translation failed",
+            Self::PlaylistResponse(_) => "playlist response translation failed",
             Self::PlaybackResolution(_) => "playback authority resolution failed",
             Self::TargetSelection(_) => "target selection failed",
             Self::At { .. } => "workflow stage failed",
@@ -129,8 +119,6 @@ impl fmt::Display for ApplicationError {
             Self::SourcesFailed(_) => "catalog sources failed",
             Self::Shared(_) => "shared catalog workflow failure",
             Self::IncompleteCatalog { .. } => "incomplete catalog inventory",
-            Self::Compatibility(_) => "unconverted helper failure",
-            Self::Endpoint { .. } => "endpoint workflow failure",
         })
     }
 }
@@ -153,7 +141,9 @@ impl Error for ApplicationError {
             | Self::Serialization(error) => Some(error),
             Self::Storage(error) => Some(error),
             Self::Internal(error) | Self::InvalidRouting(error) => Some(error.as_ref()),
-            Self::Endpoint { cause, .. } | Self::At { cause, .. } => Some(cause.as_ref()),
+            Self::RequestBody(error) => Some(error.as_ref()),
+            Self::PlaylistResponse(error) => Some(error),
+            Self::At { cause, .. } => Some(cause.as_ref()),
             Self::SourcesFailed(causes) => causes.first().map(|cause| cause as _),
             Self::Shared(cause) => Some(cause.as_ref()),
             Self::IncompleteCatalog { cause, .. } => cause.as_deref().map(|cause| cause as _),
@@ -168,8 +158,8 @@ mod tests {
 
     #[test]
     fn endpoint_contract_retains_typed_cause_without_reclassifying_upstream_denial() {
-        let error = ApplicationError::Storage(sqlx::Error::RowNotFound)
-            .with_status(StatusCode::BAD_GATEWAY);
+        let error =
+            ApplicationError::Storage(sqlx::Error::RowNotFound).at(FailureStage::HlsTranslation);
         assert_eq!(error.detail_status(), StatusCode::BAD_GATEWAY);
         assert!(!error.allows_detail_fallback());
         let wrapped = error
@@ -180,7 +170,7 @@ mod tests {
         assert!(matches!(wrapped, ApplicationError::Storage(_)));
         assert!(wrapped.source().unwrap().is::<sqlx::Error>());
         let upstream = ApplicationError::UpstreamStatus(StatusCode::FORBIDDEN)
-            .with_status(StatusCode::SERVICE_UNAVAILABLE);
+            .at(FailureStage::PlaybackCommit);
         assert!(upstream.allows_detail_fallback());
         assert!(matches!(
             upstream

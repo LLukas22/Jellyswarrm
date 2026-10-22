@@ -25,7 +25,7 @@ pub(crate) const DEFAULT_PING_MS: i64 = 500;
 const WEBSOCKET_DISCONNECT_GRACE: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
-pub(crate) struct SyncPlayState {
+pub(super) struct SyncPlayState {
     groups: HashMap<Uuid, SyncPlayGroup>,
     session_to_group: HashMap<String, Uuid>,
     transport: ConnectionHub,
@@ -577,7 +577,7 @@ impl SyncPlayService {
         state.groups.values().cloned().collect()
     }
 
-    pub(crate) async fn with_group_for_session(
+    pub(super) async fn with_group_for_session(
         &self,
         session: &SessionContext,
         f: impl FnOnce(&mut SyncPlayGroup, &mut SyncPlayState),

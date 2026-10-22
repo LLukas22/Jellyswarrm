@@ -99,10 +99,10 @@ pub async fn get_server_libraries(
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
 
-    if let Ok((client, jellyfin_user, _)) =
-        authenticate_user_on_server(&state, &user, &server).await
-    {
-        match client.get_media_folders(Some(&jellyfin_user.id)).await {
+    if let Ok(authenticated) = authenticate_user_on_server(&state, &user, &server).await {
+        let client = &authenticated.client;
+        let jellyfin_user = &authenticated.user;
+        let response = match client.get_media_folders(Some(&jellyfin_user.id)).await {
             Ok(folders) => {
                 let mut libraries = Vec::new();
                 for folder in folders {
@@ -154,7 +154,9 @@ pub async fn get_server_libraries(
                 error!("Failed to get media folders: {}", e);
                 (StatusCode::BAD_GATEWAY, "Failed to fetch libraries").into_response()
             }
-        }
+        };
+        authenticated.close().await;
+        response
     } else {
         (StatusCode::UNAUTHORIZED, "Failed to authenticate").into_response()
     }
@@ -175,12 +177,11 @@ pub async fn get_library_items(
     let limit = 20;
     let start_index = page * limit;
 
-    if let Ok((client, jellyfin_user, _)) =
-        authenticate_user_on_server(&state, &user, &server).await
-    {
-        match client
+    if let Ok(authenticated) = authenticate_user_on_server(&state, &user, &server).await {
+        let fetched = authenticated
+            .client
             .get_items(
-                &jellyfin_user.id,
+                &authenticated.user.id,
                 Some(&library_id),
                 true,
                 Some(vec![IncludeItemTypes::Movie, IncludeItemTypes::Series]),
@@ -190,8 +191,9 @@ pub async fn get_library_items(
                 Some("Descending".to_string()),
                 None,
             )
-            .await
-        {
+            .await;
+        authenticated.close().await;
+        match fetched {
             Ok(response) => {
                 let total_items = response.total_record_count;
                 let total_pages = (total_items as f64 / limit as f64).ceil() as i32;
@@ -239,7 +241,7 @@ pub async fn proxy_media_image(
     };
 
     // Authenticate
-    let (client, _, _) = match authenticate_user_on_server(&state, &user, &server).await {
+    let authenticated = match authenticate_user_on_server(&state, &user, &server).await {
         Ok(res) => res,
         Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
     };
@@ -255,7 +257,7 @@ pub async fn proxy_media_image(
 
     // Fetch image using the client's internal http client would be best, but we can't access it.
     // We can use state.reqwest_client but we need the token.
-    let token = client.get_token().await.unwrap_or_default();
+    let token = authenticated.client.get_token().await.unwrap_or_default();
 
     // Build auth header manually since we are using a raw request
     // Or we can add a method to JellyfinClient to fetch raw resource.
@@ -267,7 +269,7 @@ pub async fn proxy_media_image(
         token
     );
 
-    match state
+    let response = match state
         .reqwest_client
         .get(&image_url)
         .header(header::AUTHORIZATION, auth_header)
@@ -291,5 +293,7 @@ pub async fn proxy_media_image(
                 .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
         }
         Err(_) => StatusCode::BAD_GATEWAY.into_response(),
-    }
+    };
+    authenticated.close().await;
+    response
 }

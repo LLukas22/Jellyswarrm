@@ -1,6 +1,6 @@
 //! Proxy-owned client sessions, remote control and shared WebSocket transport.
 //! This module never sends session/control requests to upstream servers.
-mod access;
+pub(crate) mod access;
 mod http;
 mod models;
 mod service;
@@ -9,7 +9,6 @@ mod tests;
 pub(crate) mod transport;
 mod websocket;
 
-pub(crate) use access::user_has_media_access;
 pub use http::router;
 pub use service::ClientSessionService;
 pub use websocket::websocket;
