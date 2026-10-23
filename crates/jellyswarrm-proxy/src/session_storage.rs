@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::{RwLock, RwLockWriteGuard};
 
-use crate::server_id::ServerId;
+use crate::{server_id::ServerId, user_id::UserId};
 
 const PLAYBACK_SESSION_TTL: Duration = Duration::from_secs(12 * 60 * 60);
 
@@ -13,7 +13,7 @@ pub struct SessionRevision(uuid::Uuid);
 pub struct PlaybackSession {
     pub session_id: String, // Unique identifier for the session
     pub item_id: String,    // ID of the media item being played
-    pub user_id: String,
+    pub user_id: UserId,
     pub server_id: ServerId,
 }
 
@@ -87,6 +87,7 @@ impl SessionStorage {
         session_id: &str,
         user_id: &str,
     ) -> Option<PlaybackSession> {
+        let user_id = UserId::new(user_id);
         let sessions = self.live_sessions().await;
 
         sessions
@@ -103,6 +104,7 @@ impl SessionStorage {
         session_id: &str,
         user_id: &str,
     ) -> anyhow::Result<Option<(PlaybackSession, SessionRevision)>> {
+        let user_id = UserId::new(user_id);
         let sessions = self.live_sessions().await;
         let matching = sessions
             .iter()
@@ -126,6 +128,7 @@ impl SessionStorage {
         user_id: &str,
         revision: SessionRevision,
     ) -> bool {
+        let user_id = UserId::new(user_id);
         let mut sessions = self.live_sessions().await;
         let now = Instant::now();
         let mut refreshed = false;
@@ -178,6 +181,7 @@ impl SessionStorage {
         user_id: &str,
         revision: SessionRevision,
     ) {
+        let user_id = UserId::new(user_id);
         let mut sessions = self.sessions.write().await;
         sessions.retain(|tracked| {
             tracked.session.session_id != session_id

@@ -2,6 +2,7 @@ use crate::{
     encryption::HashedPassword,
     models::{AuthenticateResponse, Authorization, SyncPlayUserAccessType},
     user_authorization_service::MappingAuth,
+    user_id::UserId,
     AppState,
 };
 use axum::{
@@ -35,7 +36,7 @@ pub struct QuickConnectSession {
     pub app_version: String,
     pub date_added: DateTime<Utc>,
     #[serde(skip)]
-    pub user_id: Option<String>,
+    pub user_id: Option<UserId>,
     #[serde(skip)]
     pub expires_at: DateTime<Utc>,
 }
@@ -73,7 +74,7 @@ impl QuickConnectSession {
 #[derive(Debug, Deserialize)]
 pub struct AuthorizeQuery {
     pub code: String,
-    pub user_id: Option<String>,
+    pub user_id: Option<UserId>,
 }
 
 #[multi_case_struct(pascal, camel)]
@@ -373,8 +374,8 @@ pub async fn handle_quick_connect_authorize(
 async fn resolve_authorize_user_id(
     state: &AppState,
     headers: &HeaderMap,
-    user_id: Option<String>,
-) -> Result<String, StatusCode> {
+    user_id: Option<UserId>,
+) -> Result<UserId, StatusCode> {
     if let Some(user_id) = user_id {
         return Ok(user_id);
     }
@@ -593,7 +594,7 @@ async fn authenticate_with_mapping_on_server(
         let mut auth_response = AuthenticateResponse {
             user: remote_user,
             session_info: crate::models::SessionInfo {
-                user_id: user.id.clone(),
+                user_id: user.id.to_string(),
                 user_name: user.original_username.clone(),
                 server_id: server_id.clone(),
                 extra: Default::default(),
@@ -601,7 +602,7 @@ async fn authenticate_with_mapping_on_server(
             access_token: user.virtual_key.clone(),
             server_id: server_id.clone(),
         };
-        auth_response.user.id = user.id.clone();
+        auth_response.user.id = user.id.to_string();
         auth_response.user.name = user.original_username.clone();
         auth_response.user.server_id = server_id;
         auth_response.user.policy.is_administrator = false;
@@ -676,13 +677,13 @@ async fn authenticate_with_mapping_on_server(
     auth_response.user.server_id = server_id.clone();
     auth_response.session_info.server_id = server_id;
 
-    auth_response.session_info.user_id = user.id.clone();
+    auth_response.session_info.user_id = user.id.to_string();
     auth_response.user.name = user.original_username.clone();
     auth_response.session_info.user_name = user.original_username.clone();
     auth_response.user.policy.is_administrator = false;
     auth_response.user.policy.sync_play_access = SyncPlayUserAccessType::CreateAndJoinGroups;
     auth_response.access_token = user.virtual_key.clone();
-    auth_response.user.id = user.id.clone();
+    auth_response.user.id = user.id.to_string();
 
     crate::sessions::decorate_authentication(&state, &user, &authorization, &mut auth_response)
         .await;
@@ -830,6 +831,19 @@ mod tests {
         assert_eq!(camel.user_id.as_deref(), Some("user-1"));
         assert_eq!(pascal.user_id.as_deref(), Some("user-2"));
         assert!(missing.user_id.is_none());
+    }
+
+    #[test]
+    fn authorize_query_normalizes_user_uuid_on_deserialization() {
+        for key in ["userId", "UserId"] {
+            let params = format!("code=123456&{key}=550E8400-E29B-41D4-A716-446655440000");
+            let uri = format!("/QuickConnect/Authorize?{params}").parse().unwrap();
+            let Query(query) = Query::<AuthorizeQuery>::try_from_uri(&uri).unwrap();
+            assert_eq!(
+                query.user_id.unwrap(),
+                UserId::new("550e8400e29b41d4a716446655440000")
+            );
+        }
     }
 
     #[test]

@@ -228,7 +228,7 @@ mod tests {
         let now = chrono::Utc::now();
         AuthorizationSession {
             id: 1,
-            user_id: "proxy-user".to_string(),
+            user_id: "proxy-user".into(),
             mapping_id: 1,
             server_url: "http://server.example:8096".to_string(),
             device: Device {
@@ -409,7 +409,13 @@ mod tests {
 
     #[tokio::test]
     async fn sharing_maps_the_recipient_and_rejects_unknown_users() {
-        use crate::processors::url_processor::UrlProcessor;
+        use crate::processors::{
+            analyze_json,
+            request_analyzer::{
+                RequestAnalysisContext, RequestAnalyzer, RequestBodyAnalysisResult,
+            },
+            url_processor::UrlProcessor,
+        };
         let (data, _) = test_data_context().await;
         let server_id = data
             .server_storage
@@ -465,6 +471,35 @@ mod tests {
         let mut body = json!({"UserId": user.id});
         process_json(&mut body, &requests, &context).await.unwrap();
         assert_eq!(body["UserId"], "upstream-recipient");
+        // UUID formatting must agree in request analysis and rewriting, including
+        // nested sharing recipients rather than only the authenticated user.
+        let uuid = uuid::Uuid::parse_str(&user.id).unwrap();
+        for id in [
+            uuid.simple().to_string(),
+            uuid.hyphenated().to_string(),
+            uuid.simple().to_string().to_uppercase(),
+            uuid.hyphenated().to_string().to_uppercase(),
+        ] {
+            for key in ["UserId", "userId", "USERID"] {
+                let mut body = json!({key: id, "Users": [{key: id}]});
+                let analysis = analyze_json(
+                    &body,
+                    &RequestAnalyzer::new(data.clone()),
+                    &RequestAnalysisContext {
+                        authenticated_user_id: Some("proxy-user".into()),
+                        playback_session_action: None,
+                    },
+                    RequestBodyAnalysisResult::default(),
+                )
+                .await
+                .unwrap();
+                assert_eq!(analysis.users.len(), 2);
+                assert!(analysis.users.iter().all(|resolved| resolved.id == user.id));
+                process_json(&mut body, &requests, &context).await.unwrap();
+                assert_eq!(body[key], "upstream-recipient");
+                assert_eq!(body["Users"][0][key], "upstream-recipient");
+            }
+        }
         let urls = UrlProcessor::new(data.clone());
         let mut url = url::Url::parse(&format!(
             "http://localhost/Playlists/list/Users/{}?UserId={}",

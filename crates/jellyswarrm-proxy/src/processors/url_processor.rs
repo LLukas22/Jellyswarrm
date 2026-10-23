@@ -1,5 +1,3 @@
-use std::borrow::Cow;
-
 use anyhow::Result;
 use tracing::debug;
 
@@ -9,6 +7,7 @@ use crate::{
     server_storage::Server,
     url_helper::{contains_id, decoded_path_segments, is_id_like, replace_id},
     user_authorization_service::AuthorizationSession,
+    user_id::UserId,
     virtual_library_service::compare_virtual_library_routes,
     virtual_library_service::{VirtualLibraryAccessScope, VirtualLibraryResolution},
     DataContext,
@@ -200,11 +199,9 @@ impl UrlProcessor {
         session: &Option<AuthorizationSession>,
         server_id: ServerId,
     ) -> Result<String> {
-        let user_id = normalize_user_id(user_id);
+        let user_id = UserId::new(user_id);
         if let Some(session) = session {
-            if user_id == normalize_user_id(&session.user_id)
-                || user_id == normalize_user_id(&session.original_user_id)
-            {
+            if user_id == session.user_id || user_id == UserId::new(&session.original_user_id) {
                 return Ok(session.original_user_id.clone());
             }
         }
@@ -768,16 +765,6 @@ fn relative_url_from_parts(url: &url::Url) -> String {
     value
 }
 
-// Local user IDs are stored as lowercase, undashed UUIDs. Clients using typed
-// UUIDs (such as the Jellyfin Kotlin SDK) send the equivalent dashed form.
-// Preserve non-UUID identifiers rather than changing their matching semantics.
-fn normalize_user_id(value: &str) -> Cow<'_, str> {
-    match uuid::Uuid::parse_str(value) {
-        Ok(id) => Cow::Owned(id.simple().to_string()),
-        Err(_) => Cow::Borrowed(value),
-    }
-}
-
 pub fn matches_case_insensitive(value: &str, candidates: &[&str]) -> bool {
     candidates
         .iter()
@@ -838,6 +825,12 @@ mod tests {
                 )
                 .await
                 .unwrap();
+            let upstream_id = uuid::Uuid::new_v4();
+            let upstream_id = if name == "first" {
+                upstream_id.simple().to_string()
+            } else {
+                upstream_id.hyphenated().to_string().to_uppercase()
+            };
             user_authorization
                 .store_authorization_session(
                     &user.id,
@@ -850,7 +843,7 @@ mod tests {
                         token: None,
                     },
                     format!("{name}-token"),
-                    uuid::Uuid::new_v4().simple().to_string(),
+                    upstream_id,
                     None,
                 )
                 .await
@@ -947,7 +940,7 @@ mod tests {
         for (session, server) in sessions {
             // A different authenticated user must not replace the requested recipient.
             let mut caller = session.clone();
-            caller.user_id = uuid::Uuid::new_v4().simple().to_string();
+            caller.user_id = UserId::new(uuid::Uuid::new_v4().simple().to_string());
             caller.original_user_id = "caller-upstream-id".into();
             for id in uuid_variants(&user.id) {
                 assert_eq!(
