@@ -1668,6 +1668,34 @@ impl UserAuthorizationService {
         Ok(sessions)
     }
 
+    /// Resolve abbreviated authenticated headers without weakening normal device matching.
+    pub async fn get_user_sessions_for_partial_device(
+        &self,
+        user_id: &str,
+        device: Option<&Device>,
+    ) -> Result<Vec<(AuthorizationSession, Server)>, sqlx::Error> {
+        let sessions = self.get_user_sessions(user_id, None).await?;
+        let Some(device) = device.filter(|d| !d.device_id.is_empty()) else {
+            // Match the existing token-only request behavior.
+            return Ok(sessions);
+        };
+        if !Device::has_known_device_id(&normalize_device(&device.device_id)) {
+            return Ok(Vec::new());
+        }
+        let sessions: Vec<_> = sessions
+            .into_iter()
+            .filter(|(session, _)| {
+                session.device.device_id == device.device_id
+                    && (device.client.is_empty()
+                        || normalize_device(&session.device.client)
+                            == normalize_device(&device.client))
+            })
+            .collect();
+        // Storage is unique on (user_id, mapping_id, device_id), and mappings
+        // are unique per user/server, so each server has at most one match.
+        Ok(sessions)
+    }
+
     /// Rebind Android TV authorization sessions to a new device ID when the client rotates
     /// from username-derived to user-id-derived device IDs after login.
     ///

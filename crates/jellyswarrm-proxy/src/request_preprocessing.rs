@@ -165,7 +165,7 @@ impl JellyfinAuthorization {
         let headers = req.headers();
         if let Some(auth_header) = headers.get("authorization") {
             if let Ok(auth_str) = auth_header.to_str() {
-                if let Ok(auth) = Authorization::parse(auth_str) {
+                if let Ok(auth) = Authorization::parse_request(auth_str) {
                     return Some(JellyfinAuthorization::Authorization(auth));
                 }
             }
@@ -173,7 +173,7 @@ impl JellyfinAuthorization {
 
         if let Some(auth_header) = headers.get("x-emby-authorization") {
             if let Ok(auth_str) = auth_header.to_str() {
-                if let Ok(auth) = Authorization::parse(auth_str) {
+                if let Ok(auth) = Authorization::parse_request(auth_str) {
                     return Some(JellyfinAuthorization::XEmbyAuthorization(auth));
                 }
             }
@@ -308,10 +308,20 @@ pub async fn extract_request_infos(
         let upstream_device = auth
             .as_ref()
             .and_then(|auth| auth.get_device(request.headers()));
-        let mut sessions = state
-            .user_authorization
-            .get_user_sessions(&user.id, upstream_device)
-            .await?;
+        let partial = matches!(auth.as_ref(), Some(
+            JellyfinAuthorization::Authorization(a) | JellyfinAuthorization::XEmbyAuthorization(a)
+        ) if !a.has_complete_metadata());
+        let mut sessions = if partial {
+            state
+                .user_authorization
+                .get_user_sessions_for_partial_device(&user.id, upstream_device.as_ref())
+                .await?
+        } else {
+            state
+                .user_authorization
+                .get_user_sessions(&user.id, upstream_device)
+                .await?
+        };
 
         // ANDROID TV DEVICE-ID REBIND (intentional behavior):
         // Android TV can authenticate with a username-derived device ID and then switch to a
@@ -319,7 +329,7 @@ pub async fn extract_request_infos(
         // lookup is strict on device ID, so the first request after login may not find a match.
         // To keep the rest of the pipeline unchanged, we do a one-time Android-TV-only rebind
         // when strict lookup returns no session, then re-run strict lookup.
-        if sessions.is_empty() {
+        if sessions.is_empty() && !partial {
             if let Some(device) = &device {
                 let rebound = state
                     .user_authorization
@@ -1129,6 +1139,202 @@ mod tests {
             .get_or_create_user(name, &"password123".into())
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn abbreviated_seasons_headers_dispatch_with_stored_credentials() {
+        let state = create_test_app_state().await;
+        let caller = test_user(&state, "streamyfin").await;
+        let other = test_user(&state, "other").await;
+        let upstream = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/System/Info/Public"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&upstream)
+            .await;
+        let id = state
+            .server_storage
+            .add_server(
+                "Seasons",
+                &upstream.uri(),
+                100,
+                crate::config::MediaStreamingMode::Redirect,
+            )
+            .await
+            .unwrap();
+        let server = state
+            .server_storage
+            .get_server_by_id(id)
+            .await
+            .unwrap()
+            .unwrap();
+        let stored = Authorization {
+            client: "Streamyfin".into(),
+            device: "iPhone".into(),
+            device_id: "streamyfin-device".into(),
+            version: "0.55.2".into(),
+            token: Some("upstream-token".into()),
+        };
+        state
+            .user_authorization
+            .add_server_mapping(
+                &caller.id,
+                server.url.as_str(),
+                "upstream-user",
+                &"password".into(),
+                None,
+            )
+            .await
+            .unwrap();
+        state
+            .user_authorization
+            .store_authorization_session(
+                &caller.id,
+                server.url.as_str(),
+                &stored,
+                "upstream-token".into(),
+                "upstream-user".into(),
+                None,
+            )
+            .await
+            .unwrap();
+        state.server_storage.check_servers_health().await;
+        assert!(state.server_storage.server_status(id).await.is_healthy());
+        let show = state
+            .media_storage
+            .get_or_create_media_mapping("upstream-show", &server)
+            .await
+            .unwrap();
+        let expected_auth = stored.to_header_value();
+        Mock::given(method("GET"))
+            .and(path("/Shows/upstream-show/Seasons"))
+            .and(move |request: &wiremock::Request| {
+                request
+                    .headers
+                    .get("authorization")
+                    .is_some_and(|value| value == expected_auth.as_str())
+            })
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"Items": []})),
+            )
+            .expect(3)
+            .mount(&upstream)
+            .await;
+        let full = Authorization {
+            token: Some(caller.virtual_key.clone()),
+            ..stored.clone()
+        };
+        for (name, value) in [
+            ("authorization", full.to_header_value()),
+            (
+                "authorization",
+                format!(
+                    r#"MediaBrowser DeviceId="streamyfin-device", Token="{}""#,
+                    caller.virtual_key
+                ),
+            ),
+            (
+                "x-emby-authorization",
+                format!(
+                    r#"MediaBrowser DeviceId="streamyfin-device", Token="{}""#,
+                    caller.virtual_key
+                ),
+            ),
+        ] {
+            let uri: http::Uri = format!("/Shows/{}/Seasons", show.virtual_media_id)
+                .parse()
+                .unwrap();
+            let request = Request::builder()
+                .uri(uri.clone())
+                .extension(OriginalUri(uri))
+                .header(name, value)
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let processed = preprocess_request(request, &state).await.unwrap();
+            assert_eq!(processed.server.id, id);
+            assert_eq!(
+                processed.request.url().path(),
+                "/Shows/upstream-show/Seasons"
+            );
+            assert_eq!(
+                processed.request.headers()["authorization"],
+                stored.to_header_value()
+            );
+            assert!(!processed.request.headers()["authorization"]
+                .to_str()
+                .unwrap()
+                .contains(&caller.virtual_key));
+            assert_eq!(
+                state
+                    .reqwest_client
+                    .execute(processed.request)
+                    .await
+                    .unwrap()
+                    .status(),
+                200
+            );
+        }
+        let local = state.client_sessions.for_user(&caller.id).await;
+        assert_eq!(local.len(), 1);
+        assert_eq!(local[0].device.client, stored.client);
+        assert_eq!(local[0].device.device, stored.device);
+        assert_eq!(local[0].device.version, stored.version);
+
+        let mut partial = Device {
+            client: String::new(),
+            device: String::new(),
+            version: String::new(),
+            device_id: stored.device_id.clone(),
+        };
+        assert!(state
+            .user_authorization
+            .get_user_sessions_for_partial_device(&other.id, Some(&partial))
+            .await
+            .unwrap()
+            .is_empty());
+        partial.device_id.push_str("-wrong");
+        assert!(state
+            .user_authorization
+            .get_user_sessions_for_partial_device(&caller.id, Some(&partial))
+            .await
+            .unwrap()
+            .is_empty());
+        partial.device_id = stored.device_id.clone();
+        partial.client = "Another client".into();
+        assert!(state
+            .user_authorization
+            .get_user_sessions_for_partial_device(&caller.id, Some(&partial))
+            .await
+            .unwrap()
+            .is_empty());
+        partial.client = stored.client.clone();
+        assert_eq!(
+            state
+                .user_authorization
+                .get_user_sessions_for_partial_device(&caller.id, Some(&partial))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        state
+            .user_authorization
+            .store_authorization_session(
+                &caller.id,
+                server.url.as_str(),
+                &stored,
+                "expired-token".into(),
+                "upstream-user".into(),
+                Some(chrono::Utc::now() - chrono::Duration::seconds(1)),
+            )
+            .await
+            .unwrap();
+        assert!(state
+            .user_authorization
+            .get_user_sessions_for_partial_device(&caller.id, Some(&partial))
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     fn json_post(path: &str, token: &str, body: serde_json::Value) -> Request {

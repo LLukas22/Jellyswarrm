@@ -145,7 +145,7 @@ impl ClientSessionService {
             .collect();
         let client = device
             .map(|d| d.client.as_str())
-            .filter(|c| *c != "Unknown");
+            .filter(|c| !c.is_empty() && *c != "Unknown");
         let existing = if let Some(client) = client {
             candidates
                 .iter()
@@ -165,12 +165,37 @@ impl ClientSessionService {
         if let Some(entry) = existing.and_then(|id| entries.get_mut(&id)) {
             entry.last_activity = now;
             // WebSocket requests often contain only DeviceId and no client metadata.
-            if let Some(device) = device.filter(|d| d.client != "Unknown" && d.version != "Unknown")
-            {
-                entry.device = device.clone();
+            if let Some(device) = device {
+                for (stored, incoming) in [
+                    (&mut entry.device.client, &device.client),
+                    (&mut entry.device.device, &device.device),
+                    (&mut entry.device.version, &device.version),
+                ] {
+                    if !incoming.is_empty() && incoming != "Unknown" {
+                        *stored = incoming.clone();
+                    }
+                }
             }
             return entry.id.clone();
         }
+        let device = device.map(|d| Device {
+            client: if d.client.is_empty() {
+                "Unknown".into()
+            } else {
+                d.client.clone()
+            },
+            device: if d.device.is_empty() {
+                "Unknown".into()
+            } else {
+                d.device.clone()
+            },
+            version: if d.version.is_empty() {
+                "Unknown".into()
+            } else {
+                d.version.clone()
+            },
+            device_id: d.device_id.clone(),
+        });
         let id = Uuid::new_v4().simple().to_string();
         entries.insert(
             id.clone(),
@@ -179,7 +204,7 @@ impl ClientSessionService {
                 user_id: user.id.clone(),
                 user_name: user.original_username.clone(),
                 token: token.into(),
-                device: device.cloned().unwrap_or(Device {
+                device: device.unwrap_or(Device {
                     client: "Unknown".into(),
                     device: "Unknown".into(),
                     device_id: String::new(),
@@ -335,6 +360,30 @@ mod tests {
             updated_at: Utc::now(),
         }
     }
+    #[tokio::test]
+    async fn partial_metadata_can_be_enriched_without_replacing_the_session() {
+        let service = ClientSessionService::new(ConnectionHub::default());
+        let partial = Device {
+            client: String::new(),
+            device: String::new(),
+            version: String::new(),
+            device_id: "device".into(),
+        };
+        let id = service.ensure(&user(), "secret", Some(&partial)).await;
+        let full = Device {
+            client: "Streamyfin".into(),
+            device: "iPhone".into(),
+            version: "0.55.2".into(),
+            device_id: partial.device_id.clone(),
+        };
+        assert_eq!(service.ensure(&user(), "secret", Some(&full)).await, id);
+        assert_eq!(service.ensure(&user(), "secret", Some(&partial)).await, id);
+        let entry = service.get(&id).await.unwrap();
+        assert_eq!(entry.device.client, full.client);
+        assert_eq!(entry.device.device, full.device);
+        assert_eq!(entry.device.version, full.version);
+    }
+
     #[tokio::test]
     async fn expired_disconnected_sessions_are_replaced_but_connected_sessions_survive() {
         let service = ClientSessionService::new(ConnectionHub::default());
