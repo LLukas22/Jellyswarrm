@@ -10,6 +10,7 @@ use crate::{
     server_storage::Server,
     session_storage::{PlaybackSession, SessionRevision},
     user_authorization_service::User,
+    user_id::UserId,
     virtual_library_service::compare_virtual_library_routes,
     DataContext,
 };
@@ -105,7 +106,7 @@ pub enum PlaybackSessionAction {
 }
 
 pub struct RequestAnalysisContext {
-    pub authenticated_user_id: Option<String>,
+    pub authenticated_user_id: Option<UserId>,
     pub playback_session_action: Option<PlaybackSessionAction>,
 }
 

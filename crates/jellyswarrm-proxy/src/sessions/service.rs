@@ -1,5 +1,6 @@
 use super::{models::Capabilities, transport::ConnectionHub};
 use crate::user_authorization_service::{Device, User};
+use crate::user_id::UserId;
 use axum::http::StatusCode;
 use chrono::{DateTime, Duration, Utc};
 use serde_json::{json, Value};
@@ -14,7 +15,7 @@ const JELLYFIN_MIN_DATE: &str = "0001-01-01T00:00:00.0000000Z";
 #[derive(Clone)]
 pub struct ClientSession {
     pub id: String,
-    pub user_id: String,
+    pub user_id: UserId,
     pub user_name: String,
     pub device: Device,
     pub(super) token: String,
@@ -202,6 +203,7 @@ impl ClientSessionService {
     }
 
     pub async fn for_user(&self, user_id: &str) -> Vec<ClientSession> {
+        let user_id = UserId::new(user_id);
         let now = Utc::now();
         let mut entries = self.entries.write().await;
         entries.retain(|id, entry| {

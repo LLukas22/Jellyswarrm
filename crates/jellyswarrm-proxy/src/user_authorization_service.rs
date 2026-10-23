@@ -16,6 +16,7 @@ use crate::server_id::ServerId;
 use crate::server_storage::Server;
 #[cfg(test)]
 use crate::server_url::ServerUrl;
+use crate::user_id::UserId;
 
 // Bound both CPU and memory use (Argon2id uses ~19 MiB per operation).
 // The permit stays in the blocking task even if its request is cancelled.
@@ -132,7 +133,7 @@ impl LocalCredential {
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct User {
-    pub id: String,
+    pub id: UserId,
     pub virtual_key: String,
     pub original_username: String,
     pub local_credential: LocalCredential,
@@ -159,7 +160,7 @@ impl<'r> FromRow<'r, SqliteRow> for User {
 #[derive(Clone, FromRow)]
 pub struct VirtualUserApiKey {
     pub id: i64,
-    pub user_id: String,
+    pub user_id: UserId,
     pub app_name: String,
     pub access_token: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -196,7 +197,7 @@ impl MappingAuth {
 #[derive(Debug, Clone)]
 pub struct ServerMapping {
     pub id: i64,
-    pub user_id: String,
+    pub user_id: UserId,
     pub server_id: ServerId,
     pub server_url: String,
     pub auth: MappingAuth,
@@ -269,7 +270,7 @@ impl<'r> sqlx::FromRow<'r, SqliteRow> for ServerMapping {
 #[derive(Debug, Clone)]
 pub struct AuthorizationSession {
     pub id: i64,
-    pub user_id: String,
+    pub user_id: UserId,
     pub mapping_id: i64, // FK to server_mappings.id enabling cascade delete
     pub server_url: String,
     pub device: Device,
@@ -655,7 +656,7 @@ impl UserAuthorizationService {
         // Create new user
         let local_credential = LocalCredential::from_password(password).await?;
         let virtual_key = generate_token();
-        let user_id = generate_token();
+        let user_id = UserId::from(generate_token());
         let now = chrono::Utc::now();
 
         sqlx::query(
@@ -722,7 +723,7 @@ impl UserAuthorizationService {
         let local_credential = LocalCredential::from_password(password).await?;
         let username_key = Self::normalized_username_key(username);
         let virtual_key = generate_token();
-        let user_id = generate_token();
+        let user_id = UserId::from(generate_token());
         let now = chrono::Utc::now();
 
         sqlx::query(
@@ -856,7 +857,7 @@ impl UserAuthorizationService {
         .await
     }
 
-    /// Get user by virtual id
+    /// Get user by virtual ID, accepting equivalent UUID formats.
     pub async fn get_user_by_id(&self, id: &str) -> Result<Option<User>, sqlx::Error> {
         let user = sqlx::query_as::<_, User>(
             r#"
@@ -866,7 +867,7 @@ impl UserAuthorizationService {
             WHERE id = ?
             "#,
         )
-        .bind(id)
+        .bind(UserId::new(id))
         .fetch_optional(&self.pool)
         .await?;
 
@@ -1532,22 +1533,8 @@ impl UserAuthorizationService {
         &self,
         user_id: &str,
     ) -> Result<Option<(User, Vec<(AuthorizationSession, Server)>)>, sqlx::Error> {
-        // First, find the user by their ID
-        let user = sqlx::query_as::<_, User>(
-            r#"
-            SELECT id, virtual_key, original_username, original_password_hash,
-                   local_credential_kind, created_at, updated_at
-            FROM users
-            WHERE id = ?
-            "#,
-        )
-        .bind(user_id)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        let user = match user {
-            Some(user) => user,
-            None => return Ok(None),
+        let Some(user) = self.get_user_by_id(user_id).await? else {
+            return Ok(None);
         };
 
         let sessions = self.get_user_sessions(&user.id, None).await?;
@@ -2132,6 +2119,45 @@ mod tests {
         MIGRATOR.run(&pool).await.unwrap();
         let service = UserAuthorizationService::new(pool.clone());
         (pool, service)
+    }
+
+    #[tokio::test]
+    async fn user_lookups_accept_equivalent_uuid_formats() {
+        let (_, service) = setup_service().await;
+        let user = service
+            .create_user("viewer", &"password".into())
+            .await
+            .unwrap();
+        let uuid = uuid::Uuid::parse_str(&user.id).unwrap();
+        for id in [
+            uuid.simple().to_string(),
+            uuid.hyphenated().to_string(),
+            uuid.simple().to_string().to_uppercase(),
+            uuid.hyphenated().to_string().to_uppercase(),
+        ] {
+            assert_eq!(
+                service.get_user_by_id(&id).await.unwrap().unwrap().id,
+                user.id
+            );
+            let (resolved, sessions) = service
+                .get_user_sessions_by_user_id(&id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(resolved.id, user.id);
+            assert!(sessions.is_empty());
+        }
+        for unknown in [
+            "unknown".to_string(),
+            uuid::Uuid::new_v4().hyphenated().to_string(),
+        ] {
+            assert!(service.get_user_by_id(&unknown).await.unwrap().is_none());
+            assert!(service
+                .get_user_sessions_by_user_id(&unknown)
+                .await
+                .unwrap()
+                .is_none());
+        }
     }
 
     #[tokio::test]

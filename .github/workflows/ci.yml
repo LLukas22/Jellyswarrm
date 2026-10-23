@@ -127,7 +127,9 @@ jobs:
         toolchain: 1.92.0
 
     - name: Install just
-      uses: extractions/setup-just@v2
+      uses: extractions/setup-just@v4
+      with:
+        just-version: '1.59.0'
 
     - name: Cache cargo registry
       uses: actions/cache@v4

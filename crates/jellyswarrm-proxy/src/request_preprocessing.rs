@@ -1683,7 +1683,7 @@ mod tests {
             .add_session(PlaybackSession {
                 session_id: "victim-session".to_string(),
                 item_id: "item".to_string(),
-                user_id: "victim".to_string(),
+                user_id: "victim".into(),
                 server_id: ServerId::new(1),
             })
             .await;

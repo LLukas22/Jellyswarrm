@@ -20,6 +20,7 @@ use crate::{
     server_id::ServerId,
     server_storage::Server,
     ui::{auth::AuthenticatedUser, user::common::authenticate_user_on_server},
+    user_id::UserId,
     AppState,
 };
 
@@ -39,7 +40,7 @@ pub struct ConnectServerForm {
 }
 
 struct PendingConnect {
-    user_id: String,
+    user_id: UserId,
     server_id: ServerId,
     secret: String,
     created_at: DateTime<Utc>,

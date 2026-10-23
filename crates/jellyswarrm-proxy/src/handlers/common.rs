@@ -377,7 +377,7 @@ async fn add_tracked_play_session(
         .add_session(PlaybackSession {
             item_id: item_id.to_string(),
             session_id: session_id.to_string(),
-            user_id: user_id.to_string(),
+            user_id: user_id.into(),
             server_id: server.id,
         })
         .await;

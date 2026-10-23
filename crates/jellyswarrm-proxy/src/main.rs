@@ -52,6 +52,7 @@ mod sessions;
 mod ui;
 mod url_helper;
 mod user_authorization_service;
+mod user_id;
 mod virtual_library_service;
 
 use federated_users::FederatedUserService;

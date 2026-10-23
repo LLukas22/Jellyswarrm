@@ -13,6 +13,7 @@ use crate::{
     server_storage::Server,
     session_storage::PlaybackSession,
     user_authorization_service::AuthorizationSession,
+    user_id::UserId,
     AppState,
 };
 
@@ -45,6 +46,7 @@ fn matching_play_session(
         candidates.retain(|session| session.session_id == session_id);
     }
     if let Some(user_id) = user_id {
+        let user_id = UserId::new(user_id);
         candidates.retain(|session| session.user_id == user_id);
     }
 
@@ -305,7 +307,7 @@ pub async fn get_stream(
                     .add_session(PlaybackSession {
                         session_id,
                         item_id,
-                        user_id,
+                        user_id: user_id.into(),
                         server_id: server.id,
                     })
                     .await;
@@ -332,7 +334,7 @@ mod tests {
         PlaybackSession {
             session_id: session_id.to_string(),
             item_id: "item-1".to_string(),
-            user_id: user_id.to_string(),
+            user_id: user_id.into(),
             server_id: ServerId::new(server_id),
         }
     }
