@@ -161,22 +161,8 @@ impl UserAuthorizationService {
         &self,
         user_id: &str,
     ) -> Result<Option<(User, Vec<(AuthorizationSession, Server)>)>, sqlx::Error> {
-        // First, find the user by their ID
-        let user = sqlx::query_as::<_, User>(
-            r#"
-            SELECT id, virtual_key, original_username, original_password_hash,
-                   local_credential_kind, created_at, updated_at
-            FROM users
-            WHERE id = ?
-            "#,
-        )
-        .bind(user_id)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        let user = match user {
-            Some(user) => user,
-            None => return Ok(None),
+        let Some(user) = self.get_user_by_id(user_id).await? else {
+            return Ok(None);
         };
 
         let sessions = self.get_user_sessions(&user.id, None).await?;
@@ -273,6 +259,30 @@ impl UserAuthorizationService {
         };
 
         Ok(sessions)
+    }
+
+    /// Resolve abbreviated authenticated headers without weakening normal device matching.
+    pub async fn get_user_sessions_for_partial_device(
+        &self,
+        user_id: &str,
+        device: Option<&Device>,
+    ) -> Result<Vec<(AuthorizationSession, Server)>, sqlx::Error> {
+        let sessions = self.get_user_sessions(user_id, None).await?;
+        let Some(device) = device.filter(|d| !d.device_id.is_empty()) else {
+            return Ok(sessions);
+        };
+        if !Device::has_known_device_id(&normalize_device(&device.device_id)) {
+            return Ok(Vec::new());
+        }
+        Ok(sessions
+            .into_iter()
+            .filter(|(session, _)| {
+                session.device.device_id == device.device_id
+                    && (device.client.is_empty()
+                        || normalize_device(&session.device.client)
+                            == normalize_device(&device.client))
+            })
+            .collect())
     }
 
     /// Rebind Android TV authorization sessions to a new device ID when the client rotates

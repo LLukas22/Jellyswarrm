@@ -97,6 +97,7 @@ async fn user_can_login_browse_merged_libraries_and_stream_mapped_media() -> Res
     assert_eq!(required_string(&login, "/User/Name")?, USERNAME);
 
     let views = wait_for_views(client, proxy_url, user_id, token).await?;
+    verify_uuid_user_requests(client, proxy_url, user_id, token).await?;
     let movies = wait_for_library_items(
         client,
         proxy_url,
@@ -836,6 +837,50 @@ async fn wait_for_seerr_catalog(
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
+}
+
+async fn verify_uuid_user_requests(
+    client: &Client,
+    base_url: &str,
+    user_id: &str,
+    token: &str,
+) -> Result<()> {
+    let id = uuid::Uuid::parse_str(user_id)?;
+    for variant in [
+        id.simple().to_string(),
+        id.hyphenated().to_string(),
+        id.simple().to_string().to_uppercase(),
+        id.hyphenated().to_string().to_uppercase(),
+    ] {
+        for endpoint in [
+            "/UserViews",
+            "/UserItems/Resume",
+            "/DisplayPreferences/default",
+        ] {
+            let response = authenticated(
+                client
+                    .get(format!("{base_url}{endpoint}"))
+                    .query(&[("userId", variant.as_str()), ("client", "Wholphin")]),
+                token,
+            )
+            .send()
+            .await?;
+            let status = response.status();
+            let body = response.text().await?;
+            assert!(
+                status.is_success(),
+                "{endpoint}?userId={variant}: {status}: {body}"
+            );
+        }
+        let user = success_json(
+            authenticated(client.get(format!("{base_url}/Users/{variant}")), token)
+                .send()
+                .await?,
+        )
+        .await?;
+        assert_eq!(required_string(&user, "/Id")?, user_id);
+    }
+    Ok(())
 }
 
 async fn wait_for_views(

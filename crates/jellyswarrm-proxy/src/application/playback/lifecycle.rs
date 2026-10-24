@@ -157,7 +157,7 @@ impl PendingPlaybackSessionUpdate {
             PlaybackSessionAction::Start => Some(Self::Start(PlaybackSession {
                 session_id: result.requested_play_session_id.clone()?,
                 item_id: result.requested_play_item_id.clone()?,
-                user_id: user_id?.to_string(),
+                user_id: user_id?.into(),
                 server_id,
                 original_item_id: original_item_id.map(str::to_string),
             })),

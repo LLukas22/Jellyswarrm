@@ -418,7 +418,7 @@ async fn playlist_detail_and_sharing_reads_translate_complete_permissions() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         response.json::<Value>().await.unwrap()["UserId"],
-        recipient.id
+        recipient.id.as_str()
     );
 }
 
@@ -539,7 +539,7 @@ async fn encoded_container_paths_use_the_same_owner_for_validation_and_translati
             assert_eq!(response.status(), StatusCode::OK);
             assert_eq!(
                 response.json::<Value>().await.unwrap()[0]["UserId"],
-                f.caller.id
+                f.caller.id.as_str()
             );
         }
     }

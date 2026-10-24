@@ -582,6 +582,203 @@ fn server_is_allowed(
 
 #[cfg(test)]
 mod tests {
+    use crate::{
+        auth::{service::User, user_id::UserId},
+        models::Authorization,
+        DataContext,
+    };
+
+    async fn user_mapping_fixture() -> (UrlProcessor, User, Vec<(AuthorizationSession, Server)>) {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let server_storage = ServerStorageService::new(pool.clone());
+        let media_storage = MediaStorageService::new(pool.clone());
+        let virtual_libraries =
+            VirtualLibraryService::new(pool.clone(), server_storage.clone(), media_storage.clone());
+        let user_authorization = UserAuthorizationService::new(pool);
+        let user = user_authorization
+            .create_user("viewer", &"password".into())
+            .await
+            .unwrap();
+        for name in ["first", "second"] {
+            let id = server_storage
+                .add_server(
+                    name,
+                    &format!("http://{name}.example"),
+                    100,
+                    MediaStreamingMode::Redirect,
+                )
+                .await
+                .unwrap();
+            let server = server_storage.get_server_by_id(id).await.unwrap().unwrap();
+            user_authorization
+                .add_server_mapping(
+                    &user.id,
+                    &server,
+                    "viewer",
+                    &"password".into(),
+                    Some(&user.local_credential.mapping_key()),
+                )
+                .await
+                .unwrap();
+            let upstream_id = uuid::Uuid::new_v4();
+            let upstream_id = if name == "first" {
+                upstream_id.simple().to_string()
+            } else {
+                upstream_id.hyphenated().to_string().to_uppercase()
+            };
+            user_authorization
+                .store_authorization_session(
+                    &user.id,
+                    &server,
+                    &Authorization {
+                        client: "Wholphin".into(),
+                        device: "Android TV".into(),
+                        device_id: "test-device".into(),
+                        version: "test".into(),
+                        token: None,
+                    },
+                    format!("{name}-token"),
+                    upstream_id,
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        let sessions = user_authorization
+            .get_user_sessions_by_user_id(&user.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .1;
+        let processor = UrlProcessor::from(DataContext {
+            user_authorization: Arc::new(user_authorization),
+            server_storage: Arc::new(server_storage),
+            media_storage: Arc::new(media_storage),
+            virtual_library_service: Arc::new(virtual_libraries),
+            play_sessions: Arc::new(SessionStorage::new()),
+            config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
+        });
+        (processor, user, sessions)
+    }
+
+    fn uuid_variants(value: &str) -> Vec<String> {
+        let id = uuid::Uuid::parse_str(value).unwrap();
+        vec![
+            id.simple().to_string(),
+            id.hyphenated().to_string(),
+            id.simple().to_string().to_uppercase(),
+            id.hyphenated().to_string().to_uppercase(),
+        ]
+    }
+
+    #[tokio::test]
+    async fn user_uuid_formats_are_remapped_for_each_upstream() {
+        let (processor, user, sessions) = user_mapping_fixture().await;
+        assert_eq!(sessions.len(), 2);
+        assert_ne!(
+            sessions[0].0.original_user_id,
+            sessions[1].0.original_user_id
+        );
+        for (session, server) in sessions {
+            for id in uuid_variants(&user.id)
+                .into_iter()
+                .chain(uuid_variants(&session.original_user_id))
+            {
+                for endpoint in [
+                    "/UserViews",
+                    "/UserItems/Resume",
+                    "/UserImage",
+                    "/DisplayPreferences/default",
+                ] {
+                    for key in ["userId", "UserId", "USERID"] {
+                        let mut url = url::Url::parse(&format!("http://localhost{endpoint}?{key}={id}&fields=Overview&fields=SortName&client=Wholphin")).unwrap();
+                        processor
+                            .client_to_server_url(&mut url, &Some(session.clone()), None, server.id)
+                            .await;
+                        let pairs = url.query_pairs().collect::<Vec<_>>();
+                        assert_eq!(pairs[0].0, key);
+                        assert_eq!(
+                            pairs[0].1, session.original_user_id,
+                            "{endpoint}: {key}={id}"
+                        );
+                        assert_eq!(
+                            &pairs[1..],
+                            &[
+                                ("fields".into(), "Overview".into()),
+                                ("fields".into(), "SortName".into()),
+                                ("client".into(), "Wholphin".into())
+                            ]
+                        );
+                    }
+                }
+                let mut url =
+                    url::Url::parse(&format!("http://localhost/Users/{id}/Views")).unwrap();
+                processor
+                    .client_to_server_url(&mut url, &Some(session.clone()), None, server.id)
+                    .await;
+                assert_eq!(
+                    url.path(),
+                    format!("/Users/{}/Views", session.original_user_id)
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn recipient_uuid_formats_keep_server_specific_mapping_and_reject_unknown_users() {
+        let (processor, user, sessions) = user_mapping_fixture().await;
+        for (session, server) in sessions {
+            let mut caller = session.clone();
+            caller.user_id = UserId::new(uuid::Uuid::new_v4().simple().to_string());
+            caller.original_user_id = "caller-upstream-id".into();
+            for id in uuid_variants(&user.id) {
+                assert_eq!(
+                    processor
+                        .upstream_user_id(&id, &Some(caller.clone()), server.id)
+                        .await
+                        .unwrap(),
+                    session.original_user_id
+                );
+                let mut url = url::Url::parse(&format!(
+                    "http://localhost/Playlists/list/Users/{id}?userId={id}"
+                ))
+                .unwrap();
+                processor
+                    .client_to_server_url(&mut url, &Some(caller.clone()), None, server.id)
+                    .await;
+                assert_eq!(
+                    url.path(),
+                    format!("/Playlists/list/Users/{}", session.original_user_id)
+                );
+                assert_eq!(
+                    url.query_pairs().next().unwrap().1,
+                    session.original_user_id
+                );
+                assert!(processor
+                    .upstream_user_id(&id, &Some(caller.clone()), ServerId::new(i64::MAX))
+                    .await
+                    .is_err());
+            }
+            for unknown in [
+                "unknown".to_string(),
+                "not-a-valid-uuid".to_string(),
+                uuid::Uuid::new_v4().hyphenated().to_string(),
+            ] {
+                assert!(processor
+                    .upstream_user_id(&unknown, &Some(caller.clone()), server.id)
+                    .await
+                    .is_err());
+            }
+            assert_eq!(
+                processor
+                    .upstream_user_id("caller-upstream-id", &Some(caller), server.id)
+                    .await
+                    .unwrap(),
+                "caller-upstream-id"
+            );
+        }
+    }
     use std::sync::Arc;
 
     use sqlx::SqlitePool;

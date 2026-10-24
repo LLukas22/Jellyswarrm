@@ -201,7 +201,7 @@ impl AuthorizedTarget {
             }
             if session
                 .as_ref()
-                .is_some_and(|session| session.user_id != scope.user_id())
+                .is_some_and(|session| session.user_id.as_str() != scope.user_id())
             {
                 return Err(TargetError::ViewerMismatch);
             }
@@ -315,7 +315,7 @@ mod tests {
         );
 
         assert_eq!(context.principal(), Principal::Anonymous);
-        assert_eq!(context.user().unwrap().id, "viewer");
+        assert_eq!(context.user().unwrap().id.as_str(), "viewer");
         assert!(context.authorization().is_none());
     }
 

@@ -162,10 +162,10 @@ async fn read_contract(scenario: Scenario, route: &str, shape: Shape) {
         Shape::Theme => assert_eq!(result["ThemeSongsResult"]["Items"][0]["Id"], f.items[owner]),
         Shape::Filters | Shape::Lyrics | Shape::Counts => assert_eq!(result, upstream_body),
         Shape::Playlist => {
-            assert_eq!(result["Shares"][0]["UserId"], f.user.id);
+            assert_eq!(result["Shares"][0]["UserId"], f.user.id.as_str());
             assert_eq!(result["ItemIds"][0], f.items[owner]);
         }
-        Shape::PlaylistUser => assert_eq!(result["UserId"], f.user.id),
+        Shape::PlaylistUser => assert_eq!(result["UserId"], f.user.id.as_str()),
         Shape::Recommendations => assert_eq!(result[0]["Items"][0]["Id"], f.items[owner]),
         Shape::ImageInfo => {
             assert_eq!(result[0]["Width"], 320);

@@ -541,7 +541,7 @@ mod tests {
         PlaybackSession {
             session_id: session_id.to_string(),
             item_id: "item-1".to_string(),
-            user_id: user_id.to_string(),
+            user_id: user_id.into(),
             server_id: ServerId::new(server_id),
             original_item_id: None,
         }

@@ -24,7 +24,7 @@ async fn process_user(
 ) -> Result<crate::models::User> {
     let mut server_user = server_user;
 
-    server_user.id = user.id.clone();
+    server_user.id = user.id.to_string();
     server_user.name = user.original_username.clone();
     server_user.policy.is_administrator = false;
 
@@ -473,7 +473,7 @@ async fn decorate_auth_response(
     auth_response.server_id = server_id.clone();
     auth_response.user.server_id = server_id.clone();
     auth_response.session_info.server_id = server_id;
-    auth_response.session_info.user_id = user.id.clone();
+    auth_response.session_info.user_id = user.id.to_string();
     auth_response.user.name = login_username.to_string();
     auth_response.session_info.user_name = login_username.to_string();
     // Seerr requires this flag to finish setup. Authorization remains enforced by
@@ -481,7 +481,7 @@ async fn decorate_auth_response(
     auth_response.user.policy.is_administrator = is_seerr_client(login_authorization);
     auth_response.user.policy.sync_play_access = SyncPlayUserAccessType::CreateAndJoinGroups;
     auth_response.access_token = user.virtual_key.clone();
-    auth_response.user.id = user.id.clone();
+    auth_response.user.id = user.id.to_string();
     crate::sessions::decorate_authentication(state, user, login_authorization, &mut auth_response)
         .await;
     auth_response

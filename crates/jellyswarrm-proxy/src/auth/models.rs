@@ -2,13 +2,14 @@
 use sqlx::{sqlite::SqliteRow, FromRow, Row};
 
 use crate::auth::encryption::EncryptedPassword;
+use crate::auth::user_id::UserId;
 use crate::models::Authorization;
 use crate::servers::id::ServerId;
 
 use super::credentials::LocalCredential;
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct User {
-    pub id: String,
+    pub id: UserId,
     pub virtual_key: String,
     pub original_username: String,
     pub local_credential: LocalCredential,
@@ -35,7 +36,7 @@ impl<'r> FromRow<'r, SqliteRow> for User {
 #[derive(Clone, FromRow)]
 pub struct VirtualUserApiKey {
     pub id: i64,
-    pub user_id: String,
+    pub user_id: UserId,
     pub app_name: String,
     pub access_token: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -72,7 +73,7 @@ impl MappingAuth {
 #[derive(Debug, Clone)]
 pub struct ServerMapping {
     pub id: i64,
-    pub user_id: String,
+    pub user_id: UserId,
     pub server_id: ServerId,
     pub server_url: String,
     pub auth: MappingAuth,
@@ -145,7 +146,7 @@ impl<'r> sqlx::FromRow<'r, SqliteRow> for ServerMapping {
 #[derive(Debug, Clone)]
 pub struct AuthorizationSession {
     pub id: i64,
-    pub user_id: String,
+    pub user_id: UserId,
     pub mapping_id: i64, // FK to server_mappings.id enabling cascade delete
     pub server_url: String,
     pub device: Device,

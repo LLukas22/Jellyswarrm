@@ -41,7 +41,7 @@ pub(crate) async fn refresh(
     if input
         .sessions
         .iter()
-        .any(|session| session.user_id != input.access_scope.user_id())
+        .any(|session| session.user_id.as_str() != input.access_scope.user_id())
     {
         return Err(ApplicationError::AccessDenied);
     }

@@ -132,7 +132,7 @@ async fn real_socket_discovery_play_commands_and_subscriptions_stay_local() {
     .unwrap();
     assert_eq!(msg["MessageType"], "Play");
     assert_eq!(msg["Data"]["ItemIds"], json!(f.items));
-    assert_eq!(msg["Data"]["ControllingUserId"], f.user.id);
+    assert_eq!(msg["Data"]["ControllingUserId"], f.user.id.as_str());
     assert_eq!(msg["Data"]["StartPositionTicks"], 123);
     for command in ["Pause", "Unpause", "Stop"] {
         assert_eq!(
@@ -148,7 +148,7 @@ async fn real_socket_discovery_play_commands_and_subscriptions_stay_local() {
             serde_json::from_str(tv.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
         assert_eq!(msg["MessageType"], "Playstate");
         assert_eq!(msg["Data"]["Command"], command);
-        assert_eq!(msg["Data"]["ControllingUserId"], f.user.id);
+        assert_eq!(msg["Data"]["ControllingUserId"], f.user.id.as_str());
     }
     let mut controller = f.socket("web").await;
     controller
@@ -174,7 +174,7 @@ async fn real_socket_discovery_play_commands_and_subscriptions_stay_local() {
         .as_array()
         .unwrap()
         .iter()
-        .all(|s| s["UserId"] == f.user.id));
+        .all(|s| s["UserId"] == f.user.id.as_str()));
     controller
         .send(Message::Text(
             json!({"MessageType":"SessionsStop"}).to_string().into(),
@@ -199,6 +199,44 @@ async fn real_socket_discovery_play_commands_and_subscriptions_stay_local() {
             .status(),
         StatusCode::CONFLICT
     );
+    f.no_upstream_requests().await;
+}
+
+#[tokio::test]
+async fn controllable_user_filter_accepts_uuid_formats_without_granting_cross_user_access() {
+    let f = Fixture::new().await;
+    let _tv = f.socket("tv").await;
+    f.capabilities().await;
+    let expected = f.list().await;
+    assert!(!expected.is_empty());
+    let uuid = uuid::Uuid::parse_str(&f.user.id).unwrap();
+    for id in [
+        uuid.simple().to_string(),
+        uuid.hyphenated().to_string(),
+        uuid.simple().to_string().to_uppercase(),
+        uuid.hyphenated().to_string().to_uppercase(),
+    ] {
+        let path = format!("/Sessions?ControllableByUserId={id}");
+        let response = f
+            .request(reqwest::Method::GET, &path, &f.user, "controller")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let sessions = response.json::<Vec<Value>>().await.unwrap();
+        assert_eq!(sessions.len(), expected.len());
+        assert!(sessions
+            .iter()
+            .all(|session| session["UserId"] == f.user.id.as_str()));
+        assert_eq!(
+            f.request(reqwest::Method::GET, &path, &f.other, "other")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+    }
     f.no_upstream_requests().await;
 }
 
@@ -611,7 +649,7 @@ async fn query_capabilities_filters_browse_and_admin_reset_are_local() {
     );
     let msg: Value =
         serde_json::from_str(tv.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
-    assert_eq!(msg["Data"]["ControllingUserId"], f.user.id);
+    assert_eq!(msg["Data"]["ControllingUserId"], f.user.id.as_str());
     f.state
         .client_sessions
         .cache_media_response(

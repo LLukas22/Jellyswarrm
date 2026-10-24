@@ -53,6 +53,189 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
+#[tokio::test]
+async fn abbreviated_seasons_headers_dispatch_with_stored_credentials() {
+    let state = create_test_app_state().await;
+    let caller = test_user(&state, "streamyfin").await;
+    let other = test_user(&state, "other").await;
+    let upstream = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/System/Info/Public"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+        .mount(&upstream)
+        .await;
+    let id = state
+        .server_storage
+        .add_server(
+            "Seasons",
+            &upstream.uri(),
+            100,
+            crate::config::MediaStreamingMode::Redirect,
+        )
+        .await
+        .unwrap();
+    let server = state
+        .server_storage
+        .get_server_by_id(id)
+        .await
+        .unwrap()
+        .unwrap();
+    let stored = Authorization {
+        client: "Streamyfin".into(),
+        device: "iPhone".into(),
+        device_id: "streamyfin-device".into(),
+        version: "0.55.2".into(),
+        token: Some("upstream-token".into()),
+    };
+    state
+        .user_authorization
+        .add_server_mapping(
+            &caller.id,
+            &server,
+            "upstream-user",
+            &"password".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    state
+        .user_authorization
+        .store_authorization_session(
+            &caller.id,
+            &server,
+            &stored,
+            "upstream-token".into(),
+            "upstream-user".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    state.server_storage.check_servers_health().await;
+    assert!(state.server_storage.server_status(id).await.is_healthy());
+    let show = state
+        .media_storage
+        .get_or_create_media_mapping("upstream-show", &server)
+        .await
+        .unwrap();
+    let expected_auth = stored.to_header_value();
+    Mock::given(method("GET"))
+        .and(path("/Shows/upstream-show/Seasons"))
+        .and(move |request: &wiremock::Request| {
+            request
+                .headers
+                .get("authorization")
+                .is_some_and(|value| value == expected_auth.as_str())
+        })
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"Items": []})))
+        .expect(3)
+        .mount(&upstream)
+        .await;
+    let full = Authorization {
+        token: Some(caller.virtual_key.clone()),
+        ..stored.clone()
+    };
+    for (name, value) in [
+        ("authorization", full.to_header_value()),
+        (
+            "authorization",
+            format!(
+                r#"MediaBrowser DeviceId="streamyfin-device", Token="{}""#,
+                caller.virtual_key
+            ),
+        ),
+        (
+            "x-emby-authorization",
+            format!(
+                r#"MediaBrowser DeviceId="streamyfin-device", Token="{}""#,
+                caller.virtual_key
+            ),
+        ),
+    ] {
+        let uri: http::Uri = format!("/Shows/{}/Seasons", show.virtual_media_id)
+            .parse()
+            .unwrap();
+        let request = Request::builder()
+            .uri(uri.clone())
+            .extension(OriginalUri(uri))
+            .header(name, value)
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response =
+            crate::http::proxy::proxy_handler(axum::extract::State(state.clone()), request)
+                .await
+                .unwrap();
+        assert_eq!(
+            response.status(),
+            200,
+            "upstream requests: {:?}",
+            upstream.received_requests().await.unwrap()
+        );
+        // Consume the streaming response; the mock verifies the rewritten URL and stored credentials.
+        response.into_body().collect().await.unwrap();
+    }
+    let local = state.client_sessions.for_user(&caller.id).await;
+    assert_eq!(local.len(), 1);
+    assert_eq!(local[0].device.client, stored.client);
+    assert_eq!(local[0].device.device, stored.device);
+    assert_eq!(local[0].device.version, stored.version);
+
+    let mut partial = Device {
+        client: String::new(),
+        device: String::new(),
+        version: String::new(),
+        device_id: stored.device_id.clone(),
+    };
+    assert!(state
+        .user_authorization
+        .get_user_sessions_for_partial_device(&other.id, Some(&partial))
+        .await
+        .unwrap()
+        .is_empty());
+    partial.device_id.push_str("-wrong");
+    assert!(state
+        .user_authorization
+        .get_user_sessions_for_partial_device(&caller.id, Some(&partial))
+        .await
+        .unwrap()
+        .is_empty());
+    partial.device_id = stored.device_id.clone();
+    partial.client = "Another client".into();
+    assert!(state
+        .user_authorization
+        .get_user_sessions_for_partial_device(&caller.id, Some(&partial))
+        .await
+        .unwrap()
+        .is_empty());
+    partial.client = stored.client.clone();
+    assert_eq!(
+        state
+            .user_authorization
+            .get_user_sessions_for_partial_device(&caller.id, Some(&partial))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    state
+        .user_authorization
+        .store_authorization_session(
+            &caller.id,
+            &server,
+            &stored,
+            "expired-token".into(),
+            "upstream-user".into(),
+            Some(chrono::Utc::now() - chrono::Duration::seconds(1)),
+        )
+        .await
+        .unwrap();
+    assert!(state
+        .user_authorization
+        .get_user_sessions_for_partial_device(&caller.id, Some(&partial))
+        .await
+        .unwrap()
+        .is_empty());
+}
+
 async fn create_test_app_state() -> AppState {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
     MIGRATOR.run(&pool).await.unwrap();
@@ -801,7 +984,7 @@ async fn progress_rejects_a_session_owned_by_another_user() {
         .add_session(PlaybackSession {
             session_id: "victim-session".to_string(),
             item_id: "item".to_string(),
-            user_id: "victim".to_string(),
+            user_id: "victim".into(),
             server_id: ServerId::new(1),
             original_item_id: None,
         })

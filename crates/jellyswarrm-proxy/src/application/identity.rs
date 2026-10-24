@@ -1,5 +1,6 @@
 //! Identity namespaces at selection/translation boundaries. These wrappers do
 //! not validate ID syntax: Jellyfin IDs may be opaque, non-UUID strings.
+//! Local viewer UUIDs use the canonical user-ID representation.
 //! Deliberately no Deref, AsRef<str>, or cross-namespace conversions: leaving a
 //! namespace requires an explicit wire/storage-boundary decision.
 
@@ -61,9 +62,26 @@ macro_rules! opaque_identity {
     )+ };
 }
 
-opaque_identity!(
-    VirtualLiveStreamId,
-    BackendLiveStreamId,
-    PlaybackSessionId,
-    ViewerId
-);
+opaque_identity!(VirtualLiveStreamId, BackendLiveStreamId, PlaybackSessionId);
+
+/// Caller identity keeps its namespace while sharing local-user normalization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViewerId(crate::auth::user_id::UserId);
+
+impl ViewerId {
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl From<String> for ViewerId {
+    fn from(value: String) -> Self {
+        Self(value.into())
+    }
+}
+
+impl From<&str> for ViewerId {
+    fn from(value: &str) -> Self {
+        Self(value.into())
+    }
+}

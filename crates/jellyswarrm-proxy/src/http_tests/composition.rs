@@ -60,7 +60,7 @@ async fn production_authentication_wiring_logs_in_with_encrypted_mappings_and_re
     assert_eq!(login.status(), StatusCode::OK);
     let login: Value = login.json().await.unwrap();
     assert_eq!(login["AccessToken"], f.user.virtual_key);
-    assert_eq!(login["User"]["Id"], f.user.id);
+    assert_eq!(login["User"]["Id"], f.user.id.as_str());
     assert_eq!(login["User"]["Name"], "alice");
 
     let config = f.state.config.read().await.clone();
@@ -126,7 +126,7 @@ async fn production_authentication_wiring_logs_in_with_encrypted_mappings_and_re
         .unwrap();
     assert_eq!(me.status(), StatusCode::OK);
     let me: Value = me.json().await.unwrap();
-    assert_eq!(me["Id"], f.user.id);
+    assert_eq!(me["Id"], f.user.id.as_str());
     assert_eq!(me["Name"], "alice");
     for backend in &f.upstreams {
         backend.verify().await;

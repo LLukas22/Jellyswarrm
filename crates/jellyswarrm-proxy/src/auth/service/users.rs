@@ -1,5 +1,6 @@
 //! Local user creation, login lookup, password changes, and credential upgrades.
 use super::*;
+use crate::auth::user_id::UserId;
 
 impl UserAuthorizationService {
     pub(super) fn normalized_username_key(username: &str) -> String {
@@ -21,7 +22,7 @@ impl UserAuthorizationService {
         // Create new user
         let local_credential = LocalCredential::from_password(password).await?;
         let virtual_key = generate_token();
-        let user_id = generate_token();
+        let user_id = UserId::from(generate_token());
         let now = chrono::Utc::now();
 
         sqlx::query(
@@ -88,7 +89,7 @@ impl UserAuthorizationService {
         let local_credential = LocalCredential::from_password(password).await?;
         let username_key = Self::normalized_username_key(username);
         let virtual_key = generate_token();
-        let user_id = generate_token();
+        let user_id = UserId::from(generate_token());
         let now = chrono::Utc::now();
 
         sqlx::query(
@@ -175,7 +176,7 @@ impl UserAuthorizationService {
         .await
     }
 
-    /// Get user by virtual id
+    /// Get user by virtual ID, accepting equivalent UUID formats.
     pub async fn get_user_by_id(&self, id: &str) -> Result<Option<User>, sqlx::Error> {
         let user = sqlx::query_as::<_, User>(
             r#"
@@ -185,7 +186,7 @@ impl UserAuthorizationService {
             WHERE id = ?
             "#,
         )
-        .bind(id)
+        .bind(UserId::new(id))
         .fetch_optional(&self.pool)
         .await?;
 

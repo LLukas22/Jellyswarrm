@@ -4,7 +4,7 @@ use super::{
     service::ClientSession,
     snapshots, valid_session, SessionContext,
 };
-use crate::AppState;
+use crate::{auth::user_id::UserId, AppState};
 use axum::{
     body::to_bytes,
     extract::{Path, Request, State},
@@ -102,7 +102,7 @@ async fn list(
 ) -> ApiResult<Json<Vec<Value>>> {
     let p = Params::new(&uri)?;
     let controllable = p.get("ControllableByUserId");
-    if controllable.is_some_and(|id| id != caller.user.id) {
+    if controllable.is_some_and(|id| UserId::new(id) != caller.user.id) {
         return Err(StatusCode::FORBIDDEN);
     }
     let active = p.number::<u32>("ActiveWithinSeconds")?;

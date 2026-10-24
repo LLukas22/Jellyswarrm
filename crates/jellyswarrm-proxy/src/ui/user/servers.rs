@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 use crate::{
     auth::encryption::Password,
+    auth::user_id::UserId,
     servers::id::ServerId,
     servers::storage::Server,
     ui::{auth::AuthenticatedUser, user::common::authenticate_user_on_server},
@@ -40,7 +41,7 @@ pub struct ConnectServerForm {
 }
 
 struct PendingConnect {
-    user_id: String,
+    user_id: UserId,
     server_id: ServerId,
     secret: String,
     created_at: DateTime<Utc>,

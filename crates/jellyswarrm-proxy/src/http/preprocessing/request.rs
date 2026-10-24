@@ -77,10 +77,20 @@ pub(crate) async fn extract_request_infos(
         let upstream_device = auth
             .as_ref()
             .and_then(|auth| auth.get_device(request.headers()));
-        let mut sessions = state
-            .user_authorization
-            .get_user_sessions(&user.id, upstream_device)
-            .await?;
+        let partial = matches!(auth.as_ref(), Some(
+            JellyfinAuthorization::Authorization(a) | JellyfinAuthorization::XEmbyAuthorization(a)
+        ) if !a.has_complete_metadata());
+        let mut sessions = if partial {
+            state
+                .user_authorization
+                .get_user_sessions_for_partial_device(&user.id, upstream_device.as_ref())
+                .await?
+        } else {
+            state
+                .user_authorization
+                .get_user_sessions(&user.id, upstream_device)
+                .await?
+        };
 
         // ANDROID TV DEVICE-ID REBIND (intentional behavior):
         // Android TV can authenticate with a username-derived device ID and then switch to a
@@ -88,7 +98,7 @@ pub(crate) async fn extract_request_infos(
         // lookup is strict on device ID, so the first request after login may not find a match.
         // To keep the rest of the pipeline unchanged, we do a one-time Android-TV-only rebind
         // when strict lookup returns no session, then re-run strict lookup.
-        if sessions.is_empty() {
+        if sessions.is_empty() && !partial {
             if let Some(device) = &device {
                 let rebound = state
                     .user_authorization

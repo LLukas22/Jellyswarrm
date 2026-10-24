@@ -11,6 +11,45 @@ async fn setup_service() -> (SqlitePool, UserAuthorizationService) {
 }
 
 #[tokio::test]
+async fn user_lookups_accept_equivalent_uuid_formats() {
+    let (_, service) = setup_service().await;
+    let user = service
+        .create_user("viewer", &"password".into())
+        .await
+        .unwrap();
+    let uuid = uuid::Uuid::parse_str(&user.id).unwrap();
+    for id in [
+        uuid.simple().to_string(),
+        uuid.hyphenated().to_string(),
+        uuid.simple().to_string().to_uppercase(),
+        uuid.hyphenated().to_string().to_uppercase(),
+    ] {
+        assert_eq!(
+            service.get_user_by_id(&id).await.unwrap().unwrap().id,
+            user.id
+        );
+        let (resolved, sessions) = service
+            .get_user_sessions_by_user_id(&id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.id, user.id);
+        assert!(sessions.is_empty());
+    }
+    for unknown in [
+        "unknown".to_string(),
+        uuid::Uuid::new_v4().hyphenated().to_string(),
+    ] {
+        assert!(service.get_user_by_id(&unknown).await.unwrap().is_none());
+        assert!(service
+            .get_user_sessions_by_user_id(&unknown)
+            .await
+            .unwrap()
+            .is_none());
+    }
+}
+
+#[tokio::test]
 async fn delayed_password_change_cannot_overwrite_newer_credentials_or_mappings() {
     let (pool, service) = setup_service().await;
     let server_id = insert_test_server(&pool, "Backend", "http://localhost:8096").await;

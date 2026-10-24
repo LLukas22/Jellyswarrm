@@ -368,7 +368,7 @@ impl SyncPlayService {
 
     fn make_participant(session: &SessionContext, is_buffering: bool) -> GroupParticipant {
         GroupParticipant {
-            user_id: session.user.id.clone(),
+            user_id: session.user.id.to_string(),
             user_name: session.user.original_username.clone(),
             ping: DEFAULT_PING_MS as u64,
             is_buffering,
@@ -631,7 +631,7 @@ mod tests {
 
     fn make_user(id: &str, name: &str) -> User {
         User {
-            id: id.to_string(),
+            id: id.into(),
             virtual_key: format!("vk-{id}"),
             original_username: name.to_string(),
             local_credential: LocalCredential::Password(HashedPassword::from_hashed(

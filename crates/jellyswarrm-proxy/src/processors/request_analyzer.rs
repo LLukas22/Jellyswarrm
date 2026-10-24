@@ -119,7 +119,7 @@ pub enum PlaybackSessionAction {
 }
 
 pub struct RequestAnalysisContext {
-    pub authenticated_user_id: Option<String>,
+    pub authenticated_user_id: Option<crate::auth::user_id::UserId>,
     pub playback_session_action: Option<PlaybackSessionAction>,
 }
 

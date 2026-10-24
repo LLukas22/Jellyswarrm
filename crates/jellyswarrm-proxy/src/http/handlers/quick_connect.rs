@@ -1,4 +1,5 @@
 //! Handle Quick Connect initiation, polling, authorization, and temporary request storage.
+use crate::auth::user_id::UserId;
 use crate::{models::Authorization, AppState};
 use axum::{
     extract::{Query, State},
@@ -20,7 +21,7 @@ pub(crate) use crate::auth::quick_connect::QuickConnectStorage;
 #[derive(Debug, Deserialize)]
 pub struct AuthorizeQuery {
     pub code: String,
-    pub user_id: Option<String>,
+    pub user_id: Option<UserId>,
 }
 
 #[multi_case_struct(pascal, camel)]
@@ -173,8 +174,8 @@ pub async fn handle_quick_connect_authorize(
 async fn resolve_authorize_user_id(
     state: &AppState,
     headers: &HeaderMap,
-    user_id: Option<String>,
-) -> Result<String, StatusCode> {
+    user_id: Option<UserId>,
+) -> Result<UserId, StatusCode> {
     let token = extract_virtual_token(headers).ok_or_else(|| {
         warn!("Quick Connect authorize called without a virtual token");
         StatusCode::BAD_REQUEST
@@ -287,6 +288,22 @@ pub async fn handle_authenticate_with_quick_connect(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn authorize_query_normalizes_user_uuid_on_deserialization() {
+        for key in ["userId", "UserId"] {
+            let uri = format!(
+                "/QuickConnect/Authorize?code=123456&{key}=550E8400-E29B-41D4-A716-446655440000"
+            )
+            .parse()
+            .unwrap();
+            let Query(query) = Query::<AuthorizeQuery>::try_from_uri(&uri).unwrap();
+            assert_eq!(
+                query.user_id.unwrap(),
+                UserId::new("550e8400e29b41d4a716446655440000")
+            );
+        }
+    }
     use crate::{
         application::playback::sessions::SessionStorage,
         auth::service::{Device, UserAuthorizationService},

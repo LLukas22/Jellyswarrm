@@ -11,3 +11,4 @@ pub(crate) use service::UserAuthorizationService;
 
 pub(crate) mod credentials;
 pub(crate) mod models;
+pub(crate) mod user_id;

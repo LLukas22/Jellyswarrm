@@ -5,6 +5,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
+use crate::auth::user_id::UserId;
 use chrono::{DateTime, Duration, Utc};
 use rand::Rng;
 use serde::Serialize;
@@ -41,8 +42,8 @@ pub(crate) struct QuickConnectSession {
 
 enum Stage {
     Pending,
-    Approved(String),
-    Redeeming(String),
+    Approved(UserId),
+    Redeeming(UserId),
 }
 
 struct Session {
@@ -160,7 +161,7 @@ impl QuickConnectStorage {
             .map(|session| session.view.clone())
     }
 
-    pub(crate) fn approve(&self, code: &ConnectCode, user_id: String) -> bool {
+    pub(crate) fn approve(&self, code: &ConnectCode, user_id: UserId) -> bool {
         let mut sessions = self.lock();
         sessions.cleanup(Utc::now());
         let Some(secret) = sessions.by_code.get(code).cloned() else {
@@ -230,7 +231,7 @@ impl QuickConnectStorage {
 pub(crate) struct Redemption {
     storage: QuickConnectStorage,
     secret: ConnectSecret,
-    user_id: String,
+    user_id: UserId,
     view: QuickConnectSession,
 }
 impl Redemption {

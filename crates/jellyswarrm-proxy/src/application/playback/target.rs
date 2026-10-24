@@ -363,9 +363,10 @@ pub(crate) fn matching_session(
     session: Option<&str>,
     viewer: Option<&str>,
 ) -> Result<PlaybackSession, usize> {
+    let viewer = viewer.map(crate::auth::user_id::UserId::new);
     candidates.retain(|candidate| {
         session.is_none_or(|id| candidate.session_id == id)
-            && viewer.is_none_or(|id| candidate.user_id == id)
+            && viewer.as_ref().is_none_or(|id| &candidate.user_id == id)
     });
     match candidates.len() {
         1 => Ok(candidates.remove(0)),

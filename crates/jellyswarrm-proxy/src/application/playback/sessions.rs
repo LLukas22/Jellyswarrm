@@ -9,6 +9,7 @@ use tokio::sync::{RwLock, RwLockWriteGuard};
 use crate::application::identity::{
     BackendLiveStreamId, PlaybackSessionId, ViewerId, VirtualLiveStreamId,
 };
+use crate::auth::user_id::UserId;
 use crate::servers::id::ServerId;
 
 const PLAYBACK_SESSION_TTL: Duration = Duration::from_secs(12 * 60 * 60);
@@ -20,7 +21,7 @@ pub struct SessionRevision(uuid::Uuid);
 pub struct PlaybackSession {
     pub session_id: String, // Unique identifier for the session
     pub item_id: String,    // ID of the media item being played
-    pub user_id: String,
+    pub user_id: UserId,
     pub server_id: ServerId,
     /// Exact backend item selected by PlaybackInfo, shared by its item aliases.
     pub original_item_id: Option<String>,
@@ -196,6 +197,7 @@ impl SessionStorage {
     }
 
     pub async fn sessions_for_user(&self, user_id: &str) -> Vec<PlaybackSession> {
+        let user_id = UserId::new(user_id);
         self.live_sessions()
             .await
             .iter()
@@ -332,6 +334,7 @@ impl SessionStorage {
         server_id: ServerId,
         original_item_id: &str,
     ) {
+        let user_id = UserId::new(user_id);
         let mut sessions = self.live_sessions().await;
         let revision = SessionRevision(uuid::Uuid::new_v4());
         for tracked in sessions.iter_mut().filter(|tracked| {
@@ -359,6 +362,7 @@ impl SessionStorage {
         session_id: &str,
         user_id: &str,
     ) -> Option<PlaybackSession> {
+        let user_id = UserId::new(user_id);
         let sessions = self.live_sessions().await;
 
         sessions
@@ -382,7 +386,7 @@ impl SessionStorage {
             .filter(|tracked| tracked.session.session_id == session_id.as_str());
         if let Some(tracked) = matching
             .clone()
-            .find(|tracked| tracked.session.user_id == user_id.as_str())
+            .find(|tracked| tracked.session.user_id.as_str() == user_id.as_str())
         {
             return Ok(Some(RevisionedPlaybackSession {
                 session: tracked.session.clone(),
@@ -410,6 +414,7 @@ impl SessionStorage {
         user_id: &str,
         revision: SessionRevision,
     ) -> bool {
+        let user_id = UserId::new(user_id);
         let mut sessions = self.live_sessions().await;
         let now = Instant::now();
         let mut refreshed = false;
@@ -473,6 +478,7 @@ impl SessionStorage {
         user_id: &str,
         revision: SessionRevision,
     ) {
+        let user_id = UserId::new(user_id);
         let mut sessions = self.sessions.write().await;
         sessions.retain(|tracked| {
             tracked.session.session_id != session_id
@@ -505,6 +511,58 @@ impl SessionStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn user_uuid_formats_share_playback_and_live_stream_bindings() {
+        let storage = SessionStorage::new();
+        let id = uuid::Uuid::new_v4();
+        let canonical = id.simple().to_string();
+        let alternate = id.hyphenated().to_string().to_uppercase();
+        let server = ServerId::new(1);
+        storage
+            .add_session(PlaybackSession {
+                session_id: "play".into(),
+                item_id: "item".into(),
+                user_id: canonical.as_str().into(),
+                server_id: server,
+                original_item_id: None,
+            })
+            .await;
+        assert!(storage
+            .get_session_for_user("play", &alternate)
+            .await
+            .is_some());
+        assert_eq!(storage.sessions_for_user(&alternate).await.len(), 1);
+        storage
+            .bind_original_item("play", &alternate, server, "backend-item")
+            .await;
+        let binding = storage
+            .resolve_report_binding(&"play".into(), &alternate.as_str().into())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            binding.session().original_item_id.as_deref(),
+            Some("backend-item")
+        );
+        assert!(storage.refresh_revisioned_session(&binding).await);
+        storage.remove_revisioned_session(&binding).await;
+        assert!(storage.get_session("play").await.is_none());
+
+        let live = storage
+            .register_live_stream("backend-live", &canonical, server)
+            .await;
+        assert_eq!(
+            storage
+                .register_live_stream("backend-live", &alternate, server)
+                .await,
+            live
+        );
+        assert!(storage.live_stream(&live, &alternate).await.is_some());
+        assert!(storage.live_stream(&live, "other").await.is_none());
+        storage.remove_live_stream(&live, &alternate).await;
+        assert!(storage.live_stream(&live, &canonical).await.is_none());
+    }
 
     #[tokio::test]
     async fn live_stream_bindings_are_viewer_scoped_and_expire() {

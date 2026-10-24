@@ -1,11 +1,12 @@
 //! Management UI authentication backend, user roles, and authenticated route context.
 use std::sync::Arc;
 
+use crate::auth::user_id::UserId;
 use axum::{
     extract::FromRequestParts,
     http::{request::Parts, StatusCode},
 };
-use axum_login::{AuthUser, AuthnBackend, UserId};
+use axum_login::{AuthUser, AuthnBackend, UserId as AuthUserId};
 use serde::{Deserialize, Serialize};
 use tokio::{sync::RwLock, task};
 use tracing::info;
@@ -27,7 +28,7 @@ pub enum UserRole {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct User {
-    pub id: String,
+    pub id: UserId,
     pub username: String,
     pub local_credential: LocalCredential,
     pub role: UserRole,
@@ -67,7 +68,7 @@ impl std::fmt::Debug for User {
 }
 
 impl AuthUser for User {
-    type Id = String;
+    type Id = UserId;
 
     fn id(&self) -> Self::Id {
         self.id.clone()
@@ -123,7 +124,7 @@ impl AuthnBackend for Backend {
             info!("Admin authentication successful");
             // If the password is correct, we return the default user.
             let user = User {
-                id: "admin".to_string(),
+                id: "admin".into(),
                 username: creds.username,
                 local_credential: LocalCredential::Password(config.password.clone().into()),
                 role: UserRole::Admin,
@@ -150,11 +151,14 @@ impl AuthnBackend for Backend {
         Ok(None)
     }
 
-    async fn get_user(&self, user_id: &UserId<Self>) -> Result<Option<Self::User>, Self::Error> {
-        if user_id == "admin" {
+    async fn get_user(
+        &self,
+        user_id: &AuthUserId<Self>,
+    ) -> Result<Option<Self::User>, Self::Error> {
+        if user_id.as_str() == "admin" {
             let config = self.config.read().await;
             return Ok(Some(User {
-                id: "admin".to_string(),
+                id: "admin".into(),
                 username: config.username.clone(),
                 local_credential: LocalCredential::Password(config.password.clone().into()),
                 role: UserRole::Admin,
@@ -179,3 +183,24 @@ impl AuthnBackend for Backend {
 //
 // Note that we've supplied our concrete backend here.
 pub type AuthSession = axum_login::AuthSession<Backend>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn existing_ui_sessions_keep_their_json_shape_and_authentication_hash() {
+        for (id, role) in [
+            ("admin", UserRole::Admin),
+            ("550e8400e29b41d4a716446655440000", UserRole::User),
+        ] {
+            let legacy = json!({"id": id, "username": "viewer",
+                "local_credential": {"Password": "existing-password-hash"}, "role": role});
+            let user: User = serde_json::from_value(legacy.clone()).unwrap();
+            assert_eq!(user.id.as_str(), id);
+            assert_eq!(user.session_auth_hash(), b"existing-password-hash");
+            assert_eq!(serde_json::to_value(user).unwrap(), legacy);
+        }
+    }
+}

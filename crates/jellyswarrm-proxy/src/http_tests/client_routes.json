@@ -2709,7 +2709,7 @@
       "operation": "getItem",
       "source": "legacy",
       "file": "ui/src/components/playback/playbackmanager.js",
-      "line": 3879
+      "line": 3878
     },
     {
       "method": "GET",
@@ -2717,7 +2717,7 @@
       "operation": "getItem",
       "source": "legacy",
       "file": "ui/src/components/playback/playbackmanager.js",
-      "line": 3879
+      "line": 3878
     },
     {
       "method": "GET",
@@ -2725,7 +2725,7 @@
       "operation": "getLocalTrailers",
       "source": "legacy",
       "file": "ui/src/components/playback/playbackmanager.js",
-      "line": 4037
+      "line": 4036
     },
     {
       "method": "GET",
@@ -2733,7 +2733,7 @@
       "operation": "getInstantMixFromItem",
       "source": "legacy",
       "file": "ui/src/components/playback/playbackmanager.js",
-      "line": 4152
+      "line": 4151
     },
     {
       "method": "POST",
@@ -4941,25 +4941,25 @@
     },
     {
       "file": "ui/src/components/mediaLibraryEditor/mediaLibraryEditor.js",
-      "line": 65,
+      "line": 66,
       "expression": "ApiClient.addMediaPath(virtualFolder.Name, path, null, refreshAfterChange)",
       "reason": "legacy addMediaPath: computed URL"
     },
     {
       "file": "ui/src/components/mediaLibraryEditor/mediaLibraryEditor.js",
-      "line": 75,
+      "line": 76,
       "expression": "ApiClient.updateMediaPath(virtualFolder.Name, {\n        Path: path\n    })",
       "reason": "legacy updateMediaPath: computed URL"
     },
     {
       "file": "ui/src/components/mediaLibraryEditor/mediaLibraryEditor.js",
-      "line": 96,
+      "line": 97,
       "expression": "ApiClient.removeMediaPath(virtualFolder.Name, location, refreshAfterChange)",
       "reason": "legacy removeMediaPath: computed URL"
     },
     {
       "file": "ui/src/components/mediaLibraryEditor/mediaLibraryEditor.js",
-      "line": 143,
+      "line": 144,
       "expression": "ApiClient.getVirtualFolders()",
       "reason": "legacy getVirtualFolders: computed URL"
     },
@@ -5007,7 +5007,7 @@
     },
     {
       "file": "ui/src/components/playback/playbackmanager.js",
-      "line": 4064,
+      "line": 4063,
       "expression": "apiClient.getUrl(textStream.DeliveryUrl)",
       "reason": "computed or server-supplied URL"
     },

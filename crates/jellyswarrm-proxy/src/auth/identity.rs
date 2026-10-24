@@ -124,7 +124,7 @@ impl JellyfinAuthorization {
         let headers = req.headers();
         if let Some(auth_header) = headers.get("authorization") {
             if let Ok(auth_str) = auth_header.to_str() {
-                if let Ok(auth) = Authorization::parse(auth_str) {
+                if let Ok(auth) = Authorization::parse_request(auth_str) {
                     return Some(JellyfinAuthorization::Authorization(auth));
                 }
             }
@@ -132,7 +132,7 @@ impl JellyfinAuthorization {
 
         if let Some(auth_header) = headers.get("x-emby-authorization") {
             if let Ok(auth_str) = auth_header.to_str() {
-                if let Ok(auth) = Authorization::parse(auth_str) {
+                if let Ok(auth) = Authorization::parse_request(auth_str) {
                     return Some(JellyfinAuthorization::XEmbyAuthorization(auth));
                 }
             }

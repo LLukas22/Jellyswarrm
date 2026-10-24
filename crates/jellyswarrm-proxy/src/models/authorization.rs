@@ -25,6 +25,27 @@ impl Authorization {
 
     /// Parse authorization header with optional legacy Emby support
     pub fn parse_with_legacy(header_value: &str, enable_legacy: bool) -> Result<Self, String> {
+        Self::parse_internal(header_value, enable_legacy, false)
+    }
+
+    /// Authenticated requests may omit metadata available in the stored session.
+    /// Missing metadata is represented by empty strings; login parsing stays strict.
+    pub fn parse_request(header_value: &str) -> Result<Self, String> {
+        Self::parse_internal(header_value, false, true)
+    }
+
+    pub fn has_complete_metadata(&self) -> bool {
+        !self.client.is_empty()
+            && !self.device.is_empty()
+            && !self.device_id.is_empty()
+            && !self.version.is_empty()
+    }
+
+    fn parse_internal(
+        header_value: &str,
+        enable_legacy: bool,
+        allow_partial: bool,
+    ) -> Result<Self, String> {
         let content = if header_value.starts_with("MediaBrowser ") {
             &header_value[12..] // Skip "MediaBrowser "
         } else if enable_legacy && header_value.starts_with("Emby ") {
@@ -58,7 +79,12 @@ impl Authorization {
             }
         }
 
-        if client.is_empty() || device.is_empty() || device_id.is_empty() || version.is_empty() {
+        if (!allow_partial || token.is_none())
+            && (client.is_empty()
+                || device.is_empty()
+                || device_id.is_empty()
+                || version.is_empty())
+        {
             return Err("Missing required authorization parameters".to_string());
         }
 
@@ -192,6 +218,24 @@ impl fmt::Display for Authorization {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn partial_headers_are_only_accepted_for_authenticated_requests() {
+        for header in [
+            r#"MediaBrowser DeviceId="device", Token="proxy""#,
+            r#"MediaBrowser Token="proxy""#,
+        ] {
+            let auth = Authorization::parse_request(header).unwrap();
+            assert_eq!(auth.token.as_deref(), Some("proxy"));
+            assert!(!auth.has_complete_metadata());
+            assert!(Authorization::parse(header).is_err());
+        }
+        assert!(
+            Authorization::parse_request(r#"MediaBrowser DeviceId="device", Token="""#).is_err()
+        );
+        assert!(Authorization::parse_request("Bearer proxy").is_err());
+        assert!(Authorization::parse_request(r#"Emby DeviceId="device", Token="proxy""#).is_err());
+    }
 
     #[test]
     fn test_parse_authorization() {

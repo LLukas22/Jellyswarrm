@@ -168,9 +168,9 @@ async fn authenticate_and_register(
     response.server_id = server_id.clone();
     response.user.server_id = server_id.clone();
     response.session_info.server_id = server_id;
-    response.user.id = user.id.clone();
+    response.user.id = user.id.to_string();
     response.user.name = user.original_username.clone();
-    response.session_info.user_id = user.id.clone();
+    response.session_info.user_id = user.id.to_string();
     response.session_info.user_name = user.original_username.clone();
     response.user.policy.is_administrator = false;
     response.user.policy.sync_play_access = SyncPlayUserAccessType::CreateAndJoinGroups;

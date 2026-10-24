@@ -17,12 +17,15 @@ pub struct VirtualLibraryMember {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VirtualLibraryAccessScope {
-    user_id: String,
+    user_id: crate::auth::user_id::UserId,
     server_ids: Vec<ServerId>,
 }
 
 impl VirtualLibraryAccessScope {
-    pub fn new(user_id: impl Into<String>, server_ids: impl IntoIterator<Item = ServerId>) -> Self {
+    pub fn new(
+        user_id: impl Into<crate::auth::user_id::UserId>,
+        server_ids: impl IntoIterator<Item = ServerId>,
+    ) -> Self {
         let mut server_ids = server_ids.into_iter().collect::<Vec<_>>();
         server_ids.sort_by_key(|server_id| server_id.as_i64());
         server_ids.dedup();
