@@ -1,6 +1,7 @@
+//! Maintain proxy-owned client presence, device metadata, playback state, and remote control.
 use super::{models::Capabilities, transport::ConnectionHub};
-use crate::user_authorization_service::{Device, User};
-use crate::user_id::UserId;
+use crate::auth::service::{Device, User};
+use crate::auth::user_id::UserId;
 use axum::http::StatusCode;
 use chrono::{DateTime, Duration, Utc};
 use serde_json::{json, Value};
@@ -357,7 +358,7 @@ mod tests {
             id: "user".into(),
             virtual_key: "secret".into(),
             original_username: "Alice".into(),
-            local_credential: crate::user_authorization_service::LocalCredential::Passwordless,
+            local_credential: crate::auth::service::LocalCredential::Passwordless,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

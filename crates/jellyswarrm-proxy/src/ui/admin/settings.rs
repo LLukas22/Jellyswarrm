@@ -1,3 +1,4 @@
+//! Render and save proxy settings from the administrative UI.
 use askama::Template;
 use axum::{
     extract::State,
@@ -8,7 +9,10 @@ use axum::{
 use serde::Deserialize;
 use tracing::error;
 
-use crate::{config::save_config, AppState};
+use crate::{
+    config::service::{ConfigurationError, SettingsUpdate},
+    AppState,
+};
 
 #[derive(Template)]
 #[template(path = "admin/settings.html")]
@@ -75,30 +79,20 @@ pub struct SaveForm {
 }
 
 pub async fn save_settings(State(state): State<AppState>, Form(form): Form<SaveForm>) -> Response {
-    if form.public_address.trim().is_empty() || form.server_name.trim().is_empty() {
-        return Html(
-            "<div id=\"settings-messages\" class=\"alert alert-error\">All fields required</div>",
-        )
-        .into_response();
-    }
-
-    let save_result = {
-        let mut cfg = state.config.write().await;
-        let mut updated = cfg.clone();
-        updated.public_address = form.public_address.trim().to_string();
-        updated.server_name = form.server_name.trim().to_string();
-        updated.include_server_name_in_media = form.include_server_name_in_media;
-        updated.auto_create_users_on_login = form.auto_create_users_on_login;
-        updated.deduplicate_media = form.deduplicate_media;
-        match save_config(&updated) {
-            Ok(()) => {
-                *cfg = updated;
-                Ok(())
-            }
-            Err(error) => Err(error),
-        }
-    };
+    let save_result = state
+        .configuration_service()
+        .save(SettingsUpdate {
+            public_address: form.public_address,
+            server_name: form.server_name,
+            include_server_name_in_media: form.include_server_name_in_media,
+            auto_create_users_on_login: form.auto_create_users_on_login,
+            deduplicate_media: form.deduplicate_media,
+        })
+        .await;
     if let Err(error) = save_result {
+        if matches!(error, ConfigurationError::MissingFields) {
+            return Html("<div id=\"settings-messages\" class=\"alert alert-error\">All fields required</div>").into_response();
+        }
         error!("Failed to save settings: {error}");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -111,26 +105,23 @@ pub async fn save_settings(State(state): State<AppState>, Form(form): Form<SaveF
 }
 
 pub async fn reload_config(State(state): State<AppState>) -> impl IntoResponse {
-    let current_key = state.config.read().await.session_key.clone();
-    let new_cfg = match crate::config::load_config_with_session_key(Some(&current_key)) {
-        Ok(cfg) => cfg,
+    match state.configuration_service().reload().await {
+        Ok(()) => Html("<div class=\"alert\">Configuration reloaded</div>").into_response(),
+        Err(ConfigurationError::SessionKeyChanged) => {
+            (StatusCode::CONFLICT, Html("<div class=\"alert alert-error\">session_key cannot be changed while running</div>")).into_response()
+        }
+        Err(ConfigurationError::StartupChanged) => {
+            (StatusCode::CONFLICT, Html("<div class=\"alert alert-error\">Startup settings changed; restart the application to apply them. The previous configuration is still active.</div>")).into_response()
+        }
         Err(error) => {
             error!("Failed to reload config: {error}");
-            return (
+            (
                 StatusCode::BAD_REQUEST,
                 Html("<div class=\"alert alert-error\">Invalid configuration</div>"),
             )
-                .into_response();
+                .into_response()
         }
-    };
-    {
-        let mut cfg = state.config.write().await;
-        if cfg.session_key != new_cfg.session_key {
-            return (StatusCode::CONFLICT, Html("<div class=\"alert alert-error\">session_key cannot be changed while running</div>")).into_response();
-        }
-        *cfg = new_cfg;
     }
-    Html("<div class=\"alert\">Configuration reloaded</div>").into_response()
 }
 
 #[cfg(test)]

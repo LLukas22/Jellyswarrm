@@ -1,3 +1,4 @@
+//! Authenticate client WebSockets and manage subscriptions and bounded notification delivery.
 use super::{
     models::InboundMessage, snapshots, transport::OUTBOUND_CAPACITY, valid_session, SessionContext,
 };

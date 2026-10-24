@@ -1,3 +1,4 @@
+//! Manage virtual-library grouping, discovery, and member assignments in the administrative UI.
 use std::collections::HashMap;
 
 use askama::Template;
@@ -7,23 +8,12 @@ use axum::{
     response::{Html, IntoResponse, Response},
     Form,
 };
-use jellyfin_api::JellyfinClient;
 use serde::Deserialize;
 use tracing::{error, info};
 
 use crate::{
-    config::{save_config, CLIENT_INFO},
-    encryption::{decrypt_password, HashedPassword},
-    server_id::ServerId,
-    server_storage::Server,
-    ui::{
-        auth::{User, UserRole},
-        user::common::authenticate_user_with_mapping,
-    },
-    virtual_library_service::{
-        normalize_library_id, AssignLibraryError, DiscoveredLibrary as StoredLibrary,
-        LibraryGroupMemberRecord,
-    },
+    libraries::service::{normalize_library_id, AssignLibraryError, LibraryGroupMemberRecord},
+    servers::id::ServerId,
     AppState,
 };
 
@@ -154,18 +144,10 @@ pub async fn update_merge_libraries(
     Form(form): Form<UpdateMergeLibrariesForm>,
 ) -> Response {
     let ui_route = state.get_ui_route().await;
-    let save_result = {
-        let mut config = state.config.write().await;
-        let mut updated = config.clone();
-        updated.merge_libraries = form.merge_libraries;
-        match save_config(&updated) {
-            Ok(()) => {
-                *config = updated;
-                Ok(())
-            }
-            Err(error) => Err(error),
-        }
-    };
+    let save_result = state
+        .configuration_service()
+        .set_library_merging(form.merge_libraries)
+        .await;
 
     match save_result {
         Ok(()) => render_merge_libraries_control(form.merge_libraries, ui_route, None),
@@ -182,7 +164,14 @@ pub async fn update_merge_libraries(
 }
 
 pub async fn library_groups_list(State(state): State<AppState>) -> impl IntoResponse {
-    let errors = refresh_library_discovery(&state).await;
+    let errors = state
+        .library_administration()
+        .await
+        .refresh()
+        .await
+        .into_iter()
+        .map(discovery_message)
+        .collect();
     match render_library_groups_list_with_errors(&state, Some(errors)).await {
         Ok(html) => Html(html).into_response(),
         Err(message) => (
@@ -320,215 +309,20 @@ fn accepts_collection_type(group_type: Option<&str>, library_type: &str) -> bool
         && group_type.is_none_or(|group_type| group_type.eq_ignore_ascii_case(library_type))
 }
 
-async fn discover_mapped_libraries(
-    state: &AppState,
-    server: &Server,
-    users: &[User],
-    errors: &mut Vec<String>,
-) {
-    // Union every mapped user's visible libraries; a restricted account must
-    // not hide libraries visible to another. No prior catalog request is needed.
-    let mut libraries = Vec::new();
-    for user in users {
-        let mapping = match state
-            .user_authorization
-            .get_server_mapping(&user.id, server)
-            .await
-        {
-            Ok(None) => continue,
-            Ok(Some(mapping)) => mapping,
-            Err(error) => {
-                error!(
-                    "Could not load mapping for {} on {}: {error}",
-                    user.username, server.name
-                );
-                errors.push(format!(
-                    "{}: could not load a user mapping. Library discovery is incomplete.",
-                    server.name
-                ));
-                continue;
-            }
-        };
-        let result = async {
-            let (client, upstream_user, _) =
-                authenticate_user_with_mapping(state, user, server, &mapping).await?;
-            client
-                .get_media_folders(Some(&upstream_user.id))
-                .await
-                .map_err(|error| error.to_string())
-        }
-        .await;
-        match result {
-            Ok(folders) => libraries.extend(
-                folders
-                    .into_iter()
-                    .filter(|folder| {
-                        !folder
-                            .collection_type
-                            .as_deref()
-                            .is_some_and(|kind| kind.eq_ignore_ascii_case("livetv"))
-                    })
-                    .map(|folder| StoredLibrary {
-                        server_id: server.id,
-                        original_library_id: normalize_library_id(&folder.id),
-                        name: folder.name,
-                        collection_type: folder.collection_type.unwrap_or_default(),
-                    }),
-            ),
-            Err(error) => {
-                error!(
-                    "Could not discover libraries for {} on {}: {error}",
-                    user.username, server.name
-                );
-                errors.push(format!("{}: could not refresh libraries for {}. Showing previously discovered libraries where available.", server.name, user.username));
-            }
-        }
+fn discovery_message(issue: crate::application::library_admin::DiscoveryIssue) -> String {
+    use crate::application::library_admin::DiscoveryStage;
+    let server = issue.server.unwrap_or_default();
+    match issue.stage {
+        DiscoveryStage::Servers => "Could not load servers. Library discovery is incomplete.".into(),
+        DiscoveryStage::Users => "Could not load mapped users. Library discovery is incomplete.".into(),
+        DiscoveryStage::AdminCredentials => format!("{server}: could not load administrator credentials. Library discovery is incomplete."),
+        DiscoveryStage::Mapping => format!("{server}: could not load a user mapping. Library discovery is incomplete."),
+        DiscoveryStage::Authentication | DiscoveryStage::Inventory => match issue.user {
+            Some(user) => format!("{server}: could not refresh libraries for {user}. Showing previously discovered libraries where available."),
+            None => format!("{server}: could not fetch a complete library inventory. Showing previously discovered libraries where available."),
+        },
+        DiscoveryStage::Persistence => format!("{server}: could not save discovered libraries."),
     }
-    if let Err(error) = state
-        .virtual_library_service
-        .track_discovered_libraries(&libraries)
-        .await
-    {
-        error!(
-            "Could not cache mapped-user libraries on {}: {error}",
-            server.name
-        );
-        errors.push(format!(
-            "{}: could not save discovered libraries.",
-            server.name
-        ));
-    }
-}
-
-async fn refresh_library_discovery(state: &AppState) -> Vec<String> {
-    let servers = match state.server_storage.list_servers().await {
-        Ok(servers) => servers,
-        Err(e) => {
-            error!("Failed to list servers for library discovery: {}", e);
-            return vec!["Could not load servers. Library discovery is incomplete.".into()];
-        }
-    };
-
-    let mut discovery_errors = Vec::new();
-    let users = match state.user_authorization.list_users().await {
-        Ok(users) => users
-            .into_iter()
-            .map(|user| User {
-                id: user.id,
-                username: user.original_username,
-                local_credential: user.local_credential,
-                role: UserRole::User,
-            })
-            .collect::<Vec<_>>(),
-        Err(error) => {
-            error!("Could not load mapped users for library discovery: {error}");
-            discovery_errors
-                .push("Could not load mapped users. Library discovery is incomplete.".into());
-            Vec::new()
-        }
-    };
-    let config = state.config.read().await;
-    let admin_password: HashedPassword = config.password.clone().into();
-    drop(config);
-
-    for server in servers {
-        let admin = match state.server_storage.get_server_admin(server.id).await {
-            Ok(admin) => admin,
-            Err(error) => {
-                error!(
-                    "Could not load administrator credentials for {}: {error}",
-                    server.name
-                );
-                discovery_errors.push(format!("{}: could not load administrator credentials. Trying mapped-user discovery instead.", server.name));
-                None
-            }
-        };
-        let Some(admin) = admin else {
-            discover_mapped_libraries(state, &server, &users, &mut discovery_errors).await;
-            continue;
-        };
-
-        let decrypted_password = match decrypt_password(&admin.password, &admin_password) {
-            Ok(password) => password,
-            Err(e) => {
-                error!(
-                    "Failed to decrypt admin password for server {}: {}",
-                    server.name, e
-                );
-                discovery_errors.push(format!("{}: could not decrypt administrator credentials. Library discovery is incomplete.", server.name));
-                continue;
-            }
-        };
-
-        let client = match JellyfinClient::new(server.url.as_str(), CLIENT_INFO.clone()) {
-            Ok(client) => client,
-            Err(e) => {
-                error!(
-                    "Failed to create Jellyfin client for {}: {}",
-                    server.name, e
-                );
-                discovery_errors.push(format!(
-                    "{}: could not connect for library discovery.",
-                    server.name
-                ));
-                continue;
-            }
-        };
-
-        if client
-            .authenticate_by_name(&admin.username, decrypted_password.as_str())
-            .await
-            .is_err()
-        {
-            error!("Failed to authenticate as admin on server {}", server.name);
-            discovery_errors.push(format!("{}: administrator authentication failed. Showing previously discovered libraries where available.", server.name));
-            continue;
-        }
-
-        let folders = match client.get_media_folders(None).await {
-            Ok(folders) => folders,
-            Err(e) => {
-                error!("Failed to list libraries on server {}: {}", server.name, e);
-                discovery_errors.push(format!("{}: could not fetch a complete library inventory. Showing previously discovered libraries where available.", server.name));
-                continue;
-            }
-        };
-
-        let mut authoritative_libraries = Vec::new();
-        for folder in folders {
-            if folder
-                .collection_type
-                .as_deref()
-                .is_some_and(|collection_type| collection_type.eq_ignore_ascii_case("livetv"))
-            {
-                continue;
-            }
-
-            authoritative_libraries.push(StoredLibrary {
-                server_id: server.id,
-                original_library_id: folder.id,
-                name: folder.name,
-                collection_type: folder.collection_type.unwrap_or_default(),
-            });
-        }
-
-        if let Err(error) = state
-            .virtual_library_service
-            .replace_discovered_libraries(server.id, &authoritative_libraries)
-            .await
-        {
-            error!(
-                "Failed to cache admin-discovered libraries for server {}: {error}",
-                server.name
-            );
-            discovery_errors.push(format!(
-                "{}: could not save discovered libraries.",
-                server.name
-            ));
-        }
-    }
-
-    discovery_errors
 }
 
 pub async fn create_group(

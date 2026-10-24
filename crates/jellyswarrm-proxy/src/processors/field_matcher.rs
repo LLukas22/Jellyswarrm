@@ -1,4 +1,41 @@
+//! Centralize JSON/URL field names and matching rules used by translation.
 use std::{collections::HashSet, sync::LazyLock};
+
+// Shared by client routing and delivery rewriting. Image `Tag` values are
+// opaque cache tokens, not media identities.
+pub static MEDIA_ID_QUERY_TAGS: &[&str] = &[
+    "AlbumId",
+    "AlbumIds",
+    "ParentId",
+    "ItemId",
+    "SeriesId",
+    "LibrarySeriesId",
+    "ChannelIds",
+    "ProgramId",
+    "GenreIds",
+    "StudioIds",
+    "ExcludeItemIds",
+    "SeriesTimerId",
+    "MediaSourceId",
+    "SeasonId",
+    "startItemId",
+    "IDs",
+    "EntryIds",
+    "PlaylistItemId",
+    "PlaylistItemIds",
+    "PersonIds",
+    "ArtistIds",
+    "ContributingArtistIds",
+    "AlbumArtistIds",
+    "ExcludeArtistIds",
+];
+pub static API_KEY_QUERY_TAGS: &[&str] = &["api_key", "ApiKey"];
+
+pub fn matches_case_insensitive(value: &str, candidates: &[&str]) -> bool {
+    candidates
+        .iter()
+        .any(|candidate| value.eq_ignore_ascii_case(candidate))
+}
 
 /// A struct for case-insensitive field name matching
 pub struct FieldMatcher {
@@ -30,6 +67,7 @@ pub static ID_FIELDS: LazyLock<FieldMatcher> = LazyLock::new(|| {
         "ParentId",
         "SeriesId",
         "ChannelId",
+        "ProgramId",
         "TimerId",
         "SeriesTimerId",
         "SeasonId",
@@ -51,6 +89,7 @@ pub static RESPONSE_MEDIA_ID_FIELDS: LazyLock<FieldMatcher> = LazyLock::new(|| {
         "ParentId",
         "SeriesId",
         "ChannelId",
+        "ProgramId",
         "TimerId",
         "SeriesTimerId",
         "SeasonId",
@@ -94,6 +133,3 @@ pub static MEDIA_ID_MAP_KEY_FIELDS: LazyLock<FieldMatcher> =
 
 pub static MEDIA_ID_NESTED_MAP_KEY_FIELDS: LazyLock<FieldMatcher> =
     LazyLock::new(|| FieldMatcher::new(&["ImageBlurHashes"]));
-
-pub static NAME_FIELDS: LazyLock<FieldMatcher> =
-    LazyLock::new(|| FieldMatcher::new(&["Name", "SeriesName"]));

@@ -1,9 +1,10 @@
+//! Expose client-session discovery, capabilities, playback reports, and remote-control HTTP routes.
 use super::{
     models::{Capabilities, GeneralCommand, MessageCommand},
     service::ClientSession,
-    snapshots, user_has_media_access, valid_session, SessionContext,
+    snapshots, valid_session, SessionContext,
 };
-use crate::{user_id::UserId, AppState};
+use crate::{auth::user_id::UserId, AppState};
 use axum::{
     body::to_bytes,
     extract::{Path, Request, State},
@@ -24,9 +25,9 @@ pub fn router() -> Router<AppState> {
         .route("/Sessions", get(list))
         .route("/Sessions/", get(list))
         // Playback telemetry continues through the existing media pipeline.
-        .route("/Sessions/Playing", post(crate::proxy_handler))
-        .route("/Sessions/Playing/Progress", post(crate::proxy_handler))
-        .route("/Sessions/Playing/Stopped", post(crate::proxy_handler))
+        .route("/Sessions/Playing", post(crate::http::proxy::proxy_handler))
+        .route("/Sessions/Playing/Progress", post(crate::http::proxy::proxy_handler))
+        .route("/Sessions/Playing/Stopped", post(crate::http::proxy::proxy_handler))
         // All other session operations are local, including unsupported ones.
         .route("/Sessions/{*path}", any(dispatch))
     }
@@ -388,7 +389,12 @@ async fn require_media(
     items: &[String],
     source: Option<&str>,
 ) -> ApiResult<()> {
-    if !user_has_media_access(state, user_id, items, source).await? {
+    if !state
+        .media_access()
+        .allows(user_id, items, source)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    {
         return Err(StatusCode::NOT_FOUND);
     }
     Ok(())

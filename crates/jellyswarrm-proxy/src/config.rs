@@ -1,5 +1,10 @@
+//! Load and validate process configuration, persisted secrets, and SQL migrations.
+pub(crate) mod service;
+mod snapshots;
 use serde::{Deserialize, Serialize};
 use serde_default::DefaultFromSerde;
+pub(crate) use snapshots::SettingsView;
+pub(crate) use snapshots::StartupConfig;
 use sqlx::migrate::Migrator;
 use std::fmt;
 use std::fs;
@@ -15,7 +20,7 @@ use jellyfin_api::ClientInfo;
 
 use base64::prelude::*;
 
-use crate::encryption::Password;
+use crate::auth::encryption::Password;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MediaStreamingMode {
@@ -52,15 +57,6 @@ pub static CLIENT_INFO: LazyLock<ClientInfo> = LazyLock::new(|| ClientInfo {
     device_id: "jellyswarrm-proxy".to_string(),
     version: env!("CARGO_PKG_VERSION").to_string(),
 });
-
-pub static CLIENT_STORAGE: LazyLock<jellyfin_api::storage::JellyfinClientStorage> =
-    LazyLock::new(|| {
-        jellyfin_api::storage::JellyfinClientStorage::new(
-            300,
-            std::time::Duration::from_secs(60 * 15),
-        )
-        // 15 minutes
-    });
 
 // Lazily-resolved data directory shared across the application.
 // Priority: env var JELLYSWARRM_DATA_DIR, else "./data" relative to current working dir.
@@ -245,7 +241,7 @@ define_fallback_deserializer!(
     default_deduplicate_media
 );
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct PreconfiguredServer {
     pub url: String,
     pub name: String,
@@ -254,7 +250,7 @@ pub struct PreconfiguredServer {
     pub media_streaming_mode: MediaStreamingMode,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct DebugUser {
     pub username: String,
     pub password: Password,

@@ -66,6 +66,26 @@ check: doctor
     @docker run --rm --volume "$PWD/dev/scripts:/scripts:ro" ghcr.io/astral-sh/uv:python3.12-alpine python -c 'from pathlib import Path; [compile(path.read_text(), str(path), "exec") for path in Path("/scripts").glob("*.py")]'
     @printf 'Development configuration is valid.\n'
 
+# Run client HTTP contracts against the in-process proxy and isolated mock backends.
+http-test:
+    JELLYSWARRM_SKIP_UI=1 cargo test --package jellyswarrm-proxy --bin jellyswarrm-proxy http_tests
+
+# Run the HTTP contracts with separate, unmerged backend libraries.
+http-test-normal:
+    JELLYSWARRM_SKIP_UI=1 cargo test --package jellyswarrm-proxy --bin jellyswarrm-proxy normal_servers
+
+# Run the HTTP contracts with merged libraries and deduplicated media.
+http-test-merged:
+    JELLYSWARRM_SKIP_UI=1 cargo test --package jellyswarrm-proxy --bin jellyswarrm-proxy merged_libraries
+
+# Refresh the client call-site inventory after installing the UI dependencies.
+http-routes-update:
+    node scripts/scan-client-routes.cjs --write
+
+# Verify the committed inventory matches the current web client and SDK.
+http-routes-check:
+    node scripts/scan-client-routes.cjs --check
+
 # Run the Docker-backed server integration test in an isolated Compose project.
 integration-test: doctor media
     cargo test --package jellyswarrm-proxy --test server_integration -- --ignored --nocapture --test-threads=1

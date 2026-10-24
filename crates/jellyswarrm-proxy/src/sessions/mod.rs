@@ -1,6 +1,6 @@
 //! Proxy-owned client sessions, remote control and shared WebSocket transport.
 //! This module never sends session/control requests to upstream servers.
-mod access;
+pub(crate) mod access;
 mod http;
 mod models;
 mod service;
@@ -9,14 +9,12 @@ mod tests;
 pub(crate) mod transport;
 mod websocket;
 
-pub(crate) use access::user_has_media_access;
 pub use http::router;
 pub use service::ClientSessionService;
 pub use websocket::websocket;
 
 use crate::{
-    request_preprocessing::resolve_request_identity_from_headers_uri,
-    user_authorization_service::User, AppState,
+    auth::service::User, http::preprocessing::resolve_request_identity_from_headers_uri, AppState,
 };
 use axum::{
     extract::FromRequestParts,
@@ -56,7 +54,7 @@ pub fn authentication_response(
 
 fn websocket_cookie_device(
     headers: &axum::http::HeaderMap,
-) -> Option<crate::user_authorization_service::Device> {
+) -> Option<crate::auth::service::Device> {
     if !headers
         .get(axum::http::header::UPGRADE)?
         .to_str()
@@ -76,7 +74,7 @@ fn websocket_cookie_device(
     }
     let bytes = URL_SAFE_NO_PAD.decode(value).ok()?;
     let [client, device, device_id, version]: [String; 4] = serde_json::from_slice(&bytes).ok()?;
-    Some(crate::user_authorization_service::Device {
+    Some(crate::auth::service::Device {
         client,
         device,
         device_id,
@@ -116,9 +114,7 @@ impl FromRequestParts<AppState> for SessionContext {
         let device = identity
             .device
             .clone()
-            .filter(|d| {
-                crate::user_authorization_service::Device::has_known_device_id(&d.device_id)
-            })
+            .filter(|d| crate::auth::service::Device::has_known_device_id(&d.device_id))
             .or_else(|| websocket_cookie_device(&parts.headers))
             .or(identity.device);
         let session_id = state
@@ -164,7 +160,7 @@ pub async fn decorate_authentication(
     auth: &crate::models::Authorization,
     response: &mut crate::models::AuthenticateResponse,
 ) {
-    let device = crate::user_authorization_service::Device {
+    let device = crate::auth::service::Device {
         client: auth.client.clone(),
         device: auth.device.clone(),
         device_id: auth.device_id.clone(),
@@ -185,7 +181,7 @@ pub async fn decorate_authentication(
 
 /// Observe only reports that passed the normal playback pipeline; use the original virtual IDs.
 pub async fn observe_playback(state: &AppState, request: &reqwest::Request) {
-    let Some(action) = crate::request_preprocessing::playback_session_action(
+    let Some(action) = crate::http::preprocessing::playback_session_action(
         request.method(),
         request.url().path(),
         state,
@@ -194,7 +190,7 @@ pub async fn observe_playback(state: &AppState, request: &reqwest::Request) {
     else {
         return;
     };
-    let Some(report) = crate::request_preprocessing::body_to_json(request) else {
+    let Some(report) = crate::http::preprocessing::body_to_json(request) else {
         return;
     };
     let Ok(uri) = request.url().as_str().parse() else {

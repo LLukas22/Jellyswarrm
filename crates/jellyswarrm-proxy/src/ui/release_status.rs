@@ -1,3 +1,4 @@
+//! Resolve and cache release/version information displayed by the management UI.
 use askama::Template;
 use axum::{
     extract::State,

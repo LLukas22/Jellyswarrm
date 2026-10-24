@@ -94,6 +94,9 @@ jobs:
             npm install
           fi
 
+    - name: Check client HTTP route inventory
+      run: node scripts/scan-client-routes.cjs --check
+
     - name: Build
       run: cargo build --verbose
 

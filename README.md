@@ -130,6 +130,23 @@ See the [development environment guide](dev/README.md) for URLs, credentials,
 commands, Seerr compatibility status, and media licenses. Debug builds
 automatically register all six local servers from `data/jellyswarrm.dev.toml`.
 
+### HTTP Contract Tests
+
+Run the web-client API contracts without Docker, a browser, or a UI build:
+
+```bash
+just http-test          # Both scenarios, focused regressions and route inventory checks
+just http-test-normal   # Separate libraries on connected servers
+just http-test-merged   # Merged libraries with deduplicated media
+```
+
+The suite follows movies, episodes and audio from library discovery through
+media details, playback negotiation, and direct/HLS delivery in proxy and
+redirect modes. See the [HTTP test guide](crates/jellyswarrm-proxy/src/http_tests/README.md)
+for coverage and fixture details. These mock-backed tests are separate from
+`just integration-test` and the browser integration commands, which use real
+Jellyfin servers and media.
+
 
 
 <details>

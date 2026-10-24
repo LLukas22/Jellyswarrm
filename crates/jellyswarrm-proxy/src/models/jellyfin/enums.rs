@@ -1,3 +1,4 @@
+//! Jellyfin protocol enumeration types and wire-compatible representations.
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -236,6 +237,8 @@ pub enum ItemSortBy {
     DateLastContentAdded,
     DatePlayed,
     EpisodeOrder,
+    IndexNumber,
+    StartDate,
     InheritedParentalRating,
     IsFolder,
     IsUnplayed,

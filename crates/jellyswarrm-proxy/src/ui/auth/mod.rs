@@ -1,5 +1,7 @@
+//! Management UI authentication backend, user roles, and authenticated route context.
 use std::sync::Arc;
 
+use crate::auth::user_id::UserId;
 use axum::{
     extract::FromRequestParts,
     http::{request::Parts, StatusCode},
@@ -10,9 +12,8 @@ use tokio::{sync::RwLock, task};
 use tracing::info;
 
 use crate::{
+    auth::service::{LocalCredential, UserAuthorizationService},
     config::AppConfig,
-    user_authorization_service::{LocalCredential, UserAuthorizationService},
-    user_id::UserId,
 };
 
 mod routes;
@@ -194,13 +195,8 @@ mod tests {
             ("admin", UserRole::Admin),
             ("550e8400e29b41d4a716446655440000", UserRole::User),
         ] {
-            // Shape written before UserId replaced String in the UI session.
-            let legacy = json!({
-                "id": id,
-                "username": "viewer",
-                "local_credential": {"Password": "existing-password-hash"},
-                "role": role,
-            });
+            let legacy = json!({"id": id, "username": "viewer",
+                "local_credential": {"Password": "existing-password-hash"}, "role": role});
             let user: User = serde_json::from_value(legacy.clone()).unwrap();
             assert_eq!(user.id.as_str(), id);
             assert_eq!(user.session_auth_hash(), b"existing-password-hash");

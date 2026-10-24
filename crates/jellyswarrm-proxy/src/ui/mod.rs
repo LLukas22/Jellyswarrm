@@ -1,3 +1,4 @@
+//! Serve the management UI, composing administrative and authenticated-user routes.
 use axum::{
     body::Body,
     extract::Path,
@@ -13,8 +14,9 @@ use std::{default, sync::LazyLock};
 use tracing::error;
 
 use crate::{
+    http::assets::Asset,
     ui::auth::{AuthenticatedUser, UserRole},
-    AppState, Asset,
+    AppState,
 };
 
 pub mod admin;
