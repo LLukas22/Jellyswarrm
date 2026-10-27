@@ -73,6 +73,18 @@ pub struct DiscoveredLibraryView {
     pub assignable_groups: Vec<LibraryGroupOptionView>,
 }
 
+impl DiscoveredLibraryView {
+    pub fn assignment_block_reason(&self) -> Option<&str> {
+        if !self.assignable_groups.is_empty() {
+            None
+        } else if self.collection_type.trim().is_empty() {
+            Some("Library type unavailable. Refresh libraries; if it remains missing, check the content type on the Jellyfin server.")
+        } else {
+            Some("No compatible virtual library. Create an empty virtual library or one with the same library type.")
+        }
+    }
+}
+
 #[derive(Deserialize)]
 pub struct CreateGroupForm {
     pub name: String,
@@ -670,6 +682,32 @@ mod tests {
         assert!(html.contains("data-assignment=\"assigned\""));
         assert!(html.contains("data-library-page=\"next\""));
         assert!(html.contains("data-library-page-status role=\"status\""));
+    }
+
+    #[test]
+    fn library_board_explains_missing_types_and_incompatible_groups() {
+        let library = |id: &str, collection_type: &str| DiscoveredLibraryView {
+            server_id: 1,
+            server_name: "Primary".into(),
+            library_id: id.into(),
+            library_name: id.into(),
+            collection_type: collection_type.into(),
+            assigned_group: None,
+            assignable_groups: Vec::new(),
+        };
+        let html = LibraryGroupsListTemplate {
+            groups: Vec::new(),
+            discovered_libraries: vec![library("missing", ""), library("typed", "movies")],
+            ui_route: "admin".into(),
+            discovery_errors: None,
+        }
+        .render()
+        .unwrap();
+        assert!(html.contains("Type unavailable"));
+        assert!(html.contains("check the content type on the Jellyfin server"));
+        assert!(html.contains("Create an empty virtual library"));
+        assert_eq!(html.matches("data-can-drag=\"false\"").count(), 2);
+        assert!(!html.contains("class=\"library-assignment-form\""));
     }
 
     #[test]

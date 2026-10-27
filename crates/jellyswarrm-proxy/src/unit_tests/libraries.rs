@@ -312,6 +312,79 @@ async fn tracked_library_metadata_is_updated() {
 }
 
 #[tokio::test]
+async fn incomplete_discovery_does_not_erase_known_library_types() {
+    let fixture = Fixture::new(&[(1, 100)]).await;
+    let known = discovered_library(1, "library", "Movies");
+    fixture
+        .service
+        .track_discovered_libraries(std::slice::from_ref(&known))
+        .await
+        .unwrap();
+    let incomplete = DiscoveredLibrary {
+        name: "Renamed library".into(),
+        collection_type: " \t ".into(),
+        ..known.clone()
+    };
+    for authoritative in [false, true] {
+        if authoritative {
+            fixture
+                .service
+                .replace_discovered_libraries(ServerId::new(1), std::slice::from_ref(&incomplete))
+                .await
+                .unwrap();
+        } else {
+            fixture
+                .service
+                .track_discovered_libraries(std::slice::from_ref(&incomplete))
+                .await
+                .unwrap();
+        }
+        let library = fixture
+            .service
+            .get_discovered_library(ServerId::new(1), "library")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(library.name, "Renamed library");
+        assert_eq!(library.collection_type, "movies");
+        let group = fixture
+            .service
+            .create_group(if authoritative {
+                "Second group"
+            } else {
+                "First group"
+            })
+            .await
+            .unwrap();
+        fixture
+            .service
+            .add_member(
+                &group.virtual_id,
+                library.server_id,
+                &library.original_library_id,
+                &library.name,
+                &library.collection_type,
+            )
+            .await
+            .unwrap();
+    }
+    // Explicit type changes still replace the old value; missing metadata is
+    // not evidence of a change, but a nonempty type is.
+    fixture
+        .service
+        .track_discovered_libraries(&[DiscoveredLibrary {
+            collection_type: " TVShows ".into(),
+            ..known
+        }])
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture.service.list_discovered_libraries().await.unwrap()[0].collection_type,
+        "tvshows"
+    );
+}
+
+#[tokio::test]
 async fn authoritative_discovery_replaces_only_its_server() {
     let fixture = Fixture::new(&[(1, 100), (2, 200)]).await;
     fixture

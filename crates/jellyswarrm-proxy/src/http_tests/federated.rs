@@ -271,7 +271,21 @@ async fn admin_library_page_discovers_mapped_users_without_prior_catalog_request
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "User": {"Id": backend_id, "Name": username}, "AccessToken": "token", "ServerId":"test"
             }))).mount(&upstreams[0]).await;
-        let libraries = library_items(if index == 0 { 1 } else { 25 });
+        let mut libraries = library_items(if index == 0 { 1 } else { 25 });
+        // Regression for #202: continuation entries are visible but locked if
+        // their inventory DTO omits CollectionType. Details can supply it.
+        for library in libraries.iter_mut().skip(20) {
+            Mock::given(method("GET"))
+                .and(path(format!(
+                    "/Users/{backend_id}/Items/{}",
+                    library["Id"].as_str().unwrap()
+                )))
+                .respond_with(ResponseTemplate::new(200).set_body_json(library.clone()))
+                .expect(1)
+                .mount(&upstreams[0])
+                .await;
+            library.as_object_mut().unwrap().remove("CollectionType");
+        }
         Mock::given(method("GET"))
             .and(path(format!("/Users/{backend_id}/Views")))
             .respond_with(move |request: &wiremock::Request| {
@@ -323,15 +337,24 @@ async fn admin_library_page_discovers_mapped_users_without_prior_catalog_request
         CreateGroupForm, RemoveMemberForm, RenameGroupForm,
     };
     let request_count = upstreams[0].received_requests().await.unwrap().len();
-    let mut responses = vec![
-        create_group(
-            State(state.clone()),
-            axum::Form(CreateGroupForm {
-                name: "Test group".into(),
-            }),
-        )
-        .await,
-    ];
+    let created = create_group(
+        State(state.clone()),
+        axum::Form(CreateGroupForm {
+            name: "Test group".into(),
+        }),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(created.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let html = String::from_utf8(body.to_vec()).unwrap();
+    assert_eq!(html.matches("data-can-drag=\"true\"").count(), 25);
+    assert_eq!(
+        html.matches("class=\"library-assignment-form\"").count(),
+        25
+    );
+    let mut responses = Vec::new();
     let group_id = state.virtual_library_service.list_groups().await.unwrap()[0]
         .virtual_id
         .clone();

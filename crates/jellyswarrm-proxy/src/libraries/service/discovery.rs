@@ -249,19 +249,26 @@ impl VirtualLibraryService {
         libraries: &[DiscoveredLibrary],
     ) -> Result<(), sqlx::Error> {
         let mut tx = self.pool.begin().await?;
-        sqlx::query("DELETE FROM discovered_libraries WHERE server_id = ?")
-            .bind(server_id.as_i64())
-            .execute(&mut *tx)
-            .await?;
-        upsert_discovered_libraries(
-            &mut tx,
-            &libraries
-                .iter()
-                .filter(|library| library.server_id == server_id)
-                .cloned()
-                .collect::<Vec<_>>(),
+        let libraries = libraries
+            .iter()
+            .filter(|library| library.server_id == server_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        // Prune omitted libraries without deleting metadata for surviving rows:
+        // an inventory that omits CollectionType must not erase a known type.
+        let ids = libraries
+            .iter()
+            .map(|library| normalize_library_id(&library.original_library_id))
+            .collect::<Vec<_>>();
+        sqlx::query(
+            "DELETE FROM discovered_libraries WHERE server_id = ? \
+             AND original_library_id NOT IN (SELECT value FROM json_each(?))",
         )
+        .bind(server_id.as_i64())
+        .bind(serde_json::json!(ids).to_string())
+        .execute(&mut *tx)
         .await?;
+        upsert_discovered_libraries(&mut tx, &libraries).await?;
         tx.commit().await
     }
 

@@ -101,13 +101,14 @@ async fn upsert_discovered_libraries(
              VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP) \
              ON CONFLICT(server_id, original_library_id) DO UPDATE SET \
                  name = excluded.name, \
-                 collection_type = excluded.collection_type, \
+                  collection_type = CASE WHEN TRIM(excluded.collection_type) = '' \
+                      THEN discovered_libraries.collection_type ELSE excluded.collection_type END, \
                  last_seen_at = CURRENT_TIMESTAMP",
         )
         .bind(library.server_id.as_i64())
         .bind(normalize_library_id(&library.original_library_id))
         .bind(&library.name)
-        .bind(&library.collection_type)
+        .bind(library.collection_type.trim().to_ascii_lowercase())
         .execute(&mut **tx)
         .await?;
     }

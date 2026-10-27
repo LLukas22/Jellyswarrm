@@ -311,6 +311,33 @@ impl JellyfinClient {
                 break;
             }
         }
+        // Some inventories omit CollectionType even though item details contain
+        // it. Resolve only those entries, using the same credentials/user scope;
+        // a failed lookup must not hide the rest of the inventory.
+        for folder in &mut folders {
+            if folder
+                .collection_type
+                .as_deref()
+                .is_some_and(|kind| !kind.trim().is_empty())
+            {
+                continue;
+            }
+            let item_path = match user_id {
+                Some(uid) => format!("Users/{uid}/Items/{}", folder.id),
+                None => format!("Items/{}", folder.id),
+            };
+            match self
+                .request::<crate::models::MediaFolder>(reqwest::Method::GET, &item_path, None)
+                .await
+            {
+                Ok(item) => folder.collection_type = item.collection_type,
+                Err(error) => tracing::warn!(
+                    library_id = %folder.id,
+                    %error,
+                    "Could not resolve missing library collection type"
+                ),
+            }
+        }
         Ok(folders)
     }
 
@@ -658,6 +685,110 @@ mod tests {
                 .len(),
             25
         );
+    }
+
+    #[tokio::test]
+    async fn media_folders_resolves_missing_types_beyond_first_page_in_user_scope() {
+        use wiremock::matchers::query_param;
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/Users/user-id/Views"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Items": (0..20).map(|id| json!({
+                    "Id": format!("library-{id}"), "Name": "Movies", "CollectionType": "movies"
+                })).collect::<Vec<_>>(),
+                "TotalRecordCount": 25
+            })))
+            .with_priority(10)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/Users/user-id/Views"))
+            .and(query_param("StartIndex", "20"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Items": (20..25).map(|id| json!({
+                    "Id": format!("library-{id}"), "Name": "Shows", "CollectionType": null
+                })).collect::<Vec<_>>(),
+                "TotalRecordCount": 25
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        for id in 20..25 {
+            Mock::given(method("GET"))
+                .and(path(format!("/Users/user-id/Items/library-{id}")))
+                .and(|request: &wiremock::Request| {
+                    request
+                        .headers
+                        .get("authorization")
+                        .and_then(|value| value.to_str().ok())
+                        .is_some_and(|value| value.contains("Token=\"mapped-token\""))
+                })
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "Id": format!("library-{id}"), "Name": "Shows", "CollectionType": "tvshows"
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let client = JellyfinClient::new(&server.uri(), ClientInfo::default()).unwrap();
+        client.with_token("mapped-token".into()).await;
+        let folders = client.get_media_folders(Some("user-id")).await.unwrap();
+        assert_eq!(folders.len(), 25);
+        assert!(folders[..20]
+            .iter()
+            .all(|folder| folder.collection_type.as_deref() == Some("movies")));
+        assert!(folders[20..]
+            .iter()
+            .all(|folder| folder.collection_type.as_deref() == Some("tvshows")));
+        // Two inventory pages and five detail lookups, never one per typed folder.
+        assert_eq!(server.received_requests().await.unwrap().len(), 7);
+    }
+
+    #[tokio::test]
+    async fn media_folders_missing_type_lookup_is_best_effort_and_never_guesses() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/Library/MediaFolders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Items": [
+                    {"Id": "missing", "Name": "Movies"},
+                    {"Id": "mixed", "Name": "Mixed", "CollectionType": " "},
+                    {"Id": "resolved", "Name": "Shows", "CollectionType": ""}
+                ]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/Items/missing"))
+            .respond_with(ResponseTemplate::new(403))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/Items/mixed"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"Id":"mixed", "Name":"Mixed"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/Items/resolved"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                json!({"Id":"resolved", "Name":"Shows", "CollectionType":"tvshows"}),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = JellyfinClient::new(&server.uri(), ClientInfo::default()).unwrap();
+        let folders = client.get_media_folders(None).await.unwrap();
+        assert_eq!(folders.len(), 3);
+        assert!(folders[0].collection_type.is_none());
+        assert!(folders[1].collection_type.is_none());
+        assert_eq!(folders[2].collection_type.as_deref(), Some("tvshows"));
     }
 
     #[tokio::test]

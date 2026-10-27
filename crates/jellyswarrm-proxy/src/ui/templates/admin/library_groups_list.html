@@ -53,7 +53,7 @@
                      aria-grabbed="false">
                 <div class="library-drag-handle"
                      data-library-drag-handle
-                     title="{% if library.assignable_groups.is_empty() %}No compatible virtual library{% else %}Drag {{ library.library_name }}{% endif %}"
+                     title="{% if let Some(reason) = library.assignment_block_reason() %}{{ reason }}{% else %}Drag {{ library.library_name }}{% endif %}"
                      aria-hidden="true">
                     {% if library.assignable_groups.is_empty() %}<i class="fas fa-lock"></i>{% else %}<i class="fas fa-grip-vertical"></i>{% endif %}
                 </div>
@@ -61,7 +61,7 @@
                     <span class="library-server-name">{{ library.server_name }}</span>
                     <h3>{{ library.library_name }}</h3>
                     <div class="library-source-meta">
-                        <span>{{ library.collection_type }}</span>
+                        <span>{% if library.collection_type.is_empty() %}Type unavailable{% else %}{{ library.collection_type }}{% endif %}</span>
                         {% if let Some(group_name) = library.assigned_group %}
                         <span class="library-assignment-state is-assigned">
                             <i class="fas fa-arrow-right" aria-hidden="true"></i>
@@ -71,6 +71,9 @@
                         <span class="library-assignment-state">Unassigned</span>
                         {% endif %}
                     </div>
+                    {% if let Some(reason) = library.assignment_block_reason() %}
+                    <small class="library-assignment-block-reason">{{ reason }}</small>
+                    {% endif %}
                 </div>
 
                 {% if !library.assignable_groups.is_empty() %}
