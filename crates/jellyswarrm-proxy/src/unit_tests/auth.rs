@@ -934,9 +934,7 @@ fn test_device_from_useragent_parsing() {
 
 #[tokio::test]
 async fn test_get_or_create_user_uses_stable_username_identity() {
-    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-    MIGRATOR.run(&pool).await.unwrap();
-    let service = UserAuthorizationService::new(pool.clone());
+    let (_, service) = setup_service().await;
 
     let first = service
         .get_or_create_user("testuser", &"password-1".into())
@@ -1290,42 +1288,8 @@ async fn test_get_mapped_servers_returns_server_rows_in_priority_order() {
 
 #[tokio::test]
 async fn test_device_session_fallback_matching() {
-    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-    MIGRATOR.run(&pool).await.unwrap();
-    let service = UserAuthorizationService::new(pool.clone());
-
-    // Create servers table
-    sqlx::query(
-        r#"
-            CREATE TABLE IF NOT EXISTS servers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                url TEXT NOT NULL,
-                priority INTEGER NOT NULL DEFAULT 100,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            "#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    // Insert server
-    sqlx::query(
-        r#"
-            INSERT INTO servers (name, url, priority, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
-            "#,
-    )
-    .bind("Test Server")
-    .bind("http://localhost:8096")
-    .bind(100)
-    .bind(chrono::Utc::now())
-    .bind(chrono::Utc::now())
-    .execute(&pool)
-    .await
-    .unwrap();
+    let (pool, service) = setup_service().await;
+    insert_test_server(&pool, "Test Server", "http://localhost:8096").await;
 
     // Create user
     let user = service
@@ -1497,40 +1461,8 @@ async fn test_device_session_fallback_matching() {
 
 #[tokio::test]
 async fn test_android_tv_device_id_rebind_after_login_transition() {
-    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-    MIGRATOR.run(&pool).await.unwrap();
-    let service = UserAuthorizationService::new(pool.clone());
-
-    sqlx::query(
-        r#"
-            CREATE TABLE IF NOT EXISTS servers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                url TEXT NOT NULL,
-                priority INTEGER NOT NULL DEFAULT 100,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            "#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    sqlx::query(
-        r#"
-            INSERT INTO servers (name, url, priority, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
-            "#,
-    )
-    .bind("Test Server")
-    .bind("http://localhost:8096")
-    .bind(100)
-    .bind(chrono::Utc::now())
-    .bind(chrono::Utc::now())
-    .execute(&pool)
-    .await
-    .unwrap();
+    let (pool, service) = setup_service().await;
+    insert_test_server(&pool, "Test Server", "http://localhost:8096").await;
 
     let user = service
         .get_or_create_user("androidtv", &"testpass".into())
@@ -1597,40 +1529,8 @@ async fn test_android_tv_device_id_rebind_after_login_transition() {
 
 #[tokio::test]
 async fn test_android_tv_rebind_collapses_multiple_stale_device_ids_for_same_user() {
-    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-    MIGRATOR.run(&pool).await.unwrap();
-    let service = UserAuthorizationService::new(pool.clone());
-
-    sqlx::query(
-        r#"
-            CREATE TABLE IF NOT EXISTS servers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                url TEXT NOT NULL,
-                priority INTEGER NOT NULL DEFAULT 100,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            "#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    sqlx::query(
-        r#"
-            INSERT INTO servers (name, url, priority, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
-            "#,
-    )
-    .bind("Test Server")
-    .bind("http://localhost:8096")
-    .bind(100)
-    .bind(chrono::Utc::now())
-    .bind(chrono::Utc::now())
-    .execute(&pool)
-    .await
-    .unwrap();
+    let (pool, service) = setup_service().await;
+    insert_test_server(&pool, "Test Server", "http://localhost:8096").await;
 
     let user = service
         .get_or_create_user("androidtv-multi", &"testpass".into())
@@ -1706,40 +1606,8 @@ async fn test_android_tv_rebind_collapses_multiple_stale_device_ids_for_same_use
 
 #[tokio::test]
 async fn test_android_tv_rebind_scope_does_not_touch_other_users() {
-    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-    MIGRATOR.run(&pool).await.unwrap();
-    let service = UserAuthorizationService::new(pool.clone());
-
-    sqlx::query(
-        r#"
-            CREATE TABLE IF NOT EXISTS servers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                url TEXT NOT NULL,
-                priority INTEGER NOT NULL DEFAULT 100,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            "#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    sqlx::query(
-        r#"
-            INSERT INTO servers (name, url, priority, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
-            "#,
-    )
-    .bind("Test Server")
-    .bind("http://localhost:8096")
-    .bind(100)
-    .bind(chrono::Utc::now())
-    .bind(chrono::Utc::now())
-    .execute(&pool)
-    .await
-    .unwrap();
+    let (pool, service) = setup_service().await;
+    insert_test_server(&pool, "Test Server", "http://localhost:8096").await;
 
     let user_a = service
         .get_or_create_user("androidtv-a", &"testpass".into())
@@ -1833,40 +1701,8 @@ async fn test_android_tv_rebind_scope_does_not_touch_other_users() {
 
 #[tokio::test]
 async fn test_android_tv_rebind_is_not_applied_to_other_clients() {
-    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-    MIGRATOR.run(&pool).await.unwrap();
-    let service = UserAuthorizationService::new(pool.clone());
-
-    sqlx::query(
-        r#"
-            CREATE TABLE IF NOT EXISTS servers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                url TEXT NOT NULL,
-                priority INTEGER NOT NULL DEFAULT 100,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            "#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    sqlx::query(
-        r#"
-            INSERT INTO servers (name, url, priority, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
-            "#,
-    )
-    .bind("Test Server")
-    .bind("http://localhost:8096")
-    .bind(100)
-    .bind(chrono::Utc::now())
-    .bind(chrono::Utc::now())
-    .execute(&pool)
-    .await
-    .unwrap();
+    let (pool, service) = setup_service().await;
+    insert_test_server(&pool, "Test Server", "http://localhost:8096").await;
 
     let user = service
         .get_or_create_user("webuser", &"testpass".into())
@@ -1939,137 +1775,9 @@ async fn test_android_tv_rebind_is_not_applied_to_other_clients() {
 }
 
 #[tokio::test]
-async fn test_user_authorization_service() {
-    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-    MIGRATOR.run(&pool).await.unwrap();
-    let service = UserAuthorizationService::new(pool.clone());
-
-    // Create the servers table (normally done by ServerStorageService)
-    sqlx::query(
-        r#"
-            CREATE TABLE IF NOT EXISTS servers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                url TEXT NOT NULL,
-                priority INTEGER NOT NULL DEFAULT 100,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            "#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    // Create a server in the servers table
-    sqlx::query(
-        r#"
-            INSERT INTO servers (name, url, priority, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
-            "#,
-    )
-    .bind("Test Server")
-    .bind("http://localhost:8096")
-    .bind(100)
-    .bind(chrono::Utc::now())
-    .bind(chrono::Utc::now())
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    // Create user
-    let user = service
-        .get_or_create_user("testuser", &"testpass".into())
-        .await
-        .unwrap();
-
-    // Add server mapping
-    let _mapping_id = service
-        .add_server_mapping(
-            &user.id,
-            "http://localhost:8096",
-            "mappeduser",
-            &"mappedpass".into(),
-            None,
-        )
-        .await
-        .unwrap();
-
-    // Create authorization
-    let auth = Authorization {
-        client: "Test Client".to_string(),
-        device: "Test Device".to_string(),
-        device_id: "test-device-id".to_string(),
-        version: "1.0.0".to_string(),
-        token: None,
-    };
-
-    // Store authorization session
-    let _session_id = service
-        .store_authorization_session(
-            &user.id,
-            "http://localhost:8096",
-            &auth,
-            "jellyfin-token".to_string(),
-            "original-jellyfin-user-id".to_string(),
-            None,
-        )
-        .await
-        .unwrap();
-
-    // Retrieve user sessions by virtual token
-    let user_sessions = service
-        .get_user_sessions_by_virtual_token(&user.virtual_key)
-        .await
-        .unwrap()
-        .unwrap();
-
-    let (retrieved_user, sessions) = user_sessions;
-    assert_eq!(retrieved_user.original_username, "testuser");
-    assert_eq!(sessions.len(), 1);
-    assert_eq!(sessions[0].0.device.client, "Test Client");
-    assert_eq!(sessions[0].0.server_url, "http://localhost:8096");
-    assert_eq!(sessions[0].1.name, "Test Server");
-}
-
-#[tokio::test]
 async fn test_get_user_sessions_by_virtual_token() {
-    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-    MIGRATOR.run(&pool).await.unwrap();
-    let service = UserAuthorizationService::new(pool.clone());
-
-    // Create the servers table (normally done by ServerStorageService)
-    sqlx::query(
-        r#"
-            CREATE TABLE IF NOT EXISTS servers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                url TEXT NOT NULL,
-                priority INTEGER NOT NULL DEFAULT 100,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            "#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    // Create a server in the servers table
-    sqlx::query(
-        r#"
-            INSERT INTO servers (name, url, priority, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
-            "#,
-    )
-    .bind("Test Server")
-    .bind("http://localhost:8096")
-    .bind(100)
-    .bind(chrono::Utc::now())
-    .bind(chrono::Utc::now())
-    .execute(&pool)
-    .await
-    .unwrap();
+    let (pool, service) = setup_service().await;
+    insert_test_server(&pool, "Test Server", "http://localhost:8096").await;
 
     // Create user
     let user = service
@@ -2124,6 +1832,7 @@ async fn test_get_user_sessions_by_virtual_token() {
     assert_eq!(retrieved_user.original_username, "testuser");
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0].0.device.client, "Test Client");
+    assert_eq!(sessions[0].0.server_url, "http://localhost:8096");
     assert_eq!(sessions[0].1.name, "Test Server");
     assert_eq!(
         sessions[0].1.url.as_str().trim_end_matches('/'),
@@ -2134,26 +1843,7 @@ async fn test_get_user_sessions_by_virtual_token() {
 
 #[tokio::test]
 async fn test_multiple_servers_with_priority() {
-    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-    MIGRATOR.run(&pool).await.unwrap();
-    let service = UserAuthorizationService::new(pool.clone());
-
-    // Create the servers table
-    sqlx::query(
-        r#"
-            CREATE TABLE IF NOT EXISTS servers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                url TEXT NOT NULL,
-                priority INTEGER NOT NULL DEFAULT 100,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            "#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
+    let (pool, service) = setup_service().await;
 
     // Create servers
     sqlx::query(
@@ -2275,42 +1965,8 @@ async fn test_multiple_servers_with_priority() {
 
 #[tokio::test]
 async fn test_cascade_delete_sessions_on_mapping_delete() {
-    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-    MIGRATOR.run(&pool).await.unwrap();
-    let service = UserAuthorizationService::new(pool.clone());
-
-    // Create servers table
-    sqlx::query(
-        r#"
-            CREATE TABLE IF NOT EXISTS servers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                url TEXT NOT NULL,
-                priority INTEGER NOT NULL DEFAULT 100,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            "#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    // Insert server
-    sqlx::query(
-        r#"
-            INSERT INTO servers (name, url, priority, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
-            "#,
-    )
-    .bind("Server 1")
-    .bind("http://localhost:8096")
-    .bind(100)
-    .bind(chrono::Utc::now())
-    .bind(chrono::Utc::now())
-    .execute(&pool)
-    .await
-    .unwrap();
+    let (pool, service) = setup_service().await;
+    insert_test_server(&pool, "Server 1", "http://localhost:8096").await;
 
     // Create user
     let user = service
@@ -2380,43 +2036,14 @@ async fn test_cascade_delete_sessions_on_mapping_delete() {
 
 #[tokio::test]
 async fn test_delete_all_sessions_for_user() {
-    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-    MIGRATOR.run(&pool).await.unwrap();
-    let service = UserAuthorizationService::new(pool.clone());
-
-    // Create servers table
-    sqlx::query(
-        r#"
-            CREATE TABLE IF NOT EXISTS servers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                url TEXT NOT NULL,
-                priority INTEGER NOT NULL DEFAULT 100,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            "#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
+    let (pool, service) = setup_service().await;
 
     // Insert two servers
     for (name, url) in [
         ("Server 1", "http://localhost:8096"),
         ("Server 2", "http://localhost:8097"),
     ] {
-        sqlx::query(
-                r#"INSERT INTO servers (name, url, priority, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"#,
-            )
-            .bind(name)
-            .bind(url)
-            .bind(100)
-            .bind(chrono::Utc::now())
-            .bind(chrono::Utc::now())
-            .execute(&pool)
-            .await
-            .unwrap();
+        insert_test_server(&pool, name, url).await;
     }
 
     // Create user
@@ -2485,42 +2112,8 @@ async fn test_delete_all_sessions_for_user() {
 
 #[tokio::test]
 async fn test_add_server_mapping_upsert_preserves_mapping_id_and_sessions() {
-    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-    MIGRATOR.run(&pool).await.unwrap();
-    let service = UserAuthorizationService::new(pool.clone());
-
-    // Create servers table
-    sqlx::query(
-        r#"
-            CREATE TABLE IF NOT EXISTS servers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                url TEXT NOT NULL,
-                priority INTEGER NOT NULL DEFAULT 100,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            "#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    // Insert server
-    sqlx::query(
-        r#"
-            INSERT INTO servers (name, url, priority, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
-            "#,
-    )
-    .bind("Server 1")
-    .bind("http://localhost:8096")
-    .bind(100)
-    .bind(chrono::Utc::now())
-    .bind(chrono::Utc::now())
-    .execute(&pool)
-    .await
-    .unwrap();
+    let (pool, service) = setup_service().await;
+    insert_test_server(&pool, "Server 1", "http://localhost:8096").await;
 
     // Create user
     let user = service
@@ -2625,40 +2218,8 @@ async fn test_add_server_mapping_upsert_preserves_mapping_id_and_sessions() {
 
 #[tokio::test]
 async fn test_add_server_mapping_username_change_deletes_sessions() {
-    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-    MIGRATOR.run(&pool).await.unwrap();
-    let service = UserAuthorizationService::new(pool.clone());
-
-    sqlx::query(
-        r#"
-            CREATE TABLE IF NOT EXISTS servers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                url TEXT NOT NULL,
-                priority INTEGER NOT NULL DEFAULT 100,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            "#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    sqlx::query(
-        r#"
-            INSERT INTO servers (name, url, priority, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
-            "#,
-    )
-    .bind("Server 1")
-    .bind("http://localhost:8096")
-    .bind(100)
-    .bind(chrono::Utc::now())
-    .bind(chrono::Utc::now())
-    .execute(&pool)
-    .await
-    .unwrap();
+    let (pool, service) = setup_service().await;
+    insert_test_server(&pool, "Server 1", "http://localhost:8096").await;
 
     let user = service
         .get_or_create_user("testuser", &"testpass".into())

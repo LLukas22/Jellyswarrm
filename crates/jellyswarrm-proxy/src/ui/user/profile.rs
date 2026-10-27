@@ -15,13 +15,13 @@ use crate::{auth::encryption::Password, ui::auth::AuthenticatedUser, AppState};
 mod tests {
     use super::*;
     use crate::{
-        application::playback::sessions::SessionStorage,
         auth::encryption::{HashedPassword, MappingEncryptionKey},
         auth::service::{CredentialFormat, UserAuthorizationService},
         config::{AppConfig, MIGRATOR},
         http::handlers::quick_connect::QuickConnectStorage,
         libraries::service::VirtualLibraryService,
         media::storage::MediaStorageService,
+        playback::sessions::SessionStorage,
         processors::ProxyProcessors,
         servers::storage::{Server, ServerStorageService},
         ui::auth::{User, UserRole},

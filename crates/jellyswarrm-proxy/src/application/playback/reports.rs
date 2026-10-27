@@ -5,17 +5,13 @@ use super::target::MediaTargetResolver;
 use anyhow::{anyhow, Result};
 
 use crate::{
-    application::playback::sessions::SessionStorage,
     auth::service::AuthorizationSession,
     libraries::service::VirtualLibraryAccessScope,
     media::storage::{MediaMapping, MediaStorageService},
+    playback::sessions::SessionStorage,
     processors::request_analyzer::RequestBodyAnalysisResult,
     servers::storage::Server,
 };
-
-#[derive(Debug, thiserror::Error)]
-#[error("no authorized backend is currently available")]
-pub(crate) struct NoAvailableBackend;
 
 #[derive(Debug)]
 pub(crate) struct ResolvedReportTarget {
@@ -100,16 +96,21 @@ pub(crate) async fn resolve_cancellation(
     request: &reqwest::Request,
     path: &[String],
     access_scope: Option<&VirtualLibraryAccessScope>,
-) -> Result<Option<ResolvedReportTarget>> {
+) -> std::result::Result<Option<ResolvedReportTarget>, crate::application::routing::RoutingError> {
+    use crate::application::routing::RoutingError;
     if request.method() != reqwest::Method::DELETE
         || !matches!(path, [videos, action] if videos.eq_ignore_ascii_case("Videos") && action.eq_ignore_ascii_case("ActiveEncodings"))
     {
         return Ok(None);
     }
-    let scope =
-        access_scope.ok_or_else(|| anyhow!("transcoder cancellation requires authentication"))?;
-    let session_id = crate::processors::url_processor::play_session_id(request.url())?
-        .ok_or_else(|| anyhow!("transcoder cancellation requires a playback session ID"))?;
+    let scope = access_scope.ok_or(RoutingError::AccessDenied)?;
+    let session_id = crate::processors::url_processor::play_session_id(request.url())
+        .map_err(RoutingError::InvalidSelection)?
+        .ok_or_else(|| {
+            RoutingError::InvalidSelection(anyhow!(
+                "transcoder cancellation requires a playback session ID"
+            ))
+        })?;
     // Jellyfin only recognizes PlaySessionId on this endpoint. Accepting
     // SessionId alone would turn a targeted stop into a device-wide stop.
     if !request
@@ -117,18 +118,27 @@ pub(crate) async fn resolve_cancellation(
         .query_pairs()
         .any(|(key, value)| key.eq_ignore_ascii_case("PlaySessionId") && !value.is_empty())
     {
-        return Err(anyhow!("transcoder cancellation requires PlaySessionId"));
+        return Err(RoutingError::InvalidSelection(anyhow!(
+            "transcoder cancellation requires PlaySessionId"
+        )));
     }
     let binding = super::target::owned_session(
         play_sessions,
         &session_id.as_str().into(),
         &scope.user_id().into(),
     )
-    .await?
-    .ok_or_else(|| anyhow!("unknown transcoder playback session"))?;
+    .await
+    .map_err(|error| match error {
+        super::target::ResolutionError::Storage(cause) => RoutingError::Storage(cause),
+        super::target::ResolutionError::ViewerMismatch(_) => RoutingError::AccessDenied,
+        other => RoutingError::InvalidSelection(other.into()),
+    })?
+    .ok_or_else(|| {
+        RoutingError::InvalidSelection(anyhow!("unknown transcoder playback session"))
+    })?;
     let play_session = binding.session();
     if !scope.allows(play_session.server_id) {
-        return Err(anyhow!("playback session server is no longer authorized"));
+        return Err(RoutingError::AccessDenied);
     }
     let (session, server) = sessions
         .as_ref()
@@ -137,7 +147,7 @@ pub(crate) async fn resolve_cancellation(
                 .iter()
                 .find(|(_, server)| server.id == play_session.server_id)
         })
-        .ok_or(NoAvailableBackend)?;
+        .ok_or(RoutingError::UnavailableOwner)?;
     Ok(Some(ResolvedReportTarget {
         server: server.clone(),
         session: session.clone(),
@@ -148,9 +158,9 @@ pub(crate) async fn resolve_cancellation(
 mod tests {
     use super::*;
     use crate::{
-        application::playback::sessions::PlaybackSession,
         auth::service::Device,
         config::{MediaStreamingMode, MIGRATOR},
+        playback::sessions::PlaybackSession,
         servers::id::ServerId,
         servers::storage::ServerStorageService,
     };
@@ -282,13 +292,13 @@ mod tests {
                     .parse()
                     .unwrap(),
             );
-            assert_eq!(
-                resolve_cancellation(&None, &storage, &request, &path, Some(&scope))
-                    .await
-                    .unwrap_err()
-                    .to_string(),
-                expected
-            );
+            let error = resolve_cancellation(&None, &storage, &request, &path, Some(&scope))
+                .await
+                .unwrap_err();
+            let crate::application::routing::RoutingError::InvalidSelection(cause) = error else {
+                panic!("expected invalid selection, got {error:?}");
+            };
+            assert_eq!(cause.to_string(), expected);
         }
         let request = reqwest::Request::new(
             reqwest::Method::DELETE,
@@ -299,7 +309,10 @@ mod tests {
         let error = resolve_cancellation(&None, &storage, &request, &path, Some(&scope))
             .await
             .unwrap_err();
-        assert!(error.is::<NoAvailableBackend>());
+        assert!(matches!(
+            error,
+            crate::application::routing::RoutingError::UnavailableOwner
+        ));
         let foreign = VirtualLibraryAccessScope::new("other-viewer", [id]);
         assert!(
             resolve_cancellation(&None, &storage, &request, &path, Some(&foreign))

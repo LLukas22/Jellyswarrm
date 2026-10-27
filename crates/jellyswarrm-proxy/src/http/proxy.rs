@@ -74,7 +74,7 @@ pub(crate) async fn proxy_handler(
             access_scope,
         );
         application::proxy::prepare(
-            &state,
+            &state.proxy_service(),
             application::input::OperationRequest {
                 original_request,
                 context,
@@ -89,23 +89,21 @@ pub(crate) async fn proxy_handler(
         Ok(request) => request,
         Err(error) => {
             error!("Failed to preprocess request: {}", error);
-            let status = if error.is::<crate::http::preprocessing::NoAvailableBackend>() {
-                StatusCode::SERVICE_UNAVAILABLE
-            } else if error.is::<crate::http::preprocessing::MediaAccessDenied>() {
-                StatusCode::FORBIDDEN
-            } else {
-                StatusCode::BAD_REQUEST
-            };
-            return Ok((status, client_request_error(&error)).into_response());
+            let message = client_request_error(&error);
+            let error = application::input::routing_error(error);
+            let status = crate::http::handlers::pipeline_error::detail_status(&error);
+            return Ok((status, message).into_response());
         }
     };
 
-    let response = match application::proxy::forward(&state, prepared, response_profile).await {
-        Ok(response) => response,
-        Err(application::error::ApplicationError::RequestBody(cause)) => {
-            return Ok((StatusCode::BAD_REQUEST, client_request_error(&cause)).into_response())
-        }
-        Err(error) => return Err(error.detail_status()),
-    };
+    let response =
+        match application::proxy::forward(&state.proxy_service(), prepared, response_profile).await
+        {
+            Ok(response) => response,
+            Err(application::error::ApplicationError::RequestBody(cause)) => {
+                return Ok((StatusCode::BAD_REQUEST, client_request_error(&cause)).into_response())
+            }
+            Err(error) => return Err(crate::http::handlers::pipeline_error::detail_status(&error)),
+        };
     Ok(response.map(Body::from))
 }

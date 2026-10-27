@@ -467,7 +467,14 @@ async fn identity_reconnect_revocation_and_authentication_dto_are_consistent() {
         "SessionInfo":{"Id":"backend-session", "UserId":"backend-user", "UserName":"Alice", "ServerId":"backend"},
         "AccessToken":"backend-token", "ServerId":"backend"
     })).unwrap();
-    decorate_authentication(&f.state, &f.user, &authorization, &mut response).await;
+    decorate_authentication(
+        &f.state.client_sessions,
+        &f.state.settings.read().await.server_id,
+        &f.user,
+        &authorization,
+        &mut response,
+    )
+    .await;
     let id = response.session_info.extra["Id"]
         .as_str()
         .unwrap()

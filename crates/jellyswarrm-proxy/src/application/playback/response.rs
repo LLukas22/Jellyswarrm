@@ -74,10 +74,7 @@ pub async fn process_playback_response(
     server: &Server,
     session: &AuthorizationSession,
     proxy_api_key: Option<&str>,
-) -> Result<
-    Vec<std::sync::Arc<crate::application::playback::sessions::PreparedLiveStream>>,
-    ApplicationError,
-> {
+) -> Result<Vec<std::sync::Arc<crate::playback::sessions::PreparedLiveStream>>, ApplicationError> {
     let mut plans = Vec::new();
     for source in &mut response.media_sources {
         if let Some(plan) = crate::application::playback::live::prepare_live_source(
@@ -246,11 +243,11 @@ mod tests {
 
     use super::*;
     use crate::{
-        application::playback::sessions::SessionStorage,
         auth::service::UserAuthorizationService,
         config::{AppConfig, MediaStreamingMode, MIGRATOR},
         libraries::service::VirtualLibraryService,
         media::storage::MediaStorageService,
+        playback::sessions::SessionStorage,
         processors::ProxyProcessors,
         servers::id::ServerId,
         servers::storage::ServerStorageService,
@@ -423,6 +420,7 @@ mod tests {
         });
 
         let was_modified = state
+            .proxy_service()
             .process_response_json_typed(
                 &mut media_item,
                 &server,
@@ -488,6 +486,7 @@ mod tests {
                     {"Id": "live", "Type": "CollectionFolder", "CollectionType": "livetv", "Name": "Live TV"}
                 ]});
                 state
+                    .proxy_service()
                     .process_response_json_typed(
                         &mut payload,
                         &server,
@@ -546,6 +545,7 @@ mod tests {
         ]);
 
         let was_modified = state
+            .proxy_service()
             .process_response_json_typed(
                 &mut media_items,
                 &server,
@@ -572,6 +572,7 @@ mod tests {
         });
 
         let was_modified = state
+            .proxy_service()
             .process_response_json_typed(
                 &mut payload,
                 &server,
@@ -599,6 +600,7 @@ mod tests {
         });
 
         state
+            .proxy_service()
             .process_response_json_typed(
                 &mut payload,
                 &server,
@@ -626,6 +628,7 @@ mod tests {
         });
 
         let was_modified = state
+            .proxy_service()
             .process_response_json_typed(
                 &mut payload,
                 &server,

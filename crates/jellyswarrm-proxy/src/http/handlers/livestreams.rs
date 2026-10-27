@@ -19,7 +19,7 @@ pub async fn post_live_stream_action(
 ) -> Result<Response, StatusCode> {
     let result = live::post_live_stream_action_typed(&state.playback_service(), preprocessed)
         .await
-        .map_err(|error| error.detail_status())?;
+        .map_err(|error| crate::http::handlers::pipeline_error::detail_status(&error))?;
     Ok(match result {
         LiveStreamActionResult::Status(status) => status.into_response(),
         LiveStreamActionResult::Json(payload) => Json(payload).into_response(),
@@ -33,5 +33,5 @@ pub async fn post_livestream_open(
     live::post_livestream_open_typed(&state.playback_service(), preprocessed)
         .await
         .map(Json)
-        .map_err(|error| error.detail_status())
+        .map_err(|error| crate::http::handlers::pipeline_error::detail_status(&error))
 }

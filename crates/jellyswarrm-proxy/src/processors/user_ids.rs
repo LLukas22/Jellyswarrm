@@ -6,6 +6,14 @@ use crate::{
 };
 use std::sync::Arc;
 
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum UserIdError {
+    #[error("user mapping storage failed")]
+    Storage(#[from] sqlx::Error),
+    #[error("Requested user has no mapping on the selected server")]
+    MissingMapping,
+}
+
 #[derive(Clone)]
 pub(super) struct BackendUserIds {
     authorization: Arc<UserAuthorizationService>,
@@ -19,9 +27,9 @@ impl BackendUserIds {
     pub(super) async fn resolve(
         &self,
         user_id: &str,
-        session: &Option<AuthorizationSession>,
+        session: Option<&AuthorizationSession>,
         server_id: ServerId,
-    ) -> anyhow::Result<String> {
+    ) -> Result<String, UserIdError> {
         let user_id = UserId::new(user_id);
         if let Some(session) = session {
             if user_id == session.user_id || user_id == UserId::new(&session.original_user_id) {
@@ -37,6 +45,6 @@ impl BackendUserIds {
                     .find(|(_, server)| server.id == server_id)
                     .map(|(session, _)| session.original_user_id)
             })
-            .ok_or_else(|| anyhow::anyhow!("Requested user has no mapping on the selected server"))
+            .ok_or(UserIdError::MissingMapping)
     }
 }

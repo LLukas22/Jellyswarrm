@@ -8,7 +8,6 @@ use crate::{
     },
     processors::request_analyzer::RequestBodyAnalysisResult,
     upstream::jellyfin::request::remap_authorization,
-    AppState,
 };
 
 pub(crate) struct OperationRequest {
@@ -39,13 +38,6 @@ pub(crate) struct ResolvedTarget {
 }
 
 impl OperationRequest {
-    pub(crate) async fn resolve_target_typed(
-        &self,
-        state: &AppState,
-    ) -> Result<ResolvedTarget, ApplicationError> {
-        self.resolve_target_using(&state.routing_services()).await
-    }
-
     pub(crate) async fn resolve_target_using(
         &self,
         state: &crate::application::routing::RoutingServices<'_>,
@@ -56,16 +48,16 @@ impl OperationRequest {
                 &self.body_analysis,
                 state,
                 &self.original_request,
-                self.context.access_scope().as_ref(),
+                self.context.access_scope(),
             )
             .await
-            .map_err(routing_error)?;
+            .map_err(ApplicationError::from)?;
         state
             .urls
             .validate_container_request(
                 self.original_request.url(),
-                &session,
-                self.context.access_scope().as_ref(),
+                session.as_ref(),
+                self.context.access_scope(),
                 server.id,
                 self.body_analysis
                     .as_ref()
@@ -74,9 +66,9 @@ impl OperationRequest {
             )
             .await
             .map_err(routing_error)?;
-        let auth = remap_authorization(&self.context.authorization().cloned(), &session);
+        let auth = remap_authorization(self.context.authorization(), session.as_ref());
         let target =
-            AuthorizedTarget::new(server, session, auth, self.context.access_scope().clone())
+            AuthorizedTarget::new(server, session, auth, self.context.access_scope().cloned())
                 .map_err(|error| match error {
                     TargetError::AccessDenied | TargetError::ViewerMismatch => {
                         ApplicationError::AccessDenied
@@ -91,11 +83,88 @@ impl OperationRequest {
 }
 
 pub(crate) fn routing_error(error: anyhow::Error) -> ApplicationError {
-    if error.is::<crate::application::error::MediaAccessDenied>() {
-        ApplicationError::AccessDenied
-    } else if error.is::<crate::application::playback::reports::NoAvailableBackend>() {
-        ApplicationError::UnavailableOwner
+    if error.is::<sqlx::Error>() {
+        ApplicationError::Storage(
+            error
+                .downcast::<sqlx::Error>()
+                .expect("checked storage cause"),
+        )
+    } else if error.is::<crate::application::routing::RoutingError>() {
+        error
+            .downcast::<crate::application::routing::RoutingError>()
+            .expect("checked routing cause")
+            .into()
+    } else if error.is::<TargetError>() {
+        ApplicationError::TargetSelection(
+            error
+                .downcast::<TargetError>()
+                .expect("checked target cause"),
+        )
+    } else if crate::processors::ProcessingErrors::contains_cause::<sqlx::Error>(error.as_ref()) {
+        // Keep the entire aggregate/context tree, not just its first database
+        // cause. A validation failure in an earlier field must not hide storage
+        // failure in a later one.
+        ApplicationError::Internal(error)
     } else {
         ApplicationError::InvalidRouting(error)
+    }
+}
+
+pub(crate) fn request_body_error(error: anyhow::Error) -> ApplicationError {
+    match routing_error(error) {
+        ApplicationError::InvalidRouting(cause) => ApplicationError::RequestBody(cause),
+        error => error,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::processors::ProcessingErrors;
+
+    fn mixed_failures() -> anyhow::Error {
+        anyhow::Error::new(ProcessingErrors {
+            causes: vec![
+                anyhow::anyhow!("invalid selection"),
+                anyhow::Error::new(ProcessingErrors {
+                    causes: vec![
+                        anyhow::Error::new(sqlx::Error::PoolClosed).context("field lookup")
+                    ],
+                })
+                .context("nested fields"),
+            ],
+        })
+        .context("request analysis")
+    }
+
+    #[test]
+    fn storage_in_later_nested_fields_keeps_the_entire_aggregate() {
+        for classify in [routing_error, request_body_error] {
+            let ApplicationError::Internal(error) = classify(mixed_failures()) else {
+                panic!("storage failure must not be classified as invalid input");
+            };
+            let fields = error.downcast_ref::<ProcessingErrors>().unwrap();
+            assert_eq!(fields.causes.len(), 2);
+            assert!(crate::processors::ProcessingErrors::contains_cause::<
+                sqlx::Error,
+            >(error.as_ref()));
+        }
+    }
+
+    #[test]
+    fn validation_only_fields_retain_their_input_failure_type() {
+        let invalid = || {
+            anyhow::Error::new(ProcessingErrors {
+                causes: vec![anyhow::anyhow!("invalid selection")],
+            })
+        };
+        assert!(matches!(
+            routing_error(invalid()),
+            ApplicationError::InvalidRouting(_)
+        ));
+        assert!(matches!(
+            request_body_error(invalid()),
+            ApplicationError::RequestBody(_)
+        ));
     }
 }

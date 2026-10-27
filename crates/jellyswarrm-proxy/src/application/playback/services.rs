@@ -1,7 +1,6 @@
 //! Explicit playback capabilities. No authentication/account services, catalog
 //! caches, SyncPlay, Quick Connect, or catch-all application state are available.
 use crate::{
-    application::playback::sessions::SessionStorage,
     application::{
         error::ApplicationError,
         routing::RoutingServices,
@@ -9,6 +8,7 @@ use crate::{
     },
     config::SettingsView,
     media::storage::MediaStorageService,
+    playback::sessions::SessionStorage,
     processors::{
         response_processor::{ResponseProcessingProfile, ResponseProcessor},
         url_processor::UrlProcessor,

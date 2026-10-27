@@ -14,13 +14,7 @@ pub(crate) struct CatalogRequest {
 }
 
 pub(crate) fn input_error_typed(error: anyhow::Error) -> ApplicationError {
-    if error.is::<crate::application::playback::reports::NoAvailableBackend>() {
-        ApplicationError::UnavailableOwner
-    } else if error.is::<crate::application::error::MediaAccessDenied>() {
-        ApplicationError::AccessDenied
-    } else {
-        ApplicationError::InvalidRouting(error)
-    }
+    crate::application::input::routing_error(error)
 }
 
 impl CatalogRequest {
@@ -65,8 +59,8 @@ impl CatalogRequest {
         self.context
             .validate_media_ids(&access_url, self.body_analysis.as_ref(), &state.selection)
             .await
-            .map_err(input_error_typed)?;
-        if let Some(scope) = self.context.access_scope().as_ref() {
+            .map_err(ApplicationError::from)?;
+        if let Some(scope) = self.context.access_scope() {
             if self
                 .context
                 .backends()

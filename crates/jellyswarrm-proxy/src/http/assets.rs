@@ -72,6 +72,33 @@ fn normalize_asset_lookup_path(path: &str) -> String {
     }
 }
 
+pub(super) fn serve(req: &Request) -> Option<Result<Response<Body>, StatusCode>> {
+    // check if a resource was requested
+    let path = req.uri().path();
+    debug!("Using generic processing for path: {}", path);
+    let path = if let Some(path) = path.strip_prefix('/') {
+        path
+    } else {
+        path
+    };
+    let path = if path.is_empty() { "index.html" } else { path };
+    let decoded_path = normalize_asset_lookup_path(&percent_decode_str(path).decode_utf8_lossy());
+    if let Some(content) = Asset::get(&decoded_path) {
+        let mime = mime_guess::from_path(&decoded_path).first_or_octet_stream();
+        return Some(
+            Response::builder()
+                .header("Content-Type", mime.as_ref())
+                .body(Body::from(content.data.into_owned()))
+                .map_err(|e| {
+                    error!("Failed to build static asset response: {}", e);
+                    StatusCode::INTERNAL_SERVER_ERROR
+                }),
+        );
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod web_asset_path_tests {
     use super::normalize_asset_lookup_path;
@@ -125,31 +152,4 @@ mod web_asset_path_tests {
             "Users/abc/Items"
         );
     }
-}
-
-pub(super) fn serve(req: &Request) -> Option<Result<Response<Body>, StatusCode>> {
-    // check if a resource was requested
-    let path = req.uri().path();
-    debug!("Using generic processing for path: {}", path);
-    let path = if let Some(path) = path.strip_prefix('/') {
-        path
-    } else {
-        path
-    };
-    let path = if path.is_empty() { "index.html" } else { path };
-    let decoded_path = normalize_asset_lookup_path(&percent_decode_str(path).decode_utf8_lossy());
-    if let Some(content) = Asset::get(&decoded_path) {
-        let mime = mime_guess::from_path(&decoded_path).first_or_octet_stream();
-        return Some(
-            Response::builder()
-                .header("Content-Type", mime.as_ref())
-                .body(Body::from(content.data.into_owned()))
-                .map_err(|e| {
-                    error!("Failed to build static asset response: {}", e);
-                    StatusCode::INTERNAL_SERVER_ERROR
-                }),
-        );
-    }
-
-    None
 }

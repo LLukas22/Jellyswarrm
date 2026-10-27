@@ -252,7 +252,7 @@ pub(super) async fn get_automatic_library_root(
         context,
         ..
     } = preprocessed;
-    let access_scope = context.access_scope().as_ref().ok_or_else(|| {
+    let access_scope = context.access_scope().ok_or_else(|| {
         ApplicationError::MissingIdentity("library viewer scope")
             .at(crate::application::error::FailureStage::CallerAuthentication)
     })?;

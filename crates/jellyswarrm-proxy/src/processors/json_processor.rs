@@ -102,6 +102,25 @@ impl std::error::Error for ProcessingErrors {
     }
 }
 
+/// Inspect all aggregated field failures, including nested aggregates and
+/// context wrappers. `Error::source` alone only visits the first sibling.
+impl ProcessingErrors {
+    pub(crate) fn contains_cause<E: std::error::Error + 'static>(
+        error: &(dyn std::error::Error + 'static),
+    ) -> bool {
+        if error.is::<E>() {
+            return true;
+        }
+        if let Some(errors) = error.downcast_ref::<ProcessingErrors>() {
+            return errors
+                .causes
+                .iter()
+                .any(|cause| Self::contains_cause::<E>(cause.as_ref()));
+        }
+        error.source().is_some_and(Self::contains_cause::<E>)
+    }
+}
+
 #[derive(Debug)]
 pub struct ProcessingResponse {
     pub was_modified: bool,

@@ -9,7 +9,7 @@ use wiremock::{
 macro_rules! contracts {
     ($($name:ident: $route:literal, $body:expr;)+) => {
         pub(super) const ROUTES: &[&str] = &[$($route),+];
-        $(scenario_test!($name, body_contract, $route, $body);)+
+        $(contract_test!($name, body_contract, $route, $body);)+
     };
 }
 contracts! {
@@ -24,8 +24,8 @@ contracts! {
     metadata_edit_reaches_item_owner: "/Items/{item}", json!({"Id":"{item}","Name":"Updated movie","ProviderIds":{"Tmdb":"42"},"Overview":"Keep this text"});
 }
 
-pub(super) async fn body_contract(scenario: Scenario, route: &str, body: Value) {
-    let f = Fixture::for_scenario(scenario).await;
+pub(super) async fn body_contract(route: &str, body: Value) {
+    let f = Fixture::for_scenario(Scenario::NormalServers).await;
     f.healthy().await;
     let original = f.original(1).await;
     let substitute =

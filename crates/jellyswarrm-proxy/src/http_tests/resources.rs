@@ -9,7 +9,7 @@ use wiremock::{
 macro_rules! contracts {
     ($($name:ident: $route:literal;)+) => {
         pub(super) const ROUTES: &[&str] = &[$($route),+];
-        $(scenario_test!($name, resource_contract, $route);)+
+        $(contract_test!($name, resource_contract, $route);)+
     };
 }
 contracts! {
@@ -34,8 +34,8 @@ contracts! {
     download: "/Items/{item}/Download";
     fallback_font: "/FallbackFont/Fonts/Noto.ttf";
 }
-async fn resource_contract(scenario: Scenario, route: &str) {
-    let f = Fixture::for_scenario(scenario).await;
+async fn resource_contract(route: &str) {
+    let f = Fixture::for_scenario(Scenario::NormalServers).await;
     f.healthy().await;
     let owner = usize::from(route.contains("{item}"));
     let original = f.original(owner).await;

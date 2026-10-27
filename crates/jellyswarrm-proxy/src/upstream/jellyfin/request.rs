@@ -7,8 +7,8 @@ use crate::{
 };
 
 #[derive(Debug, thiserror::Error)]
-#[error("upstream request body cannot be cloned")]
-pub(crate) struct UpstreamBuildError;
+#[error("upstream request construction failed")]
+pub(crate) struct UpstreamBuildError(#[source] pub(crate) anyhow::Error);
 
 pub(crate) struct UpstreamRequestBuilder<'a> {
     urls: &'a UrlProcessor,
@@ -31,7 +31,9 @@ impl<'a> UpstreamRequestBuilder<'a> {
         target: &AuthorizedTarget,
         original: &reqwest::Request,
     ) -> Result<reqwest::Request, UpstreamBuildError> {
-        let mut request = original.try_clone().ok_or(UpstreamBuildError)?;
+        let mut request = original.try_clone().ok_or_else(|| {
+            UpstreamBuildError(anyhow::anyhow!("upstream request body cannot be cloned"))
+        })?;
         self.apply(
             &mut request,
             target.server(),
@@ -39,7 +41,8 @@ impl<'a> UpstreamRequestBuilder<'a> {
             target.authorization(),
             target.access_scope(),
         )
-        .await;
+        .await
+        .map_err(UpstreamBuildError)?;
         Ok(request)
     }
 
@@ -49,10 +52,10 @@ impl<'a> UpstreamRequestBuilder<'a> {
         &self,
         request: &mut reqwest::Request,
         server: &Server,
-        session: &Option<AuthorizationSession>,
-        auth: &Option<JellyfinAuthorization>,
+        session: Option<&AuthorizationSession>,
+        auth: Option<&JellyfinAuthorization>,
         access_scope: Option<&VirtualLibraryAccessScope>,
-    ) {
+    ) -> anyhow::Result<()> {
         remove_hop_by_hop_headers(request.headers_mut());
         // Let reqwest derive Host from the target URL, including its port. An explicit
         // Host header would otherwise survive redirects to external image hosts.
@@ -61,7 +64,7 @@ impl<'a> UpstreamRequestBuilder<'a> {
         let mut url = request.url().clone();
         self.urls
             .client_to_server_url(&mut url, session, access_scope, server.id)
-            .await;
+            .await?;
         let path = match self.proxy_prefix {
             Some(prefix) => url.path().trim_start_matches(&format!("/{prefix}")),
             None => url.path(),
@@ -69,12 +72,13 @@ impl<'a> UpstreamRequestBuilder<'a> {
         let mut destination = join_server_url(&server.url, path);
         destination.set_query(url.query());
         *request.url_mut() = destination;
+        Ok(())
     }
 }
 
 fn apply_authorization_header(
     request: &mut reqwest::Request,
-    auth: &Option<JellyfinAuthorization>,
+    auth: Option<&JellyfinAuthorization>,
 ) {
     for name in [
         "authorization",
@@ -108,11 +112,11 @@ fn apply_authorization_header(
 }
 
 pub(crate) fn remap_authorization(
-    auth: &Option<JellyfinAuthorization>,
-    session: &Option<AuthorizationSession>,
+    auth: Option<&JellyfinAuthorization>,
+    session: Option<&AuthorizationSession>,
 ) -> Option<JellyfinAuthorization> {
-    let auth = auth.as_ref()?;
-    let session = session.as_ref()?;
+    let auth = auth?;
+    let session = session?;
     Some(match auth {
         JellyfinAuthorization::Authorization(_)
         | JellyfinAuthorization::XEmbyToken(_)
@@ -135,11 +139,11 @@ mod tests {
 
     use super::*;
     use crate::{
-        application::playback::sessions::SessionStorage,
         auth::service::UserAuthorizationService,
         config::{AppConfig, MediaStreamingMode, MIGRATOR},
         libraries::service::VirtualLibraryService,
         media::storage::MediaStorageService,
+        playback::sessions::SessionStorage,
         servers::storage::ServerStorageService,
         DataContext,
     };

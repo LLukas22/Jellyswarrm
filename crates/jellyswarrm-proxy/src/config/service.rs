@@ -214,13 +214,14 @@ mod tests {
         release.send(()).unwrap();
         second.await.unwrap().unwrap();
         second_seen.await.unwrap();
-        let snapshots = persisted.lock().unwrap();
-        assert_eq!(snapshots.len(), 2);
-        assert_eq!(snapshots[0].server_name, "New name");
-        assert!(!snapshots[0].merge_libraries);
-        assert_eq!(snapshots[1].server_name, "New name");
-        assert!(snapshots[1].merge_libraries);
-        drop(snapshots);
+        {
+            let snapshots = persisted.lock().unwrap();
+            assert_eq!(snapshots.len(), 2);
+            assert_eq!(snapshots[0].server_name, "New name");
+            assert!(!snapshots[0].merge_libraries);
+            assert_eq!(snapshots[1].server_name, "New name");
+            assert!(snapshots[1].merge_libraries);
+        }
         assert!(current.read().await.merge_libraries);
     }
 

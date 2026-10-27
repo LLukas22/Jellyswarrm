@@ -5,21 +5,8 @@ pub(crate) async fn playback_session_action(
     request_path: &str,
     state: &AppState,
 ) -> Option<PlaybackSessionAction> {
-    if method != http::Method::POST {
-        return None;
-    }
-
     let path = state.remove_prefix_from_path(request_path).await;
-    let path = path.trim_end_matches('/');
-    if path.eq_ignore_ascii_case("/Sessions/Playing") {
-        Some(PlaybackSessionAction::Start)
-    } else if path.eq_ignore_ascii_case("/Sessions/Playing/Progress") {
-        Some(PlaybackSessionAction::Refresh)
-    } else if path.eq_ignore_ascii_case("/Sessions/Playing/Stopped") {
-        Some(PlaybackSessionAction::Remove)
-    } else {
-        None
-    }
+    crate::processors::request_analyzer::playback_session_action(method, path)
 }
 
 #[cfg(test)]
@@ -36,8 +23,15 @@ pub async fn apply_to_request(
         &state.processors.url_processor,
         prefix.as_deref(),
     )
-    .apply(request, server, session, auth, access_scope)
-    .await;
+    .apply(
+        request,
+        server,
+        session.as_ref(),
+        auth.as_ref(),
+        access_scope,
+    )
+    .await
+    .unwrap();
 }
 
 // Reports must not use the generic best-server fallback: a wrong destination can
@@ -52,7 +46,3 @@ pub(super) async fn resolve_playback_report_server(
         .await
         .map(|target| (target.server, Some(target.session), true))
 }
-
-pub(crate) use crate::application::playback::reports::NoAvailableBackend;
-
-pub(crate) use crate::application::error::MediaAccessDenied;

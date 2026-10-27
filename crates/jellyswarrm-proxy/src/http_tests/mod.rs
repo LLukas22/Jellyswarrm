@@ -1,6 +1,16 @@
 //! Client-to-proxy-to-upstream HTTP contracts. Run with `cargo test ... http_tests`.
-// Keep both configurations independently runnable and visible in test output.
-// Arguments are evaluated inside each test, so fixtures and mocks are never shared.
+// Source-owned transport contracts run once. Opt into scenario_test! only when
+// merging changes the fixture's identities or the behavior being asserted.
+macro_rules! contract_test {
+    ($name:ident, $contract:ident $(, $arg:expr)* $(,)?) => {
+        #[tokio::test]
+        async fn $name() {
+            $contract($($arg),*).await;
+        }
+    };
+}
+
+// Keep genuine configuration-dependent workflows independently runnable.
 macro_rules! scenario_test {
     ($name:ident, $contract:ident $(, $arg:expr)* $(,)?) => {
         mod $name {
@@ -41,3 +51,5 @@ use std::sync::Arc;
 use support::{auth, Fixture, Scenario};
 
 mod playlists;
+
+mod federated;

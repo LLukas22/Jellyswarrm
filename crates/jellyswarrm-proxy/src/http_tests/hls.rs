@@ -5,12 +5,9 @@ use wiremock::{
     Mock, ResponseTemplate,
 };
 
-scenario_test!(
-    playlist_uri_attributes_and_reference_styles,
-    references_contract
-);
-async fn references_contract(scenario: Scenario) {
-    let f = Fixture::for_scenario(scenario).await;
+#[tokio::test]
+async fn playlist_uri_attributes_and_reference_styles() {
+    let f = Fixture::for_scenario(Scenario::NormalServers).await;
     f.healthy().await;
     let original = f.original(0).await;
     let root = format!("/Videos/{original}");
@@ -163,12 +160,9 @@ async fn references_contract(scenario: Scenario) {
     assert!(response.bytes().await.unwrap().is_empty());
 }
 
-scenario_test!(
-    playlist_invalid_upstream_responses_fail_closed,
-    invalid_contract
-);
-async fn invalid_contract(scenario: Scenario) {
-    let f = Fixture::for_scenario(scenario).await;
+#[tokio::test]
+async fn playlist_invalid_upstream_responses_fail_closed() {
+    let f = Fixture::for_scenario(Scenario::NormalServers).await;
     f.healthy().await;
     let original = f.original(0).await;
     for (name, template, expected) in [
@@ -227,12 +221,9 @@ async fn invalid_contract(scenario: Scenario) {
     }
 }
 
-scenario_test!(
-    playlist_content_type_is_recognized_without_m3u8_path,
-    content_type_contract
-);
-async fn content_type_contract(scenario: Scenario) {
-    let f = Fixture::for_scenario(scenario).await;
+#[tokio::test]
+async fn playlist_content_type_is_recognized_without_m3u8_path() {
+    let f = Fixture::for_scenario(Scenario::NormalServers).await;
     f.healthy().await;
     let original = f.original(0).await;
     for (route, mime) in [

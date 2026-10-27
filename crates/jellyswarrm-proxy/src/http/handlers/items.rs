@@ -20,7 +20,7 @@ pub async fn get_item(
     details::get_item_detail(&state.catalog_service(), preprocessed, true)
         .await
         .map(Json)
-        .map_err(|error| error.detail_status())
+        .map_err(|error| crate::http::handlers::pipeline_error::detail_status(&error))
 }
 
 pub async fn get_items(
@@ -30,7 +30,7 @@ pub async fn get_items(
     details::get_item_detail(&state.catalog_service(), preprocessed, false)
         .await
         .map(Json)
-        .map_err(|error| error.detail_status())
+        .map_err(|error| crate::http::handlers::pipeline_error::detail_status(&error))
 }
 
 pub async fn get_items_list(
@@ -40,7 +40,7 @@ pub async fn get_items_list(
     details::get_item_detail(&state.catalog_service(), preprocessed, false)
         .await
         .map(Json)
-        .map_err(|error| error.detail_status())
+        .map_err(|error| crate::http::handlers::pipeline_error::detail_status(&error))
 }
 
 #[axum::debug_handler]
@@ -51,5 +51,5 @@ pub async fn post_playback_info(
     playback::post_playback_info_typed(&state.playback_service(), input)
         .await
         .map(Json)
-        .map_err(|error| error.detail_status())
+        .map_err(|error| crate::http::handlers::pipeline_error::detail_status(&error))
 }

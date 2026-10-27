@@ -179,7 +179,6 @@ async fn get_reconciled_catalog_uncached(
     let viewer = preprocessed
         .context
         .access_scope()
-        .as_ref()
         .map(|scope| scope.user_id().to_string())
         .unwrap_or_else(|| "anonymous".to_string());
     let report = fetched.report.clone();
@@ -427,7 +426,6 @@ pub(crate) async fn get_aggregate_show_items_typed(
     let viewer = preprocessed
         .context
         .access_scope()
-        .as_ref()
         .map(|scope| scope.user_id().to_string())
         .unwrap_or_else(|| "anonymous".to_string());
     let catalog_scope_key = MediaCatalogScope {

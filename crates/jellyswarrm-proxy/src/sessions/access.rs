@@ -43,7 +43,7 @@ impl<'a> MediaAccess<'a> {
             if self
                 .selection
                 .client_media_mapping(item, Some(&scope), None)
-                .await
+                .await?
                 .is_none()
             {
                 return Ok(false);
@@ -69,14 +69,14 @@ impl<'a> MediaAccess<'a> {
                 let Some(item) = self
                     .selection
                     .client_media_mapping(&items[0], Some(&scope), None)
-                    .await
+                    .await?
                 else {
                     return Ok(false);
                 };
                 if self
                     .selection
                     .client_media_mapping(source, Some(&scope), Some(item.server_id))
-                    .await
+                    .await?
                     .is_none()
                 {
                     return Ok(false);

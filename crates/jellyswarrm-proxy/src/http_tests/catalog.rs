@@ -27,7 +27,7 @@ pub(super) const METHOD: &str = "GET";
 macro_rules! contracts {
     ($($name:ident: $route:literal, $shape:ident;)+) => {
         pub(super) const ROUTES: &[&str] = &[$($route),+];
-        $(scenario_test!($name, read_contract, $route, Shape::$shape);)+
+        $(contract_test!($name, read_contract, $route, Shape::$shape);)+
     };
 }
 
@@ -89,8 +89,8 @@ contracts! {
     item_counts: "/Items/Counts?UserId={user}", Counts;
 }
 
-async fn read_contract(scenario: Scenario, route: &str, shape: Shape) {
-    let f = Fixture::for_scenario(scenario).await;
+async fn read_contract(route: &str, shape: Shape) {
+    let f = Fixture::for_scenario(Scenario::NormalServers).await;
     f.healthy().await;
     let owner = usize::from(route.contains("{item}"));
     let original = f.original(owner).await;

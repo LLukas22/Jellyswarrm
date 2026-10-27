@@ -69,7 +69,7 @@ pub(crate) async fn get_item_detail(
     if let (true, Some(item_id), Some(scope)) = (
         merge_media_versions,
         requested_item_id.as_deref(),
-        input.context.access_scope().as_ref(),
+        input.context.access_scope(),
     ) {
         if let Some((group, owner)) = state
             .media_storage
@@ -113,7 +113,7 @@ pub(crate) async fn get_item_detail(
     let request = builder
         .build(&target, &normalized_request)
         .await
-        .map_err(|error| ApplicationError::Internal(error.into()))?;
+        .map_err(|error| crate::application::input::routing_error(error.0))?;
     let failed_id = contains_id(request.url(), "Items");
     let result = state
         .execute_processed_json(
@@ -134,7 +134,7 @@ pub(crate) async fn get_item_detail(
             };
             let VirtualLibraryResolution::Resolved(mut library) = state
                 .virtual_library_service
-                .resolve(id, input.context.access_scope().as_ref())
+                .resolve(id, input.context.access_scope())
                 .await
                 .map_err(ApplicationError::Storage)?
             else {
@@ -162,7 +162,7 @@ pub(crate) async fn get_item_detail(
                 let request = builder
                     .build(&member_target, &request)
                     .await
-                    .map_err(|error| ApplicationError::Internal(error.into()))?;
+                    .map_err(|error| crate::application::input::routing_error(error.0))?;
                 match state
                     .execute_processed_json(
                         request,
@@ -196,7 +196,7 @@ pub(crate) async fn get_item_detail(
                 selected_group,
                 base_server: &server,
                 auth: &input.context.authorization().cloned(),
-                access_scope: input.context.access_scope().as_ref(),
+                access_scope: input.context.access_scope(),
                 sessions: input.context.backends().sessions.as_deref(),
                 original_request: &input.original_request,
                 source_generation: source_generation
@@ -211,7 +211,7 @@ pub(crate) async fn get_item_detail(
     if let Some(virtual_id) = virtual_library {
         let resolution = state
             .virtual_library_service
-            .resolve(&virtual_id, input.context.access_scope().as_ref())
+            .resolve(&virtual_id, input.context.access_scope())
             .await
             .map_err(ApplicationError::Storage)?;
         if let VirtualLibraryResolution::Resolved(resolved) = resolution {

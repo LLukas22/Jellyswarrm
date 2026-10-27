@@ -12,15 +12,16 @@ use crate::{
     upstream::jellyfin::{
         json::execute_json_request_typed as execute_json_request, request::UpstreamRequestBuilder,
     },
-    AppState,
 };
 
 use anyhow::Result;
+pub(crate) mod services;
+use services::{AccountService, AuthenticationService};
 
 async fn process_user(
     server_user: crate::models::User,
     user: &crate::auth::service::User,
-    state: &AppState,
+    state: &AuthenticationService,
 ) -> Result<crate::models::User> {
     let mut server_user = server_user;
 
@@ -40,36 +41,38 @@ pub(crate) fn public_users() -> Vec<crate::models::User> {
 }
 
 pub(crate) async fn get_me(
-    state: &AppState,
+    state: &AccountService,
     input: OperationRequest,
 ) -> Result<crate::models::User, ApplicationError> {
     // Preserve routing failures before the legacy RequireUser rejection.
-    let resolved = input.resolve_target_typed(state).await?;
+    let resolved = input
+        .resolve_target_using(&state.routing_services())
+        .await?;
     let user = input.context.user().ok_or_else(unauthenticated)?;
     let request = build_request(state, &resolved.target, &input.original_request).await?;
     // Execute request and parse JSON response
     let server_user: crate::models::User =
-        execute_json_request(&state.reqwest_client, request).await?;
+        execute_json_request(&state.authentication.reqwest_client, request).await?;
 
-    let server_user = process_user(server_user, user, state).await.map_err(|e| {
-        error!("Failed to process user: {}", e);
-        ApplicationError::Internal(e)
-    })?;
+    let server_user = process_user(server_user, user, &state.authentication)
+        .await
+        .map_err(|e| {
+            error!("Failed to process user: {}", e);
+            ApplicationError::Internal(e)
+        })?;
 
     Ok(server_user)
 }
 
 pub(crate) async fn get_user_by_id(
-    state: &AppState,
+    state: &AccountService,
     mut input: OperationRequest,
 ) -> Result<crate::models::User, ApplicationError> {
-    let resolved = input.resolve_target_typed(state).await?;
+    let resolved = input
+        .resolve_target_using(&state.routing_services())
+        .await?;
     let user = input.context.user().ok_or_else(unauthenticated)?;
-    resolved
-        .target
-        .session()
-        .as_ref()
-        .ok_or_else(unauthenticated)?;
+    resolved.target.session().ok_or_else(unauthenticated)?;
     // This endpoint always addresses the caller, not the requested path ID.
     // Normalize virtual input before translation; the old URL replacement also
     // deliberately discarded the incoming query.
@@ -78,12 +81,14 @@ pub(crate) async fn get_user_by_id(
 
     // Execute request and parse JSON response
     let server_user: crate::models::User =
-        execute_json_request(&state.reqwest_client, request).await?;
+        execute_json_request(&state.authentication.reqwest_client, request).await?;
 
-    let server_user = process_user(server_user, user, state).await.map_err(|e| {
-        error!("Failed to process user: {}", e);
-        ApplicationError::Internal(e)
-    })?;
+    let server_user = process_user(server_user, user, &state.authentication)
+        .await
+        .map_err(|e| {
+            error!("Failed to process user: {}", e);
+            ApplicationError::Internal(e)
+        })?;
 
     Ok(server_user)
 }
@@ -94,15 +99,22 @@ fn normalize_user_path(request: &mut reqwest::Request, user_id: &str) {
 }
 
 async fn build_request(
-    state: &AppState,
+    state: &AccountService,
     target: &crate::application::context::AuthorizedTarget,
     request: &reqwest::Request,
 ) -> Result<reqwest::Request, ApplicationError> {
-    let prefix = state.get_url_prefix().await;
-    UpstreamRequestBuilder::new(&state.processors.url_processor, prefix.as_deref())
+    let prefix = state
+        .authentication
+        .settings
+        .read()
+        .await
+        .url_prefix
+        .as_ref()
+        .map(ToString::to_string);
+    UpstreamRequestBuilder::new(&state.urls, prefix.as_deref())
         .build(target, request)
         .await
-        .map_err(|error| ApplicationError::InvalidRouting(error.into()))
+        .map_err(|error| crate::application::input::routing_error(error.0))
 }
 
 fn reported_server_version(ui_version: &str) -> String {
@@ -116,7 +128,7 @@ fn reported_server_version(ui_version: &str) -> String {
 }
 
 pub(crate) async fn public_server_info(
-    state: &AppState,
+    state: &AuthenticationService,
     ui_version: &str,
 ) -> crate::models::PublicServerInfo {
     let cfg = state.settings.read().await;
@@ -132,11 +144,13 @@ pub(crate) async fn public_server_info(
 }
 
 pub(crate) async fn server_info(
-    state: &AppState,
+    state: &AccountService,
     input: OperationRequest,
     ui_version: &str,
 ) -> Result<crate::models::ServerInfo, ApplicationError> {
-    let resolved = input.resolve_target_typed(state).await?;
+    let resolved = input
+        .resolve_target_using(&state.routing_services())
+        .await?;
     input.context.user().ok_or_else(unauthenticated)?;
     // Match the legacy original authorization: only the Authorization variant
     // enabled this response, not X-Emby-Authorization after remapping.
@@ -147,13 +161,15 @@ pub(crate) async fn server_info(
     );
     if !is_seerr {
         let request = build_request(state, &resolved.target, &input.original_request).await?;
-        let mut server_info =
-            execute_json_request::<crate::models::ServerInfo>(&state.reqwest_client, request)
-                .await
-                .inspect_err(|status| {
-                    error!("Failed to get upstream server info: {status}");
-                })?;
-        let cfg = state.settings.read().await;
+        let mut server_info = execute_json_request::<crate::models::ServerInfo>(
+            &state.authentication.reqwest_client,
+            request,
+        )
+        .await
+        .inspect_err(|status| {
+            error!("Failed to get upstream server info: {status}");
+        })?;
+        let cfg = state.authentication.settings.read().await;
         server_info.id = cfg.server_id.clone();
         server_info.server_name = cfg.server_name.clone();
         server_info.local_address = cfg.public_address.clone();
@@ -161,7 +177,7 @@ pub(crate) async fn server_info(
         return Ok(server_info);
     }
 
-    let cfg = state.settings.read().await;
+    let cfg = state.authentication.settings.read().await;
     Ok(crate::models::ServerInfo {
         operating_system_display_name: Some(std::env::consts::OS.to_string()),
         has_pending_restart: Some(false),
@@ -193,7 +209,7 @@ pub(crate) async fn server_info(
 
 // Authenticates a user by trying all configured servers in parallel
 pub(crate) async fn authenticate_by_name(
-    state: &AppState,
+    state: &AuthenticationService,
     headers: HeaderMap,
     payload: AuthenticateRequest,
 ) -> Result<AuthenticateResponse, ApplicationError> {
@@ -235,7 +251,7 @@ pub(crate) async fn authenticate_by_name(
         .await
         .map_err(ApplicationError::Storage)?;
 
-    if existing_user.is_none() && !state.auto_create_users_on_login().await {
+    if existing_user.is_none() && !state.settings.read().await.auto_create_users_on_login {
         warn!(
             "Auto user creation disabled; rejecting login for non-existing local user '{}'",
             payload.username
@@ -397,7 +413,7 @@ async fn local_credential_allows_login(
 }
 
 async fn resolve_or_create_login_user(
-    state: &AppState,
+    state: &AuthenticationService,
     username: &str,
     password: &Password,
 ) -> Result<crate::auth::service::User, ApplicationError> {
@@ -413,7 +429,7 @@ async fn resolve_or_create_login_user(
 }
 
 async fn persist_successful_auths(
-    state: &AppState,
+    state: &AuthenticationService,
     user: &crate::auth::service::User,
     login_authorization: &Authorization,
     successful_auths: &[SuccessfulServerAuth],
@@ -462,7 +478,7 @@ async fn persist_successful_auths(
 }
 
 async fn decorate_auth_response(
-    state: &AppState,
+    state: &AuthenticationService,
     user: &crate::auth::service::User,
     login_username: &str,
     login_authorization: &Authorization,
@@ -482,8 +498,14 @@ async fn decorate_auth_response(
     auth_response.user.policy.sync_play_access = SyncPlayUserAccessType::CreateAndJoinGroups;
     auth_response.access_token = user.virtual_key.clone();
     auth_response.user.id = user.id.to_string();
-    crate::sessions::decorate_authentication(state, user, login_authorization, &mut auth_response)
-        .await;
+    crate::sessions::decorate_authentication(
+        &state.client_sessions,
+        &state.settings.read().await.server_id,
+        user,
+        login_authorization,
+        &mut auth_response,
+    )
+    .await;
     auth_response
 }
 
@@ -610,7 +632,7 @@ mod tests {
 
 /// Authenticates a user on a specific server
 async fn authenticate_on_server(
-    state: AppState,
+    state: AuthenticationService,
     authorization: Authorization,
     payload: AuthenticateRequest,
     server: crate::servers::storage::Server,

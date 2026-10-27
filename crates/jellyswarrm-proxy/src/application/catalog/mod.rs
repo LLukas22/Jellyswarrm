@@ -11,19 +11,19 @@ pub(crate) mod services;
 use input::CatalogRequest;
 
 pub(crate) mod input;
-pub(crate) mod query;
+mod query;
 pub(crate) mod refresh;
 
-pub(crate) mod filters;
+mod filters;
 mod item_lookup;
-pub(crate) mod library_resolution;
+mod library_resolution;
 mod library_root;
-pub(crate) mod media_reconciliation;
-pub(crate) mod postprocessing;
-pub(crate) mod request_policy;
+mod media_reconciliation;
+mod postprocessing;
+mod request_policy;
 pub(crate) mod scan;
 pub(crate) mod snapshots;
-pub(crate) mod upstream;
+mod upstream;
 
 use library_resolution::{
     resolve_catalog_plan, CatalogFetchTarget, CatalogPlan, ResolvedCatalogParent,
@@ -144,7 +144,6 @@ pub(crate) async fn get_show_children(
         if preprocessed
             .context
             .access_scope()
-            .as_ref()
             .is_some_and(|scope| !scope.allows(member.server.id))
         {
             continue;
@@ -368,3 +367,15 @@ pub(super) async fn finalize_items_response_typed(
     }
     Ok(response)
 }
+
+#[cfg(test)]
+#[path = "../../unit_tests/federated_reliability.rs"]
+mod reliability_tests;
+#[cfg(test)]
+#[path = "../../unit_tests/federated_snapshots.rs"]
+mod snapshot_tests;
+#[cfg(test)]
+#[path = "../../unit_tests/federated_catalog.rs"]
+pub(crate) mod tests;
+
+pub(crate) use filters::get_filters_typed;

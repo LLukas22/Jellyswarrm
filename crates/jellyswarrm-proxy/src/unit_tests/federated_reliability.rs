@@ -1,4 +1,7 @@
 //! Federated handler regressions for incomplete results and backend failure handling.
+use super::media_reconciliation::{
+    get_aggregate_show_items_typed, get_virtual_library_items_typed,
+};
 use super::{
     tests::{fixture_member_parent_ids, request, setup},
     *,
@@ -47,6 +50,7 @@ async fn mount_catalog(upstreams: &[wiremock::MockServer], sort: &str) {
 #[tokio::test]
 async fn counted_scans_apply_timeout_to_each_page_instead_of_the_whole_catalog() {
     let (state, _, sessions, upstreams) = setup().await;
+    let service = state.catalog_service();
     state.config.write().await.timeout = 1;
     for upstream in &upstreams {
         Mock::given(method("GET")).respond_with(|request: &wiremock::Request| {
@@ -56,166 +60,12 @@ async fn counted_scans_apply_timeout_to_each_page_instead_of_the_whole_catalog()
         }).mount(upstream).await;
     }
     let response =
-        get_items_from_all_servers_preprocessed(&state, request("/Items?Limit=1", &sessions))
+        get_items_from_all_servers_preprocessed(&service, request("/Items?Limit=1", &sessions))
             .await
-            .unwrap()
-            .0;
+            .unwrap();
     assert_eq!(response["TotalRecordCount"], 6);
     assert_eq!(response["Items"].as_array().unwrap().len(), 1);
     assert_eq!(upstreams[0].received_requests().await.unwrap().len(), 3);
-}
-
-/// This request used to fail while initializing an arbitrary single backend:
-/// its first source-owned facet belongs to an authorized but offline source.
-#[tokio::test]
-async fn http_catalog_input_validates_offline_ids_without_initial_backend_selection() {
-    use tower::ServiceExt;
-
-    let (state, _, sessions, upstreams) = setup().await;
-    let user = state
-        .user_authorization
-        .create_user("catalog-input", &"password".into())
-        .await
-        .unwrap();
-    let authorization = crate::models::Authorization {
-        client: "test".into(),
-        device: "test".into(),
-        device_id: "test".into(),
-        version: "1".into(),
-        token: None,
-    };
-    for (_, server) in &sessions {
-        state
-            .user_authorization
-            .add_server_mapping(&user.id, server, "catalog-input", &"password".into(), None)
-            .await
-            .unwrap();
-        state
-            .user_authorization
-            .store_authorization_session(
-                &user.id,
-                server,
-                &authorization,
-                "upstream-token".into(),
-                "backend-user".into(),
-                None,
-            )
-            .await
-            .unwrap();
-    }
-    Mock::given(path("/System/Info/Public"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ServerName":"Online"})))
-        .mount(&upstreams[1])
-        .await;
-    Mock::given(path("/Items"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "Items":[{"Id":"movie","Type":"Movie"}], "TotalRecordCount":1,"StartIndex":0,
-        })))
-        .mount(&upstreams[1])
-        .await;
-    state.server_storage.check_servers_health().await;
-    let mut facets = Vec::new();
-    for (_, server) in &sessions {
-        facets.push(
-            state
-                .media_storage
-                .get_or_create_media_mapping("genre", server)
-                .await
-                .unwrap()
-                .virtual_media_id,
-        );
-    }
-    let app = axum::Router::new()
-        .route(
-            "/Items",
-            axum::routing::get(get_items_from_all_servers_if_not_restricted),
-        )
-        .with_state(state.clone());
-    let send = |uri: String| {
-        let app = app.clone();
-        let auth = format!("MediaBrowser Client=\"test\", Device=\"test\", DeviceId=\"test\", Version=\"1\", Token=\"{}\"", user.virtual_key);
-        async move {
-            app.oneshot(
-                axum::http::Request::builder()
-                    .uri(uri)
-                    .header("Authorization", auth)
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap()
-        }
-    };
-    let response = send(format!("/Items?GenreIds={},{}", facets[0], facets[1])).await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let online = upstreams[1].received_requests().await.unwrap();
-    let catalog_requests = online
-        .iter()
-        .filter(|request| request.url.path() == "/Items")
-        .collect::<Vec<_>>();
-    assert_eq!(catalog_requests.len(), 1);
-    assert!(catalog_requests[0]
-        .url
-        .query_pairs()
-        .any(|(key, value)| key == "GenreIds" && value == "genre"));
-    let before = online.len();
-
-    // A concrete offline owner still has the legacy FORBIDDEN contract,
-    // rather than being redirected to the healthy source.
-    assert_eq!(
-        send(format!("/Items?SeriesId={}", facets[0]))
-            .await
-            .status(),
-        StatusCode::FORBIDDEN
-    );
-    assert_eq!(
-        upstreams[1].received_requests().await.unwrap().len(),
-        before
-    );
-
-    // Removing access to the offline source rejects its IDs before any fan-out.
-    let mapping = state
-        .user_authorization
-        .get_server_mapping_by_server_id(&user.id, sessions[0].1.id)
-        .await
-        .unwrap()
-        .unwrap();
-    state
-        .user_authorization
-        .delete_server_mapping(mapping.id)
-        .await
-        .unwrap();
-    assert_eq!(
-        send(format!("/Items?GenreIds={},{}", facets[0], facets[1]))
-            .await
-            .status(),
-        StatusCode::FORBIDDEN
-    );
-    assert_eq!(
-        upstreams[1].received_requests().await.unwrap().len(),
-        before
-    );
-
-    // All unavailable is still 503, including an otherwise federated query.
-    upstreams[1].reset().await;
-    state.server_storage.check_servers_health().await;
-    let before = upstreams[1].received_requests().await.unwrap().len();
-    for uri in [
-        "/Items".to_string(),
-        format!("/Items?SeriesId={}", facets[1]),
-    ] {
-        assert_eq!(send(uri).await.status(), StatusCode::SERVICE_UNAVAILABLE);
-    }
-    assert_eq!(
-        upstreams[1].received_requests().await.unwrap().len(),
-        before
-    );
-    assert!(upstreams[0]
-        .received_requests()
-        .await
-        .unwrap()
-        .iter()
-        .all(|request| request.url.path() == "/System/Info/Public"));
 }
 
 #[tokio::test]
@@ -244,13 +94,13 @@ async fn partial_search_membership_does_not_veto_recursive_catalog_parent_identi
             ResponseTemplate::new(200).set_body_json(json!({"TotalRecordCount": items.len(), "StartIndex": 0, "Items": items}))
         }).mount(upstream).await;
     }
+    let service = state.catalog_service();
     let search = get_items_from_all_servers_preprocessed(
-        &state,
+        &service,
         request("/Items?SearchTerm=localized", &sessions),
     )
     .await
-    .unwrap()
-    .0;
+    .unwrap();
     assert_eq!(search["TotalRecordCount"], 1);
     let mut previous = None;
     for _ in 0..2 {
@@ -263,16 +113,15 @@ async fn partial_search_membership_does_not_veto_recursive_catalog_parent_identi
                 parent: None,
             })
             .collect();
-        let response = get_virtual_library_items(
-            &state,
+        let response = get_virtual_library_items_typed(
+            &service,
             request("/Items?Recursive=true", &sessions),
             "configured:shows:viewer".into(),
             targets,
             0,
         )
         .await
-        .unwrap()
-        .0;
+        .unwrap();
         let items = response["Items"].as_array().unwrap();
         assert_eq!(
             items.len(),
@@ -299,11 +148,12 @@ async fn partial_search_membership_does_not_veto_recursive_catalog_parent_identi
 async fn snapshots_coalesce_builds_and_keep_random_and_tied_pages_stable() {
     for sort in ["SortName", "Random"] {
         let (state, _, sessions, upstreams) = setup().await;
+        let service = state.catalog_service();
         mount_catalog(&upstreams, sort).await;
         let query = format!("/Items?SearchTerm=equal&SortBy={sort}");
         let fetch = |start, limit| {
             get_items_from_all_servers_preprocessed(
-                &state,
+                &service,
                 request(
                     &format!("{query}&StartIndex={start}&Limit={limit}"),
                     &sessions,
@@ -311,9 +161,9 @@ async fn snapshots_coalesce_builds_and_keep_random_and_tied_pages_stable() {
             )
         };
         let (first, second, count) = tokio::join!(fetch(0, 2), fetch(2, 2), fetch(0, 0));
-        let first = first.unwrap().0;
-        let second = second.unwrap().0;
-        let count = count.unwrap().0;
+        let first = first.unwrap();
+        let second = second.unwrap();
+        let count = count.unwrap();
         assert_eq!(count["Items"], json!([]));
         assert_eq!(count["TotalRecordCount"], 6);
         assert_eq!(second["StartIndex"], 2);
@@ -326,15 +176,15 @@ async fn snapshots_coalesce_builds_and_keep_random_and_tied_pages_stable() {
                 .unwrap()
                 .iter()
                 .all(|right| left["Id"] != right["Id"])));
-        assert_eq!(fetch(0, 2).await.unwrap().0, first);
-        assert_eq!(fetch(2, 2).await.unwrap().0, second);
-        assert_eq!(fetch(99, 3).await.unwrap().0["TotalRecordCount"], 6);
+        assert_eq!(fetch(0, 2).await.unwrap(), first);
+        assert_eq!(fetch(2, 2).await.unwrap(), second);
+        assert_eq!(fetch(99, 3).await.unwrap()["TotalRecordCount"], 6);
         for upstream in &upstreams {
             assert_eq!(upstream.received_requests().await.unwrap().len(), 3);
         }
         // Expiration rebuilds, while persisted aggregate IDs remain stable.
         state.catalog_snapshots.expire();
-        let rebuilt = fetch(0, 6).await.unwrap().0;
+        let rebuilt = fetch(0, 6).await.unwrap();
         assert_eq!(rebuilt["Items"].as_array().unwrap().len(), 6);
         for upstream in &upstreams {
             assert_eq!(upstream.received_requests().await.unwrap().len(), 6);
@@ -345,9 +195,10 @@ async fn snapshots_coalesce_builds_and_keep_random_and_tied_pages_stable() {
 #[tokio::test]
 async fn snapshots_are_scoped_to_viewer_token_targets_and_display_configuration() {
     use crate::{
-        http::preprocessing::JellyfinAuthorization, libraries::service::VirtualLibraryAccessScope,
+        auth::identity::JellyfinAuthorization, libraries::service::VirtualLibraryAccessScope,
     };
     let (state, _, sessions, upstreams) = setup().await;
+    let service = state.catalog_service();
     mount_catalog(&upstreams, "SortName").await;
     let build_request = |viewer: &str,
                          token: &str,
@@ -356,25 +207,30 @@ async fn snapshots_are_scoped_to_viewer_token_targets_and_display_configuration(
         crate::servers::storage::Server,
     )]| {
         let mut req = request("/Items?SearchTerm=equal&Limit=1", selected);
-        req.auth = Some(JellyfinAuthorization::XEmbyToken(token.to_string()));
-        req.access_scope = Some(VirtualLibraryAccessScope::new(
-            viewer,
-            selected.iter().map(|(_, server)| server.id),
-        ));
+        req.context = crate::application::context::RequestContext::new(
+            &req.original_request,
+            Some(JellyfinAuthorization::XEmbyToken(token.to_string())),
+            None,
+            Some(selected.to_vec()),
+            Some(VirtualLibraryAccessScope::new(
+                viewer,
+                selected.iter().map(|(_, server)| server.id),
+            )),
+        );
         req
     };
     let fetch = |viewer: &str, token: &str| {
-        get_items_from_all_servers_preprocessed(&state, build_request(viewer, token, &sessions))
+        get_items_from_all_servers_preprocessed(&service, build_request(viewer, token, &sessions))
     };
-    let first = fetch("viewer", "token-a").await.unwrap().0;
-    assert_eq!(fetch("viewer", "token-a").await.unwrap().0, first);
+    let first = fetch("viewer", "token-a").await.unwrap();
+    assert_eq!(fetch("viewer", "token-a").await.unwrap(), first);
     let _ = fetch("viewer", "token-b").await.unwrap();
-    let other = fetch("other", "token-a").await.unwrap().0;
+    let other = fetch("other", "token-a").await.unwrap();
     assert_ne!(first["Items"][0]["Id"], other["Items"][0]["Id"]);
     state.config.write().await.include_server_name_in_media = false;
     let _ = fetch("viewer", "token-a").await.unwrap();
     let _ = get_items_from_all_servers_preprocessed(
-        &state,
+        &service,
         build_request("viewer", "token-a", &sessions[..1]),
     )
     .await
@@ -386,9 +242,11 @@ async fn snapshots_are_scoped_to_viewer_token_targets_and_display_configuration(
 #[tokio::test]
 async fn incomplete_sources_are_discarded_without_caching_degraded_results_or_pruning_sightings() {
     use super::{
-        library_resolution::CatalogFetchTarget, media_reconciliation::get_virtual_library_items,
+        library_resolution::CatalogFetchTarget,
+        media_reconciliation::get_virtual_library_items_typed,
     };
     let (state, pool, sessions, upstreams) = setup().await;
+    let service = state.catalog_service();
     mount_catalog(&upstreams, "SortName").await;
     let targets = || {
         sessions
@@ -401,15 +259,15 @@ async fn incomplete_sources_are_discarded_without_caching_degraded_results_or_pr
             .collect()
     };
     let fetch = || {
-        get_virtual_library_items(
-            &state,
+        get_virtual_library_items_typed(
+            &service,
             request("/Items?Recursive=true&Limit=1", &sessions),
             "configured:library:viewer".into(),
             targets(),
             0,
         )
     };
-    let original = fetch().await.unwrap().0;
+    let original = fetch().await.unwrap();
     for failure in ["total", "offset", "repeat", "empty", "failed", "deadline"] {
         state.catalog_snapshots.expire();
         upstreams[0].reset().await;
@@ -428,7 +286,7 @@ async fn incomplete_sources_are_discarded_without_caching_degraded_results_or_pr
             }))
         }).mount(&upstreams[0]).await;
         for _ in 0..2 {
-            let response = fetch().await.unwrap().0;
+            let response = fetch().await.unwrap();
             assert_eq!(response["TotalRecordCount"], 6, "{failure}");
             assert_eq!(response["Items"].as_array().unwrap().len(), 1);
             assert_eq!(
@@ -469,7 +327,7 @@ async fn incomplete_sources_are_discarded_without_caching_degraded_results_or_pr
             .mount(upstream)
             .await;
     }
-    assert_eq!(fetch().await.unwrap().0["TotalRecordCount"], 0);
+    assert_eq!(fetch().await.unwrap()["TotalRecordCount"], 0);
     let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM movie_catalog_sightings")
         .fetch_one(&pool)
         .await
@@ -483,7 +341,10 @@ async fn incomplete_sources_are_discarded_without_caching_degraded_results_or_pr
             .mount(upstream)
             .await;
     }
-    assert_eq!(fetch().await.unwrap_err(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(matches!(
+        fetch().await.unwrap_err(),
+        ApplicationError::Shared(cause) if matches!(cause.as_ref(), ApplicationError::SourcesFailed(_))
+    ));
 }
 
 #[test]
@@ -512,8 +373,9 @@ async fn numbered_episode_versions_keep_ranges_distinct_and_route_same_server_co
     use crate::{
         application::{
             details::sources::{merge_media_detail, DetailMergeContext},
-            playback::selection::{
-                record_playback_sources, resolve_playback_route, PlaybackRouteDecision,
+            playback::{
+                selection::record_playback_sources,
+                target::{MediaTargetResolver, PlaybackIntent, SelectionPolicy, SelectionReason},
             },
         },
         models::MediaSource,
@@ -580,16 +442,15 @@ async fn numbered_episode_versions_keep_ranges_distinct_and_route_same_server_co
             ),
         })
         .collect();
-    let response = get_aggregate_show_items(
-        &state,
+    let response = get_aggregate_show_items_typed(
+        &state.catalog_service(),
         request(&format!("/Shows/{aggregate}/Episodes"), &sessions),
         aggregate.into(),
         targets,
         0,
     )
     .await
-    .unwrap()
-    .0;
+    .unwrap();
     let items = response["Items"].as_array().unwrap();
     assert_eq!(
         items.len(),
@@ -646,7 +507,7 @@ async fn numbered_episode_versions_keep_ranges_distinct_and_route_same_server_co
             selected_group: None,
             base_server: &sessions[0].1,
             auth: &None,
-            access_scope: detail_request.access_scope.as_ref(),
+            access_scope: detail_request.context.access_scope(),
             sessions: Some(&sessions),
             original_request: &detail_request.original_request,
             source_generation: generation,
@@ -682,36 +543,36 @@ async fn numbered_episode_versions_keep_ranges_distinct_and_route_same_server_co
         .original_request
         .url_mut()
         .set_path(&format!("/Items/{single_id}/PlaybackInfo"));
-    let context = crate::application::context::RequestContext::new(
-        &detail_request.original_request,
-        detail_request.auth.clone(),
-        detail_request.user.clone(),
-        detail_request.sessions.clone(),
-        detail_request.access_scope.clone(),
-    );
-    let route = resolve_playback_route(
-        &state,
-        &context,
-        single_id,
-        Some(&selected.virtual_media_id),
+    let route = MediaTargetResolver {
+        media: &state.media_storage,
+    }
+    .plan(
+        &detail_request.context,
+        detail_request.context.target(sessions[0].1.id).unwrap(),
+        PlaybackIntent {
+            item: single_id,
+            source: Some(&selected.virtual_media_id),
+            binding: None,
+        },
+        &state.server_storage,
+        SelectionPolicy::Negotiation,
     )
     .await
     .unwrap();
-    let PlaybackRouteDecision::Rerouted(route) = route else {
-        panic!("same-server copy must reroute its item ID");
-    };
-    assert_eq!(route.target.server().id, sessions[0].1.id);
-    assert_eq!(route.member_virtual_id, sibling.mapping.virtual_media_id);
+    assert!(matches!(route.reason, SelectionReason::ExplicitSource));
+    assert_eq!(route.target.backend.server().id, sessions[0].1.id);
+    let member_virtual_id = &route.target.member.as_ref().unwrap().virtual_media_id;
+    assert_eq!(member_virtual_id, &sibling.mapping.virtual_media_id);
     let mut normalized = detail_request.original_request.try_clone().unwrap();
     *normalized.url_mut() =
-        crate::upstream::url::replace_path_id(normalized.url(), "Items", &route.member_virtual_id)
+        crate::upstream::url::replace_path_id(normalized.url(), "Items", member_virtual_id)
             .unwrap();
     let prefix = state.get_url_prefix().await;
     let built = crate::upstream::jellyfin::request::UpstreamRequestBuilder::new(
         &state.processors.url_processor,
         prefix.as_deref(),
     )
-    .build(&route.target, &normalized)
+    .build(&route.target.backend, &normalized)
     .await
     .unwrap();
     assert_eq!(
@@ -729,7 +590,7 @@ async fn numbered_episode_versions_keep_ranges_distinct_and_route_same_server_co
     record_playback_sources(
         &state.media_storage,
         single_id,
-        route.target.server(),
+        route.target.backend.server(),
         &owner(101),
         generation,
         &mut sources,

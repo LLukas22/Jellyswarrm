@@ -32,7 +32,7 @@ struct PreserveActiveNegotiatedSources;
 
 impl PreserveActiveNegotiatedSources {
     fn retain(
-        session: &crate::application::playback::sessions::PlaybackSession,
+        session: &crate::playback::sessions::PlaybackSession,
         route: &crate::media::storage::MediaVersionSourceRoute,
         refreshed_members: &[i64],
     ) -> bool {
@@ -380,7 +380,7 @@ async fn fetch_member_source(
     let request = UpstreamRequestBuilder::new(&state.processors.url_processor, prefix.as_deref())
         .build(&target, &original_request)
         .await
-        .map_err(|error| ApplicationError::Internal(error.into()))?;
+        .map_err(|error| crate::application::input::routing_error(error.0))?;
 
     let response = state
         .execute_processed_json(
@@ -506,7 +506,7 @@ mod tests {
             source_mapping: mapping(2, 1),
             member_mapping: member.clone(),
         };
-        let mut session = crate::application::playback::sessions::PlaybackSession {
+        let mut session = crate::playback::sessions::PlaybackSession {
             session_id: "player".into(),
             item_id: route.source_mapping.virtual_media_id.clone(),
             user_id: "viewer".into(),

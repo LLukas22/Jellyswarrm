@@ -1,5 +1,6 @@
 //! Client identity routing and availability policy. Translation receives a
 //! selected server; only this application capability chooses among candidates.
+use super::routing::RoutingError;
 use crate::{
     libraries::service::{
         compare_virtual_library_routes, VirtualLibraryAccessScope, VirtualLibraryResolution,
@@ -12,7 +13,7 @@ use crate::{
     servers::{id::ServerId, Server, ServerStorageService},
     upstream::url::contains_id,
 };
-use anyhow::Result;
+type Result<T> = std::result::Result<T, RoutingError>;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -41,7 +42,7 @@ impl UrlSelection {
     ) -> Result<()> {
         if let Some(mapping) = self.media.get_media_mapping_by_virtual(id).await? {
             if !scope.allows(mapping.server_id) {
-                return Err(super::error::MediaAccessDenied.into());
+                return Err(RoutingError::AccessDenied);
             }
         }
         let members = self
@@ -49,7 +50,7 @@ impl UrlSelection {
             .get_media_version_members_by_virtual_id(id)
             .await?;
         if !members.is_empty() && members.iter().all(|member| !scope.allows(member.server.id)) {
-            return Err(super::error::MediaAccessDenied.into());
+            return Err(RoutingError::AccessDenied);
         }
         Ok(())
     }
@@ -73,7 +74,7 @@ impl UrlSelection {
                 }
             }
         }
-        if let Some(source) = selected_media_source(url)? {
+        if let Some(source) = selected_media_source(url).map_err(RoutingError::InvalidSelection)? {
             let mut aggregate = None;
             for tag in MEDIA_ID_PATH_TAGS {
                 if let Some(id) = contains_id(url, tag) {
@@ -89,12 +90,12 @@ impl UrlSelection {
                     .get_media_version_source_route(group.id, &source)
                     .await?
                     .ok_or_else(|| {
-                        anyhow::anyhow!(
+                        RoutingError::InvalidSelection(anyhow::anyhow!(
                             "media source does not belong to the requested media aggregate"
-                        )
+                        ))
                     })?;
                 if scope.is_some_and(|scope| !scope.allows(route.member_mapping.server_id)) {
-                    return Err(super::error::MediaAccessDenied.into());
+                    return Err(RoutingError::AccessDenied);
                 }
                 return Ok(self
                     .servers
@@ -131,11 +132,11 @@ impl UrlSelection {
     ) -> Result<Option<Server>> {
         if let Some((_, server)) = self.media.get_media_mapping_with_server(id).await? {
             if !allowed(server.id, scope, None) {
-                return Err(super::error::MediaAccessDenied.into());
+                return Err(RoutingError::AccessDenied);
             }
             return Ok(Some(server));
         }
-        if let Some(member) = self.media_version_member(id, scope, None).await {
+        if let Some(member) = self.media_version_member(id, scope, None).await? {
             return Ok(Some(member.server));
         }
         if self.media.get_media_version_group(id).await?.is_some() {
@@ -146,18 +147,16 @@ impl UrlSelection {
             if scope
                 .is_some_and(|scope| members.iter().all(|member| !scope.allows(member.server.id)))
             {
-                return Err(super::error::MediaAccessDenied.into());
+                return Err(RoutingError::AccessDenied);
             }
-            anyhow::bail!("media aggregate has no healthy authorized version");
+            return Err(RoutingError::UnavailableOwner);
         }
         if let Some(target) = self.libraries.routing_target(id, scope, None).await? {
             return Ok(Some(target.server));
         }
         match self.libraries.resolve(id, scope).await? {
             VirtualLibraryResolution::Unknown | VirtualLibraryResolution::Empty { .. } => Ok(None),
-            VirtualLibraryResolution::Resolved(_) => {
-                anyhow::bail!("failed to select a routing target for the resolved virtual library")
-            }
+            VirtualLibraryResolution::Resolved(_) => Err(RoutingError::UnavailableOwner),
         }
     }
 
@@ -166,19 +165,18 @@ impl UrlSelection {
         id: &str,
         scope: Option<&VirtualLibraryAccessScope>,
         server: Option<ServerId>,
-    ) -> Option<MediaMapping> {
-        if let Some(mapping) = self.media.get_media_mapping_by_virtual(id).await.ok()? {
-            return allowed(mapping.server_id, scope, server).then_some(mapping);
+    ) -> std::result::Result<Option<MediaMapping>, sqlx::Error> {
+        if let Some(mapping) = self.media.get_media_mapping_by_virtual(id).await? {
+            return Ok(allowed(mapping.server_id, scope, server).then_some(mapping));
         }
-        if let Some(member) = self.media_version_member(id, scope, server).await {
-            return Some(member.mapping);
+        if let Some(member) = self.media_version_member(id, scope, server).await? {
+            return Ok(Some(member.mapping));
         }
-        self.libraries
+        Ok(self
+            .libraries
             .routing_target(id, scope, server)
-            .await
-            .ok()
-            .flatten()
-            .map(|target| target.mapping)
+            .await?
+            .map(|target| target.mapping))
     }
 
     async fn media_version_member(
@@ -186,12 +184,11 @@ impl UrlSelection {
         id: &str,
         scope: Option<&VirtualLibraryAccessScope>,
         server: Option<ServerId>,
-    ) -> Option<MediaVersionMember> {
+    ) -> std::result::Result<Option<MediaVersionMember>, sqlx::Error> {
         let members = self
             .media
             .get_media_version_members_by_virtual_id(id)
-            .await
-            .ok()?;
+            .await?;
         let mut healthy = Vec::new();
         for member in members {
             if allowed(member.server.id, scope, server)
@@ -204,14 +201,14 @@ impl UrlSelection {
                 healthy.push(member);
             }
         }
-        healthy.into_iter().max_by(|left, right| {
+        Ok(healthy.into_iter().max_by(|left, right| {
             compare_virtual_library_routes(
                 &left.server,
                 &left.mapping.original_media_id,
                 &right.server,
                 &right.mapping.original_media_id,
             )
-        })
+        }))
     }
 }
 

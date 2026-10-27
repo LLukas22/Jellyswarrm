@@ -4,10 +4,6 @@ use std::{error::Error, fmt};
 
 use hyper::StatusCode;
 
-#[derive(Debug, thiserror::Error)]
-#[error("requested media is outside the caller's authorized server scope")]
-pub(crate) struct MediaAccessDenied;
-
 /// Workflow context, not a response code. Endpoint adapters own its HTTP policy.
 pub(crate) enum FailureStage {
     CallerAuthentication,
@@ -160,7 +156,6 @@ mod tests {
     fn endpoint_contract_retains_typed_cause_without_reclassifying_upstream_denial() {
         let error =
             ApplicationError::Storage(sqlx::Error::RowNotFound).at(FailureStage::HlsTranslation);
-        assert_eq!(error.detail_status(), StatusCode::BAD_GATEWAY);
         assert!(!error.allows_detail_fallback());
         let wrapped = error
             .source()
@@ -192,7 +187,6 @@ mod tests {
     fn upstream_forbidden_and_local_denial_have_distinct_fallback_policy() {
         let upstream = ApplicationError::UpstreamStatus(StatusCode::FORBIDDEN);
         let local = ApplicationError::AccessDenied;
-        assert_eq!(upstream.detail_status(), local.detail_status());
         assert!(upstream.allows_detail_fallback());
         assert!(!local.allows_detail_fallback());
         assert!(ApplicationError::UpstreamStatus(StatusCode::UNAUTHORIZED).allows_detail_fallback());
@@ -214,7 +208,6 @@ mod tests {
         let error = ApplicationError::InvalidRouting(anyhow::Error::new(std::io::Error::other(
             "private routing context",
         )));
-        assert_eq!(error.detail_status(), StatusCode::BAD_REQUEST);
         assert!(!error.allows_detail_fallback());
         assert!(error.source().unwrap().is::<std::io::Error>());
         assert!(!format!("{error:?}").contains("private"));

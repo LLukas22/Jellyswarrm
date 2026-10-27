@@ -668,7 +668,7 @@ async fn cancellation_rejects_unknown_foreign_and_unavailable_sessions() {
         .unwrap();
     f.state
         .play_sessions
-        .add_session(crate::application::playback::sessions::PlaybackSession {
+        .add_session(crate::playback::sessions::PlaybackSession {
             session_id: "foreign".into(),
             item_id: aggregate.clone(),
             user_id: f.other.id.clone(),
@@ -693,7 +693,12 @@ async fn cancellation_rejects_unknown_foreign_and_unavailable_sessions() {
             .send()
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{query}");
+        let expected = if query == "PlaySessionId=foreign" {
+            StatusCode::FORBIDDEN
+        } else {
+            StatusCode::BAD_REQUEST
+        };
+        assert_eq!(response.status(), expected, "{query}");
     }
     let foreign_stream = f
         .request(

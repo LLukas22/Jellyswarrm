@@ -37,12 +37,12 @@ fn media_id_tags_cover_audio_paths_and_item_id_queries() {
     ));
 }
 
-use crate::application::playback::sessions::{PlaybackSession, SessionStorage};
 use crate::auth::service::UserAuthorizationService;
 use crate::config::{AppConfig, MIGRATOR};
 use crate::http::handlers::quick_connect::QuickConnectStorage;
 use crate::libraries::service::VirtualLibraryService;
 use crate::media::storage::MediaStorageService;
+use crate::playback::sessions::{PlaybackSession, SessionStorage};
 use crate::servers::id::ServerId;
 use crate::servers::storage::ServerStorageService;
 use crate::{processors::ProxyProcessors, DataContext};

@@ -87,10 +87,10 @@ pub(crate) async fn get_filters_typed(
                 &preprocessed.body_analysis,
                 &state.routing_services(),
                 &preprocessed.original_request,
-                preprocessed.context.access_scope().as_ref(),
+                preprocessed.context.access_scope(),
             )
             .await
-            .map_err(super::input::input_error_typed)?;
+            .map_err(ApplicationError::from)?;
             vec![CatalogFetchTarget {
                 session: session.ok_or_else(|| {
                     ApplicationError::MissingIdentity("facet session")
@@ -132,7 +132,7 @@ pub(crate) async fn get_filters_typed(
             )
             .build(&authorized, &request)
             .await
-            .map_err(|error| ApplicationError::Internal(error.into()))?;
+            .map_err(|error| crate::application::input::routing_error(error.0))?;
             tokio::time::timeout(
                 timeout,
                 state.execute_processed_json(

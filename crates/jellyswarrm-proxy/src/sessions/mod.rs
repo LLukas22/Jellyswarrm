@@ -155,7 +155,8 @@ async fn snapshots(state: &AppState, user_id: &str) -> Result<Vec<serde_json::Va
 
 /// Give both password and Quick Connect authentication the same local session DTO.
 pub async fn decorate_authentication(
-    state: &AppState,
+    sessions: &ClientSessionService,
+    server_id: &str,
     user: &User,
     auth: &crate::models::Authorization,
     response: &mut crate::models::AuthenticateResponse,
@@ -166,59 +167,14 @@ pub async fn decorate_authentication(
         device_id: auth.device_id.clone(),
         version: auth.version.clone(),
     };
-    let id = state
-        .client_sessions
+    let id = sessions
         .ensure(user, &user.virtual_key, Some(&device))
         .await;
-    if let Some(session) = state.client_sessions.get(&id).await {
-        let server_id = state.config.read().await.server_id.clone();
+    if let Some(session) = sessions.get(&id).await {
         // This DTO is constructed locally and has all required SessionInfo fields.
-        response.session_info =
-            serde_json::from_value(session.dto(&server_id, &state.client_sessions.transport))
-                .expect("local SessionInfo DTO");
+        response.session_info = serde_json::from_value(session.dto(server_id, &sessions.transport))
+            .expect("local SessionInfo DTO");
     }
-}
-
-/// Observe only reports that passed the normal playback pipeline; use the original virtual IDs.
-pub async fn observe_playback(state: &AppState, request: &reqwest::Request) {
-    let Some(action) = crate::http::preprocessing::playback_session_action(
-        request.method(),
-        request.url().path(),
-        state,
-    )
-    .await
-    else {
-        return;
-    };
-    let Some(report) = crate::http::preprocessing::body_to_json(request) else {
-        return;
-    };
-    let Ok(uri) = request.url().as_str().parse() else {
-        return;
-    };
-    let Ok(identity) =
-        resolve_request_identity_from_headers_uri(request.headers(), &uri, state).await
-    else {
-        return;
-    };
-    let Some(user) = identity.user else {
-        return;
-    };
-    let Some(token) = identity.auth.as_ref().and_then(|a| a.token_ref()) else {
-        return;
-    };
-    let id = state
-        .client_sessions
-        .ensure(&user, token, identity.device.as_ref())
-        .await;
-    state
-        .client_sessions
-        .report(
-            &id,
-            action == crate::processors::request_analyzer::PlaybackSessionAction::Remove,
-            &report,
-        )
-        .await;
 }
 
 /// Reset local client connections together with an administrative session reset.

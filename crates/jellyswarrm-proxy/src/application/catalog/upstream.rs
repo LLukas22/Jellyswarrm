@@ -758,7 +758,7 @@ async fn prepare_backend_request(
     )
     .build(&target, &request)
     .await
-    .map_err(|error| ApplicationError::Internal(error.into()))
+    .map_err(|error| crate::application::input::routing_error(error.0))
 }
 
 async fn execute_raw_items_request(
@@ -873,11 +873,11 @@ mod tests {
         wiremock::MockServer,
     ) {
         use crate::{
-            application::playback::sessions::SessionStorage,
             auth::service::{Device, UserAuthorizationService},
             config::{AppConfig, MediaStreamingMode, MIGRATOR},
             libraries::service::VirtualLibraryService,
             media::storage::MediaStorageService,
+            playback::sessions::SessionStorage,
             processors::ProxyProcessors,
             servers::storage::ServerStorageService,
             DataContext,
@@ -997,7 +997,7 @@ mod tests {
                 Ok(_) => panic!("invalid JSON must fail catalog scan"),
                 Err(error) => error,
             };
-            assert_eq!(error.detail_status(), StatusCode::SERVICE_UNAVAILABLE);
+
             let ApplicationError::SourcesFailed(causes) = &error else {
                 panic!("typed source failures required")
             };

@@ -2,9 +2,9 @@
 //! registration and response decoration are explicit stages, owned here rather
 //! than by an incoming HTTP handler.
 use crate::{
+    application::accounts::services::AuthenticationService,
     auth::quick_connect::Redemption,
     models::{AuthenticateResponse, Authorization, SyncPlayUserAccessType},
-    AppState,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -20,7 +20,7 @@ pub(crate) enum QuickConnectError {
 }
 
 pub(crate) async fn redeem(
-    state: &AppState,
+    state: &AuthenticationService,
     redemption: Redemption,
     authorization: Authorization,
 ) -> Result<AuthenticateResponse, QuickConnectError> {
@@ -37,7 +37,7 @@ pub(crate) async fn redeem(
 // lifetime. Cancellation lets the coordinator drain (not abort) every worker,
 // including already-submitted SQL writes, before restoring the approval.
 async fn redeem_with_hooks(
-    state: &AppState,
+    state: &AuthenticationService,
     redemption: Redemption,
     authorization: Authorization,
     hooks: RegistrationHooks,
@@ -58,7 +58,7 @@ async fn redeem_with_hooks(
 }
 
 async fn redeem_owned(
-    state: &AppState,
+    state: &AuthenticationService,
     redemption: Redemption,
     authorization: Authorization,
     reply: &tokio::sync::oneshot::Sender<Result<AuthenticateResponse, QuickConnectError>>,
@@ -126,7 +126,7 @@ async fn redeem_owned(
 }
 
 async fn authenticate_and_register(
-    state: &AppState,
+    state: &AuthenticationService,
     user: &crate::auth::service::User,
     server: &crate::servers::Server,
     mapping: &crate::auth::service::ServerMapping,
@@ -175,7 +175,14 @@ async fn authenticate_and_register(
     response.user.policy.is_administrator = false;
     response.user.policy.sync_play_access = SyncPlayUserAccessType::CreateAndJoinGroups;
     response.access_token = user.virtual_key.clone();
-    crate::sessions::decorate_authentication(state, user, authorization, &mut response).await;
+    crate::sessions::decorate_authentication(
+        &state.client_sessions,
+        &state.settings.read().await.server_id,
+        user,
+        authorization,
+        &mut response,
+    )
+    .await;
     Ok(response)
 }
 
@@ -222,14 +229,14 @@ impl RegistrationPause {
 mod tests {
     use super::*;
     use crate::{
-        application::playback::sessions::SessionStorage,
         auth::quick_connect::{QuickConnectStorage, RedemptionError},
         config::{AppConfig, MediaStreamingMode, MIGRATOR},
         libraries::VirtualLibraryService,
         media::MediaStorageService,
+        playback::sessions::SessionStorage,
         processors::ProxyProcessors,
         servers::ServerStorageService,
-        DataContext,
+        AppState, DataContext,
     };
     use std::sync::Arc;
     use wiremock::{
@@ -323,7 +330,15 @@ mod tests {
         let caller = {
             let state = state.clone();
             let client = client.clone();
-            tokio::spawn(async move { redeem_with_hooks(&state, reservation, client, hooks).await })
+            tokio::spawn(async move {
+                redeem_with_hooks(
+                    &state.authentication_service().await,
+                    reservation,
+                    client,
+                    hooks,
+                )
+                .await
+            })
         };
         tokio::time::timeout(std::time::Duration::from_secs(5), before.entered.notified())
             .await
@@ -358,7 +373,9 @@ mod tests {
             .await
             .unwrap();
         let retry = state.quick_connect.begin_redemption(&secret).unwrap();
-        let response = redeem(&state, retry, client).await.unwrap();
+        let response = redeem(&state.authentication_service().await, retry, client)
+            .await
+            .unwrap();
         assert_eq!(response.access_token, user.virtual_key);
         assert!(matches!(
             state.quick_connect.begin_redemption(&secret),

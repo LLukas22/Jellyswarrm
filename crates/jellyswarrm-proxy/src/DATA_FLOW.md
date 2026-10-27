@@ -79,7 +79,7 @@ sequenceDiagram
 | PlaybackInfo translation | `application/playback/response.rs` |
 | Live open/refresh/close | `application/playback/live.rs` |
 | Binding commits and revision fences | `application/playback/lifecycle.rs` |
-| Playback sessions and live-stream bindings | `application/playback/sessions.rs` |
+| Playback sessions and live-stream bindings | `playback/sessions.rs` |
 | Reports and cancellation | `application/playback/reports.rs` |
 | Streaming and HLS rewriting | `upstream/jellyfin/delivery.rs`, `hls.rs` |
 | JSON adapter and wire normalization | `upstream/jellyfin/json.rs` |

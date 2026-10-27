@@ -20,12 +20,11 @@ use crate::{
 
 /// Virtualize opaque live IDs and their delivery URL references together.
 pub(crate) async fn prepare_live_source(
-    state: &crate::application::playback::sessions::SessionStorage,
+    state: &crate::playback::sessions::SessionStorage,
     source: &mut MediaSource,
     user: &str,
     server: &crate::servers::storage::Server,
-) -> Result<Option<Arc<crate::application::playback::sessions::PreparedLiveStream>>, ApplicationError>
-{
+) -> Result<Option<Arc<crate::playback::sessions::PreparedLiveStream>>, ApplicationError> {
     let mut value = serde_json::to_value(&*source).map_err(ApplicationError::Serialization)?;
     let Some(original) = value
         .as_object()
@@ -162,14 +161,10 @@ pub(crate) async fn post_live_stream_action_typed(
     state: &PlaybackService<'_>,
     preprocessed: LiveRequest,
 ) -> Result<LiveStreamActionResult, ApplicationError> {
-    let scope = preprocessed
-        .context
-        .access_scope()
-        .as_ref()
-        .ok_or_else(|| {
-            ApplicationError::MissingIdentity("live viewer scope")
-                .at(crate::application::error::FailureStage::CallerAuthentication)
-        })?;
+    let scope = preprocessed.context.access_scope().ok_or_else(|| {
+        ApplicationError::MissingIdentity("live viewer scope")
+            .at(crate::application::error::FailureStage::CallerAuthentication)
+    })?;
     let mut payload = body(&preprocessed.original_request)?;
     let id = field(&preprocessed.original_request, &payload, "LiveStreamId")?
         .ok_or(ApplicationError::InvalidInput("missing live identity"))?;
@@ -222,7 +217,7 @@ pub(crate) async fn post_live_stream_action_typed(
     let request = UpstreamRequestBuilder::new(state.processors.url_processor, prefix.as_deref())
         .build(&target, &request)
         .await
-        .map_err(|error| ApplicationError::Internal(error.into()))?;
+        .map_err(|error| crate::application::input::routing_error(error.0))?;
     if close {
         let status = state.upstream.execute_status(request).await?;
         if status.is_success() {
@@ -253,14 +248,10 @@ pub(crate) async fn post_livestream_open_typed(
     state: &PlaybackService<'_>,
     preprocessed: LiveRequest,
 ) -> Result<Value, ApplicationError> {
-    let scope = preprocessed
-        .context
-        .access_scope()
-        .as_ref()
-        .ok_or_else(|| {
-            ApplicationError::MissingIdentity("live viewer scope")
-                .at(crate::application::error::FailureStage::CallerAuthentication)
-        })?;
+    let scope = preprocessed.context.access_scope().ok_or_else(|| {
+        ApplicationError::MissingIdentity("live viewer scope")
+            .at(crate::application::error::FailureStage::CallerAuthentication)
+    })?;
     let mut payload = body(&preprocessed.original_request)?;
     let session_id = play_session_id(preprocessed.original_request.url())
         .map_err(ApplicationError::InvalidRouting)?
@@ -302,10 +293,7 @@ pub(crate) async fn post_livestream_open_typed(
         .target(binding.server_id)
         .map_err(ApplicationError::TargetSelection)?;
     let server = target.server();
-    let session = target
-        .session()
-        .as_ref()
-        .ok_or(ApplicationError::UnavailableOwner)?;
+    let session = target.session().ok_or(ApplicationError::UnavailableOwner)?;
     let original_item_id =
         binding
             .original_item_id
@@ -368,7 +356,7 @@ pub(crate) async fn post_livestream_open_typed(
     let request = UpstreamRequestBuilder::new(state.processors.url_processor, prefix.as_deref())
         .build(&target, &request)
         .await
-        .map_err(|error| ApplicationError::Internal(error.into()))?;
+        .map_err(|error| crate::application::input::routing_error(error.0))?;
     let token = preprocessed
         .context
         .authorization()
@@ -440,16 +428,15 @@ mod tests {
 
     #[test]
     fn conflicting_query_values_are_rejected_before_body_fallback() {
-        assert_eq!(
+        assert!(matches!(
             field(
                 &request("?LiveStreamId=one&livestreamid=two"),
                 &json!({"LiveStreamId": "body"}),
                 "LiveStreamId",
             )
-            .unwrap_err()
-            .detail_status(),
-            StatusCode::BAD_REQUEST,
-        );
+            .unwrap_err(),
+            crate::application::error::ApplicationError::InvalidInput(_)
+        ));
     }
 
     #[test]
@@ -464,15 +451,14 @@ mod tests {
             .unwrap(),
             Some("body".into()),
         );
-        assert_eq!(
+        assert!(matches!(
             field(
                 &request,
                 &json!({"LiveStreamId": "one", "livestreamid": "two"}),
                 "LiveStreamId",
             )
-            .unwrap_err()
-            .detail_status(),
-            StatusCode::BAD_REQUEST,
-        );
+            .unwrap_err(),
+            crate::application::error::ApplicationError::InvalidInput(_)
+        ));
     }
 }

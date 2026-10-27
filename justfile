@@ -70,11 +70,11 @@ check: doctor
 http-test:
     JELLYSWARRM_SKIP_UI=1 cargo test --package jellyswarrm-proxy --bin jellyswarrm-proxy http_tests
 
-# Run the HTTP contracts with separate, unmerged backend libraries.
+# Run configuration-dependent HTTP contracts with separate backend libraries.
 http-test-normal:
     JELLYSWARRM_SKIP_UI=1 cargo test --package jellyswarrm-proxy --bin jellyswarrm-proxy normal_servers
 
-# Run the HTTP contracts with merged libraries and deduplicated media.
+# Run configuration-dependent HTTP contracts with merged libraries and deduplicated media.
 http-test-merged:
     JELLYSWARRM_SKIP_UI=1 cargo test --package jellyswarrm-proxy --bin jellyswarrm-proxy merged_libraries
 

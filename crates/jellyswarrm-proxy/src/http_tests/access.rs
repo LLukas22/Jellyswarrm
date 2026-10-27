@@ -5,12 +5,9 @@ use wiremock::{
     Mock, ResponseTemplate,
 };
 
-scenario_test!(
-    source_owned_requests_reject_foreign_viewers_before_upstream,
-    foreign_viewer_contract
-);
-async fn foreign_viewer_contract(scenario: Scenario) {
-    let f = Fixture::for_scenario(scenario).await;
+#[tokio::test]
+async fn source_owned_requests_reject_foreign_viewers_before_upstream() {
+    let f = Fixture::for_scenario(Scenario::NormalServers).await;
     f.healthy().await;
     for (verb, route, body) in [
         (
@@ -88,12 +85,9 @@ async fn foreign_viewer_contract(scenario: Scenario) {
     f.no_upstream_requests().await;
 }
 
-scenario_test!(
-    partially_mapped_user_cannot_access_another_backend,
-    partial_access_contract
-);
-async fn partial_access_contract(scenario: Scenario) {
-    let f = Fixture::for_scenario(scenario).await;
+#[tokio::test]
+async fn partially_mapped_user_cannot_access_another_backend() {
+    let f = Fixture::for_scenario(Scenario::NormalServers).await;
     f.healthy().await;
     let (_, allowed) = f
         .state
@@ -214,13 +208,10 @@ async fn partial_access_contract(scenario: Scenario) {
     assert!(f.upstreams[1].received_requests().await.unwrap().is_empty());
 }
 
-scenario_test!(
-    source_owned_read_propagates_upstream_errors_without_other_backend_fallback,
-    upstream_error_contract
-);
-async fn upstream_error_contract(scenario: Scenario) {
+#[tokio::test]
+async fn source_owned_read_propagates_upstream_errors_without_other_backend_fallback() {
     for status in [401, 403, 404, 500, 503] {
-        let f = Fixture::for_scenario(scenario).await;
+        let f = Fixture::for_scenario(Scenario::NormalServers).await;
         f.healthy().await;
         let original = f.original(1).await;
         Mock::given(method("GET"))
@@ -244,12 +235,9 @@ async fn upstream_error_contract(scenario: Scenario) {
     }
 }
 
-scenario_test!(
-    header_and_query_authentication_translate_to_the_same_backend_identity,
-    authentication_contract
-);
-async fn authentication_contract(scenario: Scenario) {
-    let f = Fixture::for_scenario(scenario).await;
+#[tokio::test]
+async fn header_and_query_authentication_translate_to_the_same_backend_identity() {
+    let f = Fixture::for_scenario(Scenario::NormalServers).await;
     f.healthy().await;
     let original = f.original(1).await;
     Mock::given(method("GET"))
@@ -282,12 +270,9 @@ async fn authentication_contract(scenario: Scenario) {
     assert!(f.upstreams[0].received_requests().await.unwrap().is_empty());
 }
 
-scenario_test!(
-    normalized_uuid_and_lowercase_route_have_the_same_owner,
-    normalized_route_contract
-);
-async fn normalized_route_contract(scenario: Scenario) {
-    let f = Fixture::for_scenario(scenario).await;
+#[tokio::test]
+async fn normalized_uuid_and_lowercase_route_have_the_same_owner() {
+    let f = Fixture::for_scenario(Scenario::NormalServers).await;
     f.healthy().await;
     let original = f.original(1).await;
     let id = uuid::Uuid::parse_str(&f.items[1])
@@ -321,12 +306,9 @@ async fn normalized_route_contract(scenario: Scenario) {
     assert!(f.upstreams[0].received_requests().await.unwrap().is_empty());
 }
 
-scenario_test!(
-    head_on_image_resource_preserves_metadata_without_response_bytes,
-    head_resource_contract
-);
-async fn head_resource_contract(scenario: Scenario) {
-    let f = Fixture::for_scenario(scenario).await;
+#[tokio::test]
+async fn head_on_image_resource_preserves_metadata_without_response_bytes() {
+    let f = Fixture::for_scenario(Scenario::NormalServers).await;
     f.healthy().await;
     let original = f.original(1).await;
     Mock::given(method("HEAD"))

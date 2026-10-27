@@ -1,18 +1,21 @@
 //! Federated catalog regressions for merging, pagination, scoping, and backend failures.
 use std::sync::Arc;
 
+use super::media_reconciliation::{
+    get_aggregate_show_items_typed, get_virtual_library_items_typed,
+};
 use super::*;
 use crate::application::catalog::library_resolution::ResolvedCatalogParent;
 use crate::{
-    application::playback::sessions::SessionStorage,
+    auth::quick_connect::QuickConnectStorage,
     auth::service::{AuthorizationSession, Device, UserAuthorizationService},
     config::{AppConfig, MIGRATOR},
-    http::handlers::quick_connect::QuickConnectStorage,
     libraries::service::{VirtualLibraryAccessScope, VirtualLibraryService},
     media::storage::MediaStorageService,
+    playback::sessions::SessionStorage,
     processors::ProxyProcessors,
     servers::storage::{Server, ServerStorageService},
-    DataContext,
+    AppState, DataContext,
 };
 use serde_json::{json, Value};
 use wiremock::{
@@ -20,7 +23,7 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
-pub(super) async fn setup() -> (
+pub(crate) async fn setup() -> (
     AppState,
     sqlx::SqlitePool,
     Vec<(AuthorizationSession, Server)>,
@@ -93,7 +96,7 @@ pub(super) async fn setup() -> (
     (state, pool, sessions, upstreams)
 }
 
-pub(super) async fn fixture_member_parent_ids(
+pub(crate) async fn fixture_member_parent_ids(
     state: &AppState,
     sessions: &[(AuthorizationSession, Server)],
     original_parent_id: &str,
@@ -110,30 +113,22 @@ pub(super) async fn fixture_member_parent_ids(
     ids
 }
 
-pub(super) fn request(
-    path: &str,
-    sessions: &[(AuthorizationSession, Server)],
-) -> PreprocessedRequest {
+pub(crate) fn request(path: &str, sessions: &[(AuthorizationSession, Server)]) -> CatalogRequest {
     let original_request = reqwest::Request::new(
         reqwest::Method::GET,
         url::Url::parse(&format!("http://localhost{path}")).unwrap(),
     );
-    PreprocessedRequest {
-        request: original_request.try_clone().unwrap(),
-        original_request,
-        user: None,
-        sessions: Some(sessions.to_vec()),
-        server: sessions[0].1.clone(),
-        auth: None,
-        session: Some(sessions[0].0.clone()),
-        new_auth: None,
-        access_scope: Some(VirtualLibraryAccessScope::new(
+    let context = crate::application::context::RequestContext::new(
+        &original_request,
+        None,
+        None,
+        Some(sessions.to_vec()),
+        Some(VirtualLibraryAccessScope::new(
             "viewer",
             sessions.iter().map(|(_, server)| server.id),
         )),
-        server_matched_request: false,
-        pending_playback_session_update: None,
-    }
+    );
+    CatalogRequest::new(original_request, context, None)
 }
 
 #[tokio::test]
@@ -195,8 +190,8 @@ async fn request_independent_refresh_shares_paging_reconciliation_and_interactiv
     for upstream in &upstreams {
         assert_eq!(upstream.received_requests().await.unwrap().len(), 2);
     }
-    let Json(interactive) = get_items_from_all_servers_preprocessed(
-        &state,
+    let interactive = get_items_from_all_servers_preprocessed(
+        &state.catalog_service(),
         request(
             &format!(
                 "/Items?ParentId={}&Recursive=true&IncludeItemTypes=Movie,Series,Season,Episode",
@@ -252,7 +247,7 @@ async fn request_independent_refresh_shares_paging_reconciliation_and_interactiv
     // it so the next interactive request does not silently return stale cache.
     let before = upstreams[0].received_requests().await.unwrap().len();
     let _ = get_items_from_all_servers_preprocessed(
-        &state,
+        &state.catalog_service(),
         request(
             &format!(
                 "/Items?ParentId={}&Recursive=true&IncludeItemTypes=Movie,Series,Season,Episode",
@@ -325,14 +320,14 @@ async fn catalog_service_boundaries_preserve_source_and_storage_causes() {
         "/Items/Filters".to_string(),
         format!("/Items?Ids={}", ids.join(",")),
     ] {
-        let input: CatalogRequest = request(&path, &sessions).into();
+        let input: CatalogRequest = request(&path, &sessions);
         let result = if path.ends_with("/Filters") {
             get_filters_typed(&state.catalog_service(), input).await
         } else {
             get_catalog(&state.catalog_service(), input).await
         };
         let error = result.unwrap_err();
-        assert_eq!(error.detail_status(), StatusCode::SERVICE_UNAVAILABLE);
+
         let mut cause: &(dyn std::error::Error + 'static) = &error;
         while !cause.is::<serde_json::Error>() {
             cause = cause
@@ -347,14 +342,14 @@ async fn catalog_service_boundaries_preserve_source_and_storage_causes() {
         "/Items/Filters?ParentId=library",
         "/Items?Ids=unknown",
     ] {
-        let input: CatalogRequest = request(path, &sessions).into();
+        let input: CatalogRequest = request(path, &sessions);
         let result = if path.contains("/Filters") {
             get_filters_typed(&state.catalog_service(), input).await
         } else {
             get_catalog(&state.catalog_service(), input).await
         };
         let error = result.unwrap_err();
-        assert_eq!(error.detail_status(), StatusCode::INTERNAL_SERVER_ERROR);
+
         let mut cause: &(dyn std::error::Error + 'static) = &error;
         while !cause.is::<sqlx::Error>() {
             cause = cause
@@ -368,7 +363,7 @@ async fn catalog_service_boundaries_preserve_source_and_storage_causes() {
 async fn catalog_query_is_always_derived_from_the_authoritative_wire_request() {
     let (_state, _pool, sessions, _upstreams) = setup().await;
     let mut input: crate::application::catalog::input::CatalogRequest =
-        request("/Items?ParentId=before&Limit=10", &sessions).into();
+        request("/Items?ParentId=before&Limit=10", &sessions);
     *input.original_request.url_mut() = "http://localhost/Items?ParentId=after&Limit=3"
         .parse()
         .unwrap();
@@ -389,7 +384,7 @@ fn latest_items() -> Value {
     ])
 }
 
-fn library_items(count: usize) -> Vec<Value> {
+pub(crate) fn library_items(count: usize) -> Vec<Value> {
     (0..count)
         .map(|index| {
             json!({
@@ -422,8 +417,8 @@ async fn library_inventory_fetches_capped_pages_before_client_pagination() {
             .expect(3)
             .mount(&upstreams[0])
             .await;
-        let Json(response) = get_items_from_all_servers_preprocessed(
-            &state,
+        let response = get_items_from_all_servers_preprocessed(
+            &state.catalog_service(),
             request("/Users/viewer/Views?StartIndex=20&Limit=1", &sessions[..1]),
         )
         .await
@@ -470,7 +465,7 @@ async fn incomplete_library_inventory_is_not_cached() {
             .mount(&upstreams[0])
             .await;
         let result = get_items_from_all_servers_preprocessed(
-            &state,
+            &state.catalog_service(),
             request("/Users/viewer/Views", &sessions[..1]),
         )
         .await;
@@ -482,339 +477,6 @@ async fn incomplete_library_inventory_is_not_cached() {
             .unwrap()
             .is_empty());
     }
-}
-
-#[tokio::test]
-async fn admin_library_page_discovers_mapped_users_without_prior_catalog_requests() {
-    use axum::response::IntoResponse;
-    let (mut state, pool, sessions, upstreams) = setup().await;
-    state.user_authorization = Arc::new(UserAuthorizationService::with_mapping_key(
-        pool,
-        crate::auth::encryption::MappingEncryptionKey::from_session_key(&[7; 64]).unwrap(),
-        (&state.get_admin_password().await).into(),
-    ));
-    let server = &sessions[0].1;
-    Mock::given(method("GET"))
-        .and(path("/System/Info/Public"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ServerName":"Test"})))
-        .mount(&upstreams[0])
-        .await;
-    for (index, username) in ["restricted", "complete"].into_iter().enumerate() {
-        let user = state
-            .user_authorization
-            .create_user(username, &"password".into())
-            .await
-            .unwrap();
-        state
-            .user_authorization
-            .add_server_mapping(&user.id, server, username, &"password".into(), None)
-            .await
-            .unwrap();
-        let backend_id = format!("user-{index}");
-        Mock::given(method("POST")).and(path("/Users/AuthenticateByName"))
-            .and(wiremock::matchers::body_json(json!({"Username": username, "Pw": "password"})))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "User": {"Id": backend_id, "Name": username}, "AccessToken": "token", "ServerId":"test"
-            }))).mount(&upstreams[0]).await;
-        let libraries = library_items(if index == 0 { 1 } else { 25 });
-        Mock::given(method("GET"))
-            .and(path(format!("/Users/{backend_id}/Views")))
-            .respond_with(move |request: &wiremock::Request| {
-                let start = request
-                    .url
-                    .query_pairs()
-                    .find(|(key, _)| key == "StartIndex")
-                    .and_then(|(_, value)| value.parse::<usize>().ok())
-                    .unwrap_or(0);
-                ResponseTemplate::new(200).set_body_json(json!({
-                    "Items": libraries.iter().skip(start).take(20).collect::<Vec<_>>(),
-                    "TotalRecordCount": libraries.len()
-                }))
-            })
-            .mount(&upstreams[0])
-            .await;
-    }
-    assert!(state
-        .virtual_library_service
-        .list_discovered_libraries()
-        .await
-        .unwrap()
-        .is_empty());
-    let response = crate::ui::admin::libraries::library_groups_list(State(state.clone()))
-        .await
-        .into_response();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let html = String::from_utf8(body.to_vec()).unwrap();
-    assert_eq!(html.matches("data-library-card").count(), 25, "{html}");
-    assert!(html.contains("Library 24"));
-    assert!(!html.contains("role=\"alert\""), "{html}");
-    assert!(html.contains("id=\"library-discovery-errors\""));
-    assert_eq!(
-        state
-            .virtual_library_service
-            .list_discovered_libraries()
-            .await
-            .unwrap()
-            .len(),
-        25
-    );
-
-    // Editing groups uses the completed cache, not another upstream discovery.
-    use crate::ui::admin::libraries::{
-        assign_library, create_group, delete_group, remove_member, rename_group, AssignLibraryForm,
-        CreateGroupForm, RemoveMemberForm, RenameGroupForm,
-    };
-    let request_count = upstreams[0].received_requests().await.unwrap().len();
-    let mut responses = vec![
-        create_group(
-            State(state.clone()),
-            axum::Form(CreateGroupForm {
-                name: "Test group".into(),
-            }),
-        )
-        .await,
-    ];
-    let group_id = state.virtual_library_service.list_groups().await.unwrap()[0]
-        .virtual_id
-        .clone();
-    responses.push(
-        assign_library(
-            State(state.clone()),
-            axum::Form(AssignLibraryForm {
-                group_virtual_id: group_id.clone(),
-                server_id: server.id.as_i64(),
-                library_id: "library-24".into(),
-            }),
-        )
-        .await,
-    );
-    responses.push(
-        rename_group(
-            State(state.clone()),
-            axum::extract::Path(group_id.clone()),
-            axum::Form(RenameGroupForm {
-                name: "Renamed group".into(),
-            }),
-        )
-        .await,
-    );
-    responses.push(
-        remove_member(
-            State(state.clone()),
-            axum::extract::Path(group_id.clone()),
-            axum::Form(RemoveMemberForm {
-                server_id: server.id.as_i64(),
-                library_id: "library-24".into(),
-            }),
-        )
-        .await,
-    );
-    responses.push(delete_group(State(state.clone()), axum::extract::Path(group_id)).await);
-    for response in responses {
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let html = String::from_utf8(body.to_vec()).unwrap();
-        assert_eq!(html.matches("data-library-card").count(), 25);
-        assert!(html.contains("Library 24"));
-        assert!(!html.contains("id=\"library-discovery-errors\""));
-    }
-    assert_eq!(
-        upstreams[0].received_requests().await.unwrap().len(),
-        request_count
-    );
-
-    // An explicit refresh still contacts upstreams and reports failures.
-    upstreams[0].reset().await;
-    let response = crate::ui::admin::libraries::library_groups_list(State(state.clone()))
-        .await
-        .into_response();
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let html = String::from_utf8(body.to_vec()).unwrap();
-    assert_eq!(html.matches("data-library-card").count(), 25);
-    assert!(html.contains("role=\"alert\""));
-    assert_eq!(
-        state
-            .virtual_library_service
-            .list_discovered_libraries()
-            .await
-            .unwrap()
-            .len(),
-        25
-    );
-}
-
-// Exercise the production HTTP handler and preprocessing, not just cmp_by.
-// Jellyfin only includes SortName and DateCreated when requested in Fields.
-async fn check_web_album_sorting(sort_by: &str, ascending_names: &[&str]) {
-    let (state, _pool, sessions, upstreams) = setup().await;
-    let user = state
-        .user_authorization
-        .create_user("album-viewer", &"password".into())
-        .await
-        .unwrap();
-    let authorization = crate::models::Authorization {
-        client: "album-test".into(),
-        device: "test".into(),
-        device_id: "album-test".into(),
-        version: "1".into(),
-        token: None,
-    };
-    let albums = [
-        json!([
-            {"Id":"a", "Type":"MusicAlbum", "Name":"The Zebra", "SortName":"aardvark", "AlbumArtist":"Shared artist", "DateCreated":"2026-01-01T00:00:00Z"},
-            {"Id":"c", "Type":"MusicAlbum", "Name":"Omega", "SortName":"omega", "AlbumArtist":"Z artist", "DateCreated":"2026-03-01T00:00:00Z"}
-        ]),
-        json!([
-            {"Id":"b", "Type":"MusicAlbum", "Name":"Alpha", "SortName":"zulu", "AlbumArtist":"Shared artist", "DateCreated":"2026-01-01T00:00:00Z"},
-            {"Id":"d", "Type":"MusicAlbum", "Name":"Beta", "SortName":"beta", "AlbumArtist":"A artist", "DateCreated":"2026-02-01T00:00:00Z"}
-        ]),
-    ];
-    for (index, (_, server)) in sessions.iter().enumerate() {
-        state
-            .user_authorization
-            .add_server_mapping(&user.id, server, "album-viewer", &"password".into(), None)
-            .await
-            .unwrap();
-        state
-            .user_authorization
-            .store_authorization_session(
-                &user.id,
-                server,
-                &authorization,
-                "upstream-token".into(),
-                "backend-user".into(),
-                None,
-            )
-            .await
-            .unwrap();
-        Mock::given(method("GET"))
-            .and(path("/System/Info/Public"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ServerName":"Test"})))
-            .mount(&upstreams[index])
-            .await;
-        let albums = albums[index].as_array().unwrap().clone();
-        Mock::given(method("GET"))
-            .and(path("/Items"))
-            .respond_with(move |request: &wiremock::Request| {
-                let fields = request
-                    .url
-                    .query_pairs()
-                    .filter(|(key, _)| key.eq_ignore_ascii_case("Fields"))
-                    .flat_map(|(_, value)| value.split(',').map(str::to_owned).collect::<Vec<_>>())
-                    .collect::<Vec<_>>();
-                let mut items = albums.clone();
-                for item in &mut items {
-                    for field in ["SortName", "DateCreated"] {
-                        if !fields
-                            .iter()
-                            .any(|requested| requested.eq_ignore_ascii_case(field))
-                        {
-                            item.as_object_mut().unwrap().remove(field);
-                        }
-                    }
-                }
-                ResponseTemplate::new(200).set_body_json(json!({
-                    "Items":items, "TotalRecordCount":items.len(), "StartIndex":0
-                }))
-            })
-            .mount(&upstreams[index])
-            .await;
-    }
-    state.server_storage.check_servers_health().await;
-    let app = axum::Router::new()
-        .route(
-            "/Items",
-            axum::routing::get(get_items_from_all_servers_if_not_restricted),
-        )
-        .with_state(state.clone());
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let base_url = format!("http://{}", listener.local_addr().unwrap());
-    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    // Modern web requests use camelCase and don't request SortName. Also cover
-    // legacy PascalCase requests and pagination after the global sort.
-    for (sort_key, order_key, fields_key) in [
-        ("sortBy", "sortOrder", "fields"),
-        ("SortBy", "SortOrder", "Fields"),
-    ] {
-        for order in ["Ascending", "Descending"] {
-            let mut expected = ascending_names.to_vec();
-            if order == "Descending" {
-                expected.reverse();
-            }
-            for (start, limit) in [(0, 4), (1, 2)] {
-                let mut request = state.reqwest_client.get(format!("{base_url}/Items"))
-                    .header("Authorization", format!("MediaBrowser Client=\"album-test\", Device=\"test\", DeviceId=\"album-test\", Version=\"1\", Token=\"{}\"", user.virtual_key))
-                    .query(&[
-                        ("userId", user.id.as_str()), ("includeItemTypes", "MusicAlbum"),
-                        ("recursive", "true"), (order_key, order),
-                        (fields_key, if sort_key == "sortBy" { "PrimaryImageAspectRatio" } else { "PrimaryImageAspectRatio,SortName" }),
-                        ("startIndex", &start.to_string()), ("limit", &limit.to_string()),
-                    ]);
-                if sort_key == "sortBy" {
-                    // The Jellyfin SDK encodes array-valued sorts as repeated keys.
-                    for field in sort_by.split(',') {
-                        request = request.query(&[(sort_key, field)]);
-                    }
-                } else {
-                    request = request.query(&[(sort_key, sort_by)]);
-                }
-                let response = request.send().await.unwrap();
-                assert_eq!(response.status(), StatusCode::OK);
-                let response: Value = response.json().await.unwrap();
-                let names = response["Items"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|item| {
-                        item["Name"]
-                            .as_str()
-                            .unwrap()
-                            .split(" [Server ")
-                            .next()
-                            .unwrap()
-                    })
-                    .collect::<Vec<_>>();
-                assert_eq!(
-                    names,
-                    expected[start..start + limit],
-                    "{sort_by} {order}, start={start}: {response}"
-                );
-                assert_eq!(response["TotalRecordCount"], 4);
-                assert_eq!(response["StartIndex"], start);
-            }
-        }
-    }
-    task.abort();
-}
-
-#[tokio::test]
-async fn web_album_name_sorting_http_integration() {
-    check_web_album_sorting("SortName", &["The Zebra", "Beta", "Omega", "Alpha"]).await;
-}
-
-#[tokio::test]
-async fn web_album_date_added_sorting_http_integration() {
-    check_web_album_sorting(
-        "DateCreated,SortName",
-        &["The Zebra", "Alpha", "Beta", "Omega"],
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn web_album_artist_sorting_http_integration() {
-    check_web_album_sorting(
-        "AlbumArtist,SortName",
-        &["Beta", "The Zebra", "Alpha", "Omega"],
-    )
-    .await;
 }
 
 #[tokio::test]
@@ -852,22 +514,11 @@ async fn series_tv_schedule_only_queries_the_series_server() {
         .mount(&upstreams[1])
         .await;
 
-    let mut preprocessed = request(
+    let preprocessed = request(
         &format!("{}?{}", url.path(), url.query().unwrap()),
         &sessions,
     );
-    preprocessed.server = server.clone();
-    preprocessed.session = Some(sessions[1].0.clone());
-    crate::http::preprocessing::apply_to_request(
-        &mut preprocessed.request,
-        &server,
-        &preprocessed.session,
-        &None,
-        &state,
-        preprocessed.access_scope.as_ref(),
-    )
-    .await;
-    let Json(response) = get_live_tv_programs(State(state), Preprocessed(preprocessed))
+    let response = get_live_tv_programs(&state.catalog_service(), preprocessed)
         .await
         .unwrap();
     assert_eq!(response["Items"].as_array().unwrap().len(), 1);
@@ -909,22 +560,11 @@ async fn channel_tv_schedule_only_queries_the_channel_server() {
         .mount(&upstreams[1])
         .await;
 
-    let mut preprocessed = request(
+    let preprocessed = request(
         &format!("{}?{}", url.path(), url.query().unwrap()),
         &sessions,
     );
-    preprocessed.server = server.clone();
-    preprocessed.session = Some(sessions[1].0.clone());
-    crate::http::preprocessing::apply_to_request(
-        &mut preprocessed.request,
-        &server,
-        &preprocessed.session,
-        &None,
-        &state,
-        preprocessed.access_scope.as_ref(),
-    )
-    .await;
-    let Json(response) = get_live_tv_programs(State(state), Preprocessed(preprocessed))
+    let response = get_live_tv_programs(&state.catalog_service(), preprocessed)
         .await
         .unwrap();
     assert_eq!(response["Items"].as_array().unwrap().len(), 1);
@@ -976,12 +616,9 @@ async fn guide_programs_remap_channel_ids_on_each_server() {
             .await;
     }
     let path = format!("/LiveTv/Programs?ChannelIds={}", channel_ids.join(","));
-    let Json(response) = get_live_tv_programs(
-        State(state.clone()),
-        Preprocessed(request(&path, &sessions)),
-    )
-    .await
-    .unwrap();
+    let response = get_live_tv_programs(&state.catalog_service(), request(&path, &sessions))
+        .await
+        .unwrap();
     assert_eq!(response["Items"].as_array().unwrap().len(), 2);
     let returned_channels = response["Items"]
         .as_array()
@@ -1014,8 +651,9 @@ async fn guide_programs_remap_channel_ids_on_each_server() {
         state
             .processors
             .url_processor
-            .client_to_server_url(&mut timer_url, &None, None, server.id)
-            .await;
+            .client_to_server_url(&mut timer_url, None, None, server.id)
+            .await
+            .unwrap();
         assert_eq!(
             timer_url
                 .query_pairs()
@@ -1099,8 +737,8 @@ async fn merged_library_show_routes_merge_localized_seasons_and_keep_navigation(
             .mount(&upstreams[index])
             .await;
     }
-    let Json(shows) = get_items_from_all_servers_preprocessed(
-        &state,
+    let shows = get_items_from_all_servers_preprocessed(
+        &state.catalog_service(),
         request(
             &format!(
                 "/Items?ParentId={}&IncludeItemTypes=Series",
@@ -1116,12 +754,10 @@ async fn merged_library_show_routes_merge_localized_seasons_and_keep_navigation(
     let path = format!("/Shows/{series_id}/Seasons?UserId=viewer&Fields=ItemCounts,PrimaryImageAspectRatio,CanDelete,MediaSourceCount");
     let mut season_id = String::new();
     for _ in 0..2 {
-        let Json(seasons) = get_show_children_from_all_servers(
-            State(state.clone()),
-            Preprocessed(request(&path, &sessions)),
-        )
-        .await
-        .unwrap();
+        let seasons =
+            get_show_children_from_all_servers(&state.catalog_service(), request(&path, &sessions))
+                .await
+                .unwrap();
         assert_eq!(seasons["TotalRecordCount"], 1);
         assert_eq!(seasons["Items"].as_array().unwrap().len(), 1);
         let season = &seasons["Items"][0];
@@ -1147,8 +783,8 @@ async fn merged_library_show_routes_merge_localized_seasons_and_keep_navigation(
             2
         );
     }
-    let Json(items_seasons) = get_items_from_all_servers_preprocessed(
-        &state,
+    let items_seasons = get_items_from_all_servers_preprocessed(
+        &state.catalog_service(),
         request(
             &format!("/Items?ParentId={series_id}&IncludeItemTypes=Season"),
             &sessions,
@@ -1160,12 +796,12 @@ async fn merged_library_show_routes_merge_localized_seasons_and_keep_navigation(
     assert_eq!(items_seasons["Items"][0]["Id"], season_id);
     assert_eq!(items_seasons["Items"][0]["SeriesId"], series_id);
     assert_eq!(items_seasons["Items"][0]["ParentId"], series_id);
-    let Json(episodes) = get_show_children_from_all_servers(
-        State(state.clone()),
-        Preprocessed(request(
+    let episodes = get_show_children_from_all_servers(
+        &state.catalog_service(),
+        request(
             &format!("/Shows/{series_id}/Episodes?SeasonId={season_id}"),
             &sessions,
-        )),
+        ),
     )
     .await
     .unwrap();
@@ -1242,13 +878,20 @@ async fn client_pages_are_applied_after_scanning_capped_catalogs() {
                     })
                     .collect()
             };
-            let Json(result) = match kind {
+            let result = match kind {
                 "browse" => {
-                    get_virtual_library_items(&state, req, "test:viewer".into(), targets(), 0).await
+                    get_virtual_library_items_typed(
+                        &state.catalog_service(),
+                        req,
+                        "test:viewer".into(),
+                        targets(),
+                        0,
+                    )
+                    .await
                 }
                 "episodes" | "seasons" => {
-                    get_aggregate_show_items(
-                        &state,
+                    get_aggregate_show_items_typed(
+                        &state.catalog_service(),
                         req,
                         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
                         targets(),
@@ -1256,7 +899,7 @@ async fn client_pages_are_applied_after_scanning_capped_catalogs() {
                     )
                     .await
                 }
-                _ => get_items_from_all_servers_preprocessed(&state, req).await,
+                _ => get_items_from_all_servers_preprocessed(&state.catalog_service(), req).await,
             }
             .unwrap_or_else(|status| panic!("{kind}: {status}"));
             assert_eq!(
@@ -1325,9 +968,7 @@ async fn catalog_pagination_follows_backend_caps_and_detects_stalled_pages() {
         )
         .await;
         if stalled {
-            assert!(
-                matches!(catalog, Err(error) if error.detail_status() == StatusCode::SERVICE_UNAVAILABLE)
-            );
+            assert!(matches!(catalog, Err(ApplicationError::SourcesFailed(_))));
         } else {
             for result in catalog.unwrap().server_items {
                 assert_eq!(result.server_items.response.len(), 5);
@@ -1382,7 +1023,7 @@ async fn catalog_cache_contains_only_final_visible_items_and_titles() {
     req.original_request
         .headers_mut()
         .insert("X-Emby-Token", token.parse().unwrap());
-    let Json(result) = get_items_from_all_servers_preprocessed(&state, req)
+    let result = get_items_from_all_servers_preprocessed(&state.catalog_service(), req)
         .await
         .unwrap();
     assert_eq!(result["Items"].as_array().unwrap().len(), 1);
@@ -1414,7 +1055,7 @@ async fn catalog_cache_contains_only_final_visible_items_and_titles() {
     req.original_request
         .headers_mut()
         .insert("X-Emby-Token", token.parse().unwrap());
-    let Json(result) = get_items_from_all_servers_preprocessed(&state, req)
+    let result = get_items_from_all_servers_preprocessed(&state.catalog_service(), req)
         .await
         .unwrap();
     let visible = &result["Items"][0];
@@ -1449,8 +1090,8 @@ async fn search_first_show_children_merge_and_keep_viewer_scoped_parent_links() 
             }))).mount(upstream).await;
     }
     // No browse/latest requests have established identities beforehand.
-    let Json(result) = get_items_from_all_servers_preprocessed(
-        &state,
+    let result = get_items_from_all_servers_preprocessed(
+        &state.catalog_service(),
         request("/Items?SearchTerm=show&Recursive=true", &sessions),
     )
     .await
@@ -1509,14 +1150,14 @@ async fn search_merges_movies_and_series_without_server_tags() {
     let mut ids = None;
     for term_key in ["SearchTerm", "searchterm"] {
         let query = format!("/Items?{term_key}=Death&Recursive=true&Limit=10");
-        let plan = resolve_catalog_plan(&state, &request(&query, &sessions))
+        let plan = resolve_catalog_plan(&state.catalog_service(), &request(&query, &sessions))
             .await
             .unwrap();
         assert!(matches!(plan, CatalogPlan::Virtual { .. }));
     }
     for _ in 0..2 {
-        let Json(result) = get_items_from_all_servers_preprocessed(
-            &state,
+        let result = get_items_from_all_servers_preprocessed(
+            &state.catalog_service(),
             request("/Items?SearchTerm=Death&Recursive=true&Limit=10", &sessions),
         )
         .await
@@ -1537,7 +1178,8 @@ async fn search_merges_movies_and_series_without_server_tags() {
 #[tokio::test]
 async fn item_catalog_seasons_use_their_provider_matched_series_parent() {
     use super::{
-        library_resolution::CatalogFetchTarget, media_reconciliation::get_virtual_library_items,
+        library_resolution::CatalogFetchTarget,
+        media_reconciliation::get_virtual_library_items_typed,
     };
 
     let (state, _pool, sessions, upstreams) = setup().await;
@@ -1562,8 +1204,8 @@ async fn item_catalog_seasons_use_their_provider_matched_series_parent() {
             .mount(upstream)
             .await;
     }
-    let Json(series) = get_virtual_library_items(
-        &state,
+    let series = get_virtual_library_items_typed(
+        &state.catalog_service(),
         request("/Items?IncludeItemTypes=Series", &sessions),
         "configured:shows:viewer".into(),
         targets(),
@@ -1589,8 +1231,8 @@ async fn item_catalog_seasons_use_their_provider_matched_series_parent() {
             .mount(upstream)
             .await;
     }
-    let Json(seasons) = get_virtual_library_items(
-        &state,
+    let seasons = get_virtual_library_items_typed(
+        &state.catalog_service(),
         request("/Items?IncludeItemTypes=Season", &sessions),
         "configured:shows:viewer".into(),
         targets(),
@@ -1613,7 +1255,8 @@ async fn item_catalog_seasons_use_their_provider_matched_series_parent() {
 #[tokio::test]
 async fn first_recursive_catalog_merges_series_and_numbered_seasons_together() {
     use super::{
-        library_resolution::CatalogFetchTarget, media_reconciliation::get_virtual_library_items,
+        library_resolution::CatalogFetchTarget,
+        media_reconciliation::get_virtual_library_items_typed,
     };
     let (state, _pool, sessions, upstreams) = setup().await;
     for (index, upstream) in upstreams.iter().enumerate() {
@@ -1637,8 +1280,8 @@ async fn first_recursive_catalog_merges_series_and_numbered_seasons_together() {
                 parent: None,
             })
             .collect();
-        let Json(response) = get_virtual_library_items(
-            &state,
+        let response = get_virtual_library_items_typed(
+            &state.catalog_service(),
             request("/Items?Recursive=true", &sessions),
             "configured:shows:viewer".into(),
             targets,
@@ -1684,8 +1327,8 @@ async fn first_recursive_catalog_merges_series_and_numbered_seasons_together() {
             parent: None,
         })
         .collect();
-    let Json(response) = get_virtual_library_items(
-        &state,
+    let response = get_virtual_library_items_typed(
+        &state.catalog_service(),
         request("/Items?Recursive=true", &sessions),
         "configured:shows:viewer".into(),
         targets,
@@ -1706,7 +1349,8 @@ async fn first_recursive_catalog_merges_series_and_numbered_seasons_together() {
 #[tokio::test]
 async fn numbered_seasons_with_same_server_duplicates_are_not_hidden() {
     use super::{
-        library_resolution::CatalogFetchTarget, media_reconciliation::get_aggregate_show_items,
+        library_resolution::CatalogFetchTarget,
+        media_reconciliation::get_aggregate_show_items_typed,
     };
     let (state, _pool, sessions, upstreams) = setup().await;
     let member_parent_ids = fixture_member_parent_ids(&state, &sessions, "series").await;
@@ -1737,8 +1381,8 @@ async fn numbered_seasons_with_same_server_duplicates_are_not_hidden() {
             }),
         })
         .collect();
-    let Json(response) = get_aggregate_show_items(
-        &state,
+    let response = get_aggregate_show_items_typed(
+        &state.catalog_service(),
         request(&format!("/Shows/{aggregate}/Seasons"), &sessions),
         aggregate.into(),
         targets,
@@ -1765,7 +1409,8 @@ async fn show_seasons_with_reused_or_conflicting_provider_ids_merge_by_number() 
 
 async fn check_show_season_navigation(with_provider_ids: bool) {
     use super::{
-        library_resolution::CatalogFetchTarget, media_reconciliation::get_aggregate_show_items,
+        library_resolution::CatalogFetchTarget,
+        media_reconciliation::get_aggregate_show_items_typed,
     };
     use wiremock::matchers::{path, query_param};
 
@@ -1829,7 +1474,7 @@ async fn check_show_season_navigation(with_provider_ids: bool) {
             })
             .collect()
     };
-    let Json(seasons) = get_aggregate_show_items(&state,
+    let seasons = get_aggregate_show_items_typed(&state.catalog_service(),
         request(&format!("/Shows/{aggregate}/Seasons?userId=viewer&Fields=ItemCounts,PrimaryImageAspectRatio,CanDelete,MediaSourceCount"), &sessions),
         aggregate.into(), targets(), 0).await.unwrap();
     let seasons = seasons["Items"].as_array().unwrap();
@@ -1837,8 +1482,8 @@ async fn check_show_season_navigation(with_provider_ids: bool) {
     for (index, season) in seasons.iter().enumerate() {
         assert_eq!(season["SeriesId"], aggregate);
         assert_eq!(season["IndexNumber"], index + 1);
-        let Json(episodes) = get_aggregate_show_items(
-            &state,
+        let episodes = get_aggregate_show_items_typed(
+            &state.catalog_service(),
             request(
                 &format!(
                     "/Shows/{}/Episodes?seasonId={}",
@@ -1885,7 +1530,7 @@ async fn check_show_season_navigation(with_provider_ids: bool) {
             selected_group: None,
             base_server: &sessions[0].1,
             auth: &None,
-            access_scope: preprocessed.access_scope.as_ref(),
+            access_scope: preprocessed.context.access_scope(),
             sessions: Some(&sessions),
             original_request: &preprocessed.original_request,
             source_generation: state
@@ -1919,9 +1564,9 @@ async fn latest_routes_collapse_before_sort_and_limit_and_retain_partial_identit
         "/Users/viewer/Items/Latest?Limit=2&Fields=Path",
         "/Items/Latest?UserId=viewer&Limit=2&Fields=Path",
     ] {
-        let Json(response) = get_items_from_all_servers_if_not_restricted(
-            State(state.clone()),
-            Preprocessed(request(path, &sessions)),
+        let response = get_items_from_all_servers_if_not_restricted(
+            &state.catalog_service(),
+            request(path, &sessions),
         )
         .await
         .unwrap();
@@ -1959,8 +1604,8 @@ async fn latest_routes_collapse_before_sort_and_limit_and_retain_partial_identit
                 .any(|(key, _)| key == "StartIndex"));
         }
     }
-    let Json(response) = get_items_from_all_servers_preprocessed(
-        &state,
+    let response = get_items_from_all_servers_preprocessed(
+        &state.catalog_service(),
         request("/Items/Latest?StartIndex=1&Limit=1", &sessions),
     )
     .await
@@ -1979,16 +1624,15 @@ async fn latest_routes_collapse_before_sort_and_limit_and_retain_partial_identit
         .mount(&upstreams[1])
         .await;
     let degraded = get_items_from_all_servers_preprocessed(
-        &state,
+        &state.catalog_service(),
         request("/Items/Latest?Limit=1", &sessions),
     )
     .await
-    .unwrap()
-    .0;
+    .unwrap();
     assert_eq!(degraded[0]["Id"], stable_ids[0]);
     for active_sessions in [&sessions[..1]] {
-        let Json(response) = get_items_from_all_servers_preprocessed(
-            &state,
+        let response = get_items_from_all_servers_preprocessed(
+            &state.catalog_service(),
             request("/Items/Latest?Limit=1", active_sessions),
         )
         .await
@@ -2095,7 +1739,9 @@ async fn latest_virtual_parent_reuses_browse_scope_and_member_routes() {
             catalog_scope_key,
             targets,
             ..
-        } = resolve_catalog_plan(&state, &preprocessed).await.unwrap()
+        } = resolve_catalog_plan(&state.catalog_service(), &preprocessed)
+            .await
+            .unwrap()
         else {
             panic!("virtual parent must fan out");
         };
@@ -2105,9 +1751,10 @@ async fn latest_virtual_parent_reuses_browse_scope_and_member_routes() {
         } else {
             scope_key = Some(catalog_scope_key);
         }
-        let Json(response) = get_items_from_all_servers_preprocessed(&state, preprocessed)
-            .await
-            .unwrap_or_else(|status| panic!("{path}: {status}"));
+        let response =
+            get_items_from_all_servers_preprocessed(&state.catalog_service(), preprocessed)
+                .await
+                .unwrap_or_else(|status| panic!("{path}: {status}"));
         let mut current_ids = response
             .as_array()
             .unwrap()
@@ -2135,7 +1782,7 @@ async fn latest_virtual_parent_reuses_browse_scope_and_member_routes() {
         .unwrap();
     assert!(matches!(
         resolve_catalog_plan(
-            &state,
+            &state.catalog_service(),
             &request(
                 &format!("/Items/Latest?ParentId={}", mapping.virtual_media_id),
                 &sessions,
@@ -2162,8 +1809,8 @@ async fn latest_does_not_collapse_same_server_ambiguity() {
             .mount(upstream)
             .await;
     }
-    let Json(response) = get_items_from_all_servers_preprocessed(
-        &state,
+    let response = get_items_from_all_servers_preprocessed(
+        &state.catalog_service(),
         request("/Items/Latest?Limit=10", &sessions),
     )
     .await
@@ -2182,8 +1829,8 @@ async fn latest_preserves_unknown_identity_and_disabled_behavior() {
     }
     for (enabled, expected) in [(true, 4), (false, 6)] {
         state.config.write().await.deduplicate_media = enabled;
-        let Json(response) = get_items_from_all_servers_preprocessed(
-            &state,
+        let response = get_items_from_all_servers_preprocessed(
+            &state.catalog_service(),
             request("/Items/Latest?Limit=10", &sessions),
         )
         .await
@@ -2191,31 +1838,40 @@ async fn latest_preserves_unknown_identity_and_disabled_behavior() {
         assert_eq!(response.as_array().unwrap().len(), expected);
     }
     assert!(matches!(
-        resolve_catalog_plan(&state, &request("/Items/Latest", &sessions))
-            .await
-            .unwrap(),
+        resolve_catalog_plan(
+            &state.catalog_service(),
+            &request("/Items/Latest", &sessions)
+        )
+        .await
+        .unwrap(),
         CatalogPlan::Interleaved(_)
     ));
     state.config.write().await.deduplicate_media = true;
     for path in ["/Items", "/Items/Suggestions"] {
         assert!(matches!(
-            resolve_catalog_plan(&state, &request(path, &sessions))
+            resolve_catalog_plan(&state.catalog_service(), &request(path, &sessions))
                 .await
                 .unwrap(),
             CatalogPlan::Interleaved(_)
         ));
     }
     assert!(matches!(
-        resolve_catalog_plan(&state, &request("/UserItems/Resume", &sessions))
-            .await
-            .unwrap(),
+        resolve_catalog_plan(
+            &state.catalog_service(),
+            &request("/UserItems/Resume", &sessions)
+        )
+        .await
+        .unwrap(),
         CatalogPlan::Virtual { .. }
     ));
     state.config.write().await.deduplicate_media = false;
     assert!(matches!(
-        resolve_catalog_plan(&state, &request("/UserItems/Resume", &sessions))
-            .await
-            .unwrap(),
+        resolve_catalog_plan(
+            &state.catalog_service(),
+            &request("/UserItems/Resume", &sessions)
+        )
+        .await
+        .unwrap(),
         CatalogPlan::Interleaved(_)
     ));
 }

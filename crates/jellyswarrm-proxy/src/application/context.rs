@@ -97,11 +97,11 @@ impl RequestContext {
         }
     }
 
-    pub(crate) fn device(&self) -> &Option<Device> {
-        &self.device
+    pub(crate) fn device(&self) -> Option<&Device> {
+        self.device.as_ref()
     }
-    pub(crate) fn access_scope(&self) -> &Option<VirtualLibraryAccessScope> {
-        &self.access_scope
+    pub(crate) fn access_scope(&self) -> Option<&VirtualLibraryAccessScope> {
+        self.access_scope.as_ref()
     }
     pub(crate) fn backends(&self) -> &BackendAccessSnapshot {
         &self.backends
@@ -114,7 +114,7 @@ impl RequestContext {
         url: &url::Url,
         analysis: Option<&crate::processors::request_analyzer::RequestBodyAnalysisResult>,
         urls: &crate::application::url_selection::UrlSelection,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), super::routing::RoutingError> {
         use crate::processors::url_processor::{MEDIA_ID_PATH_TAGS, MEDIA_ID_QUERY_TAGS};
         if let Some(scope) = &self.access_scope {
             for tag in MEDIA_ID_PATH_TAGS {
@@ -161,8 +161,8 @@ impl RequestContext {
             server.clone(),
             Some(session.clone()),
             crate::upstream::jellyfin::request::remap_authorization(
-                &self.authorization().cloned(),
-                &Some(session.clone()),
+                self.authorization(),
+                Some(session),
             ),
             self.access_scope.clone(),
         )
@@ -217,11 +217,11 @@ impl AuthorizedTarget {
     pub(crate) fn server(&self) -> &Server {
         &self.server
     }
-    pub(crate) fn session(&self) -> &Option<AuthorizationSession> {
-        &self.session
+    pub(crate) fn session(&self) -> Option<&AuthorizationSession> {
+        self.session.as_ref()
     }
-    pub(crate) fn authorization(&self) -> &Option<JellyfinAuthorization> {
-        &self.auth
+    pub(crate) fn authorization(&self) -> Option<&JellyfinAuthorization> {
+        self.auth.as_ref()
     }
     pub(crate) fn access_scope(&self) -> Option<&VirtualLibraryAccessScope> {
         self.access_scope.as_ref()
@@ -380,14 +380,14 @@ mod tests {
 
         assert_eq!(target.server().id, ServerId::new(2));
         assert_eq!(
-            target.session().as_ref().unwrap().original_user_id,
+            target.session().unwrap().original_user_id,
             "backend-viewer-2"
         );
         assert_eq!(
-            target.authorization().as_ref().unwrap().token_ref(),
+            target.authorization().unwrap().token_ref(),
             Some("backend-token-2")
         );
-        match target.authorization().as_ref().unwrap() {
+        match target.authorization().unwrap() {
             JellyfinAuthorization::Authorization(auth) => assert_eq!(auth.device_id, "device-2"),
             _ => panic!("token authorization must be rebuilt from the selected session"),
         }

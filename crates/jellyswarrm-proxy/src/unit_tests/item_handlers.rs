@@ -3,7 +3,6 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use super::*;
 use crate::{
-    application::playback::sessions::SessionStorage,
     application::{context::RequestContext, input::OperationRequest},
     auth::service::{AuthorizationSession, Device, UserAuthorizationService},
     config::{AppConfig, MediaStreamingMode, MIGRATOR},
@@ -11,6 +10,7 @@ use crate::{
     libraries::service::{VirtualLibraryAccessScope, VirtualLibraryService},
     media::identity::{MediaAlias, MediaKind, MediaObservation, MediaProvider},
     media::storage::{MediaCatalogSnapshot, MediaStorageService},
+    playback::sessions::SessionStorage,
     processors::ProxyProcessors,
     servers::storage::ServerStorageService,
     DataContext,

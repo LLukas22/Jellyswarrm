@@ -10,7 +10,7 @@ pub async fn info_public(
 ) -> Result<Json<crate::models::PublicServerInfo>, StatusCode> {
     let ui_version = JELLYFIN_UI_VERSION.clone().unwrap_or_default().version;
     Ok(Json(
-        accounts::public_server_info(&state, &ui_version).await,
+        accounts::public_server_info(&state.authentication_service().await, &ui_version).await,
     ))
 }
 
@@ -19,8 +19,8 @@ pub async fn info(
     OperationInput(input): OperationInput,
 ) -> Result<Json<crate::models::ServerInfo>, StatusCode> {
     let ui_version = JELLYFIN_UI_VERSION.clone().unwrap_or_default().version;
-    accounts::server_info(&state, input, &ui_version)
+    accounts::server_info(&state.account_service().await, input, &ui_version)
         .await
         .map(Json)
-        .map_err(|error| error.detail_status())
+        .map_err(|error| crate::http::handlers::pipeline_error::detail_status(&error))
 }

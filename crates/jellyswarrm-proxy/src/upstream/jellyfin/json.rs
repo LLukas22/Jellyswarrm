@@ -49,14 +49,6 @@ impl From<super::transport::JsonTransportError> for ApplicationError {
     }
 }
 
-#[cfg(test)]
-pub fn payload_from_request<T>(request: &reqwest::Request) -> Result<T, StatusCode>
-where
-    T: serde::de::DeserializeOwned,
-{
-    payload_from_request_typed(request).map_err(|error| error.detail_status())
-}
-
 pub(crate) fn payload_from_request_typed<T>(
     request: &reqwest::Request,
 ) -> Result<T, ApplicationError>
@@ -69,14 +61,6 @@ where
         .as_bytes()
         .ok_or(ApplicationError::InvalidInput("unbuffered JSON body"))?;
     serde_json::from_slice::<T>(bytes).map_err(ApplicationError::InvalidRequestJson)
-}
-
-#[cfg(test)]
-pub fn set_json_body<T>(request: &mut reqwest::Request, payload: &T) -> Result<(), StatusCode>
-where
-    T: Serialize,
-{
-    set_json_body_typed(request, payload).map_err(|error| error.detail_status())
 }
 
 pub(crate) fn set_json_body_typed<T>(
@@ -98,20 +82,6 @@ where
     request.headers_mut().remove(TRANSFER_ENCODING);
 
     Ok(())
-}
-
-/// Compatibility entry point for route families not yet using application errors.
-#[cfg(test)]
-pub async fn execute_json_request<T>(
-    client: &reqwest::Client,
-    request: reqwest::Request,
-) -> Result<T, StatusCode>
-where
-    T: serde::de::DeserializeOwned,
-{
-    execute_json_request_typed(client, request)
-        .await
-        .map_err(|error| error.detail_status())
 }
 
 /// Execute without logging authenticated URLs or dumping upstream payloads.
@@ -210,7 +180,6 @@ mod tests {
                 .await
                 .unwrap_err();
         assert!(matches!(error, ApplicationError::InvalidRequestJson(_)));
-        assert_eq!(error.detail_status(), StatusCode::BAD_REQUEST);
         assert!(error.source().unwrap().is::<serde_json::Error>());
         assert!(!format!("{error:?}").contains("not-a-number"));
     }
@@ -230,7 +199,6 @@ mod tests {
 
         assert!(matches!(error, ApplicationError::InvalidUpstreamJson(_)));
         assert!(error.source().unwrap().is::<serde_json::Error>());
-        assert_eq!(error.detail_status(), StatusCode::BAD_GATEWAY);
         assert!(!format!("{error:?}").contains("not JSON"));
     }
 
@@ -255,7 +223,6 @@ mod tests {
             .downcast_ref::<reqwest::Error>()
             .unwrap();
         assert!(cause.url().is_none());
-        assert_eq!(error.detail_status(), StatusCode::BAD_GATEWAY);
         assert!(!format!("{error:?}").contains("private-token"));
     }
 
@@ -279,18 +246,18 @@ mod tests {
                 .await
                 .unwrap_err();
 
-            assert!(matches!(error, ApplicationError::UpstreamStatus(_)));
-            assert_eq!(error.detail_status().as_u16(), status);
+            assert!(
+                matches!(error, ApplicationError::UpstreamStatus(actual) if actual.as_u16() == status)
+            );
             assert_eq!(error.allows_detail_fallback(), eligible);
         }
     }
 
     #[test]
-    fn processed_payload_validation_preserves_cause_and_existing_internal_error_contract() {
+    fn processed_payload_validation_preserves_json_cause() {
         let error = response_json_to_payload_typed::<Vec<String>>(json!({})).unwrap_err();
         assert!(matches!(error, ApplicationError::InvalidProcessedJson(_)));
         assert!(error.source().unwrap().is::<serde_json::Error>());
-        assert_eq!(error.detail_status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[tokio::test]
@@ -303,9 +270,12 @@ mod tests {
         let client = reqwest::Client::new();
         let request = client.get(upstream.uri()).build().unwrap();
 
-        let result = execute_json_request::<serde_json::Value>(&client, request).await;
+        let result = execute_json_request_typed::<serde_json::Value>(&client, request).await;
 
-        assert_eq!(result.unwrap_err(), StatusCode::NOT_FOUND);
+        assert!(matches!(
+            result.unwrap_err(),
+            ApplicationError::UpstreamStatus(StatusCode::NOT_FOUND)
+        ));
     }
 
     #[test]
@@ -319,7 +289,7 @@ mod tests {
             .unwrap();
         let payload = json!({"UnknownField": {"preserved": true}});
 
-        set_json_body(&mut request, &payload).unwrap();
+        set_json_body_typed(&mut request, &payload).unwrap();
 
         let body = request.body().unwrap().as_bytes().unwrap();
         assert_eq!(
@@ -328,13 +298,13 @@ mod tests {
         );
         assert!(!request.headers().contains_key(TRANSFER_ENCODING));
         assert_eq!(
-            payload_from_request::<serde_json::Value>(&request).unwrap(),
+            payload_from_request_typed::<serde_json::Value>(&request).unwrap(),
             payload
         );
     }
 
     #[test]
-    fn missing_or_invalid_request_json_is_bad_request() {
+    fn missing_or_invalid_request_json_retains_input_causes() {
         let client = reqwest::Client::new();
         let missing = client.post("http://localhost/Items").build().unwrap();
         let invalid = client
@@ -343,15 +313,15 @@ mod tests {
             .build()
             .unwrap();
         for request in [missing, invalid] {
-            assert_eq!(
-                payload_from_request::<serde_json::Value>(&request).unwrap_err(),
-                StatusCode::BAD_REQUEST
-            );
+            assert!(matches!(
+                payload_from_request_typed::<serde_json::Value>(&request).unwrap_err(),
+                ApplicationError::InvalidInput(_) | ApplicationError::InvalidRequestJson(_)
+            ));
         }
     }
 
     #[tokio::test]
-    async fn invalid_upstream_json_is_bad_gateway() {
+    async fn invalid_upstream_json_retains_json_cause() {
         let upstream = MockServer::start().await;
         Mock::given(method("GET"))
             .respond_with(ResponseTemplate::new(200).set_body_string("not JSON"))
@@ -360,11 +330,11 @@ mod tests {
         let client = reqwest::Client::new();
         let request = client.get(upstream.uri()).build().unwrap();
 
-        assert_eq!(
-            execute_json_request::<serde_json::Value>(&client, request)
+        assert!(matches!(
+            execute_json_request_typed::<serde_json::Value>(&client, request)
                 .await
                 .unwrap_err(),
-            StatusCode::BAD_GATEWAY
-        );
+            ApplicationError::InvalidUpstreamJson(_)
+        ));
     }
 }

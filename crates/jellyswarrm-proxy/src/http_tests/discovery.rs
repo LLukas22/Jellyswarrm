@@ -6,26 +6,34 @@ use wiremock::{
 };
 
 macro_rules! contracts {
-    ($($name:ident: $route:literal;)+) => {
-        pub(super) const ROUTES: &[&str] = &[$($route),+];
-        $(scenario_test!($name, discovery_contract, $route);)+
+    (
+        configuration_dependent { $($scenario_name:ident: $scenario_route:literal;)+ }
+        fanout { $($name:ident: $route:literal;)+ }
+    ) => {
+        pub(super) const ROUTES: &[&str] = &[$($scenario_route,)+ $($route),+];
+        $(scenario_test!($scenario_name, discovery_contract, $scenario_route);)+
+        $(contract_test!($name, discovery_contract, Scenario::NormalServers, $route);)+
     };
 }
 contracts! {
-    modern_views: "/UserViews?UserId={user}";
-    legacy_views: "/Users/{user}/Views";
-    library_folders: "/Library/MediaFolders";
-    movies: "/Items?UserId={user}&IncludeItemTypes=Movie&Recursive=true";
-    search: "/Items?UserId={user}&SearchTerm=Movie&IncludeItemTypes=Movie";
-    channels: "/LiveTv/Channels?UserId={user}";
-    programs: "/LiveTv/Programs?UserId={user}";
-    recommendations: "/LiveTv/Programs/Recommended?UserId={user}";
-    recordings: "/LiveTv/Recordings?UserId={user}";
-    folders: "/LiveTv/Recordings/Folders?UserId={user}";
-    persons: "/Persons?UserId={user}&SearchTerm=Actor";
-    artists: "/Artists?UserId={user}&SearchTerm=Artist";
-    genres: "/Genres?UserId={user}";
-    studios: "/Studios?UserId={user}";
+    configuration_dependent {
+        modern_views: "/UserViews?UserId={user}";
+        legacy_views: "/Users/{user}/Views";
+        library_folders: "/Library/MediaFolders";
+        search: "/Items?UserId={user}&SearchTerm=Movie&IncludeItemTypes=Movie";
+    }
+    fanout {
+        movies: "/Items?UserId={user}&IncludeItemTypes=Movie&Recursive=true";
+        channels: "/LiveTv/Channels?UserId={user}";
+        programs: "/LiveTv/Programs?UserId={user}";
+        recommendations: "/LiveTv/Programs/Recommended?UserId={user}";
+        recordings: "/LiveTv/Recordings?UserId={user}";
+        folders: "/LiveTv/Recordings/Folders?UserId={user}";
+        persons: "/Persons?UserId={user}&SearchTerm=Actor";
+        artists: "/Artists?UserId={user}&SearchTerm=Artist";
+        genres: "/Genres?UserId={user}";
+        studios: "/Studios?UserId={user}";
+    }
 }
 async fn discovery_contract(scenario: Scenario, route: &str) {
     let f = Fixture::for_scenario(scenario).await;

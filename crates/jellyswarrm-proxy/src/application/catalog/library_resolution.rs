@@ -50,17 +50,13 @@ pub(super) fn unavailable_source_count(
     preprocessed: &CatalogRequest,
     targets: &[CatalogFetchTarget],
 ) -> usize {
-    preprocessed
-        .context
-        .access_scope()
-        .as_ref()
-        .map_or(0, |scope| {
-            scope
-                .server_ids()
-                .iter()
-                .filter(|id| !targets.iter().any(|target| target.server.id == **id))
-                .count()
-        })
+    preprocessed.context.access_scope().map_or(0, |scope| {
+        scope
+            .server_ids()
+            .iter()
+            .filter(|id| !targets.iter().any(|target| target.server.id == **id))
+            .count()
+    })
 }
 
 pub(crate) async fn resolve_catalog_plan(
@@ -70,7 +66,7 @@ pub(crate) async fn resolve_catalog_plan(
     if let Some(parent_id) = parent_id(preprocessed.original_request.url()) {
         let resolution = state
             .virtual_library_service
-            .resolve(&parent_id, preprocessed.context.access_scope().as_ref())
+            .resolve(&parent_id, preprocessed.context.access_scope())
             .await
             .map_err(ApplicationError::Storage)?;
 
@@ -192,7 +188,6 @@ pub(crate) async fn resolve_catalog_plan(
         let viewer = preprocessed
             .context
             .access_scope()
-            .as_ref()
             .map(|scope| scope.user_id())
             .or_else(|| preprocessed.context.user().map(|user| user.id.as_str()))
             .ok_or_else(|| {
@@ -300,7 +295,6 @@ async fn resolve_aggregate_plan(
         if preprocessed
             .context
             .access_scope()
-            .as_ref()
             .is_some_and(|scope| !scope.allows(member.server.id))
         {
             continue;
@@ -329,7 +323,6 @@ async fn resolve_aggregate_plan(
     let viewer = preprocessed
         .context
         .access_scope()
-        .as_ref()
         .map(|scope| scope.user_id())
         .unwrap_or("anonymous");
     debug!(

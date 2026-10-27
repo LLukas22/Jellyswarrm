@@ -268,21 +268,23 @@ pub async fn handle_authenticate_with_quick_connect(
         })?;
     let authorization =
         effective_quick_connect_authorization(&headers, redemption.session(), redemption.user_id());
-    crate::application::quick_connect::redeem(&state, redemption, authorization)
-        .await
-        .map(crate::sessions::authentication_response)
-        .map_err(|error| match error {
-            crate::application::quick_connect::QuickConnectError::Unauthorized => {
-                StatusCode::UNAUTHORIZED
-            }
-            crate::application::quick_connect::QuickConnectError::NoServers => {
-                StatusCode::NOT_FOUND
-            }
-            crate::application::quick_connect::QuickConnectError::Storage(_)
-            | crate::application::quick_connect::QuickConnectError::CoordinatorStopped(_) => {
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
-        })
+    crate::application::quick_connect::redeem(
+        &state.authentication_service().await,
+        redemption,
+        authorization,
+    )
+    .await
+    .map(crate::sessions::authentication_response)
+    .map_err(|error| match error {
+        crate::application::quick_connect::QuickConnectError::Unauthorized => {
+            StatusCode::UNAUTHORIZED
+        }
+        crate::application::quick_connect::QuickConnectError::NoServers => StatusCode::NOT_FOUND,
+        crate::application::quick_connect::QuickConnectError::Storage(_)
+        | crate::application::quick_connect::QuickConnectError::CoordinatorStopped(_) => {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    })
 }
 
 #[cfg(test)]
@@ -305,11 +307,11 @@ mod tests {
         }
     }
     use crate::{
-        application::playback::sessions::SessionStorage,
         auth::service::{Device, UserAuthorizationService},
         config::{AppConfig, MediaStreamingMode, MIGRATOR},
         media::storage::MediaStorageService,
         models::{AuthenticateResponse, SessionInfo, SyncPlayUserAccessType, User, UserPolicy},
+        playback::sessions::SessionStorage,
         processors::ProxyProcessors,
         servers::storage::ServerStorageService,
         AppState, DataContext,

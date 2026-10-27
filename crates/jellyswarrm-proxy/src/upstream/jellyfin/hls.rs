@@ -205,11 +205,11 @@ mod tests {
     use std::sync::Arc;
 
     use crate::{
-        application::playback::sessions::SessionStorage,
         auth::service::UserAuthorizationService,
         config::{AppConfig, MediaStreamingMode, MIGRATOR},
         libraries::service::VirtualLibraryService,
         media::storage::MediaStorageService,
+        playback::sessions::SessionStorage,
         servers::id::ServerId,
         servers::storage::ServerStorageService,
         DataContext,
@@ -273,10 +273,11 @@ mod tests {
             let context = HlsContext::new(&processor, &server, None, None, configured);
             assert_eq!(context.timeout, Duration::from_secs(bounded));
             assert_eq!(
-                rewrite(&context, &server.url, "not a playlist")
-                    .await
-                    .unwrap_err()
-                    .detail_status(),
+                crate::http::handlers::pipeline_error::detail_status(
+                    &(rewrite(&context, &server.url, "not a playlist")
+                        .await
+                        .unwrap_err())
+                ),
                 StatusCode::BAD_GATEWAY
             );
         }

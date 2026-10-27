@@ -2,10 +2,10 @@
 //! availability/status policy; this module never falls back from an explicit owner.
 use crate::{
     application::context::{AuthorizedTarget, RequestContext, TargetError},
-    application::playback::sessions::{
+    media::storage::{MediaMapping, MediaStorageService},
+    playback::sessions::{
         LiveStreamBinding, PlaybackSession, RevisionedPlaybackSession, SessionStorage,
     },
-    media::storage::{MediaMapping, MediaStorageService},
     servers::id::ServerId,
     servers::storage::ServerStorageService,
 };
@@ -286,23 +286,6 @@ impl MediaTargetResolver<'_> {
         Ok(member)
     }
 
-    #[cfg(test)]
-    pub async fn selected(
-        &self,
-        context: &RequestContext,
-        item: &str,
-        source: &str,
-    ) -> Result<ResolvedMediaTarget, ResolutionError> {
-        let owners = self.owners(item, Some(source), None).await?;
-        let owner = *owners.first().ok_or(ResolutionError::InvalidSource)?;
-        let backend = context.target(owner)?;
-        let member = self.member(item, Some(source), None, owner).await?;
-        Ok(ResolvedMediaTarget {
-            backend,
-            member: Some(member),
-        })
-    }
-
     /// Explicit known sessions must match a registered item alias and viewer.
     /// Unknown sessions remain unbound; delivery may bind only after success.
     /// Ambiguous implicit matches deliberately return None (mapping fallback).
@@ -333,8 +316,8 @@ impl MediaTargetResolver<'_> {
 /// Shared viewer authority for delivery, live-open and transcoder cancellation.
 pub(crate) async fn owned_session(
     sessions: &SessionStorage,
-    id: &crate::application::identity::PlaybackSessionId,
-    viewer: &crate::application::identity::ViewerId,
+    id: &crate::playback::identity::PlaybackSessionId,
+    viewer: &crate::playback::identity::ViewerId,
 ) -> Result<Option<RevisionedPlaybackSession>, ResolutionError> {
     sessions
         .resolve_report_binding(id, viewer)
@@ -347,8 +330,8 @@ pub(crate) async fn owned_session(
 pub(crate) async fn live_target(
     context: &RequestContext,
     sessions: &SessionStorage,
-    id: &crate::application::identity::VirtualLiveStreamId,
-    viewer: &crate::application::identity::ViewerId,
+    id: &crate::playback::identity::VirtualLiveStreamId,
+    viewer: &crate::playback::identity::ViewerId,
 ) -> Result<(AuthorizedTarget, LiveStreamBinding), ResolutionError> {
     let binding = sessions
         .live_binding(id, viewer)

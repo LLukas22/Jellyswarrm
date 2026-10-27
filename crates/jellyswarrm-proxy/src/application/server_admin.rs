@@ -1,9 +1,10 @@
 //! Registry mutations and their dependent effects. SQL commits first; later
 //! requests resolve fresh server settings and cannot reuse earlier catalog keys.
 use crate::{
-    application::{catalog::snapshots::CatalogSnapshots, playback::sessions::SessionStorage},
+    application::catalog::snapshots::CatalogSnapshots,
     auth::encryption::{encrypt_password, EncryptionError, HashedPassword, Password},
     config::MediaStreamingMode,
+    playback::sessions::SessionStorage,
     servers::{id::ServerId, ServerStorageService},
 };
 
@@ -161,8 +162,7 @@ impl<'a> ServerAdministration<'a> {
 mod tests {
     use super::*;
     use crate::{
-        application::playback::sessions::PlaybackSession, config::MIGRATOR,
-        media::MediaStorageService,
+        config::MIGRATOR, media::MediaStorageService, playback::sessions::PlaybackSession,
     };
 
     #[tokio::test]

@@ -3,7 +3,6 @@
 use crate::config::MediaStreamingMode;
 use crate::processors::response_processor::ResponseProcessingProfile;
 use crate::{
-    application::playback::sessions::SessionStorage,
     auth::{service::User, UserAuthorizationService},
     config::{AppConfig, MIGRATOR},
     http::{
@@ -13,6 +12,7 @@ use crate::{
     libraries::VirtualLibraryService,
     media::MediaStorageService,
     models::Authorization,
+    playback::sessions::SessionStorage,
     processors::ProxyProcessors,
     servers::{Server, ServerStorageService},
     AppState, DataContext,
@@ -594,16 +594,18 @@ async fn playlist_mapping_database_failures_are_internal_errors() {
     f.pool.close().await;
     let mut permissions = json!([{"UserId":"caller-0", "CanEdit":true}]);
     assert_eq!(
-        f.state
-            .process_response_json_typed(
-                &mut permissions,
-                &f.servers[0],
-                ResponseProcessingProfile::PlaylistPermissions,
-                None
-            )
-            .await
-            .unwrap_err()
-            .detail_status(),
+        crate::http::handlers::pipeline_error::detail_status(
+            &(f.state
+                .proxy_service()
+                .process_response_json_typed(
+                    &mut permissions,
+                    &f.servers[0],
+                    ResponseProcessingProfile::PlaylistPermissions,
+                    None
+                )
+                .await
+                .unwrap_err())
+        ),
         StatusCode::INTERNAL_SERVER_ERROR
     );
 }
@@ -659,13 +661,17 @@ async fn complete_playlist_sharing_can_be_saved_back_without_losing_recipients()
 }
 
 #[tokio::test]
-async fn collection_responses_continue_to_disable_deletion() {
+async fn listings_preserve_playlist_deletion_permissions_but_disable_collection_deletion() {
     let f = Fixture::new().await;
     let anchor = f.media(0, "movie", "Movie").await;
     Mock::given(method("GET"))
         .and(path("/TestCollections"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "Items":[{"Id":"collection", "Name":"Collection", "Type":"BoxSet", "CanDelete":true}]
+            "Items":[
+                {"Id":"collection", "Name":"Collection", "Type":"BoxSet", "CanDelete":true},
+                {"Id":"editable", "Type":"Playlist", "CanDelete":true},
+                {"Id":"read-only", "Type":"Playlist", "CanDelete":false}
+            ]
         })))
         .expect(1)
         .mount(&f.upstreams[0])
@@ -678,10 +684,13 @@ async fn collection_responses_continue_to_disable_deletion() {
         )
         .await;
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response.json::<Value>().await.unwrap()["Items"][0]["CanDelete"],
-        false
-    );
+    let result: Value = response.json().await.unwrap();
+    for (index, expected) in [false, true, false].into_iter().enumerate() {
+        assert_eq!(
+            result["Items"][index]["CanDelete"], expected,
+            "item {index}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -871,7 +880,7 @@ async fn saved_playlist_http_lifecycle_preserves_duplicate_entries_and_deletes()
     let playlist = f.create(&song).await;
     Mock::given(method("POST"))
         .and(path("/Playlists/playlist/Items"))
-        .and(query_param("Ids", "song-0"))
+        .and(query_param("Ids", "song-0,song-0"))
         .respond_with(ResponseTemplate::new(204))
         .expect(1)
         .mount(&f.upstreams[0])
@@ -879,7 +888,7 @@ async fn saved_playlist_http_lifecycle_preserves_duplicate_entries_and_deletes()
     assert_eq!(
         f.request(
             Method::POST,
-            &format!("/Playlists/{playlist}/Items?Ids={song}"),
+            &format!("/Playlists/{playlist}/Items?Ids={song},{song}"),
             None
         )
         .await

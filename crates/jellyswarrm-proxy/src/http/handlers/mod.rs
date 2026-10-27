@@ -4,7 +4,7 @@ pub(crate) mod branding;
 pub(crate) mod federated;
 pub(crate) mod items;
 pub(crate) mod livestreams;
-mod pipeline_error;
+pub(crate) mod pipeline_error;
 pub(crate) mod quick_connect;
 pub(crate) mod syncplay;
 pub(crate) mod system;

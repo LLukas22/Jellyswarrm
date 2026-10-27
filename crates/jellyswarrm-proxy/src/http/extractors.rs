@@ -88,7 +88,7 @@ impl FromRequest<AppState> for CatalogInput {
         request
             .validate(&state.catalog_service())
             .await
-            .map_err(|error| error.detail_status())?;
+            .map_err(|error| crate::http::handlers::pipeline_error::detail_status(&error))?;
         Ok(Self(request))
     }
 }
@@ -116,8 +116,8 @@ impl FromRequest<AppState> for LiveInput {
                 &state.url_selection,
             )
             .await
-            .map_err(input_error)?;
-        if let Some(scope) = context.access_scope().as_ref() {
+            .map_err(|error| crate::http::handlers::pipeline_error::detail_status(&error.into()))?;
+        if let Some(scope) = context.access_scope() {
             if context
                 .backends()
                 .sessions
@@ -139,27 +139,13 @@ impl FromRequest<AppState> for LiveInput {
 }
 
 fn input_status(error: anyhow::Error) -> StatusCode {
-    crate::application::input::routing_error(error).detail_status()
+    crate::http::handlers::pipeline_error::detail_status(&crate::application::input::routing_error(
+        error,
+    ))
 }
 
 fn input_error(error: anyhow::Error) -> StatusCode {
-    crate::application::catalog::input::input_error_typed(error).detail_status()
-}
-
-// Legacy HTTP fixtures adapt their wire-side inputs here, never in application
-// code. Production requests use the shared named extraction boundary above.
-#[cfg(test)]
-impl From<crate::http::preprocessing::PreprocessedRequest>
-    for crate::application::catalog::input::CatalogRequest
-{
-    fn from(request: crate::http::preprocessing::PreprocessedRequest) -> Self {
-        let context = crate::application::context::RequestContext::new(
-            &request.original_request,
-            request.auth,
-            request.user,
-            request.sessions,
-            request.access_scope,
-        );
-        Self::new(request.original_request, context, None)
-    }
+    crate::http::handlers::pipeline_error::detail_status(
+        &crate::application::catalog::input::input_error_typed(error),
+    )
 }

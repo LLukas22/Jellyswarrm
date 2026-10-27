@@ -151,7 +151,7 @@ pub(crate) async fn post_playback_info_typed(
         remove_source_query(&mut request);
     }
     let server = target.server();
-    let session = target.session().as_ref().ok_or_else(|| {
+    let session = target.session().ok_or_else(|| {
         ApplicationError::MissingIdentity("selected playback session")
             .at(crate::application::error::FailureStage::CallerAuthentication)
     })?;
@@ -163,7 +163,7 @@ pub(crate) async fn post_playback_info_typed(
     let request = UpstreamRequestBuilder::new(state.processors.url_processor, prefix.as_deref())
         .build(&target, &request)
         .await
-        .map_err(|error| ApplicationError::InvalidRouting(error.into()))?;
+        .map_err(|error| crate::application::input::routing_error(error.0))?;
 
     let original_item_id = contains_id(request.url(), "Items").ok_or(
         ApplicationError::InvalidInput("missing upstream playback item"),
@@ -307,5 +307,3 @@ fn remove_source_query(request: &mut reqwest::Request) {
 #[cfg(test)]
 #[path = "../../unit_tests/playback_negotiation.rs"]
 mod tests;
-#[cfg(test)]
-use super::selection::{resolve_playback_route, PlaybackRouteDecision};

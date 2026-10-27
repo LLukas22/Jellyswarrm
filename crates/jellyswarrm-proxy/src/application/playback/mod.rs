@@ -12,5 +12,3 @@ pub(crate) mod response;
 pub(crate) mod selection;
 pub(crate) mod services;
 pub(crate) mod target;
-
-pub(crate) mod sessions;

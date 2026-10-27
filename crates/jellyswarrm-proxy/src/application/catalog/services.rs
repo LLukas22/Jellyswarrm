@@ -1,6 +1,5 @@
 //! Catalog-only capabilities, owned so bounded source tasks can share them.
 use crate::{
-    application::playback::sessions::SessionStorage,
     application::{
         error::ApplicationError,
         routing::RoutingServices,
@@ -9,6 +8,7 @@ use crate::{
     config::SettingsView,
     libraries::service::VirtualLibraryService,
     media::storage::MediaStorageService,
+    playback::sessions::SessionStorage,
     processors::{
         response_processor::{ResponseProcessingProfile, ResponseProcessor},
         url_processor::UrlProcessor,

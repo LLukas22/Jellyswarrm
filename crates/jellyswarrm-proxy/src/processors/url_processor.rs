@@ -4,7 +4,6 @@ use anyhow::Result;
 use tracing::debug;
 
 use crate::{
-    application::playback::sessions::SessionStorage,
     auth::service::AuthorizationSession,
     auth::UserAuthorizationService,
     config::SettingsView,
@@ -12,6 +11,7 @@ use crate::{
     libraries::VirtualLibraryService,
     media::storage::{MediaMapping, MediaVersionMember},
     media::MediaStorageService,
+    playback::sessions::SessionStorage,
     servers::id::ServerId,
     servers::storage::Server,
     upstream::url::{contains_id, decoded_path_segments, is_id_like, replace_id},
@@ -131,15 +131,15 @@ impl UrlProcessor {
     pub async fn client_to_server_url(
         &self,
         url: &mut url::Url,
-        session: &Option<AuthorizationSession>,
+        session: Option<&AuthorizationSession>,
         access_scope: Option<&VirtualLibraryAccessScope>,
         server_id: ServerId,
-    ) {
+    ) -> Result<()> {
         let required_server_id = Some(server_id);
         self.replace_user_ids_in_path(url, session, required_server_id)
-            .await;
+            .await?;
         self.replace_media_ids_in_path(url, access_scope, required_server_id)
-            .await;
+            .await?;
 
         let mut pairs: Vec<(String, String)> = url
             .query_pairs()
@@ -147,11 +147,12 @@ impl UrlProcessor {
             .collect();
 
         self.replace_session_query_values(&mut pairs, session, required_server_id)
-            .await;
+            .await?;
         self.replace_media_ids_in_query(&mut pairs, access_scope, required_server_id)
-            .await;
+            .await?;
 
         url.query_pairs_mut().clear().extend_pairs(pairs);
+        Ok(())
     }
 
     pub async fn server_to_client_delivery_url(
@@ -240,16 +241,22 @@ impl UrlProcessor {
     pub async fn upstream_user_id(
         &self,
         user_id: &str,
-        session: &Option<AuthorizationSession>,
+        session: Option<&AuthorizationSession>,
         server_id: ServerId,
     ) -> Result<String> {
-        self.user_ids.resolve(user_id, session, server_id).await
+        self.user_ids
+            .resolve(user_id, session, server_id)
+            .await
+            .map_err(|error| match error {
+                super::user_ids::UserIdError::Storage(cause) => cause.into(),
+                super::user_ids::UserIdError::MissingMapping => error.into(),
+            })
     }
 
     pub async fn validate_container_request(
         &self,
         url: &url::Url,
-        session: &Option<AuthorizationSession>,
+        session: Option<&AuthorizationSession>,
         scope: Option<&VirtualLibraryAccessScope>,
         server_id: ServerId,
         body_media_ids: &[String],
@@ -276,7 +283,7 @@ impl UrlProcessor {
                 || pair[0].eq_ignore_ascii_case("Collections"))
                 && self
                     .client_media_mapping(&pair[1], scope, Some(server_id))
-                    .await
+                    .await?
                     .is_none()
             {
                 anyhow::bail!(unavailable);
@@ -286,7 +293,7 @@ impl UrlProcessor {
             if let Some(id) = contains_id(url, tag) {
                 if self
                     .client_media_mapping(&id, scope, Some(server_id))
-                    .await
+                    .await?
                     .is_none()
                 {
                     anyhow::bail!(unavailable);
@@ -301,7 +308,7 @@ impl UrlProcessor {
                 for id in value.split(',').map(str::trim).filter(|id| !id.is_empty()) {
                     if self
                         .client_media_mapping(id, scope, Some(server_id))
-                        .await
+                        .await?
                         .is_none()
                     {
                         anyhow::bail!(unavailable);
@@ -312,7 +319,7 @@ impl UrlProcessor {
         for id in body_media_ids {
             if self
                 .client_media_mapping(id, scope, Some(server_id))
-                .await
+                .await?
                 .is_none()
             {
                 anyhow::bail!(unavailable);
@@ -332,16 +339,19 @@ impl UrlProcessor {
     async fn replace_user_ids_in_path(
         &self,
         url: &mut url::Url,
-        session: &Option<AuthorizationSession>,
+        session: Option<&AuthorizationSession>,
         server_id: Option<ServerId>,
-    ) {
+    ) -> Result<()> {
         for &tag in USER_ID_PATH_TAGS {
             if let (Some(user_id), Some(server_id)) = (contains_id(url, tag), server_id) {
-                if let Ok(upstream) = self.upstream_user_id(&user_id, session, server_id).await {
-                    *url = replace_id(url.clone(), &user_id, &upstream);
+                match self.user_ids.resolve(&user_id, session, server_id).await {
+                    Ok(upstream) => *url = replace_id(url.clone(), &user_id, &upstream),
+                    Err(super::user_ids::UserIdError::Storage(error)) => return Err(error.into()),
+                    Err(super::user_ids::UserIdError::MissingMapping) => {}
                 }
             }
         }
+        Ok(())
     }
 
     async fn replace_media_ids_in_path(
@@ -349,21 +359,23 @@ impl UrlProcessor {
         url: &mut url::Url,
         access_scope: Option<&VirtualLibraryAccessScope>,
         required_server_id: Option<ServerId>,
-    ) {
+    ) -> Result<()> {
         // These endpoints carry a second ID after the item. Capture it before
         // rewriting the item (item/source IDs may be identical on the backend).
         let source_id = path_media_source_id(url);
-        let selected_source = selected_media_source(url).ok().flatten();
+        let selected_source = selected_media_source(url)?;
         for &path_segment in MEDIA_ID_PATH_TAGS {
             if let Some(media_id) = contains_id(url, path_segment) {
                 if let Some(source) = selected_source.as_deref() {
-                    if let Ok(Some(group)) =
-                        self.media_storage.get_media_version_group(&media_id).await
+                    if let Some(group) = self
+                        .media_storage
+                        .get_media_version_group(&media_id)
+                        .await?
                     {
-                        if let Ok(Some(route)) = self
+                        if let Some(route) = self
                             .media_storage
                             .get_media_version_source_route(group.id, source)
-                            .await
+                            .await?
                         {
                             if server_is_allowed(
                                 route.member_mapping.server_id,
@@ -382,7 +394,7 @@ impl UrlProcessor {
                 }
                 if let Some(media_mapping) = self
                     .client_media_mapping(&media_id, access_scope, required_server_id)
-                    .await
+                    .await?
                 {
                     debug!(
                         "Replacing media ID in path: {} -> {}",
@@ -395,32 +407,38 @@ impl UrlProcessor {
         if let Some(source_id) = source_id {
             if let Some(mapping) = self
                 .client_media_mapping(&source_id, access_scope, required_server_id)
-                .await
+                .await?
             {
                 *url = replace_id(url.clone(), &source_id, &mapping.original_media_id);
             }
         }
+        Ok(())
     }
 
     async fn replace_session_query_values(
         &self,
         pairs: &mut [(String, String)],
-        session: &Option<AuthorizationSession>,
+        session: Option<&AuthorizationSession>,
         server_id: Option<ServerId>,
-    ) {
+    ) -> Result<()> {
         let session_option = session;
         let Some(session) = session else {
-            return;
+            return Ok(());
         };
 
         for (name, value) in pairs {
             if matches_case_insensitive(name, USER_ID_QUERY_TAGS) {
                 if let Some(server_id) = server_id {
-                    if let Ok(upstream) = self
-                        .upstream_user_id(value, session_option, server_id)
+                    match self
+                        .user_ids
+                        .resolve(value, session_option, server_id)
                         .await
                     {
-                        *value = upstream;
+                        Ok(upstream) => *value = upstream,
+                        Err(super::user_ids::UserIdError::Storage(error)) => {
+                            return Err(error.into())
+                        }
+                        Err(super::user_ids::UserIdError::MissingMapping) => {}
                     }
                 }
             } else if matches_case_insensitive(name, API_KEY_QUERY_TAGS) {
@@ -437,6 +455,7 @@ impl UrlProcessor {
                 }
             }
         }
+        Ok(())
     }
 
     async fn replace_media_ids_in_query(
@@ -444,7 +463,7 @@ impl UrlProcessor {
         pairs: &mut [(String, String)],
         access_scope: Option<&VirtualLibraryAccessScope>,
         required_server_id: Option<ServerId>,
-    ) {
+    ) -> Result<()> {
         for (name, value) in pairs {
             if !matches_case_insensitive(name, MEDIA_ID_QUERY_TAGS) {
                 continue;
@@ -452,11 +471,12 @@ impl UrlProcessor {
 
             if let Some(resolved_value) = self
                 .resolve_client_media_id_list(value, access_scope, required_server_id)
-                .await
+                .await?
             {
                 *value = resolved_value;
             }
         }
+        Ok(())
     }
 
     async fn resolve_client_media_id_list(
@@ -464,7 +484,7 @@ impl UrlProcessor {
         value: &str,
         access_scope: Option<&VirtualLibraryAccessScope>,
         required_server_id: Option<ServerId>,
-    ) -> Option<String> {
+    ) -> Result<Option<String>> {
         let mut changed = false;
         let mut resolved_ids = Vec::new();
 
@@ -476,7 +496,7 @@ impl UrlProcessor {
 
             if let Some(media_mapping) = self
                 .client_media_mapping(trimmed, access_scope, required_server_id)
-                .await
+                .await?
             {
                 debug!(
                     "Replacing media ID in query: {} -> {}",
@@ -489,7 +509,7 @@ impl UrlProcessor {
             }
         }
 
-        changed.then(|| resolved_ids.join(","))
+        Ok(changed.then(|| resolved_ids.join(",")))
     }
 
     async fn remap_delivery_url_path(&self, url: &mut url::Url, server: &Server) -> Result<()> {
@@ -514,35 +534,36 @@ impl UrlProcessor {
         virtual_media_id: &str,
         access_scope: Option<&VirtualLibraryAccessScope>,
         required_server_id: Option<ServerId>,
-    ) -> Option<MediaMapping> {
+    ) -> std::result::Result<Option<MediaMapping>, sqlx::Error> {
         // Translation never selects a backend. An already resolved target is
         // required even when the incoming identity is an aggregate/library.
-        let required_server_id = Some(required_server_id?);
+        let Some(server_id) = required_server_id else {
+            return Ok(None);
+        };
+        let required_server_id = Some(server_id);
         if let Some(mapping) = self
             .media_storage
             .get_media_mapping_by_virtual(virtual_media_id)
-            .await
-            .unwrap_or_default()
+            .await?
         {
             if !server_is_allowed(mapping.server_id, access_scope, required_server_id) {
-                return None;
+                return Ok(None);
             }
-            return Some(mapping);
+            return Ok(Some(mapping));
         }
 
         if let Some(member) = self
             .media_version_member(virtual_media_id, access_scope, required_server_id)
-            .await
+            .await?
         {
-            return Some(member.mapping);
+            return Ok(Some(member.mapping));
         }
 
-        self.virtual_library_service
+        Ok(self
+            .virtual_library_service
             .routing_target(virtual_media_id, access_scope, required_server_id)
-            .await
-            .ok()
-            .flatten()
-            .map(|target| target.mapping)
+            .await?
+            .map(|target| target.mapping))
     }
 
     async fn media_version_member(
@@ -550,12 +571,14 @@ impl UrlProcessor {
         group_virtual_id: &str,
         access_scope: Option<&VirtualLibraryAccessScope>,
         required_server_id: Option<ServerId>,
-    ) -> Option<MediaVersionMember> {
-        let server_id = required_server_id?;
-        self.media_storage
+    ) -> std::result::Result<Option<MediaVersionMember>, sqlx::Error> {
+        let Some(server_id) = required_server_id else {
+            return Ok(None);
+        };
+        Ok(self
+            .media_storage
             .get_media_version_members_by_virtual_id(group_virtual_id)
-            .await
-            .ok()?
+            .await?
             .into_iter()
             .filter(|member| {
                 member.server.id == server_id
@@ -567,7 +590,7 @@ impl UrlProcessor {
                 left.mapping
                     .original_media_id
                     .cmp(&right.mapping.original_media_id)
-            })
+            }))
     }
 }
 
@@ -587,6 +610,42 @@ mod tests {
         models::Authorization,
         DataContext,
     };
+
+    #[tokio::test]
+    async fn translation_distinguishes_unknown_ids_from_storage_failure() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let servers = ServerStorageService::new(pool.clone());
+        let media = MediaStorageService::new(pool.clone());
+        let processor = UrlProcessor::new(
+            Arc::new(media.clone()),
+            Arc::new(VirtualLibraryService::new(pool.clone(), servers, media)),
+            Arc::new(SessionStorage::new()),
+            Arc::new(UserAuthorizationService::new(pool.clone())),
+            SettingsView::new(Arc::new(tokio::sync::RwLock::new(AppConfig::default()))),
+        );
+        let id = "0123456789abcdef0123456789abcdef";
+        let server = ServerId::new(1);
+        assert!(processor
+            .client_media_mapping(id, None, Some(server))
+            .await
+            .unwrap()
+            .is_none());
+        pool.close().await;
+        let error = processor
+            .client_media_mapping(id, None, Some(server))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, sqlx::Error::PoolClosed));
+        for path in [format!("/Items/{id}"), format!("/Items?Ids={id}")] {
+            let mut url = url::Url::parse(&format!("http://proxy.example{path}")).unwrap();
+            let error = processor
+                .client_to_server_url(&mut url, None, None, server)
+                .await
+                .unwrap_err();
+            assert!(error.is::<sqlx::Error>());
+        }
+    }
 
     async fn user_mapping_fixture() -> (UrlProcessor, User, Vec<(AuthorizationSession, Server)>) {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
@@ -694,8 +753,9 @@ mod tests {
                     for key in ["userId", "UserId", "USERID"] {
                         let mut url = url::Url::parse(&format!("http://localhost{endpoint}?{key}={id}&fields=Overview&fields=SortName&client=Wholphin")).unwrap();
                         processor
-                            .client_to_server_url(&mut url, &Some(session.clone()), None, server.id)
-                            .await;
+                            .client_to_server_url(&mut url, Some(&session), None, server.id)
+                            .await
+                            .unwrap();
                         let pairs = url.query_pairs().collect::<Vec<_>>();
                         assert_eq!(pairs[0].0, key);
                         assert_eq!(
@@ -715,8 +775,9 @@ mod tests {
                 let mut url =
                     url::Url::parse(&format!("http://localhost/Users/{id}/Views")).unwrap();
                 processor
-                    .client_to_server_url(&mut url, &Some(session.clone()), None, server.id)
-                    .await;
+                    .client_to_server_url(&mut url, Some(&session), None, server.id)
+                    .await
+                    .unwrap();
                 assert_eq!(
                     url.path(),
                     format!("/Users/{}/Views", session.original_user_id)
@@ -735,7 +796,7 @@ mod tests {
             for id in uuid_variants(&user.id) {
                 assert_eq!(
                     processor
-                        .upstream_user_id(&id, &Some(caller.clone()), server.id)
+                        .upstream_user_id(&id, Some(&caller), server.id)
                         .await
                         .unwrap(),
                     session.original_user_id
@@ -745,8 +806,9 @@ mod tests {
                 ))
                 .unwrap();
                 processor
-                    .client_to_server_url(&mut url, &Some(caller.clone()), None, server.id)
-                    .await;
+                    .client_to_server_url(&mut url, Some(&caller), None, server.id)
+                    .await
+                    .unwrap();
                 assert_eq!(
                     url.path(),
                     format!("/Playlists/list/Users/{}", session.original_user_id)
@@ -756,7 +818,7 @@ mod tests {
                     session.original_user_id
                 );
                 assert!(processor
-                    .upstream_user_id(&id, &Some(caller.clone()), ServerId::new(i64::MAX))
+                    .upstream_user_id(&id, Some(&caller), ServerId::new(i64::MAX))
                     .await
                     .is_err());
             }
@@ -766,13 +828,13 @@ mod tests {
                 uuid::Uuid::new_v4().hyphenated().to_string(),
             ] {
                 assert!(processor
-                    .upstream_user_id(&unknown, &Some(caller.clone()), server.id)
+                    .upstream_user_id(&unknown, Some(&caller), server.id)
                     .await
                     .is_err());
             }
             assert_eq!(
                 processor
-                    .upstream_user_id("caller-upstream-id", &Some(caller), server.id)
+                    .upstream_user_id("caller-upstream-id", Some(&caller), server.id)
                     .await
                     .unwrap(),
                 "caller-upstream-id"
@@ -785,11 +847,11 @@ mod tests {
 
     use super::*;
     use crate::{
-        application::playback::sessions::SessionStorage,
         auth::service::UserAuthorizationService,
         config::{AppConfig, MediaStreamingMode, MIGRATOR},
         libraries::service::VirtualLibraryService,
         media::storage::MediaStorageService,
+        playback::sessions::SessionStorage,
         servers::storage::ServerStorageService,
     };
 
@@ -865,8 +927,9 @@ mod tests {
         .unwrap();
 
         processor
-            .client_to_server_url(&mut url, &None, None, server_id)
-            .await;
+            .client_to_server_url(&mut url, None, None, server_id)
+            .await
+            .unwrap();
 
         assert_eq!(url.path(), "/Items/upstream-id/Images/Primary");
         assert_eq!(
@@ -917,8 +980,9 @@ mod tests {
         .unwrap();
 
         processor
-            .client_to_server_url(&mut url, &None, None, server_id)
-            .await;
+            .client_to_server_url(&mut url, None, None, server_id)
+            .await
+            .unwrap();
 
         assert_eq!(
             url.query_pairs()
@@ -1055,8 +1119,9 @@ mod tests {
         ))
         .unwrap();
         processor
-            .client_to_server_url(&mut url, &None, None, server_id)
-            .await;
+            .client_to_server_url(&mut url, None, None, server_id)
+            .await
+            .unwrap();
         assert_eq!(url.path(), "/Playlists/upstream-playlist/Items");
         assert_eq!(
             url.query_pairs()

@@ -14,105 +14,101 @@ fn target_status(error: &TargetError) -> StatusCode {
     }
 }
 
-impl ApplicationError {
-    /// Endpoint presentation policy; application and processor code return the
-    /// typed cause/stage and must not call this incoming-adapter method.
-    pub(crate) fn detail_status(&self) -> StatusCode {
-        match self {
-            Self::At { stage, cause } => match stage {
-                FailureStage::CallerAuthentication => StatusCode::UNAUTHORIZED,
-                FailureStage::CatalogEncoding => StatusCode::FORBIDDEN,
-                FailureStage::CatalogDeadline => StatusCode::GATEWAY_TIMEOUT,
-                FailureStage::PlaybackCommit => StatusCode::SERVICE_UNAVAILABLE,
-                FailureStage::ResourceLookup => StatusCode::NOT_FOUND,
-                FailureStage::HlsDeadline => StatusCode::GATEWAY_TIMEOUT,
-                FailureStage::HlsTranslation => StatusCode::BAD_GATEWAY,
-                FailureStage::HlsStatus => match cause.as_ref() {
-                    Self::UpstreamStatus(status)
-                        if status.is_client_error() || status.is_server_error() =>
-                    {
-                        *status
-                    }
-                    _ => StatusCode::BAD_GATEWAY,
-                },
-                FailureStage::NegotiationSelection => match cause.as_ref() {
-                    Self::PlaybackResolution(
-                        ResolutionError::OfflineOwner
-                        | ResolutionError::MissingOwner
-                        | ResolutionError::Target(TargetError::UnavailableOwner),
-                    ) => StatusCode::SERVICE_UNAVAILABLE,
-                    Self::PlaybackResolution(
-                        ResolutionError::Target(TargetError::ViewerMismatch)
-                        | ResolutionError::ViewerMismatch(_),
-                    ) => StatusCode::FORBIDDEN,
-                    Self::PlaybackResolution(ResolutionError::Storage(_)) => {
-                        StatusCode::INTERNAL_SERVER_ERROR
-                    }
-                    _ => StatusCode::BAD_REQUEST,
-                },
-                FailureStage::DeliverySelection => match cause.as_ref() {
-                    Self::PlaybackResolution(
-                        ResolutionError::ViewerMismatch(_)
-                        | ResolutionError::Target(
-                            TargetError::AccessDenied | TargetError::ViewerMismatch,
-                        ),
-                    ) => StatusCode::FORBIDDEN,
-                    Self::PlaybackResolution(ResolutionError::Target(
-                        TargetError::UnavailableOwner,
-                    )) => StatusCode::UNAUTHORIZED,
-                    Self::PlaybackResolution(
-                        ResolutionError::OfflineOwner | ResolutionError::MissingOwner,
-                    ) => StatusCode::NOT_FOUND,
-                    Self::PlaybackResolution(ResolutionError::Storage(_)) => {
-                        StatusCode::INTERNAL_SERVER_ERROR
-                    }
-                    _ => StatusCode::BAD_REQUEST,
-                },
-                FailureStage::LiveBindingLookup => match cause.as_ref() {
-                    Self::PlaybackResolution(ResolutionError::Target(error)) => {
-                        target_status(error)
-                    }
-                    _ => StatusCode::BAD_REQUEST,
-                },
-                FailureStage::LiveSessionLookup => match cause.as_ref() {
-                    Self::PlaybackResolution(ResolutionError::ViewerMismatch(_)) => {
-                        StatusCode::FORBIDDEN
-                    }
-                    _ => StatusCode::BAD_REQUEST,
-                },
+pub(crate) fn detail_status(error: &ApplicationError) -> StatusCode {
+    match error {
+        ApplicationError::At { stage, cause } => match stage {
+            FailureStage::CallerAuthentication => StatusCode::UNAUTHORIZED,
+            FailureStage::CatalogEncoding => StatusCode::FORBIDDEN,
+            FailureStage::CatalogDeadline => StatusCode::GATEWAY_TIMEOUT,
+            FailureStage::PlaybackCommit => StatusCode::SERVICE_UNAVAILABLE,
+            FailureStage::ResourceLookup => StatusCode::NOT_FOUND,
+            FailureStage::HlsDeadline => StatusCode::GATEWAY_TIMEOUT,
+            FailureStage::HlsTranslation => StatusCode::BAD_GATEWAY,
+            FailureStage::HlsStatus => match cause.as_ref() {
+                ApplicationError::UpstreamStatus(status)
+                    if status.is_client_error() || status.is_server_error() =>
+                {
+                    *status
+                }
+                _ => StatusCode::BAD_GATEWAY,
             },
-            Self::TargetSelection(error) => target_status(error),
-            Self::PlaylistResponse(error) => match error {
-                crate::processors::response_processor::PlaylistResponseError::IncompleteSharing => {
-                    StatusCode::CONFLICT
-                }
-                crate::processors::response_processor::PlaylistResponseError::InvalidSharing => {
-                    StatusCode::BAD_GATEWAY
-                }
-                crate::processors::response_processor::PlaylistResponseError::Database(_) => {
+            FailureStage::NegotiationSelection => match cause.as_ref() {
+                ApplicationError::PlaybackResolution(
+                    ResolutionError::OfflineOwner
+                    | ResolutionError::MissingOwner
+                    | ResolutionError::Target(TargetError::UnavailableOwner),
+                ) => StatusCode::SERVICE_UNAVAILABLE,
+                ApplicationError::PlaybackResolution(
+                    ResolutionError::Target(TargetError::ViewerMismatch)
+                    | ResolutionError::ViewerMismatch(_),
+                ) => StatusCode::FORBIDDEN,
+                ApplicationError::PlaybackResolution(ResolutionError::Storage(_)) => {
                     StatusCode::INTERNAL_SERVER_ERROR
                 }
+                _ => StatusCode::BAD_REQUEST,
             },
-            Self::InvalidInput(_)
-            | Self::RequestBody(_)
-            | Self::InvalidRouting(_)
-            | Self::InvalidRequestJson(_)
-            | Self::PlaybackResolution(_) => StatusCode::BAD_REQUEST,
-            Self::AccessDenied => StatusCode::FORBIDDEN,
-            Self::MissingIdentity(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            Self::UnavailableOwner | Self::SourcesFailed(_) | Self::IncompleteCatalog { .. } => {
-                StatusCode::SERVICE_UNAVAILABLE
+            FailureStage::DeliverySelection => match cause.as_ref() {
+                ApplicationError::PlaybackResolution(
+                    ResolutionError::ViewerMismatch(_)
+                    | ResolutionError::Target(
+                        TargetError::AccessDenied | TargetError::ViewerMismatch,
+                    ),
+                ) => StatusCode::FORBIDDEN,
+                ApplicationError::PlaybackResolution(ResolutionError::Target(
+                    TargetError::UnavailableOwner,
+                )) => StatusCode::UNAUTHORIZED,
+                ApplicationError::PlaybackResolution(
+                    ResolutionError::OfflineOwner | ResolutionError::MissingOwner,
+                ) => StatusCode::NOT_FOUND,
+                ApplicationError::PlaybackResolution(ResolutionError::Storage(_)) => {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                }
+                _ => StatusCode::BAD_REQUEST,
+            },
+            FailureStage::LiveBindingLookup => match cause.as_ref() {
+                ApplicationError::PlaybackResolution(ResolutionError::Target(error)) => {
+                    target_status(error)
+                }
+                _ => StatusCode::BAD_REQUEST,
+            },
+            FailureStage::LiveSessionLookup => match cause.as_ref() {
+                ApplicationError::PlaybackResolution(ResolutionError::ViewerMismatch(_)) => {
+                    StatusCode::FORBIDDEN
+                }
+                _ => StatusCode::BAD_REQUEST,
+            },
+        },
+        ApplicationError::TargetSelection(error) => target_status(error),
+        ApplicationError::PlaylistResponse(error) => match error {
+            crate::processors::response_processor::PlaylistResponseError::IncompleteSharing => {
+                StatusCode::CONFLICT
             }
-            Self::Shared(cause) => cause.detail_status(),
-            Self::UpstreamTransport(_)
-            | Self::InvalidUpstreamJson(_)
-            | Self::InvalidUpstreamPayload(_) => StatusCode::BAD_GATEWAY,
-            Self::UpstreamStatus(status) => *status,
-            Self::Storage(_)
-            | Self::Serialization(_)
-            | Self::InvalidProcessedJson(_)
-            | Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
-        }
+            crate::processors::response_processor::PlaylistResponseError::InvalidSharing => {
+                StatusCode::BAD_GATEWAY
+            }
+            crate::processors::response_processor::PlaylistResponseError::Database(_) => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        },
+        ApplicationError::InvalidInput(_)
+        | ApplicationError::RequestBody(_)
+        | ApplicationError::InvalidRouting(_)
+        | ApplicationError::InvalidRequestJson(_)
+        | ApplicationError::PlaybackResolution(_) => StatusCode::BAD_REQUEST,
+        ApplicationError::AccessDenied => StatusCode::FORBIDDEN,
+        ApplicationError::MissingIdentity(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        ApplicationError::UnavailableOwner
+        | ApplicationError::SourcesFailed(_)
+        | ApplicationError::IncompleteCatalog { .. } => StatusCode::SERVICE_UNAVAILABLE,
+        ApplicationError::Shared(cause) => detail_status(cause),
+        ApplicationError::UpstreamTransport(_)
+        | ApplicationError::InvalidUpstreamJson(_)
+        | ApplicationError::InvalidUpstreamPayload(_) => StatusCode::BAD_GATEWAY,
+        ApplicationError::UpstreamStatus(status) => *status,
+        ApplicationError::Storage(_)
+        | ApplicationError::Serialization(_)
+        | ApplicationError::InvalidProcessedJson(_)
+        | ApplicationError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
@@ -120,6 +116,100 @@ impl ApplicationError {
 mod tests {
     use super::*;
     use std::error::Error;
+
+    #[test]
+    fn input_aggregates_with_storage_failure_are_not_bad_requests() {
+        use crate::application::input::{request_body_error, routing_error};
+        use crate::processors::ProcessingErrors;
+        for classify in [routing_error, request_body_error] {
+            for storage_failed in [false, true] {
+                let mut causes = vec![anyhow::anyhow!("invalid selection")];
+                if storage_failed {
+                    causes.push(anyhow::Error::new(sqlx::Error::PoolClosed).context("body field"));
+                }
+                let error = classify(ProcessingErrors { causes }.into());
+                assert_eq!(
+                    detail_status(&error),
+                    if storage_failed {
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    } else {
+                        StatusCode::BAD_REQUEST
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn json_failure_policy_and_upstream_status_preservation_belong_to_the_adapter() {
+        let json_error = || serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+        for (error, status) in [
+            (
+                ApplicationError::InvalidInput("missing JSON body"),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                ApplicationError::InvalidRequestJson(json_error()),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                ApplicationError::InvalidUpstreamJson(json_error()),
+                StatusCode::BAD_GATEWAY,
+            ),
+            (
+                ApplicationError::InvalidProcessedJson(json_error()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ] {
+            assert_eq!(detail_status(&error), status);
+        }
+        for status in [
+            StatusCode::BAD_REQUEST,
+            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN,
+            StatusCode::NOT_FOUND,
+            StatusCode::SERVICE_UNAVAILABLE,
+        ] {
+            assert_eq!(
+                detail_status(&ApplicationError::UpstreamStatus(status)),
+                status
+            );
+        }
+    }
+
+    #[test]
+    fn routing_policy_distinguishes_storage_denial_availability_and_input() {
+        use crate::application::routing::RoutingError;
+        for (error, expected) in [
+            (
+                RoutingError::Storage(sqlx::Error::PoolClosed),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (RoutingError::AccessDenied, StatusCode::FORBIDDEN),
+            (
+                RoutingError::UnavailableOwner,
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                RoutingError::InvalidSelection(anyhow::anyhow!("conflicting source IDs")),
+                StatusCode::BAD_REQUEST,
+            ),
+        ] {
+            assert_eq!(detail_status(&error.into()), expected);
+        }
+    }
+
+    #[test]
+    fn detail_policy_does_not_confuse_upstream_forbidden_with_local_denial() {
+        let upstream = ApplicationError::UpstreamStatus(StatusCode::FORBIDDEN);
+        let local = ApplicationError::AccessDenied;
+        assert_eq!(detail_status(&upstream), detail_status(&local));
+        assert!(upstream.allows_detail_fallback());
+        assert!(!local.allows_detail_fallback());
+        let error =
+            ApplicationError::Storage(sqlx::Error::RowNotFound).at(FailureStage::HlsTranslation);
+        assert_eq!(detail_status(&error), StatusCode::BAD_GATEWAY);
+    }
 
     #[test]
     fn endpoint_policy_distinguishes_selection_stages_without_flattening_causes() {
@@ -133,7 +223,10 @@ mod tests {
         ] {
             let error =
                 ApplicationError::PlaybackResolution(ResolutionError::OfflineOwner).at(stage);
-            assert_eq!(error.detail_status(), expected);
+            assert_eq!(
+                crate::http::handlers::pipeline_error::detail_status(&error),
+                expected
+            );
             let cause = error
                 .source()
                 .unwrap()
@@ -147,7 +240,10 @@ mod tests {
         }
         let upstream = ApplicationError::UpstreamStatus(StatusCode::FORBIDDEN)
             .at(FailureStage::PlaybackCommit);
-        assert_eq!(upstream.detail_status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            crate::http::handlers::pipeline_error::detail_status(&upstream),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
         assert!(upstream.allows_detail_fallback());
         assert!(!ApplicationError::AccessDenied
             .at(FailureStage::PlaybackCommit)

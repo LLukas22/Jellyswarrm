@@ -9,7 +9,7 @@ use wiremock::{
 macro_rules! contracts {
     ($($name:ident: $verb:literal,$route:literal,$body:expr;)+) => {
         pub(super) const ROUTES: &[(&str,&str)] = &[$(($verb,$route)),+];
-        $(scenario_test!($name, editing_contract, $verb, $route, $body);)+
+        $(contract_test!($name, editing_contract, $verb, $route, $body);)+
     };
 }
 contracts! {
@@ -28,8 +28,8 @@ contracts! {
     delete_item: "DELETE","/Items/{item}",Value::Null;
 }
 
-async fn editing_contract(scenario: Scenario, verb: &str, route: &str, body: Value) {
-    let f = Fixture::for_scenario(scenario).await;
+async fn editing_contract(verb: &str, route: &str, body: Value) {
+    let f = Fixture::for_scenario(Scenario::NormalServers).await;
     f.healthy().await;
     let original = f.original(1).await;
     let target = url::Url::parse(&format!(

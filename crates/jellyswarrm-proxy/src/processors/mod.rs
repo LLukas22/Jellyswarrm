@@ -8,6 +8,7 @@ pub mod response_processor;
 pub mod url_processor;
 mod user_ids;
 
+pub(crate) use json_processor::ProcessingErrors;
 pub use json_processor::{analyze_json, process_json};
 
 mod pipeline;

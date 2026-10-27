@@ -5,11 +5,11 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use crate::{
-    application::playback::sessions::{RevisionedPlaybackSession, SessionStorage},
     auth::service::User,
     auth::UserAuthorizationService,
     libraries::service::compare_virtual_library_routes,
     media::MediaStorageService,
+    playback::sessions::{RevisionedPlaybackSession, SessionStorage},
     processors::{
         field_matcher::{ID_FIELDS, MEDIA_ID_LIST_PARENT_FIELDS, SESSION_FIELDS, USER_FIELDS},
         json_processor::{JsonAnalyzer, JsonProcessingContext},
@@ -246,4 +246,25 @@ fn last_segment(path: &str) -> &str {
         .next()
         .map(|segment| segment.split('[').next().unwrap_or(segment))
         .unwrap_or(path)
+}
+
+/// Recognize playback reports after the caller has stripped its proxy prefix.
+pub(crate) fn playback_session_action(
+    method: &hyper::Method,
+    request_path: &str,
+) -> Option<PlaybackSessionAction> {
+    if method != hyper::Method::POST {
+        return None;
+    }
+
+    let path = request_path.trim_end_matches('/');
+    if path.eq_ignore_ascii_case("/Sessions/Playing") {
+        Some(PlaybackSessionAction::Start)
+    } else if path.eq_ignore_ascii_case("/Sessions/Playing/Progress") {
+        Some(PlaybackSessionAction::Refresh)
+    } else if path.eq_ignore_ascii_case("/Sessions/Playing/Stopped") {
+        Some(PlaybackSessionAction::Remove)
+    } else {
+        None
+    }
 }

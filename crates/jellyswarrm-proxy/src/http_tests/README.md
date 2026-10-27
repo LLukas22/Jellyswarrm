@@ -14,15 +14,20 @@ From the repository root:
 
 ```sh
 just http-test          # all contracts, workflows, and coverage checks
-just http-test-normal  # separate libraries and source-owned media
-just http-test-merged  # merged libraries and deduplicated media
+just http-test-normal  # configuration-dependent contracts: separate libraries
+just http-test-merged  # configuration-dependent contracts: merged libraries
 
 # One test or module:
 JELLYSWARRM_SKIP_UI=1 cargo test -p jellyswarrm-proxy --bin jellyswarrm-proxy http_tests::catalog::episodes
 ```
 
-Shared contracts use `scenario_test!` to run both configurations. Focused pipeline
-regressions may use other settings; the scenario-specific commands exclude those.
+Source-owned transport contracts use `contract_test!` and run once, with separate
+servers. Use `scenario_test!` to run both configurations only when the fixture
+exercises merging, aggregate identities, or configuration-dependent behavior.
+Library-root discovery, search without provider IDs, and end-to-end media workflows
+retain both configurations.
+The scenario-specific commands exclude single-run contracts and focused
+regressions; use `just http-test` for the complete HTTP suite.
 
 ## Where tests belong
 
@@ -57,7 +62,9 @@ Rust tests read the committed inventory and do not require Node.
 ## Add a contract
 
 1. Match the client's real method, query/body fields, and response shape.
-2. Use `Fixture::for_scenario` and `scenario_test!` for shared contracts.
+2. Use `contract_test!` for source-owned transport contracts. Opt into
+   `Fixture::for_scenario` and `scenario_test!` when configuration changes the
+   behavior under test, rather than multiplying every route by configuration.
 3. Assert exact upstream IDs, credentials, request counts, and destination;
    verify client-facing IDs, DTOs, headers, or bytes.
 4. Put multi-request behavior in `pipeline/`, using identities returned by earlier

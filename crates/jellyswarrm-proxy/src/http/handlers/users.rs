@@ -19,10 +19,10 @@ pub async fn handle_get_me(
     State(state): State<AppState>,
     OperationInput(input): OperationInput,
 ) -> Result<Json<crate::models::User>, StatusCode> {
-    accounts::get_me(&state, input)
+    accounts::get_me(&state.account_service().await, input)
         .await
         .map(Json)
-        .map_err(|error| error.detail_status())
+        .map_err(|error| crate::http::handlers::pipeline_error::detail_status(&error))
 }
 
 pub async fn handle_get_user_by_id(
@@ -30,10 +30,10 @@ pub async fn handle_get_user_by_id(
     Path(_user_id): Path<String>,
     OperationInput(input): OperationInput,
 ) -> Result<Json<crate::models::User>, StatusCode> {
-    accounts::get_user_by_id(&state, input)
+    accounts::get_user_by_id(&state.account_service().await, input)
         .await
         .map(Json)
-        .map_err(|error| error.detail_status())
+        .map_err(|error| crate::http::handlers::pipeline_error::detail_status(&error))
 }
 
 pub async fn handle_authenticate_by_name(
@@ -41,8 +41,8 @@ pub async fn handle_authenticate_by_name(
     headers: HeaderMap,
     Json(payload): Json<AuthenticateRequest>,
 ) -> Result<crate::sessions::AuthenticationResponse, StatusCode> {
-    accounts::authenticate_by_name(&state, headers, payload)
+    accounts::authenticate_by_name(&state.authentication_service().await, headers, payload)
         .await
         .map(crate::sessions::authentication_response)
-        .map_err(|error| error.detail_status())
+        .map_err(|error| crate::http::handlers::pipeline_error::detail_status(&error))
 }

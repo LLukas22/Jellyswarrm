@@ -2,17 +2,14 @@
 use crate::syncplay::SyncPlayService;
 use crate::{application, sessions, upstream};
 use crate::{
-    application::playback::sessions::SessionStorage,
     auth::quick_connect::QuickConnectStorage,
     auth::{encryption::Password, federation::FederatedUserService, UserAuthorizationService},
     config::{AppConfig, MediaStreamingMode},
     libraries::VirtualLibraryService,
     media::MediaStorageService,
-    processors::{
-        response_processor::{ResponseProcessingContext, ResponseProcessingProfile},
-        ProxyProcessors,
-    },
-    servers::{Server, ServerStorageService},
+    playback::sessions::SessionStorage,
+    processors::ProxyProcessors,
+    servers::ServerStorageService,
 };
 use std::sync::Arc;
 #[derive(Clone)]
@@ -37,6 +34,39 @@ pub struct AppState {
 }
 
 impl AppState {
+    pub(crate) async fn authentication_service(
+        &self,
+    ) -> application::accounts::services::AuthenticationService {
+        application::accounts::services::AuthenticationService {
+            user_authorization: self.user_authorization.clone(),
+            server_storage: self.server_storage.clone(),
+            settings: self.settings.clone(),
+            reqwest_client: self.reqwest_client.clone(),
+            client_sessions: self.client_sessions.clone(),
+            admin_password: self.get_admin_password().await,
+        }
+    }
+    pub(crate) async fn account_service(&self) -> application::accounts::services::AccountService {
+        application::accounts::services::AccountService {
+            authentication: self.authentication_service().await,
+            media_storage: self.media_storage.clone(),
+            play_sessions: self.play_sessions.clone(),
+            urls: self.processors.url_processor.clone(),
+            selection: self.url_selection.clone(),
+        }
+    }
+    pub(crate) fn proxy_service(&self) -> application::proxy::services::ProxyService<'_> {
+        application::proxy::services::ProxyService {
+            routing: self.routing_services(),
+            media_storage: &self.media_storage,
+            play_sessions: &self.play_sessions,
+            settings: &self.settings,
+            processors: &self.processors,
+            reqwest_client: &self.reqwest_client,
+            client_sessions: &self.client_sessions,
+            catalog_snapshots: &self.catalog_snapshots,
+        }
+    }
     pub(crate) fn media_access(&self) -> crate::sessions::access::MediaAccess<'_> {
         crate::sessions::access::MediaAccess::new(
             &self.user_authorization,
@@ -232,31 +262,6 @@ impl AppState {
 
     pub async fn deduplicate_media_enabled(&self) -> bool {
         self.config.read().await.deduplicate_media
-    }
-
-    /// Translate backend IDs, URLs and permissions without presentation or
-    /// caching side effects. Handlers cache only their finalized response.
-    pub(crate) async fn process_response_json_typed(
-        &self,
-        payload: &mut serde_json::Value,
-        server: &Server,
-        profile: ResponseProcessingProfile,
-        proxy_api_key: Option<&str>,
-    ) -> Result<bool, application::error::ApplicationError> {
-        let config = self.config.read().await;
-        let context = ResponseProcessingContext {
-            server: server.clone(),
-            proxy_server_id: config.server_id.clone(),
-            proxy_api_key: proxy_api_key.map(str::to_string),
-            profile,
-        };
-        drop(config);
-
-        let modified = self
-            .processors
-            .process_response_json_typed(payload, &context)
-            .await?;
-        Ok(modified)
     }
 }
 

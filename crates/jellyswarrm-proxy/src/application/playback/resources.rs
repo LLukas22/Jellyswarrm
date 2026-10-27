@@ -12,13 +12,13 @@ use tracing::info;
 #[cfg(test)]
 use crate::AppState;
 use crate::{
-    application::playback::sessions::PlaybackSession,
     application::{
         context::{AuthorizedTarget, RequestContext},
         input::OperationRequest,
     },
     auth::identity::JellyfinAuthorization,
     config::MediaStreamingMode,
+    playback::sessions::PlaybackSession,
     servers::storage::Server,
     upstream::jellyfin::{
         delivery::{self, DeliveryResponse},
@@ -194,7 +194,7 @@ async fn build_request(
     UpstreamRequestBuilder::new(state.processors.url_processor, prefix.as_deref())
         .build(target, request)
         .await
-        .map_err(|error| ApplicationError::InvalidRouting(error.into()))
+        .map_err(|error| crate::application::input::routing_error(error.0))
 }
 
 pub(crate) async fn get_video_resource_typed(
@@ -338,11 +338,11 @@ mod tests {
         wiremock::MockServer,
     ) {
         use crate::{
-            application::playback::sessions::SessionStorage,
             auth::service::{LocalCredential, User, UserAuthorizationService},
             config::{AppConfig, MIGRATOR},
             libraries::service::VirtualLibraryService,
             media::storage::MediaStorageService,
+            playback::sessions::SessionStorage,
             processors::ProxyProcessors,
             servers::storage::ServerStorageService,
             DataContext,
@@ -431,7 +431,7 @@ mod tests {
             Err(error) => error,
         };
         use std::error::Error;
-        assert_eq!(error.detail_status(), StatusCode::BAD_GATEWAY);
+
         assert!(matches!(error, ApplicationError::UpstreamTransport(_)));
         assert!(error
             .source()

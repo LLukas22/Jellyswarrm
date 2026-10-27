@@ -360,12 +360,12 @@ pub fn mapping_device_id(server: &Server, user_id: &str) -> String {
 mod tests {
     use super::*;
     use crate::{
-        application::playback::sessions::SessionStorage,
         auth::service::UserAuthorizationService,
         config::{AppConfig, MIGRATOR},
         http::handlers::quick_connect::QuickConnectStorage,
         libraries::service::VirtualLibraryService,
         media::storage::MediaStorageService,
+        playback::sessions::SessionStorage,
         processors::ProxyProcessors,
         servers::storage::ServerStorageService,
         AppState, DataContext,

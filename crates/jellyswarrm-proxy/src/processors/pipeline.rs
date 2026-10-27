@@ -49,7 +49,7 @@ impl ProxyProcessors {
 
         let response = processors::process_json(&mut json_value, &self.request_processor, context)
             .await
-            .map_err(application::error::ApplicationError::RequestBody)?;
+            .map_err(application::input::request_body_error)?;
 
         if response.was_modified {
             debug!("Modified JSON body for request to {}", request_url);

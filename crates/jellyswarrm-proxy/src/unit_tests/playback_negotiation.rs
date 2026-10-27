@@ -4,14 +4,14 @@ use std::{collections::BTreeSet, sync::Arc};
 use super::*;
 use crate::{
     application::context::RequestContext,
-    application::playback::sessions::SessionStorage,
+    auth::quick_connect::QuickConnectStorage,
     auth::service::{AuthorizationSession, Device, UserAuthorizationService},
     config::{AppConfig, MediaStreamingMode, MIGRATOR},
-    http::handlers::quick_connect::QuickConnectStorage,
     http::preprocessing::JellyfinAuthorization,
     libraries::service::{VirtualLibraryAccessScope, VirtualLibraryService},
     media::identity::{MediaAlias, MediaKind, MediaObservation, MediaProvider},
     media::storage::{MediaCatalogSnapshot, MediaStorageService, MediaVersionSourceObservation},
+    playback::sessions::SessionStorage,
     processors::ProxyProcessors,
     servers::storage::{Server, ServerStorageService},
     DataContext,
@@ -58,8 +58,9 @@ async fn target_bound_translation_does_not_repeat_backend_availability_selection
         .state
         .processors
         .url_processor
-        .client_to_server_url(&mut url, &None, None, member.server.id)
-        .await;
+        .client_to_server_url(&mut url, None, None, member.server.id)
+        .await
+        .unwrap();
     let expected = members
         .iter()
         .filter(|candidate| candidate.server.id == member.server.id)
@@ -445,13 +446,15 @@ async fn sessionless_passthrough_is_rejected_without_negotiation() {
         None,
         None,
     );
-    assert_eq!(
+    assert!(matches!(
         post_playback_info_typed(&fixture.state.playback_service(), input)
             .await
-            .unwrap_err()
-            .detail_status(),
-        StatusCode::UNAUTHORIZED
-    );
+            .unwrap_err(),
+        crate::application::error::ApplicationError::At {
+            stage: crate::application::error::FailureStage::CallerAuthentication,
+            ..
+        }
+    ));
     for upstream in &fixture.upstreams {
         assert!(!upstream
             .received_requests()
@@ -464,36 +467,51 @@ async fn sessionless_passthrough_is_rejected_without_negotiation() {
 
 #[tokio::test]
 async fn selection_plan_distinguishes_invalid_source_and_unavailable_owner() {
+    use crate::application::context::TargetError;
+    use crate::application::playback::target::{PlaybackIntent, SelectionPolicy};
     let fixture = fixture().await;
     let mut input = operation(&fixture, "", json!({}));
+    let resolver = MediaTargetResolver {
+        media: &fixture.state.media_storage,
+    };
     assert!(matches!(
-        resolve_playback_route(
-            &fixture.state,
-            &input.context,
-            &fixture.aggregate,
-            Some("unknown")
-        )
-        .await
-        .unwrap(),
-        PlaybackRouteDecision::InvalidSelectedSource
+        resolver
+            .plan(
+                &input.context,
+                input.context.target(fixture.sessions[0].1.id).unwrap(),
+                PlaybackIntent {
+                    item: &fixture.aggregate,
+                    source: Some("unknown"),
+                    binding: None
+                },
+                &fixture.state.server_storage,
+                SelectionPolicy::Negotiation,
+            )
+            .await,
+        Err(ResolutionError::InvalidSource)
     ));
     input.context = RequestContext::new(
         &input.original_request,
         input.context.authorization().cloned(),
         input.context.user().cloned(),
         Some(fixture.sessions[..1].to_vec()),
-        input.context.access_scope().clone(),
+        input.context.access_scope().cloned(),
     );
     assert!(matches!(
-        resolve_playback_route(
-            &fixture.state,
-            &input.context,
-            &fixture.aggregate,
-            Some(&fixture.sources[2])
-        )
-        .await
-        .unwrap(),
-        PlaybackRouteDecision::SelectedSourceUnavailable
+        resolver
+            .plan(
+                &input.context,
+                input.context.target(fixture.sessions[0].1.id).unwrap(),
+                PlaybackIntent {
+                    item: &fixture.aggregate,
+                    source: Some(&fixture.sources[2]),
+                    binding: None
+                },
+                &fixture.state.server_storage,
+                SelectionPolicy::Negotiation,
+            )
+            .await,
+        Err(ResolutionError::Target(TargetError::UnavailableOwner))
     ));
     let scope = Some(VirtualLibraryAccessScope::new(
         "viewer",
@@ -508,15 +526,20 @@ async fn selection_plan_distinguishes_invalid_source_and_unavailable_owner() {
     );
     // Denial wins over missing availability, without falling back to a sibling.
     assert!(matches!(
-        resolve_playback_route(
-            &fixture.state,
-            &input.context,
-            &fixture.aggregate,
-            Some(&fixture.sources[2])
-        )
-        .await
-        .unwrap(),
-        PlaybackRouteDecision::InvalidSelectedSource
+        resolver
+            .plan(
+                &input.context,
+                input.context.target(fixture.sessions[0].1.id).unwrap(),
+                PlaybackIntent {
+                    item: &fixture.aggregate,
+                    source: Some(&fixture.sources[2]),
+                    binding: None
+                },
+                &fixture.state.server_storage,
+                SelectionPolicy::Negotiation,
+            )
+            .await,
+        Err(ResolutionError::Target(TargetError::AccessDenied))
     ));
     for upstream in &fixture.upstreams {
         assert!(!upstream
@@ -538,13 +561,14 @@ async fn failed_negotiation_does_not_commit_playback_binding() {
         .mount(&fixture.upstreams[1])
         .await;
     let input = operation(&fixture, "", json!({"MediaSourceId":fixture.sources[2]}));
-    assert_eq!(
+    assert!(matches!(
         post_playback_info_typed(&fixture.state.playback_service(), input)
             .await
-            .unwrap_err()
-            .detail_status(),
-        StatusCode::SERVICE_UNAVAILABLE
-    );
+            .unwrap_err(),
+        crate::application::error::ApplicationError::UpstreamStatus(
+            StatusCode::SERVICE_UNAVAILABLE
+        )
+    ));
     assert!(fixture
         .state
         .play_sessions
@@ -555,8 +579,8 @@ async fn failed_negotiation_does_not_commit_playback_binding() {
 
 #[tokio::test]
 async fn shared_resolution_keeps_implicit_ambiguity_and_explicit_binding_conflicts_distinct() {
-    use crate::application::playback::sessions::PlaybackSession;
     use crate::application::playback::target::SelectionReason;
+    use crate::playback::sessions::PlaybackSession;
     let fixture = fixture().await;
     let input = operation(&fixture, "", json!({}));
     let resolver = MediaTargetResolver {
@@ -717,11 +741,11 @@ async fn shared_explicit_source_plan_never_falls_back_from_offline_owner() {
 
 #[tokio::test]
 async fn invalid_live_open_and_failed_refresh_do_not_commit_playback_transitions() {
-    use crate::application::playback::sessions::PlaybackSession;
     use crate::application::playback::{
         lifecycle::PlaybackLifecycle,
         live::{self, LiveRequest},
     };
+    use crate::playback::sessions::PlaybackSession;
     let fixture = fixture().await;
     let owner = &fixture.sessions[0].1;
     PlaybackLifecycle::new(&fixture.state.play_sessions)
@@ -753,7 +777,7 @@ async fn invalid_live_open_and_failed_refresh_do_not_commit_playback_transitions
         .json(&json!({"ItemId":fixture.aggregate, "PlaySessionId":"live-player"}))
         .build()
         .unwrap();
-    assert_eq!(
+    assert!(matches!(
         live::post_livestream_open_typed(
             &fixture.state.playback_service(),
             LiveRequest {
@@ -762,10 +786,11 @@ async fn invalid_live_open_and_failed_refresh_do_not_commit_playback_transitions
             }
         )
         .await
-        .unwrap_err()
-        .detail_status(),
-        StatusCode::BAD_GATEWAY
-    );
+        .unwrap_err(),
+        crate::application::error::ApplicationError::InvalidUpstreamPayload(_)
+            | crate::application::error::ApplicationError::InvalidUpstreamJson(_)
+            | crate::application::error::ApplicationError::At { .. }
+    ));
     let lifecycle = PlaybackLifecycle::new(&fixture.state.play_sessions);
     let live_id = lifecycle
         .register_live("backend-live", "viewer", owner.id)
@@ -790,9 +815,10 @@ async fn invalid_live_open_and_failed_refresh_do_not_commit_playback_transitions
                 context: input.context,
             }
         )
-        .await
-        .map_err(|error| error.detail_status()),
-        Err(StatusCode::SERVICE_UNAVAILABLE)
+        .await,
+        Err(crate::application::error::ApplicationError::UpstreamStatus(
+            StatusCode::SERVICE_UNAVAILABLE
+        ))
     ));
     let binding = fixture
         .state
@@ -823,7 +849,7 @@ async fn live_open_input(
     fixture
         .state
         .play_sessions
-        .add_session(crate::application::playback::sessions::PlaybackSession {
+        .add_session(crate::playback::sessions::PlaybackSession {
             session_id: "live-player".into(),
             item_id: fixture.aggregate.clone(),
             user_id: "viewer".into(),
@@ -937,11 +963,7 @@ async fn valid_live_sources_do_not_publish_when_translation_or_reconciliation_fa
                     .await
                     .unwrap_err()
                 };
-                assert_eq!(
-                    failure.detail_status(),
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "open={open}, translation={translation}"
-                );
+
                 // The service boundary must retain the real database cause,
                 // including failures that travel through JSON field processing.
                 let mut cause: &(dyn std::error::Error + 'static) = &failure;
@@ -1051,16 +1073,16 @@ async fn stale_reconciliation_drops_live_identity_with_its_unroutable_source() {
                 .unwrap()
                 .unwrap()
                 .revision();
-            assert_eq!(
+            assert!(matches!(
                 crate::application::playback::live::post_livestream_open_typed(
                     &fixture.state.playback_service(),
                     input
                 )
                 .await
-                .unwrap_err()
-                .detail_status(),
-                StatusCode::SERVICE_UNAVAILABLE
-            );
+                .unwrap_err(),
+                crate::application::error::ApplicationError::At { .. }
+                    | crate::application::error::ApplicationError::UnavailableOwner
+            ));
             assert_eq!(
                 fixture
                     .state

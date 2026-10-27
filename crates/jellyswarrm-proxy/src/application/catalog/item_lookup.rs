@@ -59,7 +59,7 @@ impl RequestedItems {
         for id in ids.into_iter().filter(|id| seen.insert(id.clone())) {
             let library = state
                 .virtual_library_service
-                .resolve(&id, request.context.access_scope().as_ref())
+                .resolve(&id, request.context.access_scope())
                 .await
                 .map_err(ApplicationError::Storage)?;
             if let crate::libraries::service::VirtualLibraryResolution::Resolved(library) = library
@@ -106,7 +106,6 @@ impl RequestedItems {
                     request
                         .context
                         .access_scope()
-                        .as_ref()
                         .is_some_and(|scope| scope.allows(member.server_id))
                 })
                 .collect();
@@ -273,7 +272,7 @@ impl RequestedItems {
                 items.extend(members.into_iter().map(|member| member.item.into()));
             }
         }
-        if let Some(scope) = request.context.access_scope().as_ref() {
+        if let Some(scope) = request.context.access_scope() {
             for item in &mut items {
                 crate::application::details::sources::preserve_media_parent_groups_typed(
                     state,

@@ -13,7 +13,7 @@ pub async fn get_video_resource(
     delivery::response(
         resources::get_video_resource_typed(&state.playback_service(), operation)
             .await
-            .map_err(|error| error.detail_status())?,
+            .map_err(|error| crate::http::handlers::pipeline_error::detail_status(&error))?,
     )
 }
 
@@ -24,6 +24,6 @@ pub async fn get_stream(
     delivery::response(
         resources::get_stream_typed(&state.playback_service(), operation)
             .await
-            .map_err(|error| error.detail_status())?,
+            .map_err(|error| crate::http::handlers::pipeline_error::detail_status(&error))?,
     )
 }

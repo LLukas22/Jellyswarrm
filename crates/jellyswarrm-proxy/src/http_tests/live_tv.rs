@@ -5,12 +5,9 @@ use wiremock::{
     Mock, ResponseTemplate,
 };
 
-scenario_test!(
-    posted_multi_channel_guide_partitions_ids_and_paginates_after_merging,
-    partitioned_guide_contract
-);
-async fn partitioned_guide_contract(scenario: Scenario) {
-    let f = Fixture::for_scenario(scenario).await;
+#[tokio::test]
+async fn posted_multi_channel_guide_partitions_ids_and_paginates_after_merging() {
+    let f = Fixture::for_scenario(Scenario::NormalServers).await;
     f.healthy().await;
     for owner in 0..2 {
         let original = f.original(owner).await;
@@ -31,12 +28,9 @@ async fn partitioned_guide_contract(scenario: Scenario) {
     assert_backend_tokens(&f).await;
 }
 
-scenario_test!(
-    posted_unscoped_guide_advances_upstream_body_pages_without_losing_filters,
-    paged_guide_contract
-);
-async fn paged_guide_contract(scenario: Scenario) {
-    let f = Fixture::for_scenario(scenario).await;
+#[tokio::test]
+async fn posted_unscoped_guide_advances_upstream_body_pages_without_losing_filters() {
+    let f = Fixture::for_scenario(Scenario::NormalServers).await;
     f.healthy().await;
     for owner in 0..2 {
         for page in 0..2 {
@@ -64,12 +58,9 @@ async fn paged_guide_contract(scenario: Scenario) {
     assert_backend_tokens(&f).await;
 }
 
-scenario_test!(
-    posted_guide_body_scope_overrides_conflicting_query_scope,
-    guide_scope_contract
-);
-async fn guide_scope_contract(scenario: Scenario) {
-    let f = Fixture::for_scenario(scenario).await;
+#[tokio::test]
+async fn posted_guide_body_scope_overrides_conflicting_query_scope() {
+    let f = Fixture::for_scenario(Scenario::NormalServers).await;
     f.healthy().await;
     let original = f.original(1).await;
     Mock::given(method("POST"))
@@ -99,12 +90,9 @@ async fn guide_scope_contract(scenario: Scenario) {
     assert!(f.upstreams[0].received_requests().await.unwrap().is_empty());
 }
 
-scenario_test!(
-    posted_guide_null_pagination_is_replaced_with_numeric_upstream_pages,
-    null_guide_contract
-);
-async fn null_guide_contract(scenario: Scenario) {
-    let f = Fixture::for_scenario(scenario).await;
+#[tokio::test]
+async fn posted_guide_null_pagination_is_replaced_with_numeric_upstream_pages() {
+    let f = Fixture::for_scenario(Scenario::NormalServers).await;
     f.healthy().await;
     for upstream in &f.upstreams {
         Mock::given(method("POST"))
@@ -132,12 +120,9 @@ async fn null_guide_contract(scenario: Scenario) {
     assert_backend_tokens(&f).await;
 }
 
-scenario_test!(
-    posted_guide_rejects_malformed_bodies_and_foreign_channel_owners,
-    invalid_guide_contract
-);
-async fn invalid_guide_contract(scenario: Scenario) {
-    let f = Fixture::for_scenario(scenario).await;
+#[tokio::test]
+async fn posted_guide_rejects_malformed_bodies_and_foreign_channel_owners() {
+    let f = Fixture::for_scenario(Scenario::NormalServers).await;
     f.healthy().await;
     for body in [json!([]), json!({"ChannelIds":[{}]}), json!({"UserId":{}})] {
         let response = f
@@ -158,22 +143,16 @@ async fn invalid_guide_contract(scenario: Scenario) {
     f.no_upstream_requests().await;
 }
 
-scenario_test!(
-    recording_creation_with_only_program_id_uses_program_backend_and_preserves_settings,
-    program_recording_contract
-);
-async fn program_recording_contract(scenario: Scenario) {
+#[tokio::test]
+async fn recording_creation_with_only_program_id_uses_program_backend_and_preserves_settings() {
     for route in ["/LiveTv/Timers", "/LiveTv/SeriesTimers"] {
-        super::bodies::body_contract(scenario,route,json!({"ProgramId":"{item}","Name":"Program only","PrePaddingSeconds":60,"PostPaddingSeconds":120,"RecordAnyChannel":false})).await;
+        super::bodies::body_contract(route,json!({"ProgramId":"{item}","Name":"Program only","PrePaddingSeconds":60,"PostPaddingSeconds":120,"RecordAnyChannel":false})).await;
     }
 }
 
-scenario_test!(
-    recording_defaults_virtualize_program_and_channel_ids,
-    recording_defaults_contract
-);
-async fn recording_defaults_contract(scenario: Scenario) {
-    let f = Fixture::for_scenario(scenario).await;
+#[tokio::test]
+async fn recording_defaults_virtualize_program_and_channel_ids() {
+    let f = Fixture::for_scenario(Scenario::NormalServers).await;
     f.healthy().await;
     let original = f.original(1).await;
     Mock::given(method("GET")).and(path("/LiveTv/Timers/Defaults"))

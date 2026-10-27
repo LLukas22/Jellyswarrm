@@ -10,6 +10,7 @@ mod libraries;
 mod media;
 mod models;
 mod persistence;
+mod playback;
 mod processors;
 mod servers;
 mod sessions;

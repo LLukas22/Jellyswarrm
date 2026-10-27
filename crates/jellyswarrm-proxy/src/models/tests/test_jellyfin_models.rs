@@ -1,12 +1,20 @@
 //! Verify Jellyfin model serialization and deserialization against representative payloads.
 #[cfg(test)]
 mod tests {
-    use crate::auth::encryption::Password;
     use crate::models::jellyfin::enums::BaseItemKind;
     use crate::models::jellyfin::{AuthenticateRequest, MediaItem, MediaSource};
     use crate::models::{ItemsResponseWithCount, PlaybackRequest, PlaybackResponse};
     use serde_json::{json, Value};
     use std::fs;
+
+    fn fixture<T: serde::de::DeserializeOwned>(name: &str) -> T {
+        let path = format!(
+            "{}/src/models/tests/files/{name}.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let json = fs::read_to_string(path).unwrap_or_else(|error| panic!("{name}: {error}"));
+        serde_json::from_str(&json).unwrap_or_else(|error| panic!("{name}: {error}"))
+    }
 
     fn live_source_with_extensions() -> Value {
         json!({
@@ -99,61 +107,32 @@ mod tests {
         assert_eq!(serde_json::to_value(&response).unwrap(), expected_response);
     }
 
-    /// Regression test: canonical Jellyfin casing ("Pw") must deserialize correctly.
     #[test]
-    fn test_authenticate_request_canonical_pw() {
-        let json = r#"{"Username":"alice","Pw":"s3cr3t"}"#;
-        let req: AuthenticateRequest =
-            serde_json::from_str(json).expect("Failed to deserialize with uppercase 'Pw'");
-        assert_eq!(req.username, "alice");
-        assert_eq!(req.password.as_str(), "s3cr3t");
-    }
-
-    /// Regression test: Kodi / JellyCon casing ("pw") must also deserialize correctly.
-    /// Before the `alias = "pw"` was added this would panic/fail.
-    #[test]
-    fn test_authenticate_request_lowercase_pw() {
-        let json = r#"{"Username":"bob","pw":"hunter2"}"#;
-        let req: AuthenticateRequest = serde_json::from_str(json)
-            .expect("Failed to deserialize with lowercase 'pw' (Kodi/JellyCon)");
-        assert_eq!(req.username, "bob");
-        assert_eq!(req.password.as_str(), "hunter2");
-    }
-
-    /// Serialization should always use the canonical "Pw" key regardless of how
-    /// the struct was constructed.
-    #[test]
-    fn test_authenticate_request_serializes_canonical_pw() {
-        let req = AuthenticateRequest {
-            username: "carol".to_string(),
-            password: Password::from("pass123"),
-        };
-        let value = serde_json::to_value(&req).expect("Failed to serialize AuthenticateRequest");
-        let obj = value
-            .as_object()
-            .expect("AuthenticateRequest should serialize to a JSON object");
-        assert!(
-            obj.contains_key("Pw"),
-            "Serialized JSON should use canonical 'Pw' key, got: {value}"
-        );
-        assert!(
-            !obj.contains_key("pw"),
-            "Serialized JSON must not use lowercase 'pw' key, got: {value}"
-        );
+    fn authentication_accepts_jellyfin_and_kodi_password_keys_but_writes_canonical_key() {
+        for key in ["Pw", "pw"] {
+            let request: AuthenticateRequest =
+                serde_json::from_value(json!({"Username":"alice", key:"s3cr3t"}))
+                    .unwrap_or_else(|error| panic!("{key}: {error}"));
+            assert_eq!(request.username, "alice", "{key}");
+            assert_eq!(request.password.as_str(), "s3cr3t", "{key}");
+            assert_eq!(
+                serde_json::to_value(request).unwrap(),
+                json!({"Username":"alice", "Pw":"s3cr3t"}),
+                "{key}"
+            );
+        }
     }
 
     #[test]
-    fn test_deserialize_item_from_json() {
-        // Read the JSON file from the workspace root
+    fn media_item_fixture_preserves_fields_and_round_trips() {
+        let media_item: MediaItem = fixture("item");
 
-        let manifest_dir = env!("CARGO_MANIFEST_DIR");
-        let file_path = format!("{manifest_dir}/src/models/tests/files/item.json");
-
-        let json_content = fs::read_to_string(file_path).expect("Failed to read item.json file");
-
-        // Deserialize the JSON into a MediaItem
-        let media_item: MediaItem =
-            serde_json::from_str(&json_content).expect("Failed to deserialize JSON into MediaItem");
+        let serialized = serde_json::to_value(&media_item).unwrap();
+        let reparsed: MediaItem = serde_json::from_value(serialized.clone()).unwrap();
+        assert_eq!(reparsed.name, media_item.name);
+        assert_eq!(reparsed.id, media_item.id);
+        assert_eq!(reparsed.server_id, media_item.server_id);
+        assert_eq!(serde_json::to_value(reparsed).unwrap(), serialized);
 
         // Verify basic fields are correct
         assert_eq!(media_item.name.as_ref().unwrap(), "The Batman");
@@ -164,27 +143,20 @@ mod tests {
         assert_eq!(media_item.id, "165a66aa5bd2e62c0df0f8da332ae47d");
 
         // Test optional fields
-        assert!(media_item.etag.is_some());
         assert_eq!(media_item.etag.unwrap(), "11a345e866240c2637db0df717aed59b");
 
-        assert!(media_item.can_delete.is_some());
-        assert!(media_item.can_delete.unwrap());
+        assert_eq!(media_item.can_delete, Some(true));
+        assert_eq!(media_item.can_download, Some(true));
 
-        assert!(media_item.can_download.is_some());
-        assert!(media_item.can_download.unwrap());
-
-        assert!(media_item.sort_name.is_some());
         assert_eq!(media_item.sort_name.unwrap(), "batman");
 
         // Test external URLs
-        assert!(media_item.external_urls.is_some());
         let external_urls = media_item.external_urls.unwrap();
         assert_eq!(external_urls.len(), 3);
         assert_eq!(external_urls[0].name, "IMDb");
         assert_eq!(external_urls[0].url, "https://www.imdb.com/title/tt1877830");
 
         // Test media sources
-        assert!(media_item.media_sources.is_some());
         let media_sources = media_item.media_sources.unwrap();
         assert!(!media_sources.is_empty());
 
@@ -192,74 +164,28 @@ mod tests {
         assert_eq!(first_source.id, "165a66aa5bd2e62c0df0f8da332ae47d");
         assert_eq!(first_source.container.as_ref().unwrap(), "mkv");
         assert_eq!(first_source.size.unwrap(), 94045682646);
-
-        println!("✅ Successfully deserialized MediaItem from JSON!");
-        println!(
-            "Media Item: {} ({:?})",
-            media_item.name.as_ref().unwrap(),
-            media_item.item_type
-        );
     }
 
     #[test]
-    fn test_deserialize_items_from_json() {
-        // Read the JSON file from the workspace root
-
-        let manifest_dir = env!("CARGO_MANIFEST_DIR");
-        let file_path = format!("{manifest_dir}/src/models/tests/files/items.json");
-
-        let json_content = fs::read_to_string(file_path).expect("Failed to read items.json file");
-
-        // Deserialize the JSON into a MediaItem
-        let _: ItemsResponseWithCount = serde_json::from_str(&json_content)
-            .expect("Failed to deserialize JSON into ItemsResponse");
+    fn counted_item_fixtures_preserve_items_and_kinds() {
+        for (name, count, kind) in [
+            ("items", 6, BaseItemKind::Series),
+            ("userviews", 2, BaseItemKind::CollectionFolder),
+            ("series_nextup", 1, BaseItemKind::Episode),
+            ("episodes", 12, BaseItemKind::Episode),
+        ] {
+            let response: ItemsResponseWithCount = fixture(name);
+            assert_eq!(response.items.len(), count, "{name}");
+            assert_eq!(response.items[0].item_type, kind, "{name}");
+            assert!(
+                response.items.iter().all(|item| !item.id.is_empty()),
+                "{name}"
+            );
+        }
     }
 
     #[test]
-    fn test_deserialize_userviews_from_json() {
-        // Read the JSON file from the workspace root
-
-        let manifest_dir = env!("CARGO_MANIFEST_DIR");
-        let file_path = format!("{manifest_dir}/src/models/tests/files/userviews.json");
-
-        let json_content =
-            fs::read_to_string(file_path).expect("Failed to read userviews.json file");
-
-        // Deserialize the JSON into a MediaItem
-        let _: ItemsResponseWithCount = serde_json::from_str(&json_content)
-            .expect("Failed to deserialize JSON into ItemsResponse");
-    }
-
-    #[test]
-    fn test_serialize_media_item_to_json() {
-        // First deserialize from file
-
-        let manifest_dir = env!("CARGO_MANIFEST_DIR");
-        let file_path = format!("{manifest_dir}/src/models/tests/files/item.json");
-
-        let json_content = fs::read_to_string(file_path).expect("Failed to read res.json file");
-
-        let media_item: MediaItem =
-            serde_json::from_str(&json_content).expect("Failed to deserialize JSON into MediaItem");
-
-        // Now serialize back to JSON
-        let serialized_json = serde_json::to_string_pretty(&media_item)
-            .expect("Failed to serialize MediaItem to JSON");
-
-        // Verify we can deserialize it again
-        let deserialized_again: MediaItem =
-            serde_json::from_str(&serialized_json).expect("Failed to deserialize serialized JSON");
-
-        // Verify key fields match
-        assert_eq!(media_item.name, deserialized_again.name);
-        assert_eq!(media_item.id, deserialized_again.id);
-        assert_eq!(media_item.server_id, deserialized_again.server_id);
-
-        println!("✅ Successfully round-trip serialized/deserialized MediaItem!");
-    }
-
-    #[test]
-    fn test_media_item_partial_deserialization() {
+    fn partial_media_item_leaves_optional_fields_absent() {
         // Test with minimal JSON data
         let minimal_json = r#"{
             "Name": "Test Movie",
@@ -290,107 +216,36 @@ mod tests {
         assert!(media_item.etag.is_none());
         assert!(media_item.can_delete.is_none());
         assert!(media_item.external_urls.is_none());
-
-        println!("✅ Successfully deserialized minimal MediaItem!");
     }
 
     #[test]
-    fn test_media_items() {
-        let manifest_dir = env!("CARGO_MANIFEST_DIR");
-        let file_path = format!("{manifest_dir}/src/models/tests/files/special_features.json");
-
-        let json_content =
-            fs::read_to_string(file_path).expect("Failed to read special_features.json file");
-
-        let media_items: Vec<MediaItem> = serde_json::from_str(&json_content)
-            .expect("Failed to deserialize JSON into Vec<MediaItem>");
-
-        assert!(!media_items.is_empty(), "Media items should not be empty");
+    fn special_features_fixture_deserializes_as_bare_video_list() {
+        let items: Vec<MediaItem> = fixture("special_features");
+        assert_eq!(items.len(), 14);
+        assert_eq!(items[0].item_type, BaseItemKind::Video);
     }
 
     #[test]
-    fn test_media_nextup() {
-        let manifest_dir = env!("CARGO_MANIFEST_DIR");
-        let file_path = format!("{manifest_dir}/src/models/tests/files/series_nextup.json");
+    fn person_fixture_preserves_kind_and_name() {
+        let person: MediaItem = fixture("person");
+        assert_eq!(person.item_type, BaseItemKind::Person);
+        assert_eq!(person.name.as_deref(), Some("Jared Harris"));
+    }
 
-        let json_content =
-            fs::read_to_string(file_path).expect("Failed to read series_nextup.json file");
-
-        let media_items: ItemsResponseWithCount = serde_json::from_str(&json_content)
-            .expect("Failed to deserialize JSON into ItemsResponse");
-
-        assert!(
-            !media_items.items.is_empty(),
-            "Media items should not be empty"
+    #[test]
+    fn live_playback_request_fixture_retains_auto_open_and_user() {
+        let request: PlaybackRequest = fixture("livetv_playback_request");
+        assert_eq!(request.auto_open_live_stream, Some(true));
+        assert_eq!(
+            request.user_id.as_deref(),
+            Some("807dd942804c4fe7bb6042e7fad22324")
         );
     }
 
     #[test]
-    fn test_media_episodes() {
-        let manifest_dir = env!("CARGO_MANIFEST_DIR");
-        let file_path = format!("{manifest_dir}/src/models/tests/files/episodes.json");
-
-        let json_content =
-            fs::read_to_string(file_path).expect("Failed to read episodes.json file");
-
-        let media_items: ItemsResponseWithCount = serde_json::from_str(&json_content)
-            .expect("Failed to deserialize JSON into ItemsResponse");
-
-        assert!(
-            !media_items.items.is_empty(),
-            "Media items should not be empty"
-        );
-    }
-
-    #[test]
-    fn test_person() {
-        let manifest_dir = env!("CARGO_MANIFEST_DIR");
-        let file_path = format!("{manifest_dir}/src/models/tests/files/person.json");
-
-        let json_content = fs::read_to_string(file_path).expect("Failed to read person.json file");
-
-        let _person: MediaItem = serde_json::from_str(&json_content)
-            .map_err(|e| {
-                eprintln!("Deserialization error: {e}");
-                eprintln!("JSON content: {json_content}");
-                e
-            })
-            .expect("Failed to deserialize JSON into ItemsResponse");
-    }
-
-    #[test]
-    fn test_livetv_playback_request() {
-        let manifest_dir = env!("CARGO_MANIFEST_DIR");
-        let file_path =
-            format!("{manifest_dir}/src/models/tests/files/livetv_playback_request.json");
-
-        let json_content = fs::read_to_string(file_path)
-            .expect("Failed to read livetv_playback_request.json file");
-
-        let _person: PlaybackRequest = serde_json::from_str(&json_content)
-            .map_err(|e| {
-                eprintln!("Deserialization error: {e}");
-                eprintln!("JSON content: {json_content}");
-                e
-            })
-            .expect("Failed to deserialize JSON into ItemsResponse");
-    }
-
-    #[test]
-    fn test_livetv_playback_response() {
-        let manifest_dir = env!("CARGO_MANIFEST_DIR");
-        let file_path =
-            format!("{manifest_dir}/src/models/tests/files/livetv_playback_response.json");
-
-        let json_content = fs::read_to_string(file_path)
-            .expect("Failed to read livetv_playback_response.json file");
-
-        let _person: PlaybackResponse = serde_json::from_str(&json_content)
-            .map_err(|e| {
-                eprintln!("Deserialization error: {e}");
-                eprintln!("JSON content: {json_content}");
-                e
-            })
-            .expect("Failed to deserialize JSON into ItemsResponse");
+    fn live_playback_response_fixture_retains_session_and_sources() {
+        let response: PlaybackResponse = fixture("livetv_playback_response");
+        assert_eq!(response.play_session_id, "680d095d98b64cbe879924c4419eb014");
+        assert!(!response.media_sources.is_empty());
     }
 }

@@ -1,7 +1,7 @@
 //! Local playback report transitions. Planning never mutates session storage;
 //! callers commit only after upstream success and response construction.
 use crate::{
-    application::playback::sessions::{
+    playback::sessions::{
         PlaybackSession, PreparedLiveStream, RevisionedPlaybackSession, SessionStorage,
     },
     processors::request_analyzer::{PlaybackSessionAction, RequestBodyAnalysisResult},
@@ -89,8 +89,8 @@ impl<'a> PlaybackLifecycle<'a> {
 
     pub async fn close_live(
         &self,
-        id: &crate::application::identity::VirtualLiveStreamId,
-        viewer: &crate::application::identity::ViewerId,
+        id: &crate::playback::identity::VirtualLiveStreamId,
+        viewer: &crate::playback::identity::ViewerId,
     ) {
         self.sessions.close_live_binding(id, viewer).await;
     }
