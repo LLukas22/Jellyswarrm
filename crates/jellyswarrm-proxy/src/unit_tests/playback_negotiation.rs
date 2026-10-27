@@ -268,15 +268,22 @@ fn operation(fixture: &Fixture, query: &str, payload: serde_json::Value) -> Oper
 
 #[tokio::test]
 async fn first_negotiation_selects_exact_member_before_binding() {
-    for selected in [1, 2] {
+    for selected in [0, 1, 2] {
         let fixture = fixture().await;
         let backend = usize::from(selected == 2);
         let owner = format!("{:032x}", 100 + selected);
+        let edition = if selected == 1 {
+            "directors"
+        } else {
+            "theatrical"
+        };
         Mock::given(method("POST"))
             .and(path(format!("/Items/{owner}/PlaybackInfo")))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "PlaySessionId":"first-play", "MediaSources":[{
-                    "Id": format!("{:032x}", 1100 + selected), "Type":"Default"
+                    "Id": format!("{:032x}", 1100 + selected), "Type":"Default",
+                    "Name": format!("Movie (2026) - {edition}"),
+                    "Path": format!("/media/Movie (2026)/Movie (2026) - {edition}.mkv")
                 }]
             })))
             .expect(1)
@@ -300,6 +307,10 @@ async fn first_negotiation_selects_exact_member_before_binding() {
             .await
             .unwrap();
         assert_eq!(response.media_sources[0].id, fixture.sources[selected]);
+        assert_eq!(
+            response.media_sources[0].name.as_deref(),
+            Some(format!("[Backend {backend}][{edition}]").as_str())
+        );
         let requests = fixture.upstreams[backend]
             .received_requests()
             .await

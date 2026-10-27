@@ -84,8 +84,8 @@ async fn check_selected_source_detail(catalog_scopes: &[&str]) {
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "Id": owner_id, "Name": format!("Owner {index} [Server {index}]"),
                 "Type": "Movie", "Overview": format!("Selected metadata {index}"),
-                "MediaSources": [{"Id": source_id, "Name": "Version", "Type": "Default",
-                    "Path": format!("/media/{index}.mkv"), "SupportsDirectPlay": true,
+                "MediaSources": [{"Id": source_id, "Name": "Movie (2026) - theatrical", "Type": "Default",
+                    "Path": format!("/media/{index}/Movie (2026)/Movie (2026) - theatrical.mkv"), "SupportsDirectPlay": true,
                     "DefaultAudioStreamIndex": index,
                     "MediaStreams": [{"Type": "Audio", "Index": index, "Language": "deu"}]}]
             })))
@@ -241,7 +241,14 @@ async fn check_selected_source_detail(catalog_scopes: &[&str]) {
             "{case}"
         );
         assert_eq!(merged[0]["Type"], "Default");
-        assert_eq!(merged[0]["Path"], format!("/media/{selected}.mkv"));
+        assert_eq!(
+            merged[0]["Name"],
+            format!("[Server {selected}][theatrical]")
+        );
+        assert_eq!(
+            merged[0]["Path"],
+            format!("/media/{selected}/Movie (2026)/Movie (2026) - theatrical.mkv")
+        );
         assert_eq!(merged[0]["DefaultAudioStreamIndex"], selected);
         assert_eq!(merged[0]["MediaStreams"][0]["Language"], "deu");
         assert_eq!(merged[0]["SupportsDirectPlay"], true);
@@ -251,6 +258,10 @@ async fn check_selected_source_detail(catalog_scopes: &[&str]) {
             "{case}"
         );
         assert_eq!(merged[1]["Type"], "Grouping");
+        assert_eq!(
+            merged[1]["Name"],
+            format!("[Server {}][theatrical]", 1 - selected)
+        );
     }
     for upstream in upstreams {
         upstream.verify().await;

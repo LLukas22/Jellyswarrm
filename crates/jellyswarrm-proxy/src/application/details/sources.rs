@@ -430,26 +430,43 @@ fn merge_sources(
 }
 
 pub(crate) fn version_name(source: &MediaSource, server: &Server) -> String {
-    let upstream_name = source
+    let name = source
         .name
         .as_deref()
         .map(str::trim)
         .filter(|name| !name.is_empty());
-    let resolution = source.media_streams.as_ref().and_then(|streams| {
-        streams.iter().find_map(|stream| {
-            stream
-                .stream_type
-                .as_deref()
-                .is_some_and(|stream_type| stream_type.eq_ignore_ascii_case("Video"))
-                .then_some(stream.height)
-                .flatten()
-                .map(|height| format!("{height}p"))
-        })
-    });
 
-    match upstream_name.or(resolution.as_deref()) {
-        Some(name) => format!("{name} [{}]", server.name),
-        None => server.name.clone(),
+    // Jellyfin uses the entire filename when it has no local alternate versions.
+    // Do not repeat that title in the version selector. For its standard layout
+    // `Movie (2026)/Movie (2026) - theatrical.mkv`, keep only the version suffix.
+    // An already shortened upstream name is a version label and stays intact.
+    let version = match source.path.as_deref().and_then(|path| {
+        let (directory, filename) = path.rsplit_once(['/', '\\'])?;
+        let stem = filename.rsplit_once('.').map_or(filename, |(stem, _)| stem);
+        let folder = directory.rsplit(['/', '\\']).next()?;
+        Some((stem, folder))
+    }) {
+        Some((stem, folder)) if name.is_none_or(|name| name.eq_ignore_ascii_case(stem)) => stem
+            .get(..folder.len())
+            .filter(|prefix| prefix.eq_ignore_ascii_case(folder))
+            .and_then(|_| stem.get(folder.len()..))
+            .filter(|suffix| suffix.starts_with([' ', '-', '_', '.']))
+            .map(|suffix| suffix.trim_start_matches([' ', '-', '_', '.'])),
+        _ => name,
+    }
+    .map(str::trim)
+    .map(|version| {
+        version
+            .strip_prefix('[')
+            .and_then(|version| version.strip_suffix(']'))
+            .unwrap_or(version)
+            .trim()
+    })
+    .filter(|version| !version.is_empty());
+
+    match version {
+        Some(version) => format!("[{}][{version}]", server.name),
+        None => format!("[{}]", server.name),
     }
 }
 
@@ -497,6 +514,99 @@ mod tests {
             })])
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn version_labels_omit_filenames_but_preserve_editions() {
+        for (name, path, expected) in [
+            (Some("theatrical"), None, "[svr1][theatrical]"),
+            (Some(" directors "), None, "[svr1][directors]"),
+            (Some("[theatrical]"), None, "[svr1][theatrical]"),
+            (Some("4K HDR"), Some("/media/Movie.mkv"), "[svr1][4K HDR]"),
+            (
+                Some("Movie (2026) - theatrical"),
+                Some("/media/Movie (2026)/Movie (2026) - theatrical.mkv"),
+                "[svr1][theatrical]",
+            ),
+            (
+                Some("Movie (2026) - [directors]"),
+                Some("/media/Movie (2026)/Movie (2026) - [directors].mkv"),
+                "[svr1][directors]",
+            ),
+            (
+                Some("Movie (2026)"),
+                Some("/media/Movie (2026)/Movie (2026).mkv"),
+                "[svr1]",
+            ),
+            (
+                Some("Movie.2026.1080p.BluRay"),
+                Some("/media/Movie (2026)/Movie.2026.1080p.BluRay.mkv"),
+                "[svr1]",
+            ),
+            (
+                Some("Movie (2026) - directors"),
+                Some(r"D:\Movies\Movie (2026)\Movie (2026) - directors.mkv"),
+                "[svr1][directors]",
+            ),
+            (
+                Some("movie (2026) - theatrical"),
+                Some("/media/Movie (2026)/movie (2026) - theatrical.mkv"),
+                "[svr1][theatrical]",
+            ),
+            (
+                Some("Movie sequel"),
+                Some("/media/Movie/Movie sequel.mkv"),
+                "[svr1][sequel]",
+            ),
+            (Some("Movies"), Some("/media/Movie/Movies.mkv"), "[svr1]"),
+            (
+                None,
+                Some("/media/Movie/Movie - theatrical.mkv"),
+                "[svr1][theatrical]",
+            ),
+            (None, None, "[svr1]"),
+            (Some("  "), None, "[svr1]"),
+        ] {
+            let mut source = source("source", name, Some(1080));
+            source.path = path.map(str::to_string);
+            assert_eq!(
+                version_name(&source, &server(1, "svr1")),
+                expected,
+                "{name:?}, {path:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn two_editions_on_each_server_keep_distinct_source_routes() {
+        let hosted = (1..=2)
+            .map(|id| HostedMediaSources {
+                member_mapping: mapping(id, id),
+                server: server(id, &format!("svr{id}")),
+                sources: ["theatrical", "directors"]
+                    .map(|edition| source(&format!("source-{id}-{edition}"), Some(edition), None))
+                    .to_vec(),
+                user_data: None,
+                is_primary: id == 1,
+            })
+            .collect::<Vec<_>>();
+        let (sources, routes) = merge_sources(&hosted);
+        assert_eq!(
+            sources
+                .iter()
+                .map(|source| source.name.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "[svr1][theatrical]",
+                "[svr1][directors]",
+                "[svr2][theatrical]",
+                "[svr2][directors]"
+            ]
+        );
+        for (index, (source, route)) in sources.iter().zip(&routes).enumerate() {
+            assert_eq!(route.source_virtual_id, source.id);
+            assert_eq!(route.member_mapping_id, (index / 2 + 1) as i64);
+        }
     }
 
     #[test]
@@ -587,8 +697,8 @@ mod tests {
 
         assert_eq!(sources[0].id, "source-a");
         assert_eq!(sources[1].id, "source-b");
-        assert_eq!(sources[0].name.as_deref(), Some("4K [Primary]"));
-        assert_eq!(sources[1].name.as_deref(), Some("1080p [Backup]"));
+        assert_eq!(sources[0].name.as_deref(), Some("[Primary][4K]"));
+        assert_eq!(sources[1].name.as_deref(), Some("[Backup]"));
         assert_eq!(sources[0].source_type.as_deref(), None);
         assert_eq!(sources[1].source_type.as_deref(), Some("Grouping"));
         assert_eq!(observations[0].member_mapping_id, 1);
