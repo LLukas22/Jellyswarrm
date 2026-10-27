@@ -21,6 +21,10 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create reqwest client for regular API traffic.
     let reqwest_client = reqwest::Client::builder()
+        .user_agent(concat!(
+            "Jellyswarrm API Client/",
+            env!("CARGO_PKG_VERSION")
+        ))
         .timeout(Duration::from_secs(startup.timeout))
         .build()
         .unwrap_or_else(|e| {
@@ -32,6 +36,10 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Avoid a global request timeout on long-lived responses and disable automatic
     // response decompression so we forward bytes as-is with less CPU overhead.
     let streaming_reqwest_client = reqwest::Client::builder()
+        .user_agent(concat!(
+            "Jellyswarrm API Client/",
+            env!("CARGO_PKG_VERSION")
+        ))
         .connect_timeout(Duration::from_secs(startup.timeout))
         .tcp_nodelay(true)
         .no_gzip()
