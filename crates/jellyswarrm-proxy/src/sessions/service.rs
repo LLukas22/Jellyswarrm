@@ -2,6 +2,7 @@
 use super::{models::Capabilities, transport::ConnectionHub};
 use crate::auth::service::{Device, User};
 use crate::auth::user_id::UserId;
+use crate::servers::id::ServerId;
 use axum::http::StatusCode;
 use chrono::{DateTime, Duration, Utc};
 use serde_json::{json, Value};
@@ -27,6 +28,13 @@ pub struct ClientSession {
     pub now_viewing: Value,
     pub queue: Value,
     pub last_playback: Option<DateTime<Utc>>,
+    episode_server: Option<EpisodeServerPreference>,
+}
+
+#[derive(Clone)]
+struct EpisodeServerPreference {
+    series_id: String,
+    server_id: ServerId,
 }
 
 impl ClientSession {
@@ -219,6 +227,7 @@ impl ClientSessionService {
                 now_viewing: Value::Null,
                 queue: json!([]),
                 last_playback: None,
+                episode_server: None,
             },
         );
         id
@@ -226,6 +235,23 @@ impl ClientSessionService {
 
     pub async fn get(&self, id: &str) -> Option<ClientSession> {
         self.entries.read().await.get(id).cloned()
+    }
+
+    pub async fn preferred_episode_server(&self, id: &str, series_id: &str) -> Option<ServerId> {
+        let entries = self.entries.read().await;
+        let preference = entries.get(id)?.episode_server.as_ref()?;
+        (preference.series_id == series_id).then_some(preference.server_id)
+    }
+
+    /// Keep continuity across the stop/next transition, but never share it with
+    /// another client session or expose it as a client-supplied routing authority.
+    pub async fn remember_episode_server(&self, id: &str, series_id: &str, server_id: ServerId) {
+        if let Some(session) = self.entries.write().await.get_mut(id) {
+            session.episode_server = Some(EpisodeServerPreference {
+                series_id: series_id.into(),
+                server_id,
+            });
+        }
     }
 
     pub async fn for_user(&self, user_id: &str) -> Vec<ClientSession> {
@@ -363,6 +389,62 @@ mod tests {
             updated_at: Utc::now(),
         }
     }
+    #[tokio::test]
+    async fn episode_server_preference_stays_private_scoped_to_series_and_expires_with_the_client()
+    {
+        let service = ClientSessionService::new(ConnectionHub::default());
+        let device = Device {
+            client: "Web".into(),
+            device: "TV".into(),
+            device_id: "tv".into(),
+            version: "1".into(),
+        };
+        let id = service.ensure(&user(), "secret", Some(&device)).await;
+        let server = crate::servers::id::ServerId::new(2);
+        service.remember_episode_server(&id, "show", server).await;
+        assert_eq!(
+            service.preferred_episode_server(&id, "show").await,
+            Some(server)
+        );
+        assert_eq!(
+            service.preferred_episode_server(&id, "another-show").await,
+            None
+        );
+        let another_client = Device {
+            client: "Another client".into(),
+            ..device.clone()
+        };
+        let other = service
+            .ensure(&user(), "secret", Some(&another_client))
+            .await;
+        assert_ne!(other, id);
+        assert_eq!(service.preferred_episode_server(&other, "show").await, None);
+        let other = service
+            .ensure(&user(), "another-token", Some(&device))
+            .await;
+        assert_eq!(service.preferred_episode_server(&other, "show").await, None);
+        let dto = service
+            .get(&id)
+            .await
+            .unwrap()
+            .dto("proxy", &service.transport);
+        assert!(!dto.to_string().contains("episode_server"));
+
+        service
+            .entries
+            .write()
+            .await
+            .get_mut(&id)
+            .unwrap()
+            .last_activity = Utc::now() - Duration::seconds(SESSION_TTL_SECONDS + 1);
+        let replacement = service.ensure(&user(), "secret", Some(&device)).await;
+        assert_ne!(replacement, id);
+        assert_eq!(
+            service.preferred_episode_server(&replacement, "show").await,
+            None
+        );
+    }
+
     #[tokio::test]
     async fn partial_metadata_can_be_enriched_without_replacing_the_session() {
         let service = ClientSessionService::new(ConnectionHub::default());

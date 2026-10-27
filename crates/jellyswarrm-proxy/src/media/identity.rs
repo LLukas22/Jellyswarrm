@@ -96,6 +96,16 @@ pub struct MediaAlias {
 }
 
 impl MediaAlias {
+    /// Parent series of an episode identified by matched series coordinates.
+    pub fn episode_series_id(&self) -> Option<&str> {
+        if self.provider != MediaProvider::SeriesGroup || self.kind != MediaKind::Episode {
+            return None;
+        }
+        self.provider_id
+            .split_once(":season:")
+            .map(|(series, _)| series)
+    }
+
     pub fn from_item(item: &MediaItem) -> BTreeSet<Self> {
         let Some(kind) = MediaKind::from_item_kind(&item.item_type) else {
             return BTreeSet::new();

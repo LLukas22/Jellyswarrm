@@ -119,12 +119,45 @@ pub(crate) async fn post_playback_info_typed(
         payload.media_source_id = None;
     }
 
+    let continuity = super::continuity::EpisodeContinuity::prepare(
+        state.media_storage,
+        state.client_sessions,
+        &input.context,
+        &requested_item_id,
+    )
+    .await?;
+    let mut initial_target = initial.target;
+    if default_aggregate_source
+        || selected_source
+            .as_deref()
+            .is_none_or(|source| source.trim().is_empty())
+    {
+        if let Some(continuity) = &continuity {
+            if let Some(preferred) = continuity
+                .preferred_target(state, &input.context, &requested_item_id)
+                .await?
+            {
+                initial_target = preferred;
+            }
+        }
+    }
+    // Explicit false is a preview, not a change to the client's playing server.
+    // Clients omitting IsPlayback establish continuity via successful reports.
+    let is_playback = input
+        .original_request
+        .url()
+        .query_pairs()
+        .find(|(key, _)| key.eq_ignore_ascii_case("IsPlayback"))
+        .and_then(|(_, value)| value.to_ascii_lowercase().parse::<bool>().ok())
+        .or(payload.is_playback)
+        == Some(true);
+
     let plan = (MediaTargetResolver {
         media: state.media_storage,
     })
     .plan(
         &input.context,
-        initial.target,
+        initial_target,
         PlaybackIntent {
             item: &requested_item_id,
             source: selected_source
@@ -262,6 +295,11 @@ pub(crate) async fn post_playback_info_typed(
                     &original_item_id,
                 )
                 .await;
+            if is_playback && !response.media_sources.is_empty() {
+                if let Some(continuity) = &continuity {
+                    continuity.remember(state.client_sessions, server.id).await;
+                }
+            }
             debug!(server_id = %server.id, source_count = response.media_sources.len(), "Playback negotiation completed");
             if let Some(token) = proxy_api_key.as_deref() {
                 crate::application::response::media_response(

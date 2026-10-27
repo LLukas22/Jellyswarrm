@@ -7,6 +7,7 @@ use std::collections::BTreeSet;
 pub(crate) struct CatalogRequestPolicy {
     pub(super) pagination: Pagination,
     pub(super) sort: super::postprocessing::SortPolicy,
+    pub(super) episode_start_id: Option<String>,
     pub inventory_types: BTreeSet<MediaKind>,
     pub upstream_limited: bool,
     pub reconcile_playback: bool,
@@ -32,6 +33,16 @@ impl PlaybackFilter {
 impl CatalogRequestPolicy {
     pub fn from_url(url: &url::Url) -> Self {
         let sort = super::postprocessing::SortPolicy::from_url(url);
+        let path = url.path().trim_end_matches('/').to_ascii_lowercase();
+        let episode_start_id = (path.contains("/shows/") && path.ends_with("/episodes"))
+            .then(|| {
+                url.query_pairs()
+                    .find(|(key, _)| key.eq_ignore_ascii_case("StartItemId"))
+                    .map(|(_, value)| {
+                        crate::media::storage::MediaStorageService::normalize_uuid(&value)
+                    })
+            })
+            .flatten();
         let mut playback_filters = Vec::new();
         for (key, value) in url.query_pairs() {
             if key.eq_ignore_ascii_case("Filters") {
@@ -53,6 +64,7 @@ impl CatalogRequestPolicy {
         Self {
             pagination: Pagination::from_url(url),
             sort,
+            episode_start_id,
             inventory_types: authoritative_inventory_types(url),
             upstream_limited: is_upstream_limited_catalog_request(url),
             reconcile_playback: false,
@@ -61,6 +73,16 @@ impl CatalogRequestPolicy {
     }
 
     pub fn prepare_upstream(&self, url: &mut url::Url, include_identity: bool) {
+        if self.episode_start_id.is_some() {
+            // The anchor can live on only one member server. Fetch every
+            // member's episodes and apply the inclusive window after merging.
+            let pairs = url
+                .query_pairs()
+                .filter(|(key, _)| !key.eq_ignore_ascii_case("StartItemId"))
+                .map(|(key, value)| (key.into_owned(), value.into_owned()))
+                .collect::<Vec<_>>();
+            url.query_pairs_mut().clear().extend_pairs(pairs);
+        }
         if self.reconcile_playback && !self.playback_filters.is_empty() {
             // Fetch all copies before applying playback predicates. Otherwise a
             // newer completion can be hidden by an older resumable copy.
@@ -293,6 +315,36 @@ fn is_pagination_key(key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn episode_start_is_a_global_window_only_for_show_episode_lists() {
+        for path in ["/Shows/show/Episodes", "/jellyfin/shows/show/episodes/"] {
+            let original = url::Url::parse(&format!(
+                "http://localhost{path}?startItemId=episode&SeasonId=season&IsMissing=false&Fields=MediaSources"
+            )).unwrap();
+            let policy = CatalogRequestPolicy::from_url(&original);
+            assert_eq!(policy.episode_start_id.as_deref(), Some("episode"));
+            let mut upstream = original.clone();
+            policy.prepare_upstream(&mut upstream, true);
+            assert!(!has_query_key(&upstream, &["StartItemId"]));
+            for (key, value) in original.query_pairs().filter(|(key, _)| {
+                !key.eq_ignore_ascii_case("StartItemId") && !key.eq_ignore_ascii_case("Fields")
+            }) {
+                assert!(upstream
+                    .query_pairs()
+                    .any(|pair| pair == (key.clone(), value.clone())));
+            }
+            assert!(has_query_key(&original, &["StartItemId"]));
+        }
+        for path in ["/Items", "/Shows/show/Seasons", "/Shows/NextUp"] {
+            let mut url =
+                url::Url::parse(&format!("http://localhost{path}?StartItemId=episode")).unwrap();
+            let policy = CatalogRequestPolicy::from_url(&url);
+            assert!(policy.episode_start_id.is_none());
+            policy.prepare_upstream(&mut url, false);
+            assert!(has_query_key(&url, &["StartItemId"]));
+        }
+    }
 
     #[test]
     fn query_key_matching_uses_keys_not_values_and_decodes_keys() {

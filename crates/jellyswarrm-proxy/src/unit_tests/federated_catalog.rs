@@ -817,6 +817,153 @@ async fn merged_library_show_routes_merge_localized_seasons_and_keep_navigation(
 }
 
 #[tokio::test]
+async fn episode_playback_queue_spans_servers_and_applies_start_before_pagination() {
+    let (state, _pool, sessions, upstreams) = setup().await;
+    let library = state
+        .virtual_library_service
+        .create_group("Shows")
+        .await
+        .unwrap();
+    for (index, (_, server)) in sessions.iter().enumerate() {
+        state
+            .virtual_library_service
+            .add_member(
+                &library.virtual_id,
+                server.id,
+                "library",
+                "Shows",
+                "tvshows",
+            )
+            .await
+            .unwrap();
+        Mock::given(method("GET"))
+            .and(path("/Items"))
+            .and(query_param("ParentId", "library"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Items": [{"Id": "series", "Type": "Series", "ProviderIds": {"Tvdb": "42"}}],
+                "TotalRecordCount": 1, "StartIndex": 0
+            })))
+            .mount(&upstreams[index])
+            .await;
+        let numbers = if index == 0 {
+            vec![1, 2]
+        } else {
+            vec![2, 3, 4]
+        };
+        let episodes = numbers.into_iter().map(|number| json!({
+            "Id": format!("episode-{number}"), "Type": "Episode", "SeriesId": "series",
+            "Name": format!("Episode {number}"),
+            "ParentIndexNumber": if number == 4 { 2 } else { 1 },
+            "IndexNumber": if number == 4 { 1 } else { number },
+            "UserData": {"Played": false, "PlaybackPositionTicks": 0, "PlayCount": 0,
+                "IsFavorite": false, "Key": format!("episode-{number}"), "ItemId": format!("episode-{number}")}
+        })).collect::<Vec<_>>();
+        Mock::given(method("GET"))
+            .and(path("/Shows/series/Episodes"))
+            .respond_with(move |request: &wiremock::Request| {
+                // A backend cannot resolve another server's anchor (nor a
+                // proxy aggregate ID). Model that failure rather than ignoring
+                // the filter, so this regression fails if it is forwarded.
+                let items = if request
+                    .url
+                    .query_pairs()
+                    .any(|(key, _)| key.eq_ignore_ascii_case("StartItemId"))
+                {
+                    vec![]
+                } else {
+                    episodes.clone()
+                };
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "TotalRecordCount": items.len(), "StartIndex": 0, "Items": items
+                }))
+            })
+            .mount(&upstreams[index])
+            .await;
+    }
+    let shows = get_items_from_all_servers_preprocessed(
+        &state.catalog_service(),
+        request(
+            &format!(
+                "/Items?ParentId={}&IncludeItemTypes=Series",
+                library.virtual_id
+            ),
+            &sessions,
+        ),
+    )
+    .await
+    .unwrap();
+    let series_id = shows["Items"][0]["Id"].as_str().unwrap();
+    let endpoint = format!("/Shows/{series_id}/Episodes");
+    let listing =
+        get_show_children_from_all_servers(&state.catalog_service(), request(&endpoint, &sessions))
+            .await
+            .unwrap();
+    let ids = listing["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["Id"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(ids.len(), 4);
+    let alternate = state
+        .media_storage
+        .get_or_create_media_mapping("episode-2", &sessions[1].1)
+        .await
+        .unwrap()
+        .virtual_media_id;
+    let formatted_anchor = uuid::Uuid::parse_str(&ids[1])
+        .unwrap()
+        .hyphenated()
+        .to_string()
+        .to_uppercase();
+    for (anchor, key, offset, limit, expected, total) in [
+        (ids[0].as_str(), "StartItemId", 0, 100, &ids[..], 4),
+        (ids[1].as_str(), "startItemId", 0, 100, &ids[1..], 3),
+        (alternate.as_str(), "STARTITEMID", 0, 100, &ids[1..], 3),
+        (
+            formatted_anchor.as_str(),
+            "StartItemId",
+            0,
+            100,
+            &ids[1..],
+            3,
+        ),
+        (ids[0].as_str(), "StartItemId", 1, 1, &ids[1..2], 4),
+        // Same snapshot, different client page: do not apply the anchor twice.
+        (ids[0].as_str(), "StartItemId", 2, 2, &ids[2..], 4),
+        (ids[2].as_str(), "StartItemId", 0, 100, &ids[2..], 2),
+        (ids[3].as_str(), "StartItemId", 0, 100, &ids[3..], 1),
+    ] {
+        let queue = get_show_children_from_all_servers(
+            &state.catalog_service(),
+            request(&format!("{endpoint}?{key}={anchor}&StartIndex={offset}&Limit={limit}&IsMissing=false&IsVirtualUnaired=false&Fields=MediaSources"), &sessions),
+        ).await.unwrap();
+        let actual = queue["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["Id"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected, "anchor={anchor}, offset={offset}");
+        assert_eq!(queue["TotalRecordCount"], total);
+        assert_eq!(queue["StartIndex"], offset);
+        assert!(queue["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["SeriesId"] == series_id));
+    }
+    let requests = upstreams[1].received_requests().await.unwrap();
+    assert!(requests
+        .iter()
+        .filter(|request| request.url.path().ends_with("/Episodes"))
+        .all(|request| !request
+            .url
+            .query_pairs()
+            .any(|(key, _)| key.eq_ignore_ascii_case("StartItemId"))));
+}
+
+#[tokio::test]
 async fn client_pages_are_applied_after_scanning_capped_catalogs() {
     for (kind, endpoint) in [
         ("search", "/Items?SearchTerm=movie"),

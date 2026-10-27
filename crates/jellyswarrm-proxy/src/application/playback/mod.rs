@@ -3,6 +3,7 @@
 //! `negotiation` handles PlaybackInfo; `resources` handles subsequent media requests;
 //! `live` handles live open/refresh/close. They share target selection and lifecycle
 //! commits. `services` contains dependencies, not another workflow.
+pub(crate) mod continuity;
 pub(crate) mod lifecycle;
 pub(crate) mod live;
 pub(crate) mod negotiation;

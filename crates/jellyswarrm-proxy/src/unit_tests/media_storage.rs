@@ -46,6 +46,125 @@ async fn assert_no_foreign_key_violations(pool: &SqlitePool) {
 }
 
 #[tokio::test]
+async fn episode_continuity_parent_uses_persisted_viewer_scoped_unambiguous_identity() {
+    let (pool, service) = migrated_service().await;
+    let server = create_test_server_with_url(&pool, "http://episodes:8096").await;
+    let mut members = Vec::new();
+    for original in ["episode-a", "episode-b"] {
+        members.push(
+            service
+                .get_or_create_media_mapping(original, &server)
+                .await
+                .unwrap(),
+        );
+    }
+    let mut aggregate = String::new();
+    for (scope, parent) in [
+        ("aggregate:show:alice", "alice-show"),
+        ("aggregate:show:bob", "bob-show"),
+    ] {
+        let episode = serde_json::from_value(serde_json::json!({
+            "Id":"episode", "Type":"Episode", "ParentIndexNumber":1, "IndexNumber":1
+        }))
+        .unwrap();
+        let snapshots = vec![MediaCatalogSnapshot {
+            source_key: "episodes".into(),
+            server_id: server.id,
+            complete: false,
+            observations: members
+                .iter()
+                .map(|member| MediaObservation {
+                    virtual_media_id: member.virtual_media_id.clone(),
+                    kind: MediaKind::Episode,
+                    aliases: BTreeSet::from([MediaAlias::for_episode(&episode, parent).unwrap()]),
+                })
+                .collect(),
+        }];
+        let generation = service.begin_media_reconciliation().await.unwrap();
+        let groups = service
+            .reconcile_media_catalog(scope, generation, &snapshots, false)
+            .await
+            .unwrap();
+        let id = &groups[&members[0].virtual_media_id].virtual_media_id;
+        assert_eq!(
+            service
+                .get_episode_series_id(id, scope.rsplit(':').next().unwrap())
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(parent)
+        );
+        if scope.ends_with("alice") {
+            aggregate = id.clone();
+        }
+    }
+    assert_eq!(
+        service
+            .get_episode_series_id(&members[0].virtual_media_id, "alice")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("alice-show")
+    );
+    assert_eq!(
+        service
+            .get_episode_series_id(&aggregate, "bob")
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        service
+            .get_episode_series_id(&members[0].virtual_media_id, "unknown")
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        service
+            .get_episode_series_id("missing", "alice")
+            .await
+            .unwrap(),
+        None
+    );
+
+    // Another catalog for the same viewer disagrees about this member's show.
+    // Do not guess which series should inherit a previous playback's preference.
+    let episode = serde_json::from_value(serde_json::json!({
+        "Id":"episode", "Type":"Episode", "ParentIndexNumber":1, "IndexNumber":1
+    }))
+    .unwrap();
+    let generation = service.begin_media_reconciliation().await.unwrap();
+    service
+        .reconcile_media_catalog(
+            "aggregate:other:alice",
+            generation,
+            &[MediaCatalogSnapshot {
+                source_key: "other".into(),
+                server_id: server.id,
+                complete: false,
+                observations: vec![MediaObservation {
+                    virtual_media_id: members[0].virtual_media_id.clone(),
+                    kind: MediaKind::Episode,
+                    aliases: BTreeSet::from([
+                        MediaAlias::for_episode(&episode, "other-show").unwrap()
+                    ]),
+                }],
+            }],
+            false,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        service
+            .get_episode_series_id(&members[0].virtual_media_id, "alice")
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
 async fn inventory_authority_requires_matching_source_identity_and_nonempty_coverage() {
     let snapshot = || MediaCatalogSnapshot {
         source_key: "source".into(),

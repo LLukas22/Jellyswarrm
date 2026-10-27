@@ -34,6 +34,7 @@ async fn forwarded_success(
     state: &ProxyService<'_>,
     input: &OperationRequest,
     mutation_viewer: Option<&str>,
+    server_id: crate::servers::id::ServerId,
 ) {
     if let Some(viewer) = mutation_viewer {
         state.catalog_snapshots.invalidate_viewer(viewer);
@@ -67,6 +68,31 @@ async fn forwarded_success(
                 .client_sessions
                 .report(&id, action == PlaybackSessionAction::Remove, &report)
                 .await;
+            if action != PlaybackSessionAction::Remove {
+                if let Some(item) = report.as_object().and_then(|object| {
+                    object
+                        .iter()
+                        .find(|(key, _)| key.eq_ignore_ascii_case("ItemId"))
+                        .and_then(|(_, value)| value.as_str())
+                }) {
+                    match crate::application::playback::continuity::EpisodeContinuity::prepare(
+                        state.media_storage,
+                        state.client_sessions,
+                        context,
+                        item,
+                    )
+                    .await
+                    {
+                        Ok(Some(continuity)) => {
+                            continuity.remember(state.client_sessions, server_id).await
+                        }
+                        Ok(None) => {}
+                        Err(_) => warn!(
+                            "Could not retain episode server preference after playback report"
+                        ),
+                    }
+                }
+            }
         }
     }
 }
@@ -229,7 +255,7 @@ pub(crate) async fn forward(
         .map_err(|error| ApplicationError::UpstreamTransport(error.without_url()))?;
     let status = response.status();
     if status.is_success() {
-        forwarded_success(state, &input, mutation_viewer.as_deref()).await;
+        forwarded_success(state, &input, mutation_viewer.as_deref(), server.id).await;
     } else {
         warn!("Upstream server returned error status: {}", status);
     }

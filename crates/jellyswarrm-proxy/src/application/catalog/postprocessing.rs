@@ -172,6 +172,14 @@ impl FederatedItems {
         let pagination = policy.pagination;
         self.items.retain(|item| policy.matches_playback(item));
         policy.sort.apply(&mut self.items);
+        if let Some(start_id) = &policy.episode_start_id {
+            let start = self
+                .items
+                .iter()
+                .position(|item| &item.id == start_id)
+                .unwrap_or(self.items.len());
+            self.items.drain(..start);
+        }
         let total_count = self.items.len();
         let items = pagination
             .apply(self.items)
@@ -415,6 +423,38 @@ pub(super) fn page_materialized_response(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn episode_window_is_inclusive_sorted_and_never_restarts_at_an_unrelated_episode() {
+        for (anchor, expected, total) in [
+            ("first", vec!["second"], 3),
+            ("second", vec!["third"], 2),
+            ("third", vec![], 1),
+            ("missing", vec![], 0),
+        ] {
+            let url = url::Url::parse(&format!(
+                "http://localhost/Shows/show/Episodes?StartItemId={anchor}&StartIndex=1&Limit=1"
+            ))
+            .unwrap();
+            let items = [("third", 2, 1), ("first", 1, 1), ("second", 1, 2)]
+                .into_iter()
+                .map(|(id, season, episode)| {
+                    serde_json::from_value(json!({
+                        "Id": id, "Type": "Episode", "ParentIndexNumber": season, "IndexNumber": episode
+                    }))
+                    .unwrap()
+                })
+                .collect();
+            let ItemsResponseVariants::WithCount(result) =
+                FederatedItems::new(items).into_response(&url, ResponseShape::Counted)
+            else {
+                panic!("expected counted response")
+            };
+            assert_eq!(item_ids(&result.items), expected);
+            assert_eq!(result.total_record_count, total);
+            assert_eq!(result.start_index, 1);
+        }
+    }
 
     #[test]
     fn unsupported_sort_does_not_replace_backend_order_with_name_or_id_order() {

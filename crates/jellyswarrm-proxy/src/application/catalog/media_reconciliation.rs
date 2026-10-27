@@ -195,6 +195,18 @@ async fn get_reconciled_catalog_uncached(
         fetched,
     )
     .await?;
+    if let Some(start_id) = policy.episode_start_id.as_deref() {
+        // Alternate/member episode IDs collapse to a different public ID. Use
+        // this viewer's freshly reconciled catalog to locate the queue anchor.
+        if let Some(aggregate) = state
+            .media_storage
+            .get_media_parent_group_id_for_scope(start_id, &viewer, Some(&catalog_scope_key))
+            .await
+            .map_err(ApplicationError::Storage)?
+        {
+            policy.episode_start_id = Some(aggregate);
+        }
+    }
     Ok(super::snapshots::SnapshotResponse {
         response: finalize_items_response_typed(
             state,

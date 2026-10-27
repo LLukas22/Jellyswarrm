@@ -52,6 +52,12 @@ flowchart TD
 
 Negotiation and delivery are separate requests, connected by stored bindings.
 
+Implicit episode negotiation also prefers the last successful episode server
+for the same series and authenticated client session. This is a soft preference:
+explicit source/member selections still win, and missing or unavailable copies
+use normal routing. Successful playback reports establish continuity for clients
+that omit `IsPlayback`; previews and failed negotiations do not change it.
+
 ```mermaid
 sequenceDiagram
     participant C as Client

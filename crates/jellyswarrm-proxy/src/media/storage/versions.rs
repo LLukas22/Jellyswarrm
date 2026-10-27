@@ -2,6 +2,47 @@
 use super::*;
 
 impl MediaStorageService {
+    /// Resolve episode continuity from persisted catalog identity, not the
+    /// short-lived display-metadata cache. Ambiguous or foreign-viewer parent
+    /// identities cannot establish a preference.
+    pub async fn get_episode_series_id(
+        &self,
+        virtual_media_id: &str,
+        viewer: &str,
+    ) -> Result<Option<String>, sqlx::Error> {
+        let rows = sqlx::query(
+            r#"
+            SELECT DISTINCT alias.provider_id, scope.scope_key
+            FROM movie_version_aliases alias
+            JOIN movie_version_members member ON member.scope_id = alias.scope_id
+                AND member.media_mapping_id = alias.media_mapping_id
+            JOIN media_mappings mapping ON mapping.id = member.media_mapping_id
+            JOIN movie_catalog_scopes scope ON scope.id = member.scope_id
+            LEFT JOIN movie_version_group_ids ids ON ids.group_id = member.group_id
+            WHERE alias.provider = 'series-group:episode'
+                AND (mapping.virtual_media_id = ? OR ids.virtual_media_id = ?)
+            "#,
+        )
+        .bind(Self::normalize_uuid(virtual_media_id))
+        .bind(Self::normalize_uuid(virtual_media_id))
+        .fetch_all(&self.pool)
+        .await?;
+        let mut series = BTreeSet::new();
+        for row in rows {
+            if !MediaCatalogScope::belongs_to(&row.try_get::<String, _>("scope_key")?, viewer) {
+                continue;
+            }
+            let alias = MediaAlias::parse_storage(
+                "series-group:episode",
+                &row.try_get::<String, _>("provider_id")?,
+            );
+            if let Some(parent) = alias.as_ref().and_then(MediaAlias::episode_series_id) {
+                series.insert(Self::normalize_uuid(parent));
+            }
+        }
+        Ok((series.len() == 1).then(|| series.into_iter().next().unwrap()))
+    }
+
     pub async fn get_media_version_group(
         &self,
         virtual_media_id: &str,
