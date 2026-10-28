@@ -2,81 +2,69 @@
 name = "jellyswarrm-proxy"
 version = { workspace = true }
 edition = { workspace = true }
+rust-version.workspace = true
+publish = false
 authors = { workspace = true }
 repository = { workspace = true }
 description = "A high-performance reverse proxy for combining multiple Jellyfin instances"
 license = "MIT OR Apache-2.0"
 
-[[bin]]
-name = "jellyswarrm-proxy"
-path = "src/main.rs"
+[lints]
+workspace = true
 
 [features]
 browser-tests = ["dep:playwright-rs"]
 
 [dependencies]
-playwright-rs = { version = "0.18.0", optional = true, default-features = false, features = ["rustls-tls-native-roots", "ring"] }
-jellyswarrm-macros = { workspace = true }
-axum = { workspace = true, features = ["ws"] }
-tokio = { workspace = true }
-tower = { workspace = true }
-tower-http = { workspace = true }
-hyper = { workspace = true }
-http-body-util = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-tracing-appender = { workspace = true }
-url = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-reqwest = { workspace = true }
-sqlx = { workspace = true }
-sha2 = { workspace = true }
-sha1 = { workspace = true }
-hex = { workspace = true }
-hkdf = { workspace = true }
-argon2 = { workspace = true }
-chrono = { workspace = true }
-rand = { workspace = true }
-moka = { workspace = true }
-askama = { workspace = true }
-uuid = { workspace = true }
+aes-gcm = { workspace = true }
 anyhow = { workspace = true }
-thiserror = { workspace = true }
-rust-embed = { workspace = true }
-mime_guess = { workspace = true }
-config = { workspace = true }
-toml = { workspace = true }
-
-regex = { workspace = true }
-percent-encoding = { workspace = true }
-
-serde_default = { workspace = true }
-
+argon2 = { workspace = true }
+askama = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true, features = ["ws"] }
 axum-login = { workspace = true }
 axum-messages = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+config = { workspace = true }
+futures-util = { workspace = true }
+hex = { workspace = true }
+hkdf = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true }
+jellyfin-api = { workspace = true }
+jellyswarrm-macros = { workspace = true }
+mime_guess = { workspace = true }
+moka = { workspace = true }
+percent-encoding = { workspace = true }
+playwright-rs = { version = "0.20.1", optional = true, default-features = false, features = ["rustls-tls-native-roots", "ring"] }
+rand = { workspace = true }
+regex = { workspace = true }
+reqwest = { workspace = true }
+rust-embed = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_with = { workspace = true }
+sha1 = { workspace = true }
+sha2 = { workspace = true }
+sqlx = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+toml = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
 tower-sessions = { workspace = true }
 tower-sessions-sqlx-store = { workspace = true }
-
-
-time = { workspace = true }
-base64 = { workspace = true }
-async-trait = { workspace = true }
-async-recursion = { workspace = true }
-
-aes-gcm = { workspace = true }
-serde_with = { workspace = true }
-jellyfin-api = { workspace = true }
-futures-util = { workspace = true }
+tracing = { workspace = true }
+tracing-appender = { workspace = true }
+tracing-subscriber = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
-tokio-tungstenite = { workspace = true }
-tokio-test = { workspace = true }
 tempfile = { workspace = true }
-mockall = { workspace = true }
 testcontainers = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+tokio-tungstenite = { workspace = true }
 wiremock = { workspace = true }
-
-[build-dependencies]
-fs_extra = { workspace = true }
-serde_json = { workspace = true }

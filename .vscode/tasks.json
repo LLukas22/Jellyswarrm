@@ -28,7 +28,7 @@
 			"label": "Install UI Dependencies",
 			"type": "shell",
 			"command": "npm",
-			"args": ["install"],
+			"args": ["ci"],
 			"options": {
 				"cwd": "${workspaceFolder}/ui"
 			},
@@ -44,10 +44,10 @@
 		{
 			"label": "Build UI Production",
 			"type": "shell",
-			"command": "npm",
-			"args": ["run", "build:production"],
+			"command": "just",
+			"args": ["ui"],
 			"options": {
-				"cwd": "${workspaceFolder}/ui"
+				"cwd": "${workspaceFolder}"
 			},
 			"group": "build",
 			"presentation": {

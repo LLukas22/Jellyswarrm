@@ -120,23 +120,29 @@ This will build and start the application with all necessary dependencies, perfe
 <details>
 <summary><strong>Native Build</strong></summary>
 
-For a native development setup, ensure you have both Rust and Node.js installed on your system. 
-
-First, install the UI dependencies. You can use the convenient VS Code task `Install UI Dependencies` from the tasks.json file, or run it manually:
-
-```bash
-cd ui
-npm install
-cd ..
-```
-
-Once the dependencies are installed, build the entire project with:
+For a native build with the embedded web client, install Rust (the version in
+`rust-toolchain.toml`), Node.js 24, and [just](https://just.systems/). Initialize
+the UI submodule as shown above, then run:
 
 ```bash
-cargo build --release
+just ui
+cargo build --locked --release
 ```
 
-The build process is streamlined thanks to the included [`build.rs`](./crates/jellyswarrm-proxy/build.rs) script, which automatically compiles the web UI and embeds it into the final binary for a truly self-contained application.
+`just ui` runs `npm ci`, builds the production web client, and replaces the
+embedded assets in `crates/jellyswarrm-proxy/static/`, including UI version and
+commit metadata. Run it again after updating the UI submodule or editing the UI.
+Cargo only builds Rust; it never invokes npm or git.
+
+For Rust-only development, `cargo check`, `cargo clippy`, and `cargo test` work
+without Node.js or a UI build. A missing UI gets a development placeholder.
+Release builds reject this placeholder: build the real UI with `just ui` first.
+For deliberately UI-less release checks only, set
+`JELLYSWARRM_ALLOW_PLACEHOLDER_UI=1` (not for deployment).
+
+To run the dependency policy locally, install `cargo-deny` and run `just audit`.
+Security advisories and unapproved licenses fail the check. Duplicate versions
+and unmaintained transitive dependencies are reported as warnings.
 
 ### Local Test Servers
 

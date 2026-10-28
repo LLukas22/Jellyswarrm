@@ -16,7 +16,7 @@ impl ContainerBrowser {
         );
         let port = available_port()?;
         let path = uuid::Uuid::new_v4().simple().to_string();
-        let mut request = GenericImage::new("jellyswarrm-browser-tests", "1.63.0")
+        let mut request = GenericImage::new("jellyswarrm-browser-tests", "1.64.0")
             .with_network("host")
             .with_shm_size(1024 * 1024 * 1024)
             .with_env_var("PLAYWRIGHT_PORT", port.to_string())

@@ -20,5 +20,5 @@ broaden visibility merely to make tests compile. Playlist contracts live in
 Run all proxy tests from the repository root:
 
 ```sh
-JELLYSWARRM_SKIP_UI=1 cargo test -p jellyswarrm-proxy --bin jellyswarrm-proxy
+cargo test --locked -p jellyswarrm-proxy --bin jellyswarrm-proxy
 ```

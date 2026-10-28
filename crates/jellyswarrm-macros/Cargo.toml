@@ -2,9 +2,14 @@
 name = "jellyswarrm-macros"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+publish = false
 authors.workspace = true
 license = "MIT OR Apache-2.0"
 repository.workspace = true
+
+[lints]
+workspace = true
 
 [lib]
 proc-macro = true
@@ -18,7 +23,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
 axum = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
 tower = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

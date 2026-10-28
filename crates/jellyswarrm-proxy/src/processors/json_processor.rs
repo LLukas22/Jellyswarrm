@@ -1,6 +1,5 @@
 //! Walk JSON recursively and apply field analyzers or request/response transformations.
 use anyhow::Result;
-use async_recursion::async_recursion;
 use async_trait::async_trait;
 use serde_json::{Map, Value};
 use std::boxed::Box;
@@ -148,7 +147,6 @@ pub trait JsonAnalyzer<C, A>: Send + Sync {
     ) -> Result<()>;
 }
 
-#[async_recursion]
 async fn _process_json<'a, P, C>(
     value: &'a mut Value,
     processor: &'a P,
@@ -190,7 +188,7 @@ where
             // Process nested structures
             match &mut val {
                 Value::Object(_) => {
-                    let (nested_result, nested_modified) = _process_json(
+                    let (nested_result, nested_modified) = Box::pin(_process_json(
                         &mut val,
                         processor,
                         context,
@@ -198,7 +196,7 @@ where
                         depth + 1,
                         parent_context_object.as_ref(),
                         errors,
-                    )
+                    ))
                     .await?;
                     val = Value::Object(nested_result);
                     if nested_modified {
@@ -206,7 +204,7 @@ where
                     }
                 }
                 Value::Array(_) => {
-                    was_modified |= _process_array_items(
+                    was_modified |= Box::pin(_process_array_items(
                         &mut val,
                         processor,
                         context,
@@ -214,7 +212,7 @@ where
                         depth + 1,
                         parent_context_object.as_ref(),
                         errors,
-                    )
+                    ))
                     .await?;
                 }
                 _ => {}
@@ -274,7 +272,6 @@ fn parent_context_object(map: &Map<String, Value>) -> Option<Map<String, Value>>
     (!context.is_empty()).then_some(context)
 }
 
-#[async_recursion]
 async fn _process_array_items<'a, P, C>(
     value: &'a mut Value,
     processor: &'a P,
@@ -298,7 +295,7 @@ where
         let array_path = format!("{}[{}]", parent_path, index);
 
         if let Value::Object(_) = item {
-            let (nested_result, nested_modified) = _process_json(
+            let (nested_result, nested_modified) = Box::pin(_process_json(
                 item,
                 processor,
                 context,
@@ -306,7 +303,7 @@ where
                 depth,
                 parent_object,
                 errors,
-            )
+            ))
             .await?;
             *item = Value::Object(nested_result);
             if nested_modified {
@@ -316,7 +313,7 @@ where
         }
 
         if let Value::Array(_) = item {
-            if _process_array_items(
+            if Box::pin(_process_array_items(
                 item,
                 processor,
                 context,
@@ -324,7 +321,7 @@ where
                 depth + 1,
                 parent_object,
                 errors,
-            )
+            ))
             .await?
             {
                 was_modified = true;
@@ -396,7 +393,6 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-#[async_recursion]
 async fn _analyze_json<'a, A, C, Acc>(
     value: &'a Value,
     analyzer: &'a A,
@@ -434,7 +430,7 @@ where
             // Recursively analyze nested structures
             match val {
                 Value::Object(_) => {
-                    _analyze_json(
+                    Box::pin(_analyze_json(
                         val,
                         analyzer,
                         context,
@@ -443,11 +439,11 @@ where
                         depth + 1,
                         parent_context.as_ref(),
                         errors,
-                    )
+                    ))
                     .await?;
                 }
                 Value::Array(_) => {
-                    _analyze_array(
+                    Box::pin(_analyze_array(
                         val,
                         analyzer,
                         context,
@@ -456,7 +452,7 @@ where
                         depth + 1,
                         parent_context.as_ref(),
                         errors,
-                    )
+                    ))
                     .await?;
                 }
                 _ => {}
@@ -474,7 +470,6 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-#[async_recursion]
 async fn _analyze_array<A, C, Acc>(
     value: &Value,
     analyzer: &A,
@@ -497,7 +492,7 @@ where
         let path = format!("{parent_path}[{index}]");
         match item {
             Value::Object(_) => {
-                _analyze_json(
+                Box::pin(_analyze_json(
                     item,
                     analyzer,
                     context,
@@ -506,11 +501,11 @@ where
                     depth,
                     parent_object,
                     errors,
-                )
+                ))
                 .await?
             }
             Value::Array(_) => {
-                _analyze_array(
+                Box::pin(_analyze_array(
                     item,
                     analyzer,
                     context,
@@ -519,7 +514,7 @@ where
                     depth + 1,
                     parent_object,
                     errors,
-                )
+                ))
                 .await?
             }
             _ => {

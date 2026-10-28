@@ -91,7 +91,6 @@ pub(crate) fn wrap(
     pool: sqlx::SqlitePool,
 ) -> Router {
     let app = if let Some(url_prefix) = url_prefix {
-        let url_prefix = url_prefix.to_string();
         info!("Using URL prefix: {}", url_prefix);
 
         info!("Starting reverse proxy on http://{}/{}", addr, url_prefix);
@@ -109,7 +108,7 @@ pub(crate) fn wrap(
                 // preserving the original path. e.g. /foo/bar -> /{url_prefix}/foo/bar
                 // capture url_prefix by value
                 {
-                    let prefix = url_prefix.clone();
+                    let prefix = url_prefix;
                     move |req: Request| {
                         let prefix = prefix.clone();
                         async move {

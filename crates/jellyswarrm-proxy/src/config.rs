@@ -2,7 +2,6 @@
 pub(crate) mod service;
 mod snapshots;
 use serde::{Deserialize, Serialize};
-use serde_default::DefaultFromSerde;
 pub(crate) use snapshots::SettingsView;
 pub(crate) use snapshots::StartupConfig;
 use sqlx::migrate::Migrator;
@@ -256,7 +255,7 @@ pub struct DebugUser {
     pub password: Password,
 }
 
-#[derive(Clone, Deserialize, Serialize, DefaultFromSerde)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct AppConfig {
     #[serde(default = "default_server_id")]
     pub server_id: String,
@@ -334,6 +333,32 @@ pub struct AppConfig {
         alias = "deduplicate_movies"
     )]
     pub deduplicate_media: bool,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            server_id: default_server_id(),
+            public_address: default_public_address(),
+            server_name: default_server_name(),
+            host: default_host(),
+            port: default_port(),
+            include_server_name_in_media: default_include_server_name_in_media(),
+            username: default_username(),
+            password: default_password(),
+            preconfigured_servers: Vec::new(),
+            debug_user: None,
+            session_key: default_session_key(),
+            timeout: default_timeout(),
+            ui_route: default_ui_route(),
+            url_prefix: None,
+            media_streaming_mode: default_media_streaming_mode(),
+            server_background_check_interval_secs: default_server_background_check_interval_secs(),
+            auto_create_users_on_login: default_auto_create_users_on_login(),
+            merge_libraries: default_merge_libraries(),
+            deduplicate_media: default_deduplicate_media(),
+        }
+    }
 }
 
 impl fmt::Debug for AppConfig {

@@ -12,6 +12,8 @@
 # Local data & logs
 /logs
 /data
+/dev/data
+/.worktrees
 *.log
 *.db
 

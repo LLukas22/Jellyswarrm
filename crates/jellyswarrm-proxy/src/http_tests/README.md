@@ -18,7 +18,7 @@ just http-test-normal  # configuration-dependent contracts: separate libraries
 just http-test-merged  # configuration-dependent contracts: merged libraries
 
 # One test or module:
-JELLYSWARRM_SKIP_UI=1 cargo test -p jellyswarrm-proxy --bin jellyswarrm-proxy http_tests::catalog::episodes
+cargo test --locked -p jellyswarrm-proxy --bin jellyswarrm-proxy http_tests::catalog::episodes
 ```
 
 Source-owned transport contracts use `contract_test!` and run once, with separate

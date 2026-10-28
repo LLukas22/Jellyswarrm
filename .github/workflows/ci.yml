@@ -1,4 +1,3 @@
-# .github/workflows/ci.yml
 name: CI
 
 on:
@@ -8,6 +7,9 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -16,105 +18,69 @@ jobs:
     - name: Checkout (with submodules)
       uses: actions/checkout@v4
       with:
-          submodules: recursive
-          fetch-depth: 0
+        submodules: recursive
+        fetch-depth: 0
 
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
-      with:
-          toolchain: 1.92.0
-          components: rustfmt, clippy
+    - name: Install Rust from rust-toolchain.toml
+      run: rustup show active-toolchain
 
-    - name: Cache Rust toolchain
-      uses: actions/cache@v4
+    - name: Cache Rust artifacts
+      uses: Swatinem/rust-cache@v2
       with:
-        path: |
-          ~/.rustup/toolchains
-          ~/.rustup/update-hashes
-          ~/.rustup/settings.toml
-        key: ${{ runner.os }}-rustup-${{ hashFiles('rust-toolchain.toml') }}
-        restore-keys: |
-          ${{ runner.os }}-rustup-
+        shared-key: build
 
-    - name: Cache cargo registry and index
-      uses: actions/cache@v4
+    - name: Install just
+      uses: extractions/setup-just@v4
       with:
-        path: |
-          ~/.cargo/registry/index
-          ~/.cargo/registry/cache
-          ~/.cargo/git/db
-        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-registry-
+        just-version: '1.59.0'
 
-    - name: Cache target directory
-      uses: actions/cache@v4
-      with:
-        path: target
-        key: ${{ runner.os }}-target-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('**/*.rs') }}
-        restore-keys: |
-          ${{ runner.os }}-target-${{ hashFiles('**/Cargo.lock') }}-
-          ${{ runner.os }}-target-
+    # Exercise a fresh checkout before installing Node or generating static/.
+    - name: Test UI build validation
+      run: python3 scripts/test-ui-build.py
+
+    - name: Check Rust without UI assets
+      run: cargo check --locked --workspace --all-targets --all-features
+
+    - name: Run tests without UI assets
+      run: cargo test --locked --workspace --verbose
 
     - name: Setup Node.js (LTS)
       uses: actions/setup-node@v4
       with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: ui/package-lock.json
+        node-version: 24
+        cache: npm
+        cache-dependency-path: ui/package-lock.json
 
-    - name: Cache Node.js modules
-      uses: actions/cache@v4
-      with:
-        path: |
-          ui/node_modules
-          ~/.npm
-        key: ${{ runner.os }}-node-${{ hashFiles('ui/package-lock.json') }}
-        restore-keys: |
-          ${{ runner.os }}-node-
-
-    - name: Cache Rust build artifacts
-      uses: actions/cache@v4
-      with:
-        path: |
-          target/debug/deps
-          target/debug/build
-          target/debug/.fingerprint
-        key: ${{ runner.os }}-rust-build-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('**/*.rs') }}
-        restore-keys: |
-          ${{ runner.os }}-rust-build-${{ hashFiles('**/Cargo.lock') }}-
-          ${{ runner.os }}-rust-build-
-
-    - name: Install UI deps
-      working-directory: ui
-      run: |
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install
-          fi
+    - name: Build embedded UI
+      run: just ui
 
     - name: Check client HTTP route inventory
       run: node scripts/scan-client-routes.cjs --check
 
     - name: Build
-      run: cargo build --verbose
-
-    - name: Run tests
-      run: cargo test --verbose
+      run: cargo build --locked --workspace --verbose
 
     - name: Lint (clippy)
-      run: cargo clippy -- -D warnings
+      run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
     - name: Format check
-      run: cargo fmt -- --check
+      run: cargo fmt --all -- --check
+
+  dependencies:
+    name: Dependency advisories and licenses
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: EmbarkStudios/cargo-deny-action@v2
+      with:
+        # Abandoned transitive crates are reported, but security findings fail.
+        command: check --warn unmaintained advisories bans licenses sources
+        arguments: --locked
 
   integration:
     name: Docker integration test
     runs-on: ubuntu-latest
     timeout-minutes: 35
-    permissions:
-      contents: read
 
     steps:
     - name: Checkout media fixtures
@@ -124,26 +90,18 @@ jobs:
         lfs: true
         submodules: recursive
 
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
+    - name: Install Rust from rust-toolchain.toml
+      run: rustup show active-toolchain
+
+    - name: Cache Rust artifacts
+      uses: Swatinem/rust-cache@v2
       with:
-        toolchain: 1.92.0
+        shared-key: integration
 
     - name: Install just
       uses: extractions/setup-just@v4
       with:
         just-version: '1.59.0'
-
-    - name: Cache cargo registry
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/registry/index
-          ~/.cargo/registry/cache
-          ~/.cargo/git/db
-        key: ${{ runner.os }}-integration-cargo-${{ hashFiles('Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-integration-cargo-
 
     - name: Setup Node.js
       uses: actions/setup-node@v4
@@ -153,27 +111,15 @@ jobs:
         cache-dependency-path: ui/package-lock.json
 
     - name: Build embedded UI
-      working-directory: ui
-      run: |
-        npm ci
-        npm run build:production
-
-    - name: Copy embedded UI
-      run: |
-        mkdir --parents crates/jellyswarrm-proxy/static
-        cp --recursive ui/dist/. crates/jellyswarrm-proxy/static/
+      run: just ui
 
     - name: Verify Docker Compose
       run: docker compose version
 
     - name: Run integration test
-      env:
-        JELLYSWARRM_SKIP_UI: "1"
       run: just integration-test
 
     - name: Run containerized browser integration test
-      env:
-        JELLYSWARRM_SKIP_UI: "1"
       run: just browser-integration-test-docker
 
     - name: Upload browser videos, traces and failure screenshots
