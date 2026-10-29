@@ -2,7 +2,7 @@
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MediaScopeKind {
+pub(crate) enum MediaScopeKind {
     Configured,
     Automatic,
     Aggregate,
@@ -14,14 +14,14 @@ pub enum MediaScopeKind {
 /// Shared codec for persisted catalog keys and viewer-scoped reverse lookups.
 /// Keep the existing key layouts so published aggregate IDs remain usable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MediaCatalogScope<'a> {
-    pub kind: MediaScopeKind,
-    pub viewer: &'a str,
-    pub resource_id: &'a str,
+pub(crate) struct MediaCatalogScope<'a> {
+    pub(crate) kind: MediaScopeKind,
+    pub(crate) viewer: &'a str,
+    pub(crate) resource_id: &'a str,
 }
 
 impl<'a> MediaCatalogScope<'a> {
-    pub fn parse(key: &'a str) -> Option<Self> {
+    pub(crate) fn parse(key: &'a str) -> Option<Self> {
         let mut parts = key.split(':');
         let kind = match parts.next()? {
             "configured" => MediaScopeKind::Configured,
@@ -59,7 +59,7 @@ impl<'a> MediaCatalogScope<'a> {
         })
     }
 
-    pub fn belongs_to(key: &str, viewer: &str) -> bool {
+    pub(crate) fn belongs_to(key: &str, viewer: &str) -> bool {
         MediaCatalogScope::parse(key).is_some_and(|scope| scope.viewer == viewer)
     }
 }

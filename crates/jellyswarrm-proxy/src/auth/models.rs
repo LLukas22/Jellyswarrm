@@ -8,13 +8,13 @@ use crate::servers::id::ServerId;
 
 use super::credentials::LocalCredential;
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct User {
-    pub id: UserId,
-    pub virtual_key: String,
-    pub original_username: String,
-    pub local_credential: LocalCredential,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub updated_at: chrono::DateTime<chrono::Utc>,
+pub(crate) struct User {
+    pub(crate) id: UserId,
+    pub(crate) virtual_key: String,
+    pub(crate) original_username: String,
+    pub(crate) local_credential: LocalCredential,
+    pub(crate) created_at: chrono::DateTime<chrono::Utc>,
+    pub(crate) updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl<'r> FromRow<'r, SqliteRow> for User {
@@ -34,16 +34,22 @@ impl<'r> FromRow<'r, SqliteRow> for User {
 }
 
 #[derive(Clone, FromRow)]
-pub struct VirtualUserApiKey {
-    pub id: i64,
-    pub user_id: UserId,
-    pub app_name: String,
-    pub access_token: String,
-    pub created_at: chrono::DateTime<chrono::Utc>,
+pub(crate) struct VirtualUserApiKey {
+    #[expect(dead_code, reason = "Retain the decoded API-key row identity")]
+    pub(crate) id: i64,
+    #[expect(dead_code, reason = "Retain the decoded API-key owner")]
+    pub(crate) user_id: UserId,
+    pub(crate) app_name: String,
+    pub(crate) access_token: String,
+    #[expect(
+        dead_code,
+        reason = "Retain timestamp decoding for the stored API-key row"
+    )]
+    pub(crate) created_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Debug, Clone)]
-pub enum MappingAuth {
+pub(crate) enum MappingAuth {
     Password {
         username: String,
         password: EncryptedPassword,
@@ -56,14 +62,14 @@ pub enum MappingAuth {
 }
 
 impl MappingAuth {
-    pub fn label(&self) -> &'static str {
+    pub(crate) fn label(&self) -> &'static str {
         match self {
             Self::Password { .. } => "Username and password",
             Self::QuickConnect { .. } => "Quick Connect",
         }
     }
 
-    pub fn username(&self) -> &str {
+    pub(crate) fn username(&self) -> &str {
         match self {
             Self::Password { username, .. } | Self::QuickConnect { username, .. } => username,
         }
@@ -71,19 +77,31 @@ impl MappingAuth {
 }
 
 #[derive(Debug, Clone)]
-pub struct ServerMapping {
-    pub id: i64,
-    pub user_id: UserId,
-    pub server_id: ServerId,
-    pub server_url: String,
-    pub auth: MappingAuth,
-    pub credential_format: CredentialFormat,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub updated_at: chrono::DateTime<chrono::Utc>,
+pub(crate) struct ServerMapping {
+    pub(crate) id: i64,
+    pub(crate) user_id: UserId,
+    pub(crate) server_id: ServerId,
+    #[expect(
+        dead_code,
+        reason = "Retain the decoded canonical URL in mapping diagnostics"
+    )]
+    pub(crate) server_url: String,
+    pub(crate) auth: MappingAuth,
+    pub(crate) credential_format: CredentialFormat,
+    #[expect(
+        dead_code,
+        reason = "Retain timestamp decoding and mapping diagnostics"
+    )]
+    pub(crate) created_at: chrono::DateTime<chrono::Utc>,
+    #[expect(
+        dead_code,
+        reason = "Retain timestamp decoding and mapping diagnostics"
+    )]
+    pub(crate) updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CredentialFormat {
+pub(crate) enum CredentialFormat {
     Legacy,
     SessionV1,
 }
@@ -144,17 +162,21 @@ impl<'r> sqlx::FromRow<'r, SqliteRow> for ServerMapping {
 }
 
 #[derive(Debug, Clone)]
-pub struct AuthorizationSession {
-    pub id: i64,
-    pub user_id: UserId,
-    pub mapping_id: i64, // FK to server_mappings.id enabling cascade delete
-    pub server_url: String,
-    pub device: Device,
-    pub jellyfin_token: String,
-    pub original_user_id: String,
-    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub updated_at: chrono::DateTime<chrono::Utc>,
+pub(crate) struct AuthorizationSession {
+    pub(crate) id: i64,
+    pub(crate) user_id: UserId,
+    pub(crate) mapping_id: i64, // FK to server_mappings.id enabling cascade delete
+    pub(crate) server_url: String,
+    pub(crate) device: Device,
+    pub(crate) jellyfin_token: String,
+    pub(crate) original_user_id: String,
+    #[expect(
+        dead_code,
+        reason = "Expiry is filtered in SQL; retain decoding of persisted expiry"
+    )]
+    pub(crate) expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub(crate) created_at: chrono::DateTime<chrono::Utc>,
+    pub(crate) updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl<'r> sqlx::FromRow<'r, SqliteRow> for AuthorizationSession {
@@ -180,14 +202,14 @@ impl<'r> sqlx::FromRow<'r, SqliteRow> for AuthorizationSession {
 }
 
 #[derive(Debug, Clone)]
-pub struct Device {
-    pub client: String,
-    pub device: String,
-    pub device_id: String,
-    pub version: String,
+pub(crate) struct Device {
+    pub(crate) client: String,
+    pub(crate) device: String,
+    pub(crate) device_id: String,
+    pub(crate) version: String,
 }
 
-pub fn normalize_device(value: &str) -> String {
+pub(crate) fn normalize_device(value: &str) -> String {
     value.trim().to_lowercase().replace("+", " ")
 }
 
@@ -197,7 +219,7 @@ pub(super) fn is_android_tv_client(client: &str) -> bool {
 
 impl Device {
     /// Check if this device matches another device based on client and either device_id or device name or version
-    pub fn matches(&self, other: &Device) -> bool {
+    pub(crate) fn matches(&self, other: &Device) -> bool {
         let self_client = normalize_device(&self.client);
         let other_client = normalize_device(&other.client);
 
@@ -251,7 +273,7 @@ impl Device {
             && device_id != "n/a"
     }
 
-    pub fn from_useragent(user_agent: &str) -> Self {
+    pub(crate) fn from_useragent(user_agent: &str) -> Self {
         let (client, version, device) = Self::parse_user_agent(user_agent);
 
         Device {
@@ -335,7 +357,7 @@ impl Device {
 
 impl AuthorizationSession {
     /// Create an Authorization struct from this session
-    pub fn to_authorization(&self) -> Authorization {
+    pub(crate) fn to_authorization(&self) -> Authorization {
         Authorization {
             client: self.device.client.clone(),
             device: self.device.device.clone(),

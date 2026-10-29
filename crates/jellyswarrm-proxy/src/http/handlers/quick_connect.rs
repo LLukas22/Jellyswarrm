@@ -19,21 +19,21 @@ pub(crate) use crate::auth::quick_connect::QuickConnectStorage;
 
 #[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-pub struct AuthorizeQuery {
-    pub code: String,
-    pub user_id: Option<UserId>,
+pub(crate) struct AuthorizeQuery {
+    pub(crate) code: String,
+    pub(crate) user_id: Option<UserId>,
 }
 
 #[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-pub struct ConnectQuery {
-    pub secret: String,
+pub(crate) struct ConnectQuery {
+    pub(crate) secret: String,
 }
 
 #[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-pub struct QuickConnectAuthenticateRequest {
-    pub secret: String,
+pub(crate) struct QuickConnectAuthenticateRequest {
+    pub(crate) secret: String,
 }
 
 fn parse_authorization_from_headers(headers: &HeaderMap) -> Option<Authorization> {
@@ -127,11 +127,11 @@ fn effective_quick_connect_authorization(
     authorization
 }
 
-pub async fn handle_quick_connect_enabled() -> Result<Json<bool>, StatusCode> {
+pub(crate) async fn handle_quick_connect_enabled() -> Result<Json<bool>, StatusCode> {
     Ok(Json(true))
 }
 
-pub async fn handle_quick_connect_initiate(
+pub(crate) async fn handle_quick_connect_initiate(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<QuickConnectSession>, StatusCode> {
@@ -149,7 +149,7 @@ pub async fn handle_quick_connect_initiate(
     Ok(Json(session))
 }
 
-pub async fn handle_quick_connect_authorize(
+pub(crate) async fn handle_quick_connect_authorize(
     Query(params): Query<AuthorizeQuery>,
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -243,7 +243,7 @@ fn extract_virtual_token(headers: &HeaderMap) -> Option<String> {
     None
 }
 
-pub async fn handle_quick_connect_connect(
+pub(crate) async fn handle_quick_connect_connect(
     Query(params): Query<ConnectQuery>,
     State(state): State<AppState>,
 ) -> Result<Json<QuickConnectSession>, StatusCode> {
@@ -254,7 +254,7 @@ pub async fn handle_quick_connect_connect(
     }
 }
 
-pub async fn handle_authenticate_with_quick_connect(
+pub(crate) async fn handle_authenticate_with_quick_connect(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(request): Json<QuickConnectAuthenticateRequest>,
@@ -308,9 +308,10 @@ mod tests {
     }
     use crate::{
         auth::service::{Device, UserAuthorizationService},
-        config::{AppConfig, MediaStreamingMode, MIGRATOR},
+        config::{AppConfig, MediaStreamingMode},
         media::storage::MediaStorageService,
         models::{AuthenticateResponse, SessionInfo, SyncPlayUserAccessType, User, UserPolicy},
+        persistence::MIGRATOR,
         playback::sessions::SessionStorage,
         processors::ProxyProcessors,
         servers::storage::ServerStorageService,
@@ -332,6 +333,7 @@ mod tests {
         let media_storage = MediaStorageService::new(pool.clone());
 
         let data_context = DataContext {
+            paths: crate::config::Paths::temporary(),
             user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
             server_storage: Arc::new(server_storage.clone()),
             media_storage: Arc::new(media_storage.clone()),

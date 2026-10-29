@@ -15,7 +15,7 @@ use std::{collections::HashMap, str::FromStr};
 use tracing::{debug, info};
 use uuid::Uuid;
 
-pub async fn create_group(
+pub(crate) async fn create_group(
     State(state): State<AppState>,
     session: SessionContext,
     Json(payload): Json<NewGroupRequestDto>,
@@ -28,7 +28,7 @@ pub async fn create_group(
         .ok_or(StatusCode::CONFLICT)
 }
 
-pub async fn join_group(
+pub(crate) async fn join_group(
     State(state): State<AppState>,
     session: SessionContext,
     Json(payload): Json<JoinGroupRequestDto>,
@@ -45,7 +45,7 @@ pub async fn join_group(
     })
 }
 
-pub async fn leave_group(
+pub(crate) async fn leave_group(
     State(state): State<AppState>,
     session: SessionContext,
 ) -> Result<StatusCode, StatusCode> {
@@ -54,7 +54,7 @@ pub async fn leave_group(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn list_groups(
+pub(crate) async fn list_groups(
     State(state): State<AppState>,
     session: SessionContext,
 ) -> Result<Json<Vec<GroupInfoDto>>, StatusCode> {
@@ -66,7 +66,7 @@ pub async fn list_groups(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
-pub async fn get_group(
+pub(crate) async fn get_group(
     State(state): State<AppState>,
     session: SessionContext,
     Path(group_id): Path<String>,
@@ -83,7 +83,7 @@ pub async fn get_group(
     Ok((StatusCode::OK, Json(group)).into_response())
 }
 
-pub async fn set_new_queue(
+pub(crate) async fn set_new_queue(
     State(state): State<AppState>,
     session: SessionContext,
     Json(payload): Json<PlayRequestDto>,
@@ -96,7 +96,7 @@ pub async fn set_new_queue(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn queue_items(
+pub(crate) async fn queue_items(
     State(state): State<AppState>,
     session: SessionContext,
     Json(payload): Json<QueueRequestDto>,
@@ -109,7 +109,7 @@ pub async fn queue_items(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn set_playlist_item(
+pub(crate) async fn set_playlist_item(
     State(state): State<AppState>,
     session: SessionContext,
     Json(payload): Json<SetPlaylistItemRequestDto>,
@@ -117,7 +117,7 @@ pub async fn set_playlist_item(
     state.syncplay.set_playlist_item(&session, payload).await;
     Ok(StatusCode::NO_CONTENT)
 }
-pub async fn remove_from_playlist(
+pub(crate) async fn remove_from_playlist(
     State(state): State<AppState>,
     session: SessionContext,
     Json(payload): Json<RemoveFromPlaylistRequestDto>,
@@ -125,7 +125,7 @@ pub async fn remove_from_playlist(
     state.syncplay.remove_from_playlist(&session, payload).await;
     Ok(StatusCode::NO_CONTENT)
 }
-pub async fn move_playlist_item(
+pub(crate) async fn move_playlist_item(
     State(state): State<AppState>,
     session: SessionContext,
     Json(payload): Json<MovePlaylistItemRequestDto>,
@@ -133,28 +133,28 @@ pub async fn move_playlist_item(
     state.syncplay.move_playlist_item(&session, payload).await;
     Ok(StatusCode::NO_CONTENT)
 }
-pub async fn unpause(
+pub(crate) async fn unpause(
     State(state): State<AppState>,
     session: SessionContext,
 ) -> Result<StatusCode, StatusCode> {
     state.syncplay.unpause(&session).await;
     Ok(StatusCode::NO_CONTENT)
 }
-pub async fn pause(
+pub(crate) async fn pause(
     State(state): State<AppState>,
     session: SessionContext,
 ) -> Result<StatusCode, StatusCode> {
     state.syncplay.pause(&session).await;
     Ok(StatusCode::NO_CONTENT)
 }
-pub async fn stop(
+pub(crate) async fn stop(
     State(state): State<AppState>,
     session: SessionContext,
 ) -> Result<StatusCode, StatusCode> {
     state.syncplay.stop(&session).await;
     Ok(StatusCode::NO_CONTENT)
 }
-pub async fn seek(
+pub(crate) async fn seek(
     State(state): State<AppState>,
     session: SessionContext,
     Json(payload): Json<SeekRequestDto>,
@@ -162,7 +162,7 @@ pub async fn seek(
     state.syncplay.seek(&session, payload).await;
     Ok(StatusCode::NO_CONTENT)
 }
-pub async fn buffering(
+pub(crate) async fn buffering(
     State(state): State<AppState>,
     session: SessionContext,
     Json(payload): Json<BufferRequestDto>,
@@ -170,7 +170,7 @@ pub async fn buffering(
     state.syncplay.buffering(&session, payload).await;
     Ok(StatusCode::NO_CONTENT)
 }
-pub async fn ready(
+pub(crate) async fn ready(
     State(state): State<AppState>,
     session: SessionContext,
     Json(payload): Json<BufferRequestDto>,
@@ -178,7 +178,7 @@ pub async fn ready(
     state.syncplay.ready(&session, payload).await;
     Ok(StatusCode::NO_CONTENT)
 }
-pub async fn set_ignore_wait(
+pub(crate) async fn set_ignore_wait(
     State(state): State<AppState>,
     session: SessionContext,
     Json(payload): Json<IgnoreWaitRequestDto>,
@@ -186,7 +186,7 @@ pub async fn set_ignore_wait(
     state.syncplay.set_ignore_wait(&session, payload).await;
     Ok(StatusCode::NO_CONTENT)
 }
-pub async fn next_item(
+pub(crate) async fn next_item(
     State(state): State<AppState>,
     session: SessionContext,
     payload: Option<Json<NextItemRequestDto>>,
@@ -200,7 +200,7 @@ pub async fn next_item(
         .await;
     Ok(StatusCode::NO_CONTENT)
 }
-pub async fn previous_item(
+pub(crate) async fn previous_item(
     State(state): State<AppState>,
     session: SessionContext,
     payload: Option<Json<NextItemRequestDto>>,
@@ -214,7 +214,7 @@ pub async fn previous_item(
         .await;
     Ok(StatusCode::NO_CONTENT)
 }
-pub async fn set_repeat_mode(
+pub(crate) async fn set_repeat_mode(
     State(state): State<AppState>,
     session: SessionContext,
     Json(payload): Json<SetRepeatModeRequestDto>,
@@ -222,7 +222,7 @@ pub async fn set_repeat_mode(
     state.syncplay.set_repeat_mode(&session, payload).await;
     Ok(StatusCode::NO_CONTENT)
 }
-pub async fn set_shuffle_mode(
+pub(crate) async fn set_shuffle_mode(
     State(state): State<AppState>,
     session: SessionContext,
     Json(payload): Json<SetShuffleModeRequestDto>,
@@ -230,7 +230,7 @@ pub async fn set_shuffle_mode(
     state.syncplay.set_shuffle_mode(&session, payload).await;
     Ok(StatusCode::NO_CONTENT)
 }
-pub async fn ping(
+pub(crate) async fn ping(
     State(state): State<AppState>,
     session: SessionContext,
     Json(payload): Json<PingRequestDto>,
@@ -239,7 +239,7 @@ pub async fn ping(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn get_utc_time(
+pub(crate) async fn get_utc_time(
     Query(_query): Query<HashMap<String, String>>,
 ) -> Result<Json<UtcTimeResponse>, StatusCode> {
     let request_reception_time = Utc::now();

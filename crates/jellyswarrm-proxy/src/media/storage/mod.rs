@@ -6,7 +6,9 @@ use std::{
 };
 
 use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
-use tracing::{debug, error, info, trace};
+use tracing::{debug, trace};
+#[cfg(test)]
+use tracing::{error, info};
 use uuid::Uuid;
 
 #[cfg(test)]
@@ -39,7 +41,7 @@ struct ActiveMediaMember {
 }
 
 #[derive(Debug, Clone)]
-pub struct MediaStorageService {
+pub(crate) struct MediaStorageService {
     pool: SqlitePool,
     original_mapping_cache: Cache<String, MediaMapping>,
     media_version_reconciliation: Arc<tokio::sync::Mutex<()>>,
@@ -50,7 +52,7 @@ mod mappings;
 mod versions;
 
 impl MediaStorageService {
-    pub fn new(pool: SqlitePool) -> Self {
+    pub(crate) fn new(pool: SqlitePool) -> Self {
         Self {
             pool,
             original_mapping_cache: Cache::builder()

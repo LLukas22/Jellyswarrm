@@ -26,7 +26,7 @@ struct LegacyMediaMapping {
     server_url: String,
 }
 
-pub async fn canonicalize_legacy_server_identity(pool: &SqlitePool) -> Result<()> {
+pub(crate) async fn canonicalize_legacy_server_identity(pool: &SqlitePool) -> Result<()> {
     let mut tx = pool.begin().await?;
 
     if !table_exists(&mut tx, "servers").await? {

@@ -11,13 +11,14 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tower_sessions_sqlx_store::SqliteStore;
 use tracing::{error, info, warn};
 pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let _logging_guard = super::logging::initialize();
+    let paths = crate::config::Paths::resolve()?;
+    let _logging_guard = super::logging::initialize(&paths);
 
-    let loaded_config = crate::config::load_config()?;
+    let loaded_config = crate::config::load_config(&paths)?;
     let startup = loaded_config.startup_config();
     info!("Loaded configuration: {:?}", loaded_config);
 
-    let pool = crate::persistence::database::connect().await?;
+    let pool = crate::persistence::database::connect(&paths).await?;
 
     // Create reqwest client for regular API traffic.
     let reqwest_client = reqwest::Client::builder()
@@ -135,6 +136,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let data_context = DataContext {
+        paths: paths.clone(),
         user_authorization: Arc::new(user_authorization.clone()),
         server_storage: Arc::new(server_storage.clone()),
         media_storage: Arc::new(media_storage.clone()),

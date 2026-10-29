@@ -10,7 +10,7 @@ pub(crate) async fn playback_session_action(
 }
 
 #[cfg(test)]
-pub async fn apply_to_request(
+pub(crate) async fn apply_to_request(
     request: &mut reqwest::Request,
     server: &Server,
     session: &Option<AuthorizationSession>,

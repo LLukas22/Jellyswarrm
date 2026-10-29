@@ -30,14 +30,14 @@ impl From<&str> for ConnectSecret {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct QuickConnectSession {
-    pub authenticated: bool,
-    pub secret: String,
-    pub code: String,
-    pub device_id: String,
-    pub device_name: String,
-    pub app_name: String,
-    pub app_version: String,
-    pub date_added: DateTime<Utc>,
+    pub(crate) authenticated: bool,
+    pub(crate) secret: String,
+    pub(crate) code: String,
+    pub(crate) device_id: String,
+    pub(crate) device_name: String,
+    pub(crate) app_name: String,
+    pub(crate) app_version: String,
+    pub(crate) date_added: DateTime<Utc>,
 }
 
 enum Stage {
@@ -80,7 +80,8 @@ impl Sessions {
 }
 
 #[derive(Clone, Default)]
-pub struct QuickConnectStorage {
+pub(crate) struct QuickConnectStorage {
+    pub(crate) pending: super::pending_connects::PendingConnects,
     sessions: Arc<Mutex<Sessions>>,
 }
 

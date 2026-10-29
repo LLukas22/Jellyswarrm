@@ -13,7 +13,7 @@ fn utc_now() -> DateTime<Utc> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
-pub enum GroupStateType {
+pub(crate) enum GroupStateType {
     Idle,
     Waiting,
     Paused,
@@ -22,14 +22,14 @@ pub enum GroupStateType {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
-pub enum GroupQueueMode {
+pub(crate) enum GroupQueueMode {
     Queue,
     QueueNext,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
-pub enum GroupShuffleMode {
+pub(crate) enum GroupShuffleMode {
     Sorted,
     Shuffle,
 }
@@ -37,7 +37,7 @@ pub enum GroupShuffleMode {
 #[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
-pub enum GroupRepeatMode {
+pub(crate) enum GroupRepeatMode {
     RepeatOne,
     RepeatAll,
     RepeatNone,
@@ -83,68 +83,68 @@ pub(crate) enum PlayQueueUpdateReason {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "PascalCase")]
-pub struct GroupInfoDto {
-    pub group_id: Uuid,
-    pub group_name: String,
-    pub state: GroupStateType,
-    pub participants: Vec<String>,
-    pub last_updated_at: DateTime<Utc>,
+pub(crate) struct GroupInfoDto {
+    pub(crate) group_id: Uuid,
+    pub(crate) group_name: String,
+    pub(crate) state: GroupStateType,
+    pub(crate) participants: Vec<String>,
+    pub(crate) last_updated_at: DateTime<Utc>,
 }
 
 #[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-pub struct NewGroupRequestDto {
-    pub group_name: String,
+pub(crate) struct NewGroupRequestDto {
+    pub(crate) group_name: String,
 }
 
 #[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-pub struct JoinGroupRequestDto {
-    pub group_id: Uuid,
+pub(crate) struct JoinGroupRequestDto {
+    pub(crate) group_id: Uuid,
 }
 
 #[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-pub struct PlayRequestDto {
+pub(crate) struct PlayRequestDto {
     #[serde(default)]
-    pub playing_queue: Vec<String>,
+    pub(crate) playing_queue: Vec<String>,
     #[serde(default)]
-    pub playing_item_position: usize,
+    pub(crate) playing_item_position: usize,
     #[serde(default)]
-    pub start_position_ticks: i64,
+    pub(crate) start_position_ticks: i64,
 }
 
 #[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-pub struct SetPlaylistItemRequestDto {
-    pub playlist_item_id: Uuid,
+pub(crate) struct SetPlaylistItemRequestDto {
+    pub(crate) playlist_item_id: Uuid,
 }
 
 #[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-pub struct RemoveFromPlaylistRequestDto {
+pub(crate) struct RemoveFromPlaylistRequestDto {
     #[serde(default)]
-    pub playlist_item_ids: Vec<Uuid>,
+    pub(crate) playlist_item_ids: Vec<Uuid>,
     #[serde(default)]
-    pub clear_playlist: bool,
+    pub(crate) clear_playlist: bool,
     #[serde(default)]
-    pub clear_playing_item: bool,
+    pub(crate) clear_playing_item: bool,
 }
 
 #[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-pub struct MovePlaylistItemRequestDto {
-    pub playlist_item_id: Uuid,
-    pub new_index: usize,
+pub(crate) struct MovePlaylistItemRequestDto {
+    pub(crate) playlist_item_id: Uuid,
+    pub(crate) new_index: usize,
 }
 
 #[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-pub struct QueueRequestDto {
+pub(crate) struct QueueRequestDto {
     #[serde(default)]
-    pub item_ids: Vec<String>,
+    pub(crate) item_ids: Vec<String>,
     #[serde(default = "default_queue_mode")]
-    pub mode: GroupQueueMode,
+    pub(crate) mode: GroupQueueMode,
 }
 
 fn default_queue_mode() -> GroupQueueMode {
@@ -153,60 +153,60 @@ fn default_queue_mode() -> GroupQueueMode {
 
 #[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-pub struct SeekRequestDto {
+pub(crate) struct SeekRequestDto {
     #[serde(default)]
-    pub position_ticks: i64,
+    pub(crate) position_ticks: i64,
 }
 
 #[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-pub struct BufferRequestDto {
+pub(crate) struct BufferRequestDto {
     #[serde(default = "utc_now")]
-    pub when: DateTime<Utc>,
+    pub(crate) when: DateTime<Utc>,
     #[serde(default)]
-    pub position_ticks: i64,
+    pub(crate) position_ticks: i64,
     #[serde(default)]
-    pub is_playing: bool,
-    pub playlist_item_id: Option<Uuid>,
+    pub(crate) is_playing: bool,
+    pub(crate) playlist_item_id: Option<Uuid>,
 }
 
 #[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-pub struct IgnoreWaitRequestDto {
+pub(crate) struct IgnoreWaitRequestDto {
     #[serde(default)]
-    pub ignore_wait: bool,
+    pub(crate) ignore_wait: bool,
 }
 
 #[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-pub struct NextItemRequestDto {
-    pub playlist_item_id: Option<Uuid>,
+pub(crate) struct NextItemRequestDto {
+    pub(crate) playlist_item_id: Option<Uuid>,
 }
 
 #[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-pub struct SetRepeatModeRequestDto {
-    pub mode: GroupRepeatMode,
+pub(crate) struct SetRepeatModeRequestDto {
+    pub(crate) mode: GroupRepeatMode,
 }
 
 #[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-pub struct SetShuffleModeRequestDto {
-    pub mode: GroupShuffleMode,
+pub(crate) struct SetShuffleModeRequestDto {
+    pub(crate) mode: GroupShuffleMode,
 }
 
 #[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
-pub struct PingRequestDto {
+pub(crate) struct PingRequestDto {
     #[serde(default)]
-    pub ping: f64,
+    pub(crate) ping: f64,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "PascalCase")]
-pub struct UtcTimeResponse {
-    pub request_reception_time: DateTime<Utc>,
-    pub response_transmission_time: DateTime<Utc>,
+pub(crate) struct UtcTimeResponse {
+    pub(crate) request_reception_time: DateTime<Utc>,
+    pub(crate) response_transmission_time: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone)]
@@ -223,8 +223,8 @@ pub(crate) struct GroupParticipant {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct SyncPlayQueueItem {
-    pub item_id: String,
-    pub playlist_item_id: Uuid,
+    pub(crate) item_id: String,
+    pub(crate) playlist_item_id: Uuid,
 }
 
 #[derive(Debug, Clone)]
@@ -253,7 +253,7 @@ impl SyncPlayGroup {
             .collect()
     }
 
-    pub fn to_group_info(&self) -> GroupInfoDto {
+    pub(crate) fn to_group_info(&self) -> GroupInfoDto {
         let mut unique_names = HashSet::new();
         let mut participants = Vec::new();
         for p in self.participants.values() {
@@ -270,7 +270,7 @@ impl SyncPlayGroup {
         }
     }
 
-    pub fn current_playlist_item_id(&self) -> Uuid {
+    pub(crate) fn current_playlist_item_id(&self) -> Uuid {
         self.playing_item_index
             .and_then(|idx| self.playlist.get(idx))
             .map(|item| item.playlist_item_id)
@@ -286,7 +286,7 @@ impl SyncPlayGroup {
         self.position_base_when = when;
     }
 
-    pub fn estimated_position_ticks(&self, now: DateTime<Utc>) -> i64 {
+    pub(crate) fn estimated_position_ticks(&self, now: DateTime<Utc>) -> i64 {
         let base = self
             .pending_position_ticks
             .unwrap_or(self.start_position_ticks)
@@ -312,7 +312,7 @@ impl SyncPlayGroup {
     }
 
     /// Collect all media item IDs from the playlist.
-    pub fn queue_item_ids(&self) -> Vec<String> {
+    pub(crate) fn queue_item_ids(&self) -> Vec<String> {
         self.playlist
             .iter()
             .map(|item| item.item_id.clone())
@@ -329,7 +329,7 @@ impl SyncPlayGroup {
     }
 
     /// Calculate the playback delay based on the highest participant ping.
-    pub fn ping_delay_ms(&self) -> i64 {
+    pub(crate) fn ping_delay_ms(&self) -> i64 {
         let highest = self
             .participants
             .values()
@@ -344,41 +344,41 @@ impl SyncPlayGroup {
 #[derive(Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub(super) struct GroupUpdateEnvelope {
-    pub group_id: Uuid,
+    pub(crate) group_id: Uuid,
     #[serde(rename = "Type")]
-    pub update_type: GroupUpdateType,
-    pub data: Value,
+    pub(crate) update_type: GroupUpdateType,
+    pub(crate) data: Value,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub(super) struct SendCommandEnvelope {
-    pub group_id: Uuid,
-    pub playlist_item_id: Uuid,
-    pub when: DateTime<Utc>,
-    pub position_ticks: Option<i64>,
-    pub command: SendCommandType,
-    pub emitted_at: DateTime<Utc>,
+    pub(crate) group_id: Uuid,
+    pub(crate) playlist_item_id: Uuid,
+    pub(crate) when: DateTime<Utc>,
+    pub(crate) position_ticks: Option<i64>,
+    pub(crate) command: SendCommandType,
+    pub(crate) emitted_at: DateTime<Utc>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub(super) struct GroupStateUpdate {
-    pub state: GroupStateType,
-    pub reason: &'static str,
+    pub(crate) state: GroupStateType,
+    pub(crate) reason: &'static str,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub(super) struct PlayQueueUpdate {
-    pub reason: PlayQueueUpdateReason,
-    pub last_update: DateTime<Utc>,
-    pub playlist: Vec<SyncPlayQueueItem>,
-    pub playing_item_index: i64,
-    pub start_position_ticks: i64,
-    pub is_playing: bool,
-    pub shuffle_mode: GroupShuffleMode,
-    pub repeat_mode: GroupRepeatMode,
+    pub(crate) reason: PlayQueueUpdateReason,
+    pub(crate) last_update: DateTime<Utc>,
+    pub(crate) playlist: Vec<SyncPlayQueueItem>,
+    pub(crate) playing_item_index: i64,
+    pub(crate) start_position_ticks: i64,
+    pub(crate) is_playing: bool,
+    pub(crate) shuffle_mode: GroupShuffleMode,
+    pub(crate) repeat_mode: GroupRepeatMode,
 }
 
 #[cfg(test)]

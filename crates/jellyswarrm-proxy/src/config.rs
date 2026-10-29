@@ -1,15 +1,17 @@
-//! Load and validate process configuration, persisted secrets, and SQL migrations.
+//! Load and validate process configuration and persisted secrets at explicit paths.
+mod paths;
 pub(crate) mod service;
+pub(crate) use paths::Paths;
 mod snapshots;
 use serde::{Deserialize, Serialize};
 pub(crate) use snapshots::SettingsView;
 pub(crate) use snapshots::StartupConfig;
-use sqlx::migrate::Migrator;
+
 use std::fmt;
 use std::fs;
 use std::io::Write;
 use std::ops::Deref;
-use std::path::PathBuf;
+
 use std::sync::LazyLock;
 use tower_sessions::cookie::Key;
 use tracing::info;
@@ -22,7 +24,7 @@ use base64::prelude::*;
 use crate::auth::encryption::Password;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum MediaStreamingMode {
+pub(crate) enum MediaStreamingMode {
     Redirect,
     Proxy,
 }
@@ -48,33 +50,11 @@ impl fmt::Display for MediaStreamingMode {
     }
 }
 
-pub static MIGRATOR: Migrator = sqlx::migrate!();
-
-pub static CLIENT_INFO: LazyLock<ClientInfo> = LazyLock::new(|| ClientInfo {
+pub(crate) static CLIENT_INFO: LazyLock<ClientInfo> = LazyLock::new(|| ClientInfo {
     client: "Jellyswarrm Proxy".to_string(),
     device: "Server".to_string(),
     device_id: "jellyswarrm-proxy".to_string(),
     version: env!("CARGO_PKG_VERSION").to_string(),
-});
-
-// Lazily-resolved data directory shared across the application.
-// Priority: env var JELLYSWARRM_DATA_DIR, else "./data" relative to current working dir.
-// The directory is created on first access.
-pub static DATA_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
-    let base = std::env::var("JELLYSWARRM_DATA_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            std::env::current_dir()
-                .map(|path| path.join("data"))
-                .unwrap_or_else(|e| {
-                    eprintln!("Failed to resolve current directory, using ./data: {e}");
-                    PathBuf::from("data")
-                })
-        });
-    if let Err(e) = std::fs::create_dir_all(&base) {
-        eprintln!("Failed to create data directory {base:?}: {e}");
-    }
-    base
 });
 
 fn default_server_id() -> String {
@@ -146,7 +126,7 @@ mod base64_serde {
     use serde::de::Error as DeError;
     use serde::{Deserializer, Serializer};
 
-    pub fn serialize<S>(bytes: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error>
+    pub(crate) fn serialize<S>(bytes: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
@@ -154,7 +134,7 @@ mod base64_serde {
         serializer.serialize_str(&s)
     }
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -241,87 +221,87 @@ define_fallback_deserializer!(
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct PreconfiguredServer {
-    pub url: String,
-    pub name: String,
-    pub priority: i32,
+pub(crate) struct PreconfiguredServer {
+    pub(crate) url: String,
+    pub(crate) name: String,
+    pub(crate) priority: i32,
     #[serde(default = "default_media_streaming_mode")]
-    pub media_streaming_mode: MediaStreamingMode,
+    pub(crate) media_streaming_mode: MediaStreamingMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct DebugUser {
-    pub username: String,
-    pub password: Password,
+pub(crate) struct DebugUser {
+    pub(crate) username: String,
+    pub(crate) password: Password,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
-pub struct AppConfig {
+pub(crate) struct AppConfig {
     #[serde(default = "default_server_id")]
-    pub server_id: String,
+    pub(crate) server_id: String,
     #[serde(default = "default_public_address")]
-    pub public_address: String,
+    pub(crate) public_address: String,
     #[serde(default = "default_server_name")]
-    pub server_name: String,
+    pub(crate) server_name: String,
     #[serde(default = "default_host", deserialize_with = "deserialize_host")]
-    pub host: String,
+    pub(crate) host: String,
     #[serde(default = "default_port", deserialize_with = "deserialize_port")]
-    pub port: u16,
+    pub(crate) port: u16,
     #[serde(
         default = "default_include_server_name_in_media",
         deserialize_with = "deserialize_include_server_name_in_media"
     )]
-    pub include_server_name_in_media: bool,
+    pub(crate) include_server_name_in_media: bool,
 
     #[serde(default = "default_username")]
-    pub username: String,
+    pub(crate) username: String,
     #[serde(default = "default_password")]
-    pub password: Password,
+    pub(crate) password: Password,
 
     #[serde(default)]
-    pub preconfigured_servers: Vec<PreconfiguredServer>,
+    pub(crate) preconfigured_servers: Vec<PreconfiguredServer>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub debug_user: Option<DebugUser>,
+    pub(crate) debug_user: Option<DebugUser>,
 
     #[serde(default = "default_session_key", with = "base64_serde")]
-    pub session_key: Vec<u8>,
+    pub(crate) session_key: Vec<u8>,
 
     #[serde(default = "default_timeout", deserialize_with = "deserialize_timeout")]
-    pub timeout: u64, // in seconds
+    pub(crate) timeout: u64, // in seconds
 
     #[serde(
         default = "default_ui_route",
         deserialize_with = "deserialize_ui_route"
     )]
-    pub ui_route: UrlSegment,
+    pub(crate) ui_route: UrlSegment,
 
     #[serde(default)]
-    pub url_prefix: Option<UrlSegment>,
+    pub(crate) url_prefix: Option<UrlSegment>,
 
     #[serde(
         default = "default_media_streaming_mode",
         deserialize_with = "deserialize_media_streaming_mode"
     )]
-    pub media_streaming_mode: MediaStreamingMode,
+    pub(crate) media_streaming_mode: MediaStreamingMode,
 
     #[serde(
         default = "default_server_background_check_interval_secs",
         deserialize_with = "deserialize_server_background_check_interval_secs"
     )]
-    pub server_background_check_interval_secs: u64,
+    pub(crate) server_background_check_interval_secs: u64,
 
     #[serde(
         default = "default_auto_create_users_on_login",
         deserialize_with = "deserialize_auto_create_users_on_login"
     )]
-    pub auto_create_users_on_login: bool,
+    pub(crate) auto_create_users_on_login: bool,
 
     #[serde(
         default = "default_merge_libraries",
         deserialize_with = "deserialize_merge_libraries"
     )]
-    pub merge_libraries: bool,
+    pub(crate) merge_libraries: bool,
 
     /// Collapse duplicate movies and shows across backend servers into a
     /// single item whose media sources carry one entry per server.
@@ -332,7 +312,7 @@ pub struct AppConfig {
         deserialize_with = "deserialize_deduplicate_media",
         alias = "deduplicate_movies"
     )]
-    pub deduplicate_media: bool,
+    pub(crate) deduplicate_media: bool,
 }
 
 impl Default for AppConfig {
@@ -396,37 +376,30 @@ impl fmt::Debug for AppConfig {
     }
 }
 
-pub const DEFAULT_CONFIG_FILENAME: &str = "jellyswarrm.toml";
-
-fn config_path() -> PathBuf {
-    DATA_DIR.join(DEFAULT_CONFIG_FILENAME)
-}
-
-#[allow(dead_code)]
-fn dev_config_path() -> PathBuf {
-    const DEV_CONFIG_FILENAME: &str = "jellyswarrm.dev.toml";
-    DATA_DIR.join(DEV_CONFIG_FILENAME)
-}
+pub(crate) const DEFAULT_CONFIG_FILENAME: &str = "jellyswarrm.toml";
 
 /// Load configuration from known files and environment. Falls back to defaults.
-pub fn load_config() -> anyhow::Result<AppConfig> {
-    load_config_with_session_key(None)
+pub(crate) fn load_config(paths: &Paths) -> anyhow::Result<AppConfig> {
+    load_config_with_session_key(paths, None)
 }
 
 /// On hot reload, preserve the key held by the active session middleware if
 /// an old config omitted it. Do not persist a different key and orphan data.
-pub fn load_config_with_session_key(existing_key: Option<&[u8]>) -> anyhow::Result<AppConfig> {
-    let path = config_path();
+pub(crate) fn load_config_with_session_key(
+    paths: &Paths,
+    existing_key: Option<&[u8]>,
+) -> anyhow::Result<AppConfig> {
+    let path = &paths.config;
     let builder = if cfg!(debug_assertions) {
         // In debug mode, also load a dev-specific config file if it exists.
         info!(
             "Loading config from {path:?} and dev config from {dev_config_path:?}",
-            dev_config_path = dev_config_path()
+            dev_config_path = paths.dev_config
         );
         config::Config::builder()
             .add_source(config::File::with_name(path.to_string_lossy().as_ref()).required(false))
             .add_source(
-                config::File::with_name(dev_config_path().to_string_lossy().as_ref())
+                config::File::with_name(paths.dev_config.to_string_lossy().as_ref())
                     .required(false),
             )
             .add_source(config::Environment::with_prefix("JELLYSWARRM").separator("_"))
@@ -457,16 +430,16 @@ pub fn load_config_with_session_key(existing_key: Option<&[u8]>) -> anyhow::Resu
     // An older config may omit this field. Never use a freshly generated
     // key for durable credentials without persisting it first.
     if !path.exists() || !had_session_key {
-        save_config(&config)?;
+        save_config(paths, &config)?;
     }
 
     Ok(config)
 }
 
 /// Persist configuration to the first existing file or the primary default file.
-pub fn save_config(cfg: &AppConfig) -> std::io::Result<()> {
+pub(crate) fn save_config(paths: &Paths, cfg: &AppConfig) -> std::io::Result<()> {
     let toml_str = toml::to_string_pretty(cfg).map_err(std::io::Error::other)?;
-    let path = config_path();
+    let path = &paths.config;
     let temp_path = path.with_extension(format!("toml.tmp-{}", std::process::id()));
     let write_result = (|| {
         let mut options = fs::OpenOptions::new();
@@ -484,7 +457,7 @@ pub fn save_config(cfg: &AppConfig) -> std::io::Result<()> {
         }
         file.write_all(toml_str.as_bytes())?;
         file.sync_all()?;
-        fs::rename(&temp_path, &path)
+        fs::rename(&temp_path, path)
     })();
     if let Err(error) = write_result {
         let _ = fs::remove_file(temp_path);
@@ -496,10 +469,10 @@ pub fn save_config(cfg: &AppConfig) -> std::io::Result<()> {
 
 // A normalized URL path segment (no leading/trailing slashes, non-empty).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct UrlSegment(String);
+pub(crate) struct UrlSegment(String);
 
 impl UrlSegment {
-    pub fn new<S: Into<String>>(s: S) -> Result<Self, &'static str> {
+    pub(crate) fn new<S: Into<String>>(s: S) -> Result<Self, &'static str> {
         let t = s
             .into()
             .trim_start_matches('/')
@@ -510,10 +483,6 @@ impl UrlSegment {
         } else {
             Ok(UrlSegment(t))
         }
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
     }
 }
 

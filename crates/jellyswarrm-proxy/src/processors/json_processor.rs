@@ -8,29 +8,29 @@ use std::collections::HashMap;
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Context provided to the processor/analyzer for each JSON field
-pub struct JsonProcessingContext {
-    pub path: String,
-    pub key: String,
-    pub parent_path: String,
-    pub depth: usize,
-    pub is_array_item: bool,
-    pub array_index: Option<usize>,
-    pub parent_object: Option<Map<String, Value>>, // Access to parent for conditional logic
+pub(crate) struct JsonProcessingContext {
+    pub(crate) path: String,
+    pub(crate) key: String,
+    pub(crate) parent_path: String,
+    pub(crate) depth: usize,
+    pub(crate) is_array_item: bool,
+    pub(crate) array_index: Option<usize>,
+    pub(crate) parent_object: Option<Map<String, Value>>, // Access to parent for conditional logic
 }
 
 #[derive(Debug)]
 /// Result of processing a single JSON field
-pub struct JsonProcessingResult {
-    pub new_key: Option<String>,
-    pub remove: bool,
-    pub add_fields: HashMap<String, Value>,
-    pub modified: bool,
-    pub errors: Vec<anyhow::Error>,
+pub(crate) struct JsonProcessingResult {
+    pub(crate) new_key: Option<String>,
+    pub(crate) remove: bool,
+    pub(crate) add_fields: HashMap<String, Value>,
+    pub(crate) modified: bool,
+    pub(crate) errors: Vec<anyhow::Error>,
 }
 
 #[allow(dead_code)]
 impl JsonProcessingResult {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             new_key: None,
             remove: false,
@@ -40,35 +40,35 @@ impl JsonProcessingResult {
         }
     }
 
-    pub fn rename_key(mut self, new_key: String) -> Self {
+    pub(crate) fn rename_key(mut self, new_key: String) -> Self {
         self.new_key = Some(new_key);
         self.modified = true;
         self
     }
 
-    pub fn remove_field(mut self) -> Self {
+    pub(crate) fn remove_field(mut self) -> Self {
         self.remove = true;
         self.modified = true;
         self
     }
 
-    pub fn add_field(mut self, key: String, value: Value) -> Self {
+    pub(crate) fn add_field(mut self, key: String, value: Value) -> Self {
         self.add_fields.insert(key, value);
         self.modified = true;
         self
     }
 
-    pub fn mark_modified(mut self) -> Self {
+    pub(crate) fn mark_modified(mut self) -> Self {
         self.modified = true;
         self
     }
 
-    pub fn add_error(mut self, error: String) -> Self {
+    pub(crate) fn add_error(mut self, error: String) -> Self {
         self.errors.push(anyhow::Error::msg(error));
         self
     }
 
-    pub fn add_cause(mut self, error: anyhow::Error) -> Self {
+    pub(crate) fn add_cause(mut self, error: anyhow::Error) -> Self {
         self.errors.push(error);
         self
     }
@@ -77,8 +77,8 @@ impl JsonProcessingResult {
 /// Retain every field failure. The standard error chain exposes the first
 /// cause; callers needing all failures can inspect `causes` without parsing text.
 #[derive(Debug)]
-pub struct ProcessingErrors {
-    pub causes: Vec<anyhow::Error>,
+pub(crate) struct ProcessingErrors {
+    pub(crate) causes: Vec<anyhow::Error>,
 }
 
 impl std::fmt::Display for ProcessingErrors {
@@ -121,12 +121,12 @@ impl ProcessingErrors {
 }
 
 #[derive(Debug)]
-pub struct ProcessingResponse {
-    pub was_modified: bool,
+pub(crate) struct ProcessingResponse {
+    pub(crate) was_modified: bool,
 }
 
 #[async_trait]
-pub trait JsonProcessor<C>: Send + Sync {
+pub(crate) trait JsonProcessor<C>: Send + Sync {
     async fn process(
         &self,
         json_context: &JsonProcessingContext,
@@ -137,7 +137,7 @@ pub trait JsonProcessor<C>: Send + Sync {
 
 #[async_trait]
 /// Read-only counterpart of JsonProcessor, under the same traversal contract.
-pub trait JsonAnalyzer<C, A>: Send + Sync {
+pub(crate) trait JsonAnalyzer<C, A>: Send + Sync {
     async fn analyze(
         &self,
         json_context: &JsonProcessingContext,
@@ -361,7 +361,7 @@ where
 /// whose depth is the array element's depth. Parent context is the nearest
 /// original Type/CollectionType projection, never partially transformed data.
 /// Errors retain their causes; mutation may be partial on failure/cancellation.
-pub async fn process_json<P, C>(
+pub(crate) async fn process_json<P, C>(
     data: &mut Value,
     processor: &P,
     context: &C,
@@ -537,7 +537,7 @@ where
 }
 
 /// Analyze a JSON Value using the provided JsonAnalyzer and context, accumulates the results into the provided accumulator.
-pub async fn analyze_json<A, C, Acc>(
+pub(crate) async fn analyze_json<A, C, Acc>(
     data: &Value,
     analyzer: &A,
     context: &C,

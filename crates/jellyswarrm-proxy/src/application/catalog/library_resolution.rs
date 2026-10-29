@@ -41,9 +41,9 @@ pub(crate) struct CatalogFetchTarget {
 /// optional. Only virtual identities enter the request builder.
 #[derive(Debug)]
 pub(crate) struct ResolvedCatalogParent {
-    pub requested: VirtualItemId,
-    pub member: VirtualItemId,
-    pub backend: BackendItemId,
+    pub(crate) requested: VirtualItemId,
+    pub(crate) member: VirtualItemId,
+    pub(crate) backend: BackendItemId,
 }
 
 pub(super) fn unavailable_source_count(

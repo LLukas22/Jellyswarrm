@@ -1,10 +1,10 @@
 //! Initialize console and rotating-file tracing; callers retain the worker guard until shutdown.
-use crate::config::DATA_DIR;
+use crate::config::Paths;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
-pub(super) fn initialize() -> tracing_appender::non_blocking::WorkerGuard {
+pub(super) fn initialize(paths: &Paths) -> tracing_appender::non_blocking::WorkerGuard {
     // Initialize file logging
 
-    let file_appender = tracing_appender::rolling::daily(DATA_DIR.join("logs"), "jellyswarm.log");
+    let file_appender = tracing_appender::rolling::daily(&paths.logs, "jellyswarm.log");
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
     // Create an environment filter with configurable log level

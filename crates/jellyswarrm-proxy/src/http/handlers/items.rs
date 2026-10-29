@@ -13,7 +13,7 @@ use crate::{
 #[path = "../../unit_tests/item_handlers.rs"]
 mod tests;
 
-pub async fn get_item(
+pub(crate) async fn get_item(
     State(state): State<AppState>,
     OperationInput(preprocessed): OperationInput,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
@@ -23,7 +23,7 @@ pub async fn get_item(
         .map_err(|error| crate::http::handlers::pipeline_error::detail_status(&error))
 }
 
-pub async fn get_items(
+pub(crate) async fn get_items(
     State(state): State<AppState>,
     OperationInput(preprocessed): OperationInput,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
@@ -33,7 +33,7 @@ pub async fn get_items(
         .map_err(|error| crate::http::handlers::pipeline_error::detail_status(&error))
 }
 
-pub async fn get_items_list(
+pub(crate) async fn get_items_list(
     State(state): State<AppState>,
     OperationInput(preprocessed): OperationInput,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
@@ -44,7 +44,7 @@ pub async fn get_items_list(
 }
 
 #[axum::debug_handler]
-pub async fn post_playback_info(
+pub(crate) async fn post_playback_info(
     State(state): State<AppState>,
     PlaybackInput(input): PlaybackInput,
 ) -> Result<Json<PlaybackResponse>, StatusCode> {

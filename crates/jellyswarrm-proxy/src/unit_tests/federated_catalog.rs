@@ -9,9 +9,10 @@ use crate::application::catalog::library_resolution::ResolvedCatalogParent;
 use crate::{
     auth::quick_connect::QuickConnectStorage,
     auth::service::{AuthorizationSession, Device, UserAuthorizationService},
-    config::{AppConfig, MIGRATOR},
+    config::AppConfig,
     libraries::service::{VirtualLibraryAccessScope, VirtualLibraryService},
     media::storage::MediaStorageService,
+    persistence::MIGRATOR,
     playback::sessions::SessionStorage,
     processors::ProxyProcessors,
     servers::storage::{Server, ServerStorageService},
@@ -38,6 +39,7 @@ pub(crate) async fn setup() -> (
     let server_storage = ServerStorageService::new(pool.clone());
     let media_storage = MediaStorageService::new(pool.clone());
     let context = DataContext {
+        paths: crate::config::Paths::temporary(),
         user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
         server_storage: Arc::new(server_storage.clone()),
         media_storage: Arc::new(media_storage.clone()),

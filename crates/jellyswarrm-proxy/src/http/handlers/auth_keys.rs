@@ -6,27 +6,27 @@ use tracing::error;
 use crate::{http::extractors::RequirePrimaryUser, AppState};
 
 #[derive(Deserialize)]
-pub struct CreateApiKeyQuery {
+pub(crate) struct CreateApiKeyQuery {
     #[serde(rename = "App")]
     app: String,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "PascalCase")]
-pub struct ApiKeyItem {
+pub(crate) struct ApiKeyItem {
     app_name: String,
     access_token: String,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "PascalCase")]
-pub struct ApiKeyList {
+pub(crate) struct ApiKeyList {
     items: Vec<ApiKeyItem>,
     total_record_count: usize,
     start_index: usize,
 }
 
-pub async fn create_api_key(
+pub(crate) async fn create_api_key(
     State(state): State<AppState>,
     Query(query): Query<CreateApiKeyQuery>,
     RequirePrimaryUser(user): RequirePrimaryUser,
@@ -47,7 +47,7 @@ pub async fn create_api_key(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn list_api_keys(
+pub(crate) async fn list_api_keys(
     State(state): State<AppState>,
     RequirePrimaryUser(user): RequirePrimaryUser,
 ) -> Result<Json<ApiKeyList>, StatusCode> {

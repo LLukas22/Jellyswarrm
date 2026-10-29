@@ -9,4 +9,4 @@ mod runtime;
 mod shutdown;
 mod state;
 pub(crate) use bootstrap::run;
-pub use state::{AppState, DataContext};
+pub(crate) use state::{AppState, DataContext};

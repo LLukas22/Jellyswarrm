@@ -40,8 +40,8 @@ pub(crate) enum ResolutionError {
 
 /// A selected backend and exact item identity, before any URL/credential rewriting.
 pub(crate) struct ResolvedMediaTarget {
-    pub backend: AuthorizedTarget,
-    pub member: Option<MediaMapping>,
+    pub(crate) backend: AuthorizedTarget,
+    pub(crate) member: Option<MediaMapping>,
 }
 
 #[derive(Clone, Copy)]
@@ -52,16 +52,16 @@ pub(crate) enum SelectionPolicy {
 }
 
 pub(crate) struct PlaybackSelectionPlan {
-    pub target: ResolvedMediaTarget,
-    pub reason: SelectionReason,
+    pub(crate) target: ResolvedMediaTarget,
+    pub(crate) reason: SelectionReason,
 }
 
 /// Normalized identity intent; endpoint query/body precedence is resolved by
 /// the caller before selection, while a known binding retains its authority.
 pub(crate) struct PlaybackIntent<'a> {
-    pub item: &'a str,
-    pub source: Option<&'a str>,
-    pub binding: Option<&'a PlaybackSession>,
+    pub(crate) item: &'a str,
+    pub(crate) source: Option<&'a str>,
+    pub(crate) binding: Option<&'a PlaybackSession>,
 }
 
 #[derive(Debug)]
@@ -72,14 +72,14 @@ pub(crate) enum SelectionReason {
 }
 
 pub(crate) struct MediaTargetResolver<'a> {
-    pub media: &'a MediaStorageService,
+    pub(crate) media: &'a MediaStorageService,
 }
 
 impl MediaTargetResolver<'_> {
     /// Shared explicit/session/default precedence. Availability is deliberately
     /// endpoint-specific: direct initial targets retain routing policy, resources
     /// and known bindings require a healthy owner, negotiation checks selections.
-    pub async fn plan(
+    pub(crate) async fn plan(
         &self,
         context: &RequestContext,
         initial: AuthorizedTarget,
@@ -181,7 +181,7 @@ impl MediaTargetResolver<'_> {
 
     /// All identity-compatible owners, before availability filtering. Reports
     /// require one available owner; default negotiation uses its ordered policy.
-    pub async fn owners(
+    pub(crate) async fn owners(
         &self,
         item: &str,
         source: Option<&str>,
@@ -233,7 +233,7 @@ impl MediaTargetResolver<'_> {
     }
 
     /// Resolve an exact member without conflating upstream source and item IDs.
-    pub async fn member(
+    pub(crate) async fn member(
         &self,
         item: &str,
         source: Option<&str>,
@@ -289,7 +289,7 @@ impl MediaTargetResolver<'_> {
     /// Explicit known sessions must match a registered item alias and viewer.
     /// Unknown sessions remain unbound; delivery may bind only after success.
     /// Ambiguous implicit matches deliberately return None (mapping fallback).
-    pub async fn session(
+    pub(crate) async fn session(
         &self,
         sessions: &SessionStorage,
         item: &str,

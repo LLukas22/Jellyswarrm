@@ -2,7 +2,7 @@
 use super::*;
 
 impl MediaStorageService {
-    pub async fn begin_media_reconciliation(
+    pub(crate) async fn begin_media_reconciliation(
         &self,
     ) -> Result<ReconciliationGeneration, sqlx::Error> {
         let (generation,): (i64,) = sqlx::query_as(
@@ -14,7 +14,7 @@ impl MediaStorageService {
     }
 
     #[cfg(test)]
-    pub async fn reconcile_media_catalog(
+    pub(crate) async fn reconcile_media_catalog(
         &self,
         scope_key: &str,
         generation: ReconciliationGeneration,
@@ -34,7 +34,7 @@ impl MediaStorageService {
     /// A complete source scan replaces sightings only for the types covered by
     /// the query. Per-type watermarks also fence older full or filtered scans.
     #[cfg(test)]
-    pub async fn reconcile_media_catalog_with_coverage(
+    pub(crate) async fn reconcile_media_catalog_with_coverage(
         &self,
         scope_key: &str,
         generation: ReconciliationGeneration,
@@ -52,7 +52,7 @@ impl MediaStorageService {
         .await
     }
 
-    pub async fn apply_inventory_update(
+    pub(crate) async fn apply_inventory_update(
         &self,
         scope_key: &str,
         generation: ReconciliationGeneration,

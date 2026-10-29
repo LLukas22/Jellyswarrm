@@ -6,7 +6,7 @@ use crate::{application::playback::resources, http::extractors::PlaybackInput, A
 
 mod delivery;
 
-pub async fn get_video_resource(
+pub(crate) async fn get_video_resource(
     State(state): State<AppState>,
     PlaybackInput(operation): PlaybackInput,
 ) -> Result<Response, StatusCode> {
@@ -17,7 +17,7 @@ pub async fn get_video_resource(
     )
 }
 
-pub async fn get_stream(
+pub(crate) async fn get_stream(
     State(state): State<AppState>,
     PlaybackInput(operation): PlaybackInput,
 ) -> Result<Response, StatusCode> {

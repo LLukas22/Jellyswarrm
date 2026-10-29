@@ -8,11 +8,11 @@ use super::AppConfig;
 /// Settings supported by the administrative edit operation. Listener, routing,
 /// transport and encryption settings are intentionally not part of this input.
 pub(crate) struct SettingsUpdate {
-    pub public_address: String,
-    pub server_name: String,
-    pub include_server_name_in_media: bool,
-    pub auto_create_users_on_login: bool,
-    pub deduplicate_media: bool,
+    pub(crate) public_address: String,
+    pub(crate) server_name: String,
+    pub(crate) include_server_name_in_media: bool,
+    pub(crate) auto_create_users_on_login: bool,
+    pub(crate) deduplicate_media: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -35,27 +35,32 @@ pub(crate) enum ConfigurationError {
 pub(crate) struct ConfigurationService {
     current: Arc<RwLock<AppConfig>>,
     writers: Arc<tokio::sync::Mutex<()>>,
+    paths: super::Paths,
 }
 
 impl ConfigurationService {
-    pub(crate) fn new(current: Arc<RwLock<AppConfig>>) -> Self {
+    pub(crate) fn new(current: Arc<RwLock<AppConfig>>, paths: super::Paths) -> Self {
         Self {
             current,
+            paths,
             writers: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
     pub(crate) async fn save(&self, update: SettingsUpdate) -> Result<(), ConfigurationError> {
-        self.save_with(update, super::save_config).await
+        let paths = self.paths.clone();
+        self.save_with(update, move |config| super::save_config(&paths, config))
+            .await
     }
 
     pub(crate) async fn set_library_merging(
         &self,
         enabled: bool,
     ) -> Result<(), ConfigurationError> {
+        let paths = self.paths.clone();
         self.persist_update(
             move |next| next.merge_libraries = enabled,
-            super::save_config,
+            move |config| super::save_config(&paths, config),
         )
         .await
     }
@@ -104,7 +109,8 @@ impl ConfigurationService {
     }
 
     pub(crate) async fn reload(&self) -> Result<(), ConfigurationError> {
-        self.reload_with(|key| super::load_config_with_session_key(Some(key)))
+        let paths = self.paths.clone();
+        self.reload_with(move |key| super::load_config_with_session_key(&paths, Some(key)))
             .await
     }
 
@@ -156,7 +162,7 @@ mod tests {
         };
         let current = Arc::new(RwLock::new(initial.clone()));
         let view = crate::config::SettingsView::new(current.clone());
-        let service = ConfigurationService::new(current.clone());
+        let service = ConfigurationService::new(current.clone(), super::super::Paths::temporary());
         let persisted = Arc::new(std::sync::Mutex::new(Vec::new()));
         let (entered, waiting) = tokio::sync::oneshot::channel();
         let (release, gate) = std::sync::mpsc::channel();
@@ -229,7 +235,7 @@ mod tests {
     async fn cancelled_slow_reload_keeps_readers_live_and_serializes_with_save() {
         let initial = AppConfig::default();
         let current = Arc::new(RwLock::new(initial.clone()));
-        let service = ConfigurationService::new(current.clone());
+        let service = ConfigurationService::new(current.clone(), super::super::Paths::temporary());
         let (entered, waiting) = tokio::sync::oneshot::channel();
         let (release, gate) = std::sync::mpsc::channel();
         let reload = {
@@ -282,7 +288,7 @@ mod tests {
     async fn failed_save_does_not_publish_and_success_preserves_startup_settings() {
         let initial = AppConfig::default();
         let current = Arc::new(RwLock::new(initial.clone()));
-        let service = ConfigurationService::new(current.clone());
+        let service = ConfigurationService::new(current.clone(), super::super::Paths::temporary());
         let result = service
             .save_with(update(), |_| Err(std::io::Error::other("disk full")))
             .await;
@@ -305,7 +311,10 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_update_does_not_attempt_persistence() {
-        let service = ConfigurationService::new(Arc::new(RwLock::new(AppConfig::default())));
+        let service = ConfigurationService::new(
+            Arc::new(RwLock::new(AppConfig::default())),
+            super::super::Paths::temporary(),
+        );
         let mut invalid = update();
         invalid.server_name = "  ".into();
         assert!(matches!(
@@ -320,7 +329,7 @@ mod tests {
     async fn reload_rejects_startup_changes_without_partially_publishing_runtime_settings() {
         let initial = AppConfig::default();
         let current = Arc::new(RwLock::new(initial.clone()));
-        let service = ConfigurationService::new(current.clone());
+        let service = ConfigurationService::new(current.clone(), super::super::Paths::temporary());
         let proposed = initial.clone();
         let result = service
             .reload_with(move |_| {
@@ -339,7 +348,7 @@ mod tests {
     async fn failed_reload_and_key_rotation_preserve_the_active_snapshot() {
         let initial = AppConfig::default();
         let current = Arc::new(RwLock::new(initial.clone()));
-        let service = ConfigurationService::new(current.clone());
+        let service = ConfigurationService::new(current.clone(), super::super::Paths::temporary());
         assert!(matches!(
             service.reload_with(|_| anyhow::bail!("invalid file")).await,
             Err(ConfigurationError::Load(_))

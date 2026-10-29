@@ -1,6 +1,6 @@
 //! Virtual library discovery, grouping, assignment, access-scope, and refresh-generation regressions.
 use super::*;
-use crate::{config::MIGRATOR, servers::storage::ServerStorageService};
+use crate::{persistence::MIGRATOR, servers::storage::ServerStorageService};
 
 #[tokio::test]
 async fn viewer_inventories_are_isolated_and_fence_delayed_refreshes() {

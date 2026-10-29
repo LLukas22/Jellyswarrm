@@ -13,7 +13,7 @@ pub(crate) enum CatalogQueryKind {
 }
 
 pub(crate) struct CatalogQuery {
-    pub kind: CatalogQueryKind,
+    pub(crate) kind: CatalogQueryKind,
     pub(super) pagination: Pagination,
     // Retain every extension and duplicate value, rather than reconstructing a
     // query from the fields understood by this proxy.
@@ -22,7 +22,7 @@ pub(crate) struct CatalogQuery {
 }
 
 impl CatalogQuery {
-    pub fn from_url(url: &url::Url) -> Self {
+    pub(crate) fn from_url(url: &url::Url) -> Self {
         let path = url.path().trim_end_matches('/').to_ascii_lowercase();
         let kind = if path.ends_with("/views")
             || path.ends_with("/userviews")
@@ -85,7 +85,7 @@ impl CatalogQuery {
         }
     }
 
-    pub fn identity(&self) -> String {
+    pub(crate) fn identity(&self) -> String {
         let query = url::form_urlencoded::Serializer::new(String::new())
             .extend_pairs(&self.parameters)
             .finish();
@@ -102,7 +102,7 @@ impl CatalogQuery {
         base
     }
 
-    pub fn policy(&self, materialize: bool) -> CatalogRequestPolicy {
+    pub(crate) fn policy(&self, materialize: bool) -> CatalogRequestPolicy {
         let url =
             self.to_url(url::Url::parse("http://catalog.invalid").expect("static policy origin"));
         let mut policy = CatalogRequestPolicy::from_url(&url);

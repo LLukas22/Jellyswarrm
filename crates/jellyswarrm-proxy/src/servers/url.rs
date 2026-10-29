@@ -5,19 +5,19 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use url::Url;
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct ServerUrl {
+pub(crate) struct ServerUrl {
     url: Url,
     canonical: String,
 }
 
 impl ServerUrl {
-    pub fn parse(input: &str) -> Result<Self, url::ParseError> {
+    pub(crate) fn parse(input: &str) -> Result<Self, url::ParseError> {
         let canonical = Self::canonicalize(input)?;
         let url = Url::parse(&canonical)?;
         Ok(Self { url, canonical })
     }
 
-    pub fn canonicalize(input: &str) -> Result<String, url::ParseError> {
+    pub(crate) fn canonicalize(input: &str) -> Result<String, url::ParseError> {
         let mut url = Url::parse(input.trim())?;
         url.set_fragment(None);
         url.set_query(None);
@@ -30,11 +30,11 @@ impl ServerUrl {
         Ok(canonical)
     }
 
-    pub fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         &self.canonical
     }
 
-    pub fn as_url(&self) -> &Url {
+    pub(crate) fn as_url(&self) -> &Url {
         &self.url
     }
 }

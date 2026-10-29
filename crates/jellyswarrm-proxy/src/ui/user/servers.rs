@@ -1,24 +1,19 @@
 //! Manage the current user’s backend server mappings and authentication methods.
+use crate::auth::pending_connects::PendingConnect;
 use askama::Template;
 use axum::{
     extract::{Path, State},
     response::{Html, IntoResponse},
     Form, Json,
 };
-use chrono::{DateTime, Duration, Utc};
 use hyper::{header::HeaderValue, StatusCode};
 use jellyfin_api::JellyfinClient;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::HashMap,
-    sync::{LazyLock, Mutex},
-};
 use tracing::{error, info};
 use uuid::Uuid;
 
 use crate::{
     auth::encryption::Password,
-    auth::user_id::UserId,
     servers::id::ServerId,
     servers::storage::Server,
     ui::{auth::AuthenticatedUser, user::common::authenticate_user_on_server},
@@ -27,37 +22,27 @@ use crate::{
 
 #[derive(Template)]
 #[template(path = "user/user_server_list.html")]
-pub struct UserServerListTemplate {
-    pub username: String,
-    pub servers: Vec<Server>,
-    pub unmapped_servers: Vec<Server>,
-    pub ui_route: String,
+pub(crate) struct UserServerListTemplate {
+    pub(crate) username: String,
+    pub(crate) servers: Vec<Server>,
+    pub(crate) unmapped_servers: Vec<Server>,
+    pub(crate) ui_route: String,
 }
 
 #[derive(Deserialize)]
-pub struct ConnectServerForm {
-    pub username: String,
-    pub password: Password,
+pub(crate) struct ConnectServerForm {
+    pub(crate) username: String,
+    pub(crate) password: Password,
 }
-
-struct PendingConnect {
-    user_id: UserId,
-    server_id: ServerId,
-    secret: String,
-    created_at: DateTime<Utc>,
-}
-
-static PENDING_CONNECTS: LazyLock<Mutex<HashMap<String, PendingConnect>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Serialize)]
-pub struct QuickConnectProgress {
+pub(crate) struct QuickConnectProgress {
     status: &'static str,
     code: Option<String>,
     request_id: Option<String>,
 }
 
-pub async fn initiate_quick_connect(
+pub(crate) async fn initiate_quick_connect(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Path(server_id): Path<ServerId>,
@@ -98,17 +83,18 @@ pub async fn initiate_quick_connect(
         .await
         .map_err(|_| StatusCode::BAD_GATEWAY)?;
     let request_id = Uuid::new_v4().to_string();
-    let mut pending = PENDING_CONNECTS.lock().unwrap_or_else(|e| e.into_inner());
-    pending.retain(|_, p| Utc::now() - p.created_at < Duration::minutes(10));
-    pending.insert(
-        request_id.clone(),
-        PendingConnect {
-            user_id: user.id,
-            server_id,
-            secret: result.secret,
-            created_at: Utc::now(),
-        },
-    );
+    state
+        .quick_connect
+        .pending
+        .insert(
+            request_id.clone(),
+            PendingConnect {
+                user_id: user.id,
+                server_id,
+                secret: result.secret,
+            },
+        )
+        .await;
     Ok(Json(QuickConnectProgress {
         status: "pending",
         code: Some(result.code),
@@ -116,20 +102,17 @@ pub async fn initiate_quick_connect(
     }))
 }
 
-pub async fn finish_quick_connect(
+pub(crate) async fn finish_quick_connect(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Path((server_id, request_id)): Path<(ServerId, String)>,
 ) -> Result<Json<QuickConnectProgress>, StatusCode> {
-    let secret = {
-        let mut pending = PENDING_CONNECTS.lock().unwrap_or_else(|e| e.into_inner());
-        pending.retain(|_, p| Utc::now() - p.created_at < Duration::minutes(10));
-        let p = pending.get(&request_id).ok_or(StatusCode::NOT_FOUND)?;
-        if p.user_id != user.id || p.server_id != server_id {
-            return Err(StatusCode::NOT_FOUND);
-        }
-        p.secret.clone()
-    };
+    let secret = state
+        .quick_connect
+        .pending
+        .get(&request_id, &user.id, server_id)
+        .await
+        .ok_or(StatusCode::NOT_FOUND)?;
     let server = state
         .server_storage
         .get_server_by_id(server_id)
@@ -157,12 +140,7 @@ pub async fn finish_quick_connect(
     }
     // The request ID is one-use, including when redemption fails. Retrying requires
     // a new approval rather than racing two token writes for the same mapping.
-    if PENDING_CONNECTS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(&request_id)
-        .is_none()
-    {
+    if !state.quick_connect.pending.claim(&request_id).await {
         return Err(StatusCode::NOT_FOUND);
     }
     let auth: jellyfin_api::models::AuthResponse = client
@@ -198,13 +176,13 @@ pub async fn finish_quick_connect(
 
 #[derive(Template)]
 #[template(path = "user/user_server_status.html")]
-pub struct UserServerStatusTemplate {
-    pub username: Option<String>,
-    pub error_message: Option<String>,
-    pub server_version: String,
+pub(crate) struct UserServerStatusTemplate {
+    pub(crate) username: Option<String>,
+    pub(crate) error_message: Option<String>,
+    pub(crate) server_version: String,
 }
 
-pub async fn get_user_servers(
+pub(crate) async fn get_user_servers(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> impl IntoResponse {
@@ -245,7 +223,7 @@ pub async fn get_user_servers(
     }
 }
 
-pub async fn connect_server(
+pub(crate) async fn connect_server(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Path(server_id): Path<ServerId>,
@@ -345,7 +323,7 @@ pub async fn connect_server(
     }
 }
 
-pub async fn delete_server_mapping(
+pub(crate) async fn delete_server_mapping(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Path(server_id): Path<ServerId>,
@@ -403,7 +381,7 @@ pub async fn delete_server_mapping(
     StatusCode::NOT_FOUND.into_response()
 }
 
-pub async fn check_user_server_status(
+pub(crate) async fn check_user_server_status(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Path(server_id): Path<ServerId>,

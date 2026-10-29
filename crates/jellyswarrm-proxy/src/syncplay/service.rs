@@ -204,7 +204,7 @@ impl SyncPlayState {
 }
 
 #[derive(Clone, Default)]
-pub struct SyncPlayService {
+pub(crate) struct SyncPlayService {
     state: Arc<RwLock<SyncPlayState>>,
 }
 
@@ -218,11 +218,11 @@ impl SyncPlayGroup {
 
 impl SyncPlayService {
     #[cfg(test)]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::with_transport(ConnectionHub::default())
     }
 
-    pub fn with_transport(transport: ConnectionHub) -> Self {
+    pub(crate) fn with_transport(transport: ConnectionHub) -> Self {
         Self {
             state: Arc::new(RwLock::new(SyncPlayState {
                 transport,

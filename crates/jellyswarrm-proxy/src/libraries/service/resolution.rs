@@ -2,7 +2,7 @@
 use super::*;
 
 impl VirtualLibraryService {
-    pub async fn library_grouping(
+    pub(crate) async fn library_grouping(
         &self,
         automatic_merging_enabled: bool,
     ) -> Result<LibraryGrouping, sqlx::Error> {
@@ -17,7 +17,7 @@ impl VirtualLibraryService {
         }
     }
 
-    pub async fn resolve(
+    pub(crate) async fn resolve(
         &self,
         virtual_id: &str,
         access_scope: Option<&VirtualLibraryAccessScope>,
@@ -60,7 +60,7 @@ impl VirtualLibraryService {
         Ok(VirtualLibraryResolution::Unknown)
     }
 
-    pub async fn routing_target(
+    pub(crate) async fn routing_target(
         &self,
         virtual_id: &str,
         access_scope: Option<&VirtualLibraryAccessScope>,

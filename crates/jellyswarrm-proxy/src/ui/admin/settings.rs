@@ -16,23 +16,23 @@ use crate::{
 
 #[derive(Template)]
 #[template(path = "admin/settings.html")]
-pub struct SettingsPageTemplate {
-    pub ui_route: String,
+pub(crate) struct SettingsPageTemplate {
+    pub(crate) ui_route: String,
 }
 
 #[derive(Template)]
 #[template(path = "admin/settings_form.html")]
-pub struct SettingsFormTemplate {
-    pub server_id: String,
-    pub public_address: String,
-    pub server_name: String,
-    pub include_server_name_in_media: bool,
-    pub auto_create_users_on_login: bool,
-    pub deduplicate_media: bool,
-    pub ui_route: String,
+pub(crate) struct SettingsFormTemplate {
+    pub(crate) server_id: String,
+    pub(crate) public_address: String,
+    pub(crate) server_name: String,
+    pub(crate) include_server_name_in_media: bool,
+    pub(crate) auto_create_users_on_login: bool,
+    pub(crate) deduplicate_media: bool,
+    pub(crate) ui_route: String,
 }
 
-pub async fn settings_page(State(state): State<AppState>) -> impl IntoResponse {
+pub(crate) async fn settings_page(State(state): State<AppState>) -> impl IntoResponse {
     let template = SettingsPageTemplate {
         ui_route: state.get_ui_route().await,
     };
@@ -45,7 +45,7 @@ pub async fn settings_page(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
-pub async fn settings_form(State(state): State<AppState>) -> impl IntoResponse {
+pub(crate) async fn settings_form(State(state): State<AppState>) -> impl IntoResponse {
     let cfg = state.config.read().await.clone();
     let form = SettingsFormTemplate {
         server_id: cfg.server_id,
@@ -66,19 +66,22 @@ pub async fn settings_form(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 #[derive(Deserialize)]
-pub struct SaveForm {
-    pub public_address: String,
-    pub server_name: String,
+pub(crate) struct SaveForm {
+    pub(crate) public_address: String,
+    pub(crate) server_name: String,
     // When the checkbox is unchecked the field is absent; default to false.
     #[serde(default)]
-    pub include_server_name_in_media: bool,
+    pub(crate) include_server_name_in_media: bool,
     #[serde(default)]
-    pub auto_create_users_on_login: bool,
+    pub(crate) auto_create_users_on_login: bool,
     #[serde(default)]
-    pub deduplicate_media: bool,
+    pub(crate) deduplicate_media: bool,
 }
 
-pub async fn save_settings(State(state): State<AppState>, Form(form): Form<SaveForm>) -> Response {
+pub(crate) async fn save_settings(
+    State(state): State<AppState>,
+    Form(form): Form<SaveForm>,
+) -> Response {
     let save_result = state
         .configuration_service()
         .save(SettingsUpdate {
@@ -104,7 +107,7 @@ pub async fn save_settings(State(state): State<AppState>, Form(form): Form<SaveF
     settings_form(State(state)).await.into_response()
 }
 
-pub async fn reload_config(State(state): State<AppState>) -> impl IntoResponse {
+pub(crate) async fn reload_config(State(state): State<AppState>) -> impl IntoResponse {
     match state.configuration_service().reload().await {
         Ok(()) => Html("<div class=\"alert\">Configuration reloaded</div>").into_response(),
         Err(ConfigurationError::SessionKeyChanged) => {

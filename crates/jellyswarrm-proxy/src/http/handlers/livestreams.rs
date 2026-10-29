@@ -13,7 +13,7 @@ use crate::{
     AppState,
 };
 
-pub async fn post_live_stream_action(
+pub(crate) async fn post_live_stream_action(
     State(state): State<AppState>,
     LiveInput(preprocessed): LiveInput,
 ) -> Result<Response, StatusCode> {
@@ -26,7 +26,7 @@ pub async fn post_live_stream_action(
     })
 }
 
-pub async fn post_livestream_open(
+pub(crate) async fn post_livestream_open(
     State(state): State<AppState>,
     LiveInput(preprocessed): LiveInput,
 ) -> Result<Json<Value>, StatusCode> {

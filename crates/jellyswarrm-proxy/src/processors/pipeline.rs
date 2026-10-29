@@ -9,15 +9,15 @@ use super::{
 use crate::upstream::jellyfin::json::set_json_body_typed;
 use crate::{application, processors, DataContext};
 use tracing::{debug, error};
-pub struct ProxyProcessors {
-    pub request_processor: RequestProcessor,
-    pub request_analyzer: RequestAnalyzer,
-    pub response_processor: ResponseProcessor,
-    pub url_processor: UrlProcessor,
+pub(crate) struct ProxyProcessors {
+    pub(crate) request_processor: RequestProcessor,
+    pub(crate) request_analyzer: RequestAnalyzer,
+    pub(crate) response_processor: ResponseProcessor,
+    pub(crate) url_processor: UrlProcessor,
 }
 
 impl ProxyProcessors {
-    pub fn new(data_context: DataContext) -> Self {
+    pub(crate) fn new(data_context: DataContext) -> Self {
         Self {
             request_processor: RequestProcessor::new(
                 data_context.media_storage.clone(),

@@ -12,7 +12,7 @@ use sqlx::{database::Database, error::BoxDynError, Decode, Encode, Sqlite, Type}
 /// all enforce the same normalization.
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(from = "String")]
-pub struct UserId(String);
+pub(crate) struct UserId(String);
 
 impl From<&UserId> for UserId {
     fn from(value: &UserId) -> Self {
@@ -21,7 +21,7 @@ impl From<&UserId> for UserId {
 }
 
 impl UserId {
-    pub fn new(value: impl Into<String>) -> Self {
+    pub(crate) fn new(value: impl Into<String>) -> Self {
         let value = value.into();
         Self(match uuid::Uuid::parse_str(&value) {
             Ok(id) => id.simple().to_string(),
@@ -29,7 +29,7 @@ impl UserId {
         })
     }
 
-    pub fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
 }

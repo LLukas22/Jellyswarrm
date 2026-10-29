@@ -3,7 +3,7 @@ use axum::{extract::State, http::StatusCode, routing::get, Router};
 use sqlx::SqlitePool;
 use std::time::Duration;
 
-pub fn router(pool: SqlitePool) -> Router {
+pub(crate) fn router(pool: SqlitePool) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))

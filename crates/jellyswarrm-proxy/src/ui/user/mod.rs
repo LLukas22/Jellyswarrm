@@ -1,5 +1,5 @@
 //! Compose authenticated user profile, backend mapping, and media management routes.
-pub mod common;
-pub mod media;
-pub mod profile;
-pub mod servers;
+pub(crate) mod common;
+pub(crate) mod media;
+pub(crate) mod profile;
+pub(crate) mod servers;

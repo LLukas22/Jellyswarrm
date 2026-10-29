@@ -17,7 +17,7 @@ use std::string::ToString;
 /// A wrapper type for plaintext passwords.
 #[derive(Clone, PartialEq, Eq, Hash, sqlx::Type, Serialize, Deserialize)]
 #[sqlx(transparent)]
-pub struct Password(String);
+pub(crate) struct Password(String);
 
 impl std::fmt::Debug for Password {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -32,11 +32,11 @@ impl std::fmt::Display for Password {
 }
 
 impl Password {
-    pub fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
 
-    pub fn into_inner(self) -> String {
+    pub(crate) fn into_inner(self) -> String {
         self.0
     }
 }
@@ -54,7 +54,7 @@ impl From<&str> for Password {
 }
 
 /// Hash a password using SHA-256
-pub fn hash_password(password: &str) -> String {
+pub(crate) fn hash_password(password: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(password.as_bytes());
     hex::encode(hasher.finalize())
@@ -64,26 +64,22 @@ pub fn hash_password(password: &str) -> String {
 /// This does not contain the plaintext password, only the hashed version.
 #[derive(Clone, PartialEq, Eq, Debug, Hash, sqlx::Type, Serialize, Deserialize)]
 #[sqlx(transparent)]
-pub struct HashedPassword(String);
+pub(crate) struct HashedPassword(String);
 
 impl HashedPassword {
-    pub fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
 
-    pub fn into_inner(self) -> String {
-        self.0
-    }
-
-    pub fn from_password(password: &str) -> Self {
+    pub(crate) fn from_password(password: &str) -> Self {
         Self(hash_password(password))
     }
 
-    pub fn verify(&self, password: &str) -> bool {
+    pub(crate) fn verify(&self, password: &str) -> bool {
         self.0 == hash_password(password)
     }
 
-    pub fn from_hashed(hashed: String) -> Self {
+    pub(crate) fn from_hashed(hashed: String) -> Self {
         Self(hashed)
     }
 }
@@ -103,12 +99,12 @@ impl From<&Password> for HashedPassword {
 /// A wrapper type for encrypted passwords.
 #[derive(Clone, PartialEq, Eq, Debug, Hash, sqlx::Type, Serialize, Deserialize)]
 #[sqlx(transparent)]
-pub struct EncryptedPassword(String);
+pub(crate) struct EncryptedPassword(String);
 
 /// A purpose-separated key derived from the persistent UI session secret.
 /// It is not a password verifier and must never be saved in the database.
 #[derive(Clone)]
-pub struct MappingEncryptionKey([u8; 32]);
+pub(crate) struct MappingEncryptionKey([u8; 32]);
 
 impl std::fmt::Debug for MappingEncryptionKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -117,11 +113,11 @@ impl std::fmt::Debug for MappingEncryptionKey {
 }
 
 impl MappingEncryptionKey {
-    pub fn from_session_key(session_key: &[u8]) -> Result<Self, EncryptionError> {
+    pub(crate) fn from_session_key(session_key: &[u8]) -> Result<Self, EncryptionError> {
         Self::derive(session_key, b"jellyswarrm/server-mapping/v1")
     }
 
-    pub fn for_authorization_sessions(session_key: &[u8]) -> Result<Self, EncryptionError> {
+    pub(crate) fn for_authorization_sessions(session_key: &[u8]) -> Result<Self, EncryptionError> {
         Self::derive(session_key, b"jellyswarrm/authorization-session/v1")
     }
 
@@ -140,7 +136,7 @@ impl MappingEncryptionKey {
         Ok(Self(key))
     }
 
-    pub fn encrypt(&self, value: &Password) -> Result<EncryptedPassword, EncryptionError> {
+    pub(crate) fn encrypt(&self, value: &Password) -> Result<EncryptedPassword, EncryptionError> {
         let cipher = Aes256Gcm::new(&self.0.into());
         let mut nonce_bytes = [0u8; 12];
         rand::rng().fill_bytes(&mut nonce_bytes);
@@ -153,7 +149,7 @@ impl MappingEncryptionKey {
         Ok(EncryptedPassword(general_purpose::STANDARD.encode(result)))
     }
 
-    pub fn decrypt(&self, value: &EncryptedPassword) -> Result<Password, EncryptionError> {
+    pub(crate) fn decrypt(&self, value: &EncryptedPassword) -> Result<Password, EncryptionError> {
         let data = general_purpose::STANDARD.decode(value.as_str())?;
         if data.len() < 28 {
             return Err(EncryptionError::InvalidNonceSize);
@@ -169,15 +165,15 @@ impl MappingEncryptionKey {
 }
 
 impl EncryptedPassword {
-    pub fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
 
-    pub fn into_inner(self) -> String {
+    pub(crate) fn into_inner(self) -> String {
         self.0
     }
 
-    pub fn from_raw(raw: String) -> Self {
+    pub(crate) fn from_raw(raw: String) -> Self {
         Self(raw)
     }
 }
@@ -185,7 +181,7 @@ impl EncryptedPassword {
 /// Identify legacy values that cannot be complete encrypted blobs. A false
 /// result is ambiguous: generated plaintext passwords can also be valid Base64
 /// containing at least 12 nonce + 16 tag bytes. Validate those with the backend.
-pub fn is_legacy_plaintext(value: &EncryptedPassword) -> bool {
+pub(crate) fn is_legacy_plaintext(value: &EncryptedPassword) -> bool {
     general_purpose::STANDARD
         .decode(value.as_str())
         .map_or(true, |bytes| bytes.len() < 28)
@@ -193,7 +189,7 @@ pub fn is_legacy_plaintext(value: &EncryptedPassword) -> bool {
 
 /// Custom error type for encryption/decryption operations
 #[derive(Debug, thiserror::Error)]
-pub enum EncryptionError {
+pub(crate) enum EncryptionError {
     #[error("Encryption failed: {0}")]
     EncryptionFailed(String),
     #[error("Decryption failed: {0}")]
@@ -214,7 +210,7 @@ pub enum EncryptionError {
 ///
 /// # Returns
 /// Base64-encoded string containing the nonce and encrypted data
-pub fn encrypt_password(
+pub(crate) fn encrypt_password(
     plaintext: &Password,
     master_password: &HashedPassword,
 ) -> Result<EncryptedPassword, EncryptionError> {
@@ -255,7 +251,7 @@ pub fn encrypt_password(
 ///
 /// # Returns
 /// The decrypted password as a String
-pub fn decrypt_password(
+pub(crate) fn decrypt_password(
     encrypted_data: &EncryptedPassword,
     master_password: &HashedPassword,
 ) -> Result<Password, EncryptionError> {
@@ -266,7 +262,7 @@ pub fn decrypt_password(
 ///
 /// This is used for backward compatibility with legacy records that may have
 /// been encrypted using raw password strings as key material.
-pub fn decrypt_password_with_key_material(
+pub(crate) fn decrypt_password_with_key_material(
     encrypted_data: &EncryptedPassword,
     key_material: &str,
 ) -> Result<Password, EncryptionError> {

@@ -6,13 +6,13 @@ use crate::auth::encryption::Password;
 // Deliberately no Debug: session keys must never appear in diagnostics.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct StartupConfig {
-    pub host: String,
-    pub port: u16,
-    pub timeout: u64,
-    pub ui_route: UrlSegment,
-    pub url_prefix: Option<UrlSegment>,
-    pub session_key: Vec<u8>,
-    pub server_background_check_interval_secs: u64,
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) timeout: u64,
+    pub(crate) ui_route: UrlSegment,
+    pub(crate) url_prefix: Option<UrlSegment>,
+    pub(crate) session_key: Vec<u8>,
+    pub(crate) server_background_check_interval_secs: u64,
     username: String,
     password: Password,
     preconfigured_servers: Vec<PreconfiguredServer>,
@@ -21,14 +21,14 @@ pub(crate) struct StartupConfig {
 
 #[derive(Clone)]
 pub(crate) struct RuntimeSettings {
-    pub server_id: String,
-    pub public_address: String,
-    pub server_name: String,
-    pub include_server_name_in_media: bool,
-    pub media_streaming_mode: MediaStreamingMode,
-    pub auto_create_users_on_login: bool,
-    pub merge_libraries: bool,
-    pub deduplicate_media: bool,
+    pub(crate) server_id: String,
+    pub(crate) public_address: String,
+    pub(crate) server_name: String,
+    pub(crate) include_server_name_in_media: bool,
+    pub(crate) media_streaming_mode: MediaStreamingMode,
+    pub(crate) auto_create_users_on_login: bool,
+    pub(crate) merge_libraries: bool,
+    pub(crate) deduplicate_media: bool,
 }
 
 /// Read-only capability for request workflows. No administrator password,
@@ -40,8 +40,8 @@ pub(crate) struct SettingsView(std::sync::Arc<tokio::sync::RwLock<AppConfig>>);
 
 pub(crate) struct RequestSettings {
     runtime: RuntimeSettings,
-    pub timeout: u64,
-    pub url_prefix: Option<UrlSegment>,
+    pub(crate) timeout: u64,
+    pub(crate) url_prefix: Option<UrlSegment>,
 }
 impl std::ops::Deref for RequestSettings {
     type Target = RuntimeSettings;

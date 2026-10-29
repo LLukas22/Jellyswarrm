@@ -10,9 +10,9 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-pub struct TaggedMediaItem {
-    pub item: MediaItem,
-    pub server: Server,
+pub(crate) struct TaggedMediaItem {
+    pub(crate) item: MediaItem,
+    pub(crate) server: Server,
 }
 
 #[derive(Debug)]
@@ -25,13 +25,13 @@ struct CatalogGroup {
 /// all observations have been reconciled.
 /// Inputs carry translated IDs but original, undecorated upstream titles.
 #[derive(Debug)]
-pub struct MediaDedupPlan {
+pub(crate) struct MediaDedupPlan {
     groups: Vec<CatalogGroup>,
 }
 
 impl MediaDedupPlan {
     #[cfg(test)]
-    pub fn new(items: Vec<TaggedMediaItem>) -> Self {
+    pub(crate) fn new(items: Vec<TaggedMediaItem>) -> Self {
         let aliases = items
             .iter()
             .map(|tagged| MediaAlias::from_item(&tagged.item))
@@ -39,7 +39,7 @@ impl MediaDedupPlan {
         Self::with_aliases(items, aliases)
     }
 
-    pub fn with_aliases(
+    pub(crate) fn with_aliases(
         items: Vec<TaggedMediaItem>,
         aliases: Vec<std::collections::BTreeSet<MediaAlias>>,
     ) -> Self {
@@ -80,7 +80,10 @@ impl MediaDedupPlan {
         Self { groups }
     }
 
-    pub fn collapse(self, stable_groups: &HashMap<String, StableMediaGroup>) -> Vec<CatalogItem> {
+    pub(crate) fn collapse(
+        self,
+        stable_groups: &HashMap<String, StableMediaGroup>,
+    ) -> Vec<CatalogItem> {
         let mut groups: Vec<CatalogGroup> = Vec::new();
         let mut stable_indexes = HashMap::new();
         for group in self.groups {
@@ -255,7 +258,7 @@ pub(crate) fn merge_playback_user_data<'a>(
     }
 }
 
-pub fn label_duplicates(items: Vec<TaggedMediaItem>) -> Vec<CatalogItem> {
+pub(crate) fn label_duplicates(items: Vec<TaggedMediaItem>) -> Vec<CatalogItem> {
     let mut group_indexes: HashMap<String, usize> = HashMap::new();
     let mut groups: Vec<Vec<TaggedMediaItem>> = Vec::new();
     for tagged in items {

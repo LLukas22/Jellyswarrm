@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use crate::{http::extractors::CatalogInput, AppState};
 
-pub async fn post_live_tv_programs(
+pub(crate) async fn post_live_tv_programs(
     State(state): State<AppState>,
     request: Request,
 ) -> Result<Json<Value>, StatusCode> {

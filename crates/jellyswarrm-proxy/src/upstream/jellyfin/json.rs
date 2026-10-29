@@ -12,7 +12,7 @@ use serde_json::Value;
 /// Concrete adapter for application workflows. Wire normalization, execution,
 /// and error conversion are kept together here; transport owns HTTP I/O.
 pub(crate) struct JellyfinJsonUpstream {
-    pub client: reqwest::Client,
+    pub(crate) client: reqwest::Client,
 }
 
 #[async_trait::async_trait]

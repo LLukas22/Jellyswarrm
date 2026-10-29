@@ -2,9 +2,9 @@
 macro_rules! opaque_identity {
     ($($name:ident),+ $(,)?) => { $(
         #[derive(Debug, Clone, PartialEq, Eq)]
-        pub struct $name(String);
+        pub(crate) struct $name(String);
         impl $name {
-            pub fn as_str(&self) -> &str { &self.0 }
+            pub(crate) fn as_str(&self) -> &str { &self.0 }
         }
         impl From<String> for $name {
             fn from(value: String) -> Self { Self(value) }
@@ -19,10 +19,10 @@ opaque_identity!(VirtualLiveStreamId, BackendLiveStreamId, PlaybackSessionId);
 
 /// Caller identity keeps its namespace while sharing local-user normalization.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ViewerId(crate::auth::user_id::UserId);
+pub(crate) struct ViewerId(crate::auth::user_id::UserId);
 
 impl ViewerId {
-    pub fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         self.0.as_str()
     }
 }

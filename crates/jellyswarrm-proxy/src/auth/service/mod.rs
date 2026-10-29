@@ -21,7 +21,7 @@ pub(crate) use super::models::{
     User, VirtualUserApiKey,
 };
 #[derive(Debug, Clone)]
-pub struct UserAuthorizationService {
+pub(crate) struct UserAuthorizationService {
     pool: SqlitePool,
     mapping_key: Option<MappingEncryptionKey>,
     session_key: Option<MappingEncryptionKey>,
@@ -29,7 +29,7 @@ pub struct UserAuthorizationService {
 }
 
 #[cfg(test)]
-pub enum ServerReference<'a> {
+pub(crate) enum ServerReference<'a> {
     Server(&'a Server),
     Url(&'a str),
 }
@@ -57,14 +57,14 @@ impl<'a> From<&'a &'a str> for ServerReference<'a> {
 
 mod api_keys;
 mod server_mappings;
-pub use server_mappings::MappingCredentialError;
+pub(crate) use server_mappings::MappingCredentialError;
 mod sessions;
 mod users;
 
 impl UserAuthorizationService {
     /// Use the persisted session secret in production. `new` remains available
     /// for legacy-format test fixtures that exercise old database rows.
-    pub fn with_mapping_key(
+    pub(crate) fn with_mapping_key(
         pool: SqlitePool,
         mapping_key: MappingEncryptionKey,
         legacy_admin_key: HashedPassword,
@@ -78,7 +78,7 @@ impl UserAuthorizationService {
     }
 
     #[cfg(test)]
-    pub fn new(pool: SqlitePool) -> Self {
+    pub(crate) fn new(pool: SqlitePool) -> Self {
         Self {
             pool,
             mapping_key: None,

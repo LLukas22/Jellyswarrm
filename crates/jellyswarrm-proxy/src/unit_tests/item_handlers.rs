@@ -5,11 +5,12 @@ use super::*;
 use crate::{
     application::{context::RequestContext, input::OperationRequest},
     auth::service::{AuthorizationSession, Device, UserAuthorizationService},
-    config::{AppConfig, MediaStreamingMode, MIGRATOR},
+    config::{AppConfig, MediaStreamingMode},
     http::handlers::quick_connect::QuickConnectStorage,
     libraries::service::{VirtualLibraryAccessScope, VirtualLibraryService},
     media::identity::{MediaAlias, MediaKind, MediaObservation, MediaProvider},
     media::storage::{MediaCatalogSnapshot, MediaStorageService},
+    persistence::MIGRATOR,
     playback::sessions::SessionStorage,
     processors::ProxyProcessors,
     servers::storage::ServerStorageService,
@@ -41,6 +42,7 @@ async fn check_selected_source_detail(catalog_scopes: &[&str]) {
     let server_storage = ServerStorageService::new(pool.clone());
     let media_storage = MediaStorageService::new(pool.clone());
     let context = DataContext {
+        paths: crate::config::Paths::temporary(),
         user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
         server_storage: Arc::new(server_storage.clone()),
         media_storage: Arc::new(media_storage.clone()),

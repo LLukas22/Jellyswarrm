@@ -15,19 +15,19 @@ const JELLYFIN_MIN_DATE: &str = "0001-01-01T00:00:00.0000000Z";
 
 // Never derive Debug/Serialize: the credential is private and only used for local revocation checks.
 #[derive(Clone)]
-pub struct ClientSession {
-    pub id: String,
-    pub user_id: UserId,
-    pub user_name: String,
-    pub device: Device,
+pub(crate) struct ClientSession {
+    pub(crate) id: String,
+    pub(crate) user_id: UserId,
+    pub(crate) user_name: String,
+    pub(crate) device: Device,
     pub(super) token: String,
-    pub capabilities: Capabilities,
-    pub last_activity: DateTime<Utc>,
-    pub play_state: Value,
-    pub now_playing: Value,
-    pub now_viewing: Value,
-    pub queue: Value,
-    pub last_playback: Option<DateTime<Utc>>,
+    pub(crate) capabilities: Capabilities,
+    pub(crate) last_activity: DateTime<Utc>,
+    pub(crate) play_state: Value,
+    pub(crate) now_playing: Value,
+    pub(crate) now_viewing: Value,
+    pub(crate) queue: Value,
+    pub(crate) last_playback: Option<DateTime<Utc>>,
     episode_server: Option<EpisodeServerPreference>,
 }
 
@@ -38,7 +38,7 @@ struct EpisodeServerPreference {
 }
 
 impl ClientSession {
-    pub fn dto(&self, server_id: &str, transport: &ConnectionHub) -> Value {
+    pub(crate) fn dto(&self, server_id: &str, transport: &ConnectionHub) -> Value {
         let connected = transport.is_connected(&self.id);
         let controllable = connected && self.capabilities.supports_media_control;
         let last_playback = self
@@ -60,14 +60,14 @@ impl ClientSession {
     }
 }
 
-pub struct ClientSessionService {
+pub(crate) struct ClientSessionService {
     entries: RwLock<HashMap<String, ClientSession>>,
-    pub transport: ConnectionHub,
+    pub(crate) transport: ConnectionHub,
     media_metadata: moka::future::Cache<(String, String), Value>,
 }
 
 impl ClientSessionService {
-    pub fn new(transport: ConnectionHub) -> Self {
+    pub(crate) fn new(transport: ConnectionHub) -> Self {
         Self {
             entries: RwLock::new(HashMap::new()),
             transport,
@@ -80,7 +80,7 @@ impl ClientSessionService {
 
     /// Remember only public display fields from already-served media responses.
     /// Remote controls must not fetch metadata from an upstream on their own.
-    pub async fn cache_media_response(&self, token: &str, payload: &Value) {
+    pub(crate) async fn cache_media_response(&self, token: &str, payload: &Value) {
         let mut pending = vec![payload];
         let mut retained = 0;
         while let Some(value) = pending.pop() {
@@ -135,13 +135,13 @@ impl ClientSessionService {
         }
     }
 
-    pub async fn media_metadata(&self, token: &str, item_id: &str) -> Option<Value> {
+    pub(crate) async fn media_metadata(&self, token: &str, item_id: &str) -> Option<Value> {
         self.media_metadata
             .get(&(token.to_string(), item_id.to_string()))
             .await
     }
 
-    pub async fn ensure(&self, user: &User, token: &str, device: Option<&Device>) -> String {
+    pub(crate) async fn ensure(&self, user: &User, token: &str, device: Option<&Device>) -> String {
         let mut entries = self.entries.write().await;
         let now = Utc::now();
         entries.retain(|id, entry| {
@@ -233,11 +233,15 @@ impl ClientSessionService {
         id
     }
 
-    pub async fn get(&self, id: &str) -> Option<ClientSession> {
+    pub(crate) async fn get(&self, id: &str) -> Option<ClientSession> {
         self.entries.read().await.get(id).cloned()
     }
 
-    pub async fn preferred_episode_server(&self, id: &str, series_id: &str) -> Option<ServerId> {
+    pub(crate) async fn preferred_episode_server(
+        &self,
+        id: &str,
+        series_id: &str,
+    ) -> Option<ServerId> {
         let entries = self.entries.read().await;
         let preference = entries.get(id)?.episode_server.as_ref()?;
         (preference.series_id == series_id).then_some(preference.server_id)
@@ -245,7 +249,12 @@ impl ClientSessionService {
 
     /// Keep continuity across the stop/next transition, but never share it with
     /// another client session or expose it as a client-supplied routing authority.
-    pub async fn remember_episode_server(&self, id: &str, series_id: &str, server_id: ServerId) {
+    pub(crate) async fn remember_episode_server(
+        &self,
+        id: &str,
+        series_id: &str,
+        server_id: ServerId,
+    ) {
         if let Some(session) = self.entries.write().await.get_mut(id) {
             session.episode_server = Some(EpisodeServerPreference {
                 series_id: series_id.into(),
@@ -254,7 +263,7 @@ impl ClientSessionService {
         }
     }
 
-    pub async fn for_user(&self, user_id: &str) -> Vec<ClientSession> {
+    pub(crate) async fn for_user(&self, user_id: &str) -> Vec<ClientSession> {
         let user_id = UserId::new(user_id);
         let now = Utc::now();
         let mut entries = self.entries.write().await;
@@ -271,7 +280,7 @@ impl ClientSessionService {
         result
     }
 
-    pub async fn capabilities(
+    pub(crate) async fn capabilities(
         &self,
         id: &str,
         capabilities: Capabilities,
@@ -285,24 +294,24 @@ impl ClientSessionService {
         Ok(())
     }
 
-    pub async fn touch(&self, id: &str) {
+    pub(crate) async fn touch(&self, id: &str) {
         if let Some(s) = self.entries.write().await.get_mut(id) {
             s.last_activity = Utc::now();
         }
     }
 
-    pub async fn remove(&self, id: &str) {
+    pub(crate) async fn remove(&self, id: &str) {
         self.entries.write().await.remove(id);
         self.transport.remove(id);
     }
 
-    pub async fn viewing(&self, id: &str, item_id: &str) {
+    pub(crate) async fn viewing(&self, id: &str, item_id: &str) {
         if let Some(s) = self.entries.write().await.get_mut(id) {
             s.now_viewing = json!({"Id": item_id});
         }
     }
 
-    pub async fn report(&self, id: &str, stopped: bool, report: &Value) {
+    pub(crate) async fn report(&self, id: &str, stopped: bool, report: &Value) {
         let reported_id = report
             .as_object()
             .and_then(|object| {

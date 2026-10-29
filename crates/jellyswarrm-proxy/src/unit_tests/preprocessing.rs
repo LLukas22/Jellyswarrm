@@ -38,13 +38,13 @@ fn media_id_tags_cover_audio_paths_and_item_id_queries() {
 }
 
 use crate::auth::service::UserAuthorizationService;
-use crate::config::{AppConfig, MIGRATOR};
 use crate::http::handlers::quick_connect::QuickConnectStorage;
 use crate::libraries::service::VirtualLibraryService;
 use crate::media::storage::MediaStorageService;
 use crate::playback::sessions::{PlaybackSession, SessionStorage};
 use crate::servers::id::ServerId;
 use crate::servers::storage::ServerStorageService;
+use crate::{config::AppConfig, persistence::MIGRATOR};
 use crate::{processors::ProxyProcessors, DataContext};
 use sqlx::SqlitePool;
 use std::sync::Arc;
@@ -243,6 +243,7 @@ async fn create_test_app_state() -> AppState {
     let media_storage = MediaStorageService::new(pool.clone());
 
     let data_context = DataContext {
+        paths: crate::config::Paths::temporary(),
         user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
         server_storage: Arc::new(server_storage.clone()),
         media_storage: Arc::new(media_storage.clone()),

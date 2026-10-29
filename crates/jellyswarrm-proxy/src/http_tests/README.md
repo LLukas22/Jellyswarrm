@@ -8,6 +8,9 @@ Each test uses an in-memory SQLite database, two Wiremock backends, and a proxy 
 an ephemeral port. No Docker, browser, UI build, or external credentials required.
 Real-server and browser tests live separately in `tests/`.
 
+These source-owned contracts run under the proxy library's test target. The
+thin executable does not compile a second copy of the application test modules.
+
 ## Run
 
 From the repository root:
@@ -18,7 +21,7 @@ just http-test-normal  # configuration-dependent contracts: separate libraries
 just http-test-merged  # configuration-dependent contracts: merged libraries
 
 # One test or module:
-cargo test --locked -p jellyswarrm-proxy --bin jellyswarrm-proxy http_tests::catalog::episodes
+cargo test --locked -p jellyswarrm-proxy --lib http_tests::catalog::episodes
 ```
 
 Source-owned transport contracts use `contract_test!` and run once, with separate

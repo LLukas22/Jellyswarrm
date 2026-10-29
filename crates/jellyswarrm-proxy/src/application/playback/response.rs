@@ -27,7 +27,7 @@ fn parse_delivery_url(value: &str) -> Option<url::Url> {
     url::Url::parse(&format!("http://localhost{path}")).ok()
 }
 
-pub async fn remap_playback_request(
+pub(crate) async fn remap_playback_request(
     payload: &mut PlaybackRequest,
     state: &PlaybackService<'_>,
     session: &AuthorizationSession,
@@ -68,7 +68,7 @@ pub async fn remap_playback_request(
     Ok(())
 }
 
-pub async fn process_playback_response(
+pub(crate) async fn process_playback_response(
     response: &mut PlaybackResponse,
     state: &PlaybackService<'_>,
     server: &Server,
@@ -105,7 +105,7 @@ pub async fn process_playback_response(
     Ok(plans)
 }
 
-pub async fn track_play_session(
+pub(crate) async fn track_play_session(
     item: &MediaSource,
     session_id: &str,
     user_id: &str,
@@ -199,7 +199,7 @@ async fn add_tracked_play_session(
 /// session selected during playback negotiation. Subsequent stream requests
 /// can then route by `(PlaySessionId, aggregate item id)` even though the
 /// aggregate ID does not exist on any backend.
-pub async fn track_playback_alias(
+pub(crate) async fn track_playback_alias(
     item_id: &str,
     session_id: &str,
     user_id: &str,
@@ -244,9 +244,10 @@ mod tests {
     use super::*;
     use crate::{
         auth::service::UserAuthorizationService,
-        config::{AppConfig, MediaStreamingMode, MIGRATOR},
+        config::{AppConfig, MediaStreamingMode},
         libraries::service::VirtualLibraryService,
         media::storage::MediaStorageService,
+        persistence::MIGRATOR,
         playback::sessions::SessionStorage,
         processors::ProxyProcessors,
         servers::id::ServerId,
@@ -293,6 +294,7 @@ mod tests {
         let media_storage = MediaStorageService::new(pool.clone());
 
         let data_context = DataContext {
+            paths: crate::config::Paths::temporary(),
             user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
             server_storage: Arc::new(server_storage.clone()),
             media_storage: Arc::new(media_storage.clone()),

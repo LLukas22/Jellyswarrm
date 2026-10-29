@@ -23,11 +23,11 @@ impl<'a> PlaybackLifecycle<'a> {
         Self { sessions }
     }
 
-    pub async fn establish(&self, session: PlaybackSession) {
+    pub(crate) async fn establish(&self, session: PlaybackSession) {
         self.sessions.add_session(session).await;
     }
 
-    pub async fn alias(&self, item: &str, session: &str, viewer: &str, server: ServerId) {
+    pub(crate) async fn alias(&self, item: &str, session: &str, viewer: &str, server: ServerId) {
         self.establish(PlaybackSession {
             session_id: session.into(),
             item_id: item.into(),
@@ -40,7 +40,7 @@ impl<'a> PlaybackLifecycle<'a> {
 
     /// Direct streams bind after an accepted response/redirect, before exposing
     /// it to the client. Stream consumption is not the commit condition.
-    pub async fn direct_stream(
+    pub(crate) async fn direct_stream(
         &self,
         status: hyper::StatusCode,
         session: Option<&str>,
@@ -63,13 +63,19 @@ impl<'a> PlaybackLifecycle<'a> {
         }
     }
 
-    pub async fn bind_original(&self, session: &str, viewer: &str, server: ServerId, item: &str) {
+    pub(crate) async fn bind_original(
+        &self,
+        session: &str,
+        viewer: &str,
+        server: ServerId,
+        item: &str,
+    ) {
         self.sessions
             .bind_original_item(session, viewer, server, item)
             .await;
     }
 
-    pub async fn commit_live(
+    pub(crate) async fn commit_live(
         &self,
         plans: &[std::sync::Arc<PreparedLiveStream>],
     ) -> Result<(), InvalidatedReservation> {
@@ -81,13 +87,18 @@ impl<'a> PlaybackLifecycle<'a> {
     }
 
     #[cfg(test)]
-    pub async fn register_live(&self, original: &str, viewer: &str, server: ServerId) -> String {
+    pub(crate) async fn register_live(
+        &self,
+        original: &str,
+        viewer: &str,
+        server: ServerId,
+    ) -> String {
         self.sessions
             .register_live_stream(original, viewer, server)
             .await
     }
 
-    pub async fn close_live(
+    pub(crate) async fn close_live(
         &self,
         id: &crate::playback::identity::VirtualLiveStreamId,
         viewer: &crate::playback::identity::ViewerId,
@@ -95,7 +106,7 @@ impl<'a> PlaybackLifecycle<'a> {
         self.sessions.close_live_binding(id, viewer).await;
     }
 
-    pub async fn remove_server(&self, server: ServerId) {
+    pub(crate) async fn remove_server(&self, server: ServerId) {
         self.sessions.remove_sessions_for_server(server).await;
     }
 }

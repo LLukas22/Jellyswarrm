@@ -6,11 +6,12 @@ use crate::{
     application::context::RequestContext,
     auth::quick_connect::QuickConnectStorage,
     auth::service::{AuthorizationSession, Device, UserAuthorizationService},
-    config::{AppConfig, MediaStreamingMode, MIGRATOR},
+    config::{AppConfig, MediaStreamingMode},
     http::preprocessing::JellyfinAuthorization,
     libraries::service::{VirtualLibraryAccessScope, VirtualLibraryService},
     media::identity::{MediaAlias, MediaKind, MediaObservation, MediaProvider},
     media::storage::{MediaCatalogSnapshot, MediaStorageService, MediaVersionSourceObservation},
+    persistence::MIGRATOR,
     playback::sessions::SessionStorage,
     processors::ProxyProcessors,
     servers::storage::{Server, ServerStorageService},
@@ -80,6 +81,7 @@ async fn fixture() -> Fixture {
     let servers = ServerStorageService::new(pool.clone());
     let media = MediaStorageService::new(pool.clone());
     let context = DataContext {
+        paths: crate::config::Paths::temporary(),
         user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
         server_storage: Arc::new(servers.clone()),
         media_storage: Arc::new(media.clone()),

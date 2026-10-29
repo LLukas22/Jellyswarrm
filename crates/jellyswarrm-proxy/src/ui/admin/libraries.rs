@@ -19,11 +19,11 @@ use crate::{
 
 #[derive(Template)]
 #[template(path = "admin/libraries.html")]
-pub struct LibrariesPageTemplate {
-    pub merge_libraries: bool,
-    pub has_merge_libraries_error: bool,
-    pub merge_libraries_error: String,
-    pub ui_route: String,
+pub(crate) struct LibrariesPageTemplate {
+    pub(crate) merge_libraries: bool,
+    pub(crate) has_merge_libraries_error: bool,
+    pub(crate) merge_libraries_error: String,
+    pub(crate) ui_route: String,
 }
 
 #[derive(Template)]
@@ -37,44 +37,44 @@ struct MergeLibrariesControlTemplate {
 
 #[derive(Template)]
 #[template(path = "admin/library_groups_list.html")]
-pub struct LibraryGroupsListTemplate {
-    pub groups: Vec<LibraryGroupView>,
-    pub discovered_libraries: Vec<DiscoveredLibraryView>,
-    pub ui_route: String,
-    pub discovery_errors: Option<Vec<String>>,
+pub(crate) struct LibraryGroupsListTemplate {
+    pub(crate) groups: Vec<LibraryGroupView>,
+    pub(crate) discovered_libraries: Vec<DiscoveredLibraryView>,
+    pub(crate) ui_route: String,
+    pub(crate) discovery_errors: Option<Vec<String>>,
 }
 
-pub struct LibraryGroupView {
-    pub virtual_id: String,
-    pub name: String,
-    pub collection_type: Option<String>,
-    pub members: Vec<LibraryGroupMemberView>,
+pub(crate) struct LibraryGroupView {
+    pub(crate) virtual_id: String,
+    pub(crate) name: String,
+    pub(crate) collection_type: Option<String>,
+    pub(crate) members: Vec<LibraryGroupMemberView>,
 }
 
-pub struct LibraryGroupOptionView {
-    pub virtual_id: String,
-    pub name: String,
+pub(crate) struct LibraryGroupOptionView {
+    pub(crate) virtual_id: String,
+    pub(crate) name: String,
 }
 
-pub struct LibraryGroupMemberView {
-    pub server_id: i64,
-    pub server_name: String,
-    pub original_library_id: String,
-    pub library_name: String,
+pub(crate) struct LibraryGroupMemberView {
+    pub(crate) server_id: i64,
+    pub(crate) server_name: String,
+    pub(crate) original_library_id: String,
+    pub(crate) library_name: String,
 }
 
-pub struct DiscoveredLibraryView {
-    pub server_id: i64,
-    pub server_name: String,
-    pub library_id: String,
-    pub library_name: String,
-    pub collection_type: String,
-    pub assigned_group: Option<String>,
-    pub assignable_groups: Vec<LibraryGroupOptionView>,
+pub(crate) struct DiscoveredLibraryView {
+    pub(crate) server_id: i64,
+    pub(crate) server_name: String,
+    pub(crate) library_id: String,
+    pub(crate) library_name: String,
+    pub(crate) collection_type: String,
+    pub(crate) assigned_group: Option<String>,
+    pub(crate) assignable_groups: Vec<LibraryGroupOptionView>,
 }
 
 impl DiscoveredLibraryView {
-    pub fn assignment_block_reason(&self) -> Option<&str> {
+    pub(crate) fn assignment_block_reason(&self) -> Option<&str> {
         if !self.assignable_groups.is_empty() {
             None
         } else if self.collection_type.trim().is_empty() {
@@ -86,35 +86,35 @@ impl DiscoveredLibraryView {
 }
 
 #[derive(Deserialize)]
-pub struct CreateGroupForm {
-    pub name: String,
+pub(crate) struct CreateGroupForm {
+    pub(crate) name: String,
 }
 
 #[derive(Deserialize)]
-pub struct AssignLibraryForm {
-    pub group_virtual_id: String,
-    pub server_id: i64,
-    pub library_id: String,
+pub(crate) struct AssignLibraryForm {
+    pub(crate) group_virtual_id: String,
+    pub(crate) server_id: i64,
+    pub(crate) library_id: String,
 }
 
 #[derive(Deserialize)]
-pub struct RemoveMemberForm {
-    pub server_id: i64,
-    pub library_id: String,
+pub(crate) struct RemoveMemberForm {
+    pub(crate) server_id: i64,
+    pub(crate) library_id: String,
 }
 
 #[derive(Deserialize)]
-pub struct RenameGroupForm {
-    pub name: String,
+pub(crate) struct RenameGroupForm {
+    pub(crate) name: String,
 }
 
 #[derive(Deserialize)]
-pub struct UpdateMergeLibrariesForm {
+pub(crate) struct UpdateMergeLibrariesForm {
     #[serde(default)]
-    pub merge_libraries: bool,
+    pub(crate) merge_libraries: bool,
 }
 
-pub async fn libraries_page(State(state): State<AppState>) -> impl IntoResponse {
+pub(crate) async fn libraries_page(State(state): State<AppState>) -> impl IntoResponse {
     let merge_libraries = state.merge_libraries_enabled().await;
     let template = LibrariesPageTemplate {
         merge_libraries,
@@ -151,7 +151,7 @@ fn render_merge_libraries_control(
     }
 }
 
-pub async fn update_merge_libraries(
+pub(crate) async fn update_merge_libraries(
     State(state): State<AppState>,
     Form(form): Form<UpdateMergeLibrariesForm>,
 ) -> Response {
@@ -175,7 +175,7 @@ pub async fn update_merge_libraries(
     }
 }
 
-pub async fn library_groups_list(State(state): State<AppState>) -> impl IntoResponse {
+pub(crate) async fn library_groups_list(State(state): State<AppState>) -> impl IntoResponse {
     let errors = state
         .library_administration()
         .await
@@ -337,7 +337,7 @@ fn discovery_message(issue: crate::application::library_admin::DiscoveryIssue) -
     }
 }
 
-pub async fn create_group(
+pub(crate) async fn create_group(
     State(state): State<AppState>,
     Form(form): Form<CreateGroupForm>,
 ) -> Response {
@@ -377,7 +377,7 @@ pub async fn create_group(
     }
 }
 
-pub async fn delete_group(
+pub(crate) async fn delete_group(
     State(state): State<AppState>,
     Path(virtual_id): Path<String>,
 ) -> Response {
@@ -406,7 +406,7 @@ pub async fn delete_group(
     }
 }
 
-pub async fn assign_library(
+pub(crate) async fn assign_library(
     State(state): State<AppState>,
     Form(form): Form<AssignLibraryForm>,
 ) -> Response {
@@ -480,7 +480,7 @@ pub async fn assign_library(
     }
 }
 
-pub async fn rename_group(
+pub(crate) async fn rename_group(
     State(state): State<AppState>,
     Path(virtual_id): Path<String>,
     Form(form): Form<RenameGroupForm>,
@@ -518,7 +518,7 @@ pub async fn rename_group(
     }
 }
 
-pub async fn remove_member(
+pub(crate) async fn remove_member(
     State(state): State<AppState>,
     Path(group_virtual_id): Path<String>,
     Form(form): Form<RemoveMemberForm>,

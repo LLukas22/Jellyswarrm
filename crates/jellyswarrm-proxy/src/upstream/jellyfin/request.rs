@@ -140,9 +140,10 @@ mod tests {
     use super::*;
     use crate::{
         auth::service::UserAuthorizationService,
-        config::{AppConfig, MediaStreamingMode, MIGRATOR},
+        config::{AppConfig, MediaStreamingMode},
         libraries::service::VirtualLibraryService,
         media::storage::MediaStorageService,
+        persistence::MIGRATOR,
         playback::sessions::SessionStorage,
         servers::storage::ServerStorageService,
         DataContext,
@@ -170,6 +171,7 @@ mod tests {
         let media = MediaStorageService::new(pool.clone());
         let libraries = VirtualLibraryService::new(pool.clone(), servers.clone(), media.clone());
         let urls = UrlProcessor::from(DataContext {
+            paths: crate::config::Paths::temporary(),
             user_authorization: Arc::new(UserAuthorizationService::new(pool)),
             server_storage: Arc::new(servers),
             media_storage: Arc::new(media.clone()),

@@ -79,7 +79,7 @@ struct ReleaseStatusTemplate {
     title: String,
 }
 
-pub async fn jellyswarrm_release_status(State(state): State<AppState>) -> impl IntoResponse {
+pub(crate) async fn jellyswarrm_release_status(State(state): State<AppState>) -> impl IntoResponse {
     let status = get_jellyswarrm_release_status(&state).await;
     let template = ReleaseStatusTemplate {
         css_variant: status.css_variant,

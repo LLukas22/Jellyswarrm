@@ -3,14 +3,14 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct ServerId(i64);
+pub(crate) struct ServerId(i64);
 
 impl ServerId {
-    pub fn new(value: i64) -> Self {
+    pub(crate) fn new(value: i64) -> Self {
         Self(value)
     }
 
-    pub fn as_i64(self) -> i64 {
+    pub(crate) fn as_i64(self) -> i64 {
         self.0
     }
 }

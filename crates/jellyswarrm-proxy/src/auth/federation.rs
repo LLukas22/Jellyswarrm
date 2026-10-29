@@ -7,12 +7,11 @@ use crate::{
     auth::encryption::{decrypt_password, HashedPassword, Password},
     auth::service::UserAuthorizationService,
     servers::storage::ServerStorageService,
-    AppState,
 };
 use jellyfin_api::JellyfinClient;
 
 #[derive(Debug, Clone)]
-pub enum SyncStatus {
+pub(crate) enum SyncStatus {
     Created,
     AlreadyExists,
     ExistsWithDifferentPassword,
@@ -23,29 +22,21 @@ pub enum SyncStatus {
 }
 
 #[derive(Debug, Clone)]
-pub struct ServerSyncResult {
-    pub server_name: String,
-    pub status: SyncStatus,
-    pub message: Option<String>,
+pub(crate) struct ServerSyncResult {
+    pub(crate) server_name: String,
+    pub(crate) status: SyncStatus,
+    pub(crate) message: Option<String>,
 }
 
 #[derive(Clone)]
-pub struct FederatedUserService {
+pub(crate) struct FederatedUserService {
     server_storage: Arc<ServerStorageService>,
     user_authorization: Arc<UserAuthorizationService>,
     config: Arc<tokio::sync::RwLock<crate::config::AppConfig>>,
 }
 
 impl FederatedUserService {
-    pub fn new(state: &AppState) -> Self {
-        Self {
-            server_storage: state.server_storage.clone(),
-            user_authorization: state.user_authorization.clone(),
-            config: state.config.clone(),
-        }
-    }
-
-    pub fn new_from_components(
+    pub(crate) fn new_from_components(
         server_storage: Arc<ServerStorageService>,
         user_authorization: Arc<UserAuthorizationService>,
         config: Arc<tokio::sync::RwLock<crate::config::AppConfig>>,
@@ -60,7 +51,7 @@ impl FederatedUserService {
     /// Syncs a user to all configured servers where an admin account is available.
     /// If the user does not exist on a server, it is created.
     /// If the user exists, we assume it's fine (we don't update passwords for existing users here to avoid conflicts).
-    pub async fn sync_user_to_all_servers(
+    pub(crate) async fn sync_user_to_all_servers(
         &self,
         username: &str,
         password: &Password,
@@ -292,7 +283,10 @@ impl FederatedUserService {
         results
     }
 
-    pub async fn delete_user_from_all_servers(&self, username: &str) -> Vec<ServerSyncResult> {
+    pub(crate) async fn delete_user_from_all_servers(
+        &self,
+        username: &str,
+    ) -> Vec<ServerSyncResult> {
         let mut results = Vec::new();
         let servers = match self.server_storage.list_servers().await {
             Ok(s) => s,

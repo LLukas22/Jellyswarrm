@@ -7,7 +7,7 @@ use crate::{
     auth::service::User, http::preprocessing::resolve_request_identity_from_headers_uri, AppState,
 };
 
-pub struct RequirePrimaryUser(pub User);
+pub(crate) struct RequirePrimaryUser(pub(crate) User);
 
 impl FromRequest<AppState> for RequirePrimaryUser {
     type Rejection = StatusCode;
@@ -35,8 +35,8 @@ impl FromRequest<AppState> for RequirePrimaryUser {
 }
 
 /// A caller-scoped operation that has not selected or encoded a backend request.
-pub struct OperationInput(pub(crate) crate::application::input::OperationRequest);
-pub use OperationInput as PlaybackInput;
+pub(crate) struct OperationInput(pub(crate) crate::application::input::OperationRequest);
+pub(crate) use OperationInput as PlaybackInput;
 
 impl FromRequest<AppState> for OperationInput {
     type Rejection = StatusCode;
@@ -62,10 +62,10 @@ impl FromRequest<AppState> for OperationInput {
     }
 }
 
-pub struct LiveInput(pub(crate) crate::application::playback::live::LiveRequest);
+pub(crate) struct LiveInput(pub(crate) crate::application::playback::live::LiveRequest);
 
 /// Catalog authentication and scope collection without selecting or rewriting a backend.
-pub struct CatalogInput(pub(crate) crate::application::catalog::input::CatalogRequest);
+pub(crate) struct CatalogInput(pub(crate) crate::application::catalog::input::CatalogRequest);
 
 impl FromRequest<AppState> for CatalogInput {
     type Rejection = StatusCode;

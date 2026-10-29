@@ -11,7 +11,7 @@ use crate::{
 /// Already-authorized dependencies for rewriting a selected backend's playlist.
 /// The caller resolves the viewer; transport never looks up authorization or
 /// selects a playback session. URL identity mapping remains in UrlProcessor.
-pub struct HlsContext<'a> {
+pub(crate) struct HlsContext<'a> {
     url_processor: &'a UrlProcessor,
     server: &'a Server,
     proxy_api_key: Option<&'a str>,
@@ -20,7 +20,7 @@ pub struct HlsContext<'a> {
 }
 
 impl<'a> HlsContext<'a> {
-    pub fn new(
+    pub(crate) fn new(
         url_processor: &'a UrlProcessor,
         server: &'a Server,
         proxy_api_key: Option<&'a str>,
@@ -38,9 +38,9 @@ impl<'a> HlsContext<'a> {
 }
 
 /// A rewritten playlist response; HTTP adapters own their framework body type.
-pub struct PlaylistResponse {
-    pub headers: hyper::HeaderMap,
-    pub body: String,
+pub(crate) struct PlaylistResponse {
+    pub(crate) headers: hyper::HeaderMap,
+    pub(crate) body: String,
 }
 
 const MAX_PLAYLIST_BYTES: usize = 8 * 1024 * 1024;
@@ -49,11 +49,11 @@ const MAX_PLAYLIST_BYTES: usize = 8 * 1024 * 1024;
 static QUOTED_ATTRIBUTE: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r#"(?:^|[:,])\s*([A-Z0-9-]+)="([^"]*)""#).unwrap());
 
-pub fn is_playlist_path(url: &url::Url) -> bool {
+pub(crate) fn is_playlist_path(url: &url::Url) -> bool {
     url.path().to_ascii_lowercase().ends_with(".m3u8")
 }
 
-pub fn is_playlist_type(headers: &hyper::HeaderMap) -> bool {
+pub(crate) fn is_playlist_type(headers: &hyper::HeaderMap) -> bool {
     headers
         .get(hyper::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
@@ -74,7 +74,7 @@ pub fn is_playlist_type(headers: &hyper::HeaderMap) -> bool {
         })
 }
 
-pub async fn response(
+pub(crate) async fn response(
     context: &HlsContext<'_>,
     upstream: reqwest::Response,
     head: bool,
@@ -206,9 +206,10 @@ mod tests {
 
     use crate::{
         auth::service::UserAuthorizationService,
-        config::{AppConfig, MediaStreamingMode, MIGRATOR},
+        config::{AppConfig, MediaStreamingMode},
         libraries::service::VirtualLibraryService,
         media::storage::MediaStorageService,
+        persistence::MIGRATOR,
         playback::sessions::SessionStorage,
         servers::id::ServerId,
         servers::storage::ServerStorageService,
@@ -222,6 +223,7 @@ mod tests {
         let media = MediaStorageService::new(pool.clone());
         let libraries = VirtualLibraryService::new(pool.clone(), servers.clone(), media.clone());
         let processor = UrlProcessor::from(DataContext {
+            paths: crate::config::Paths::temporary(),
             user_authorization: Arc::new(UserAuthorizationService::new(pool)),
             server_storage: Arc::new(servers),
             media_storage: Arc::new(media),

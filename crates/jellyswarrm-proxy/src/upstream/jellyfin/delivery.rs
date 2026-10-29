@@ -10,13 +10,13 @@ use super::hls;
 use crate::upstream::headers::remove_hop_by_hop_headers;
 
 /// Concrete transport dependencies, with authorization resolved by the caller.
-pub struct DeliveryContext<'a> {
+pub(crate) struct DeliveryContext<'a> {
     streaming_client: &'a reqwest::Client,
     hls: hls::HlsContext<'a>,
 }
 
 impl<'a> DeliveryContext<'a> {
-    pub fn new(streaming_client: &'a reqwest::Client, hls: hls::HlsContext<'a>) -> Self {
+    pub(crate) fn new(streaming_client: &'a reqwest::Client, hls: hls::HlsContext<'a>) -> Self {
         Self {
             streaming_client,
             hls,
@@ -24,22 +24,22 @@ impl<'a> DeliveryContext<'a> {
     }
 }
 
-pub type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, io::Error>> + Send>>;
+pub(crate) type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, io::Error>> + Send>>;
 
-pub enum DeliveryBody {
+pub(crate) enum DeliveryBody {
     Empty,
     Stream(ByteStream),
     Playlist(String),
 }
 
-pub struct DeliveryResponse {
-    pub status: StatusCode,
-    pub headers: HeaderMap,
-    pub body: DeliveryBody,
+pub(crate) struct DeliveryResponse {
+    pub(crate) status: StatusCode,
+    pub(crate) headers: HeaderMap,
+    pub(crate) body: DeliveryBody,
 }
 
 /// Encode a backend-owned temporary redirect using already selected credentials.
-pub fn redirect(
+pub(crate) fn redirect(
     request: &reqwest::Request,
     backend_token: Option<&str>,
 ) -> Result<DeliveryResponse, ApplicationError> {
@@ -81,7 +81,7 @@ pub fn redirect(
 
 /// Execute a resolved request without selecting or changing its backend.
 /// Binary bodies are never collected; only HLS playlists are buffered.
-pub async fn proxy(
+pub(crate) async fn proxy(
     context: &DeliveryContext<'_>,
     mut request: reqwest::Request,
 ) -> Result<DeliveryResponse, ApplicationError> {

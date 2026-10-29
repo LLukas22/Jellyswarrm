@@ -18,7 +18,7 @@ use crate::{
 };
 use std::sync::Arc;
 
-pub static MEDIA_ID_PATH_TAGS: &[&str] = &[
+pub(crate) static MEDIA_ID_PATH_TAGS: &[&str] = &[
     "Items",
     "Items/RemoteSearch/Apply",
     "Audio",
@@ -40,10 +40,12 @@ pub static MEDIA_ID_PATH_TAGS: &[&str] = &[
     "UserPlayedItems",
 ];
 
-pub use super::field_matcher::{matches_case_insensitive, API_KEY_QUERY_TAGS, MEDIA_ID_QUERY_TAGS};
+pub(crate) use super::field_matcher::{
+    matches_case_insensitive, API_KEY_QUERY_TAGS, MEDIA_ID_QUERY_TAGS,
+};
 
-pub static USER_ID_PATH_TAGS: &[&str] = &["Users"];
-pub static USER_ID_QUERY_TAGS: &[&str] = &["UserId"];
+pub(crate) static USER_ID_PATH_TAGS: &[&str] = &["Users"];
+pub(crate) static USER_ID_QUERY_TAGS: &[&str] = &["UserId"];
 
 fn path_media_source_id(url: &url::Url) -> Option<String> {
     decoded_path_segments(url.path())
@@ -103,7 +105,7 @@ pub(crate) fn play_session_id(url: &url::Url) -> Result<Option<String>> {
 }
 
 #[derive(Clone)]
-pub struct UrlProcessor {
+pub(crate) struct UrlProcessor {
     media_storage: Arc<MediaStorageService>,
     virtual_library_service: Arc<VirtualLibraryService>,
     play_sessions: Arc<SessionStorage>,
@@ -128,7 +130,7 @@ impl UrlProcessor {
         }
     }
 
-    pub async fn client_to_server_url(
+    pub(crate) async fn client_to_server_url(
         &self,
         url: &mut url::Url,
         session: Option<&AuthorizationSession>,
@@ -153,17 +155,6 @@ impl UrlProcessor {
 
         url.query_pairs_mut().clear().extend_pairs(pairs);
         Ok(())
-    }
-
-    pub async fn server_to_client_delivery_url(
-        &self,
-        value: &str,
-        server: &Server,
-        proxy_api_key: Option<&str>,
-    ) -> Result<Option<String>> {
-        DeliveryUrlTranslator::new(self.media_storage.clone())
-            .translate(value, server, proxy_api_key)
-            .await
     }
 
     /// HLS references are resolved against the upstream playlist, then returned
@@ -238,7 +229,7 @@ impl UrlProcessor {
         Ok(relative_url_from_parts(&url))
     }
 
-    pub async fn upstream_user_id(
+    pub(crate) async fn upstream_user_id(
         &self,
         user_id: &str,
         session: Option<&AuthorizationSession>,
@@ -253,7 +244,7 @@ impl UrlProcessor {
             })
     }
 
-    pub async fn validate_container_request(
+    pub(crate) async fn validate_container_request(
         &self,
         url: &url::Url,
         session: Option<&AuthorizationSession>,
@@ -711,6 +702,7 @@ mod tests {
             .unwrap()
             .1;
         let processor = UrlProcessor::from(DataContext {
+            paths: crate::config::Paths::temporary(),
             user_authorization: Arc::new(user_authorization),
             server_storage: Arc::new(server_storage),
             media_storage: Arc::new(media_storage),
@@ -848,9 +840,10 @@ mod tests {
     use super::*;
     use crate::{
         auth::service::UserAuthorizationService,
-        config::{AppConfig, MediaStreamingMode, MIGRATOR},
+        config::{AppConfig, MediaStreamingMode},
         libraries::service::VirtualLibraryService,
         media::storage::MediaStorageService,
+        persistence::MIGRATOR,
         playback::sessions::SessionStorage,
         servers::storage::ServerStorageService,
     };

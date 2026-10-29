@@ -93,8 +93,8 @@ impl CatalogSnapshots {
 }
 
 pub(crate) struct SnapshotResponse {
-    pub response: serde_json::Value,
-    pub report: super::scan::CatalogReport,
+    pub(crate) response: serde_json::Value,
+    pub(crate) report: super::scan::CatalogReport,
 }
 
 enum BuildFailure {
@@ -163,7 +163,7 @@ fn hash_request_identity(
 }
 
 impl SnapshotRequest {
-    pub async fn prepare(
+    pub(crate) async fn prepare(
         state: &CatalogService,
         request: &CatalogRequest,
         targets: &[CatalogFetchTarget],
@@ -234,14 +234,14 @@ impl SnapshotRequest {
         }
     }
 
-    pub fn materialization_policy(
+    pub(crate) fn materialization_policy(
         &self,
         request: &CatalogRequest,
     ) -> super::request_policy::CatalogRequestPolicy {
         request.query().policy(self.key.is_some())
     }
 
-    pub async fn serve(
+    pub(crate) async fn serve(
         self,
         state: &CatalogService,
         build: impl std::future::Future<Output = Result<SnapshotResponse, ApplicationError>>,

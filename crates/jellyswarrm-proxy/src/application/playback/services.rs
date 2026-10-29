@@ -17,24 +17,24 @@ use crate::{
 };
 
 pub(crate) struct PlaybackProcessors<'a> {
-    pub url_processor: &'a UrlProcessor,
-    pub response_processor: &'a ResponseProcessor,
+    pub(crate) url_processor: &'a UrlProcessor,
+    pub(crate) response_processor: &'a ResponseProcessor,
 }
 
 pub(crate) struct PlaybackService<'a> {
-    pub media_storage: &'a MediaStorageService,
-    pub server_storage: &'a ServerStorageService,
-    pub play_sessions: &'a SessionStorage,
-    pub config: &'a SettingsView,
-    pub selection: &'a crate::application::url_selection::UrlSelection,
-    pub processors: PlaybackProcessors<'a>,
-    pub upstream: Box<dyn JsonUpstream + 'a>,
-    pub streaming_reqwest_client: &'a reqwest::Client,
-    pub client_sessions: &'a crate::sessions::ClientSessionService,
+    pub(crate) media_storage: &'a MediaStorageService,
+    pub(crate) server_storage: &'a ServerStorageService,
+    pub(crate) play_sessions: &'a SessionStorage,
+    pub(crate) config: &'a SettingsView,
+    pub(crate) selection: &'a crate::application::url_selection::UrlSelection,
+    pub(crate) processors: PlaybackProcessors<'a>,
+    pub(crate) upstream: Box<dyn JsonUpstream + 'a>,
+    pub(crate) streaming_reqwest_client: &'a reqwest::Client,
+    pub(crate) client_sessions: &'a crate::sessions::ClientSessionService,
 }
 
 impl PlaybackService<'_> {
-    pub fn routing_services(&self) -> RoutingServices<'_> {
+    pub(crate) fn routing_services(&self) -> RoutingServices<'_> {
         RoutingServices {
             media_storage: self.media_storage,
             server_storage: self.server_storage,
@@ -44,7 +44,7 @@ impl PlaybackService<'_> {
             urls: self.processors.url_processor,
         }
     }
-    pub async fn get_url_prefix(&self) -> Option<String> {
+    pub(crate) async fn get_url_prefix(&self) -> Option<String> {
         self.config
             .read()
             .await
@@ -53,7 +53,7 @@ impl PlaybackService<'_> {
             .map(ToString::to_string)
     }
 
-    pub async fn process_response_json_typed(
+    pub(crate) async fn process_response_json_typed(
         &self,
         payload: &mut serde_json::Value,
         server: &Server,
@@ -71,7 +71,7 @@ impl PlaybackService<'_> {
         .await
     }
 
-    pub async fn execute_processed_json(
+    pub(crate) async fn execute_processed_json(
         &self,
         request: reqwest::Request,
         server: &Server,

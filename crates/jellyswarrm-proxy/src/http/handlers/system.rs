@@ -5,7 +5,7 @@ use crate::{
 use axum::{extract::State, Json};
 use hyper::StatusCode;
 
-pub async fn info_public(
+pub(crate) async fn info_public(
     State(state): State<AppState>,
 ) -> Result<Json<crate::models::PublicServerInfo>, StatusCode> {
     let ui_version = JELLYFIN_UI_VERSION.clone().unwrap_or_default().version;
@@ -14,7 +14,7 @@ pub async fn info_public(
     ))
 }
 
-pub async fn info(
+pub(crate) async fn info(
     State(state): State<AppState>,
     OperationInput(input): OperationInput,
 ) -> Result<Json<crate::models::ServerInfo>, StatusCode> {

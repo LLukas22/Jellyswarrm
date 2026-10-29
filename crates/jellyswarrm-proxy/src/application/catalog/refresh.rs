@@ -19,16 +19,16 @@ use super::{
 /// caller resolves them through the normal session service, never an invented
 /// HTTP request. Only exhaustive virtual-library inventories are supported.
 pub(crate) struct CatalogRefresh {
-    pub library_id: String,
-    pub access_scope: VirtualLibraryAccessScope,
-    pub sessions: Vec<AuthorizationSession>,
+    pub(crate) library_id: String,
+    pub(crate) access_scope: VirtualLibraryAccessScope,
+    pub(crate) sessions: Vec<AuthorizationSession>,
 }
 
 // Read by future refresh callers; no scheduler is enabled by this extraction.
 #[allow(dead_code)]
 pub(crate) struct RefreshResult {
-    pub report: CatalogReport,
-    pub response: serde_json::Value,
+    pub(crate) report: CatalogReport,
+    pub(crate) response: serde_json::Value,
 }
 
 /// Reserved service entry point for on-demand/background refresh callers.

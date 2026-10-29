@@ -9,9 +9,9 @@ mod tests;
 pub(crate) mod transport;
 mod websocket;
 
-pub use http::router;
-pub use service::ClientSessionService;
-pub use websocket::websocket;
+pub(crate) use http::router;
+pub(crate) use service::ClientSessionService;
+pub(crate) use websocket::websocket;
 
 use crate::{
     auth::service::User, http::preprocessing::resolve_request_identity_from_headers_uri, AppState,
@@ -22,7 +22,7 @@ use axum::{
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
-pub type AuthenticationResponse = (
+pub(crate) type AuthenticationResponse = (
     axum::http::HeaderMap,
     axum::Json<crate::models::AuthenticateResponse>,
 );
@@ -30,7 +30,7 @@ pub type AuthenticationResponse = (
 /// Browser WebSockets cannot set Authorization headers, and Jellyfin Web sends
 /// only ApiKey. Its proxy key is shared across devices, so retain device metadata
 /// in a same-origin cookie. This is an identity hint, never an authentication token.
-pub fn authentication_response(
+pub(crate) fn authentication_response(
     response: crate::models::AuthenticateResponse,
 ) -> AuthenticationResponse {
     let session = &response.session_info;
@@ -84,8 +84,8 @@ fn websocket_cookie_device(
 
 #[derive(Clone)]
 pub(crate) struct SessionContext {
-    pub user: User,
-    pub session_id: String,
+    pub(crate) user: User,
+    pub(crate) session_id: String,
 }
 
 impl FromRequestParts<AppState> for SessionContext {
@@ -154,7 +154,7 @@ async fn snapshots(state: &AppState, user_id: &str) -> Result<Vec<serde_json::Va
 }
 
 /// Give both password and Quick Connect authentication the same local session DTO.
-pub async fn decorate_authentication(
+pub(crate) async fn decorate_authentication(
     sessions: &ClientSessionService,
     server_id: &str,
     user: &User,
@@ -178,7 +178,7 @@ pub async fn decorate_authentication(
 }
 
 /// Reset local client connections together with an administrative session reset.
-pub async fn end_user_sessions(state: &AppState, user_id: &str) {
+pub(crate) async fn end_user_sessions(state: &AppState, user_id: &str) {
     for session in state.client_sessions.for_user(user_id).await {
         state.syncplay.end_session(&session.id).await;
         state.client_sessions.remove(&session.id).await;

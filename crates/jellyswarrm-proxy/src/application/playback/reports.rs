@@ -15,8 +15,8 @@ use crate::{
 
 #[derive(Debug)]
 pub(crate) struct ResolvedReportTarget {
-    pub server: Server,
-    pub session: AuthorizationSession,
+    pub(crate) server: Server,
+    pub(crate) session: AuthorizationSession,
 }
 
 // Reports must not use the generic best-server fallback: a wrong destination can
@@ -158,10 +158,8 @@ pub(crate) async fn resolve_cancellation(
 mod tests {
     use super::*;
     use crate::{
-        auth::service::Device,
-        config::{MediaStreamingMode, MIGRATOR},
-        playback::sessions::PlaybackSession,
-        servers::id::ServerId,
+        auth::service::Device, config::MediaStreamingMode, persistence::MIGRATOR,
+        playback::sessions::PlaybackSession, servers::id::ServerId,
         servers::storage::ServerStorageService,
     };
 

@@ -2,7 +2,7 @@
 use super::*;
 
 #[derive(Debug, thiserror::Error)]
-pub enum MappingCredentialError {
+pub(crate) enum MappingCredentialError {
     #[error("mapping has the wrong credential kind")]
     WrongKind,
     #[error("mapping encryption key unavailable")]
@@ -71,7 +71,7 @@ impl UserAuthorizationService {
 
     /// Add or update server mapping for a user
     #[cfg(not(test))]
-    pub async fn add_server_mapping(
+    pub(crate) async fn add_server_mapping(
         &self,
         user_id: &str,
         server: &Server,
@@ -91,7 +91,7 @@ impl UserAuthorizationService {
     }
 
     #[cfg(test)]
-    pub async fn add_server_mapping<'a, S>(
+    pub(crate) async fn add_server_mapping<'a, S>(
         &self,
         user_id: &str,
         server: S,
@@ -216,7 +216,7 @@ impl UserAuthorizationService {
 
     /// Persist a Quick Connect credential independently of client-device sessions.
     /// Re-linking invalidates sessions that may refer to another upstream account.
-    pub async fn add_quick_connect_mapping(
+    pub(crate) async fn add_quick_connect_mapping(
         &self,
         user_id: &str,
         server: &Server,
@@ -270,7 +270,7 @@ impl UserAuthorizationService {
         Ok(id)
     }
 
-    pub fn decrypt_mapping_token(
+    pub(crate) fn decrypt_mapping_token(
         &self,
         mapping: &ServerMapping,
         user_key: &HashedPassword,
@@ -297,7 +297,7 @@ impl UserAuthorizationService {
     }
 
     /// Decrypt a server mapping password
-    pub fn decrypt_server_mapping_password(
+    pub(crate) fn decrypt_server_mapping_password(
         &self,
         mapping: &ServerMapping,
         user_password: &HashedPassword,
@@ -432,7 +432,7 @@ impl UserAuthorizationService {
     }
 
     /// Get server mapping
-    pub async fn get_server_mapping(
+    pub(crate) async fn get_server_mapping(
         &self,
         user_id: &str,
         server: &Server,
@@ -441,7 +441,7 @@ impl UserAuthorizationService {
             .await
     }
 
-    pub async fn get_server_mapping_by_server_id(
+    pub(crate) async fn get_server_mapping_by_server_id(
         &self,
         user_id: &str,
         server_id: ServerId,
@@ -468,7 +468,7 @@ impl UserAuthorizationService {
     }
 
     /// List all server mappings for a user
-    pub async fn list_server_mappings(
+    pub(crate) async fn list_server_mappings(
         &self,
         user_id: &str,
     ) -> Result<Vec<ServerMapping>, sqlx::Error> {
@@ -494,7 +494,7 @@ impl UserAuthorizationService {
     /// Call only after verifying the local password. Raw-password-key legacy
     /// mappings can be migrated without contacting the backend because AEAD
     /// decryption authenticates their contents. Ambiguous values remain legacy.
-    pub async fn upgrade_mappings_with_verified_password(
+    pub(crate) async fn upgrade_mappings_with_verified_password(
         &self,
         user_id: &str,
         password: &Password,
@@ -513,7 +513,7 @@ impl UserAuthorizationService {
 
     /// Persist a legacy password only after successful upstream authentication.
     /// Compare against the original row so a concurrent reconnect is not lost.
-    pub async fn upgrade_validated_password_mapping(
+    pub(crate) async fn upgrade_validated_password_mapping(
         &self,
         mapping: &ServerMapping,
         plaintext: &Password,
@@ -541,7 +541,7 @@ impl UserAuthorizationService {
 
     /// Resolve a backend account only when it identifies one virtual user on
     /// this server. Multiple devices are fine; ambiguous account aliases aren't.
-    pub async fn virtual_user_id_for_backend(
+    pub(crate) async fn virtual_user_id_for_backend(
         &self,
         server_id: crate::servers::id::ServerId,
         original_user_id: &str,
@@ -562,7 +562,7 @@ impl UserAuthorizationService {
     }
 
     /// Delete a server mapping
-    pub async fn delete_server_mapping(&self, mapping_id: i64) -> Result<bool, sqlx::Error> {
+    pub(crate) async fn delete_server_mapping(&self, mapping_id: i64) -> Result<bool, sqlx::Error> {
         let mut tx = self.pool.begin().await?;
 
         sqlx::query("DELETE FROM authorization_sessions WHERE mapping_id = ?")
@@ -581,7 +581,10 @@ impl UserAuthorizationService {
     }
 
     /// Get all servers mapped to a user, sorted by priority
-    pub async fn get_mapped_servers(&self, user_id: &str) -> Result<Vec<Server>, sqlx::Error> {
+    pub(crate) async fn get_mapped_servers(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<Server>, sqlx::Error> {
         let rows = sqlx::query(
             r#"
             SELECT s.id, s.name, s.url, s.priority, s.media_streaming_mode, s.created_at, s.updated_at

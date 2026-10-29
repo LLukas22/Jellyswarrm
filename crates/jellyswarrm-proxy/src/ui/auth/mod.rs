@@ -18,23 +18,23 @@ use crate::{
 
 mod routes;
 
-pub use routes::router;
+pub(crate) use routes::router;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum UserRole {
+pub(crate) enum UserRole {
     Admin,
     User,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct User {
-    pub id: UserId,
-    pub username: String,
-    pub local_credential: LocalCredential,
-    pub role: UserRole,
+pub(crate) struct User {
+    pub(crate) id: UserId,
+    pub(crate) username: String,
+    pub(crate) local_credential: LocalCredential,
+    pub(crate) role: UserRole,
 }
 
-pub struct AuthenticatedUser(pub User);
+pub(crate) struct AuthenticatedUser(pub(crate) User);
 
 impl<S> FromRequestParts<S> for AuthenticatedUser
 where
@@ -82,26 +82,29 @@ impl AuthUser for User {
 // This allows us to extract the authentication fields from forms. We use this
 // to authenticate requests with the backend.
 #[derive(Debug, Clone, Deserialize)]
-pub struct Credentials {
-    pub username: String,
-    pub password: String,
-    pub next: Option<String>,
+pub(crate) struct Credentials {
+    pub(crate) username: String,
+    pub(crate) password: String,
+    pub(crate) next: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-pub struct Backend {
+pub(crate) struct Backend {
     config: Arc<RwLock<AppConfig>>,
     user_auth: Arc<UserAuthorizationService>,
 }
 
 impl Backend {
-    pub fn new(config: Arc<RwLock<AppConfig>>, user_auth: Arc<UserAuthorizationService>) -> Self {
+    pub(crate) fn new(
+        config: Arc<RwLock<AppConfig>>,
+        user_auth: Arc<UserAuthorizationService>,
+    ) -> Self {
         Self { config, user_auth }
     }
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
+pub(crate) enum Error {
     #[error(transparent)]
     TaskJoin(#[from] task::JoinError),
     #[error(transparent)]
@@ -182,7 +185,7 @@ impl AuthnBackend for Backend {
 // We use a type alias for convenience.
 //
 // Note that we've supplied our concrete backend here.
-pub type AuthSession = axum_login::AuthSession<Backend>;
+pub(crate) type AuthSession = axum_login::AuthSession<Backend>;
 
 #[cfg(test)]
 mod tests {

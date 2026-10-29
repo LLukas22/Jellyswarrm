@@ -54,14 +54,14 @@ pub(super) fn normalize_detail_member(
 }
 
 pub(crate) struct DetailMergeContext<'a> {
-    pub requested_item_id: &'a str,
-    pub selected_group: Option<MediaVersionGroup>,
-    pub base_server: &'a Server,
-    pub auth: &'a Option<JellyfinAuthorization>,
-    pub access_scope: Option<&'a VirtualLibraryAccessScope>,
-    pub sessions: Option<&'a [(AuthorizationSession, Server)]>,
-    pub original_request: &'a reqwest::Request,
-    pub source_generation: crate::media::storage::ReconciliationGeneration,
+    pub(crate) requested_item_id: &'a str,
+    pub(crate) selected_group: Option<MediaVersionGroup>,
+    pub(crate) base_server: &'a Server,
+    pub(crate) auth: &'a Option<JellyfinAuthorization>,
+    pub(crate) access_scope: Option<&'a VirtualLibraryAccessScope>,
+    pub(crate) sessions: Option<&'a [(AuthorizationSession, Server)]>,
+    pub(crate) original_request: &'a reqwest::Request,
+    pub(crate) source_generation: crate::media::storage::ReconciliationGeneration,
 }
 
 #[derive(Debug)]

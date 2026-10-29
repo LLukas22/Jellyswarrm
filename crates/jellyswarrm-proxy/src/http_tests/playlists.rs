@@ -4,7 +4,7 @@ use crate::config::MediaStreamingMode;
 use crate::processors::response_processor::ResponseProcessingProfile;
 use crate::{
     auth::{service::User, UserAuthorizationService},
-    config::{AppConfig, MIGRATOR},
+    config::AppConfig,
     http::{
         handlers::quick_connect::QuickConnectStorage, proxy::proxy_handler,
         router::item_detail_routes,
@@ -12,6 +12,7 @@ use crate::{
     libraries::VirtualLibraryService,
     media::MediaStorageService,
     models::Authorization,
+    persistence::MIGRATOR,
     playback::sessions::SessionStorage,
     processors::ProxyProcessors,
     servers::{Server, ServerStorageService},
@@ -66,6 +67,7 @@ impl Fixture {
         let servers = ServerStorageService::new(pool.clone());
         let media = MediaStorageService::new(pool.clone());
         let data = DataContext {
+            paths: crate::config::Paths::temporary(),
             user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
             server_storage: Arc::new(servers.clone()),
             media_storage: Arc::new(media.clone()),

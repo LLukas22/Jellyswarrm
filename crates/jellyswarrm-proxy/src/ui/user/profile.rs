@@ -17,10 +17,11 @@ mod tests {
     use crate::{
         auth::encryption::{HashedPassword, MappingEncryptionKey},
         auth::service::{CredentialFormat, UserAuthorizationService},
-        config::{AppConfig, MIGRATOR},
+        config::AppConfig,
         http::handlers::quick_connect::QuickConnectStorage,
         libraries::service::VirtualLibraryService,
         media::storage::MediaStorageService,
+        persistence::MIGRATOR,
         playback::sessions::SessionStorage,
         processors::ProxyProcessors,
         servers::storage::{Server, ServerStorageService},
@@ -75,6 +76,7 @@ mod tests {
         let server_storage = ServerStorageService::new(pool.clone());
         let media_storage = MediaStorageService::new(pool.clone());
         let context = DataContext {
+            paths: crate::config::Paths::temporary(),
             user_authorization: Arc::new(service),
             server_storage: Arc::new(server_storage.clone()),
             media_storage: Arc::new(media_storage.clone()),
@@ -214,19 +216,19 @@ mod tests {
 
 #[derive(Template)]
 #[template(path = "user/user_profile.html")]
-pub struct UserProfileTemplate {
-    pub username: String,
-    pub ui_route: String,
+pub(crate) struct UserProfileTemplate {
+    pub(crate) username: String,
+    pub(crate) ui_route: String,
 }
 
 #[derive(Deserialize)]
-pub struct ChangePasswordForm {
-    pub current_password: Password,
-    pub new_password: Password,
-    pub confirm_password: Password,
+pub(crate) struct ChangePasswordForm {
+    pub(crate) current_password: Password,
+    pub(crate) new_password: Password,
+    pub(crate) confirm_password: Password,
 }
 
-pub async fn get_user_profile(
+pub(crate) async fn get_user_profile(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> impl IntoResponse {
@@ -244,7 +246,7 @@ pub async fn get_user_profile(
     }
 }
 
-pub async fn post_user_password(
+pub(crate) async fn post_user_password(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Form(form): Form<ChangePasswordForm>,

@@ -16,46 +16,46 @@ use crate::{
 
 #[derive(Template)]
 #[template(path = "admin/servers.html")]
-pub struct ServersPageTemplate {
-    pub ui_route: String,
+pub(crate) struct ServersPageTemplate {
+    pub(crate) ui_route: String,
 }
 
-pub struct ServerWithAdmin {
-    pub server: Server,
-    pub has_admin: bool,
-    pub is_redirect: bool,
-    pub is_proxy: bool,
+pub(crate) struct ServerWithAdmin {
+    pub(crate) server: Server,
+    pub(crate) has_admin: bool,
+    pub(crate) is_redirect: bool,
+    pub(crate) is_proxy: bool,
 }
 
 #[derive(Template)]
 #[template(path = "admin/server_list.html")]
-pub struct ServerListTemplate {
-    pub servers: Vec<ServerWithAdmin>,
-    pub ui_route: String,
+pub(crate) struct ServerListTemplate {
+    pub(crate) servers: Vec<ServerWithAdmin>,
+    pub(crate) ui_route: String,
 }
 
 #[derive(Deserialize)]
-pub struct AddServerForm {
-    pub name: String,
-    pub url: String,
-    pub priority: i32,
-    pub media_streaming_mode: String,
+pub(crate) struct AddServerForm {
+    pub(crate) name: String,
+    pub(crate) url: String,
+    pub(crate) priority: i32,
+    pub(crate) media_streaming_mode: String,
 }
 
 #[derive(Deserialize)]
-pub struct UpdatePriorityForm {
-    pub priority: i32,
+pub(crate) struct UpdatePriorityForm {
+    pub(crate) priority: i32,
 }
 
 #[derive(Deserialize)]
-pub struct UpdateMediaStreamingModeForm {
-    pub media_streaming_mode: String,
+pub(crate) struct UpdateMediaStreamingModeForm {
+    pub(crate) media_streaming_mode: String,
 }
 
 #[derive(Deserialize)]
-pub struct AddServerAdminForm {
-    pub username: String,
-    pub password: Password,
+pub(crate) struct AddServerAdminForm {
+    pub(crate) username: String,
+    pub(crate) password: Password,
 }
 
 async fn render_server_list(state: &AppState) -> Result<String, String> {
@@ -90,7 +90,7 @@ async fn render_server_list(state: &AppState) -> Result<String, String> {
 }
 
 /// Main servers management page
-pub async fn servers_page(State(state): State<AppState>) -> impl IntoResponse {
+pub(crate) async fn servers_page(State(state): State<AppState>) -> impl IntoResponse {
     let template = ServersPageTemplate {
         ui_route: state.get_ui_route().await,
     };
@@ -105,7 +105,7 @@ pub async fn servers_page(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 /// Get server list partial (for HTMX)
-pub async fn get_server_list(State(state): State<AppState>) -> impl IntoResponse {
+pub(crate) async fn get_server_list(State(state): State<AppState>) -> impl IntoResponse {
     match render_server_list(&state).await {
         Ok(html) => Html(html).into_response(),
         Err(e) => {
@@ -116,7 +116,7 @@ pub async fn get_server_list(State(state): State<AppState>) -> impl IntoResponse
 }
 
 /// Add a new server
-pub async fn add_server(
+pub(crate) async fn add_server(
     State(state): State<AppState>,
     Form(form): Form<AddServerForm>,
 ) -> Response {
@@ -212,7 +212,7 @@ pub async fn add_server(
 }
 
 /// Update server media streaming mode
-pub async fn update_server_media_streaming_mode(
+pub(crate) async fn update_server_media_streaming_mode(
     State(state): State<AppState>,
     Path(server_id): Path<ServerId>,
     Form(form): Form<UpdateMediaStreamingModeForm>,
@@ -257,7 +257,7 @@ pub async fn update_server_media_streaming_mode(
 }
 
 /// Delete a server
-pub async fn delete_server(
+pub(crate) async fn delete_server(
     State(state): State<AppState>,
     Path(server_id): Path<ServerId>,
 ) -> Response {
@@ -284,7 +284,7 @@ pub async fn delete_server(
 }
 
 /// Update server priority
-pub async fn update_server_priority(
+pub(crate) async fn update_server_priority(
     State(state): State<AppState>,
     Path(server_id): Path<ServerId>,
     Form(form): Form<UpdatePriorityForm>,
@@ -324,7 +324,7 @@ pub async fn update_server_priority(
 }
 
 /// Add server admin
-pub async fn add_server_admin(
+pub(crate) async fn add_server_admin(
     State(state): State<AppState>,
     Path(server_id): Path<ServerId>,
     Form(form): Form<AddServerAdminForm>,
@@ -372,7 +372,7 @@ fn server_credential_error(
 }
 
 /// Delete server admin
-pub async fn delete_server_admin(
+pub(crate) async fn delete_server_admin(
     State(state): State<AppState>,
     Path(server_id): Path<ServerId>,
 ) -> Response {

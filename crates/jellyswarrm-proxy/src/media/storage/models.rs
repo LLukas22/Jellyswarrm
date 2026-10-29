@@ -1,54 +1,84 @@
 //! Persisted media mappings, version records, and validated reconciliation evidence.
 use super::*;
 #[derive(Debug, Clone)]
-pub struct MediaMapping {
-    pub id: i64,
-    pub virtual_media_id: String,
-    pub original_media_id: String,
-    pub server_id: ServerId,
-    pub server_url: String,
-    pub created_at: chrono::DateTime<chrono::Utc>,
+pub(crate) struct MediaMapping {
+    pub(crate) id: i64,
+    pub(crate) virtual_media_id: String,
+    pub(crate) original_media_id: String,
+    pub(crate) server_id: ServerId,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Canonical URL is asserted by storage tests")
+    )]
+    pub(crate) server_url: String,
+    #[expect(
+        dead_code,
+        reason = "Retain timestamp decoding and media mapping diagnostics"
+    )]
+    pub(crate) created_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Debug, Clone)]
-pub struct MediaVersionGroup {
-    pub id: i64,
-    pub virtual_media_id: String,
-    pub scope_id: i64,
-    pub published: bool,
-    pub ambiguous: bool,
+pub(crate) struct MediaVersionGroup {
+    pub(crate) id: i64,
+    pub(crate) virtual_media_id: String,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Reconciliation scope is asserted by storage tests"
+        )
+    )]
+    pub(crate) scope_id: i64,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Publication transitions are asserted by storage tests"
+        )
+    )]
+    pub(crate) published: bool,
+    #[expect(
+        dead_code,
+        reason = "Eligibility is filtered in SQL; retain ambiguity in group diagnostics"
+    )]
+    pub(crate) ambiguous: bool,
 }
 
 #[derive(Debug, Clone)]
-pub struct MediaVersionMember {
-    pub mapping: MediaMapping,
-    pub server: Server,
+pub(crate) struct MediaVersionMember {
+    pub(crate) mapping: MediaMapping,
+    pub(crate) server: Server,
 }
 
 #[derive(Debug, Clone)]
-pub struct MediaVersionSourceObservation {
-    pub member_mapping_id: i64,
-    pub source_virtual_id: String,
+pub(crate) struct MediaVersionSourceObservation {
+    pub(crate) member_mapping_id: i64,
+    pub(crate) source_virtual_id: String,
 }
 
 #[derive(Debug, Clone)]
-pub struct MediaVersionSourceRoute {
-    pub source_mapping: MediaMapping,
-    pub member_mapping: MediaMapping,
+pub(crate) struct MediaVersionSourceRoute {
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Source identity is asserted by routing tests")
+    )]
+    pub(crate) source_mapping: MediaMapping,
+    pub(crate) member_mapping: MediaMapping,
 }
 
 #[derive(Debug, Clone)]
-pub struct MediaCatalogSnapshot {
-    pub source_key: String,
-    pub server_id: ServerId,
-    pub complete: bool,
-    pub observations: Vec<MediaObservation>,
+pub(crate) struct MediaCatalogSnapshot {
+    pub(crate) source_key: String,
+    pub(crate) server_id: ServerId,
+    pub(crate) complete: bool,
+    pub(crate) observations: Vec<MediaObservation>,
 }
 
 /// Issued by the persistent reconciliation clock; cannot be fabricated from an
 /// item/group ID or a caller-provided integer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ReconciliationGeneration(pub(super) i64);
+pub(crate) struct ReconciliationGeneration(pub(super) i64);
 
 impl ReconciliationGeneration {
     pub(crate) fn as_i64(self) -> i64 {
@@ -57,7 +87,7 @@ impl ReconciliationGeneration {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum ReconciliationMode {
+pub(crate) enum ReconciliationMode {
     Disabled,
     Enabled {
         generation: ReconciliationGeneration,
@@ -67,37 +97,37 @@ pub enum ReconciliationMode {
 /// Fetch evidence is distinct from query coverage. Bounded/partial sources can
 /// contribute observations, but neither is a complete inventory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InventorySourceStatus {
+pub(crate) enum InventorySourceStatus {
     Complete,
     Bounded,
     Incomplete,
 }
 
-pub struct InventorySourceEvidence {
-    pub source_key: String,
-    pub server_id: ServerId,
-    pub status: InventorySourceStatus,
+pub(crate) struct InventorySourceEvidence {
+    pub(crate) source_key: String,
+    pub(crate) server_id: ServerId,
+    pub(crate) status: InventorySourceStatus,
 }
 
 #[derive(Debug, thiserror::Error)]
 #[error("inconsistent catalog inventory evidence")]
-pub struct InvalidInventoryEvidence;
+pub(crate) struct InvalidInventoryEvidence;
 
 /// Only validated construction can grant replacement/pruning authority. The
 /// payload cannot be mutated after checking source identity and query coverage.
-pub struct CompleteInventory {
+pub(crate) struct CompleteInventory {
     pub(super) snapshots: Vec<MediaCatalogSnapshot>,
     pub(super) coverage: BTreeSet<MediaKind>,
     pub(super) prune_missing_sources: bool,
 }
 
-pub enum InventoryUpdate {
+pub(crate) enum InventoryUpdate {
     Observations(Vec<MediaCatalogSnapshot>),
     CompleteInventory(CompleteInventory),
 }
 
 impl InventoryUpdate {
-    pub fn validated_inventory(
+    pub(crate) fn validated_inventory(
         mut snapshots: Vec<MediaCatalogSnapshot>,
         coverage: BTreeSet<MediaKind>,
         evidence: &[InventorySourceEvidence],

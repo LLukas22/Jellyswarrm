@@ -2,22 +2,16 @@
 use url::Url;
 use uuid::Uuid;
 
-pub fn is_id_like(segment: &str) -> bool {
+pub(crate) fn is_id_like(segment: &str) -> bool {
     Uuid::parse_str(segment).is_ok()
 }
 
 /// Joins a server URL with a request path, preserving any subdirectories in the server URL
 ///
-/// # Examples
-///
-/// ```
-/// use url::Url;
-/// let server_url = Url::parse("http://server.com/jellyfin").unwrap();
-/// let request_path = "/Users/123";
-/// let result = join_server_url(&server_url, request_path);
-/// assert_eq!(result.as_str(), "http://server.com/jellyfin/Users/123");
-/// ```
-pub fn join_server_url(server_url: &Url, request_path: &str) -> Url {
+/// For example, `http://server.com/jellyfin` plus `/Users/123` becomes
+/// `http://server.com/jellyfin/Users/123`. The module's unit tests cover path
+/// composition; this helper is internal to the library.
+pub(crate) fn join_server_url(server_url: &Url, request_path: &str) -> Url {
     let mut new_url = server_url.clone();
     let server_path = new_url.path().trim_end_matches('/');
     let combined_path = if server_path.is_empty() {
@@ -29,7 +23,7 @@ pub fn join_server_url(server_url: &Url, request_path: &str) -> Url {
     new_url
 }
 
-pub fn decoded_path_segments(path: &str) -> Vec<String> {
+pub(crate) fn decoded_path_segments(path: &str) -> Vec<String> {
     let decoded = percent_encoding::percent_decode_str(path).decode_utf8_lossy();
     decoded
         .strip_prefix('/')
@@ -39,7 +33,7 @@ pub fn decoded_path_segments(path: &str) -> Vec<String> {
         .collect()
 }
 
-pub fn contains_id(url: &Url, name: &str) -> Option<String> {
+pub(crate) fn contains_id(url: &Url, name: &str) -> Option<String> {
     let tags = name.split('/').collect::<Vec<_>>();
     decoded_path_segments(url.path())
         .windows(tags.len() + 1)
@@ -53,7 +47,7 @@ pub fn contains_id(url: &Url, name: &str) -> Option<String> {
         .map(|parts| parts[tags.len()].clone())
 }
 
-pub fn replace_id(url: Url, original: &str, replacement: &str) -> Url {
+pub(crate) fn replace_id(url: Url, original: &str, replacement: &str) -> Url {
     let mut url = url;
     let segments = decoded_path_segments(url.path());
     if let Ok(mut path) = url.path_segments_mut() {
@@ -70,14 +64,14 @@ pub fn replace_id(url: Url, original: &str, replacement: &str) -> Url {
 
 /// Replaces the media ID immediately following `path_tag` without requiring
 /// callers to know the request's full route shape.
-pub fn replace_path_id(url: &Url, path_tag: &str, replacement: &str) -> Option<Url> {
+pub(crate) fn replace_path_id(url: &Url, path_tag: &str, replacement: &str) -> Option<Url> {
     let original = contains_id(url, path_tag)?;
     Some(replace_id(url.clone(), &original, replacement))
 }
 
 /// Consolidates repeated/comma-separated values into one query parameter,
 /// ensuring the requested value is present and preserving unrelated parameters.
-pub fn ensure_query_list_value(url: &mut Url, expected_key: &str, value: &str) {
+pub(crate) fn ensure_query_list_value(url: &mut Url, expected_key: &str, value: &str) {
     let mut pairs = url
         .query_pairs()
         .map(|(key, entry)| (key.into_owned(), entry.into_owned()))

@@ -90,8 +90,8 @@ fn rewrite_live_id(value: &mut Value, id: &str) {
 /// Live commands have caller context but no arbitrary initial backend. The
 /// negotiated playback/live binding selects the sole target before translation.
 pub(crate) struct LiveRequest {
-    pub original_request: reqwest::Request,
-    pub context: RequestContext,
+    pub(crate) original_request: reqwest::Request,
+    pub(crate) context: RequestContext,
 }
 
 /// Close preserves the upstream status without a body; refresh returns the

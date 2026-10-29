@@ -1,14 +1,12 @@
 //! Open SQLite with production durability settings and upgrade legacy identities before migrations.
 use super::legacy_server_identity::canonicalize_legacy_server_identity;
-use crate::config::{DATA_DIR, MIGRATOR};
+use crate::{config::Paths, persistence::MIGRATOR};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
-use std::{str::FromStr, time::Duration};
+use std::time::Duration;
 use tracing::error;
-pub(crate) async fn connect() -> Result<sqlx::SqlitePool, Box<dyn std::error::Error>> {
-    // Resolve database path inside DATA_DIR
-    let db_path = DATA_DIR.join("jellyswarrm.db");
-    let db_url = format!("sqlite://{}", db_path.to_string_lossy());
-    let options = SqliteConnectOptions::from_str(&db_url)?
+pub(crate) async fn connect(paths: &Paths) -> Result<sqlx::SqlitePool, Box<dyn std::error::Error>> {
+    let options = SqliteConnectOptions::new()
+        .filename(&paths.db)
         .create_if_missing(true)
         .journal_mode(SqliteJournalMode::Wal)
         .synchronous(SqliteSynchronous::Normal)

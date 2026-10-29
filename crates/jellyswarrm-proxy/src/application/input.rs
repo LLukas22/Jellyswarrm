@@ -11,30 +11,30 @@ use crate::{
 };
 
 pub(crate) struct OperationRequest {
-    pub original_request: reqwest::Request,
-    pub context: RequestContext,
-    pub body_analysis: Option<RequestBodyAnalysisResult>,
+    pub(crate) original_request: reqwest::Request,
+    pub(crate) context: RequestContext,
+    pub(crate) body_analysis: Option<RequestBodyAnalysisResult>,
 }
 
 /// Named boundary between incoming extraction and application execution. No
 /// backend is selected or encoded while collecting these caller-owned inputs.
 pub(crate) struct CollectedRequest {
-    pub original_request: reqwest::Request,
-    pub auth: Option<crate::auth::identity::JellyfinAuthorization>,
-    pub user: Option<crate::auth::service::User>,
-    pub sessions: Option<
+    pub(crate) original_request: reqwest::Request,
+    pub(crate) auth: Option<crate::auth::identity::JellyfinAuthorization>,
+    pub(crate) user: Option<crate::auth::service::User>,
+    pub(crate) sessions: Option<
         Vec<(
             crate::auth::service::AuthorizationSession,
             crate::servers::Server,
         )>,
     >,
-    pub body_analysis: Option<RequestBodyAnalysisResult>,
-    pub access_scope: Option<crate::libraries::service::VirtualLibraryAccessScope>,
+    pub(crate) body_analysis: Option<RequestBodyAnalysisResult>,
+    pub(crate) access_scope: Option<crate::libraries::service::VirtualLibraryAccessScope>,
 }
 
 pub(crate) struct ResolvedTarget {
-    pub target: AuthorizedTarget,
-    pub server_matched_request: bool,
+    pub(crate) target: AuthorizedTarget,
+    pub(crate) server_matched_request: bool,
 }
 
 impl OperationRequest {

@@ -167,8 +167,7 @@ mod tests {
     #[tokio::test]
     async fn delivery_translation_needs_only_media_storage_and_a_resolved_server() {
         use crate::{
-            config::{MediaStreamingMode, MIGRATOR},
-            servers::ServerStorageService,
+            config::MediaStreamingMode, persistence::MIGRATOR, servers::ServerStorageService,
         };
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
         MIGRATOR.run(&pool).await.unwrap();

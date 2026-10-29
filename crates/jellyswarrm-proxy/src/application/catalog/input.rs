@@ -8,9 +8,9 @@ use crate::{
 };
 
 pub(crate) struct CatalogRequest {
-    pub original_request: reqwest::Request,
-    pub context: RequestContext,
-    pub body_analysis: Option<RequestBodyAnalysisResult>,
+    pub(crate) original_request: reqwest::Request,
+    pub(crate) context: RequestContext,
+    pub(crate) body_analysis: Option<RequestBodyAnalysisResult>,
 }
 
 pub(crate) fn input_error_typed(error: anyhow::Error) -> ApplicationError {

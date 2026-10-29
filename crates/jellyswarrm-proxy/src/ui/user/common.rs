@@ -3,7 +3,7 @@ use crate::{auth::encryption::Password, servers::storage::Server, AppState};
 
 /// Validate ambiguous legacy values before the local password transaction.
 /// Do not accept a cached token as proof of the saved password's correctness.
-pub async fn prepare_mappings_for_password_change(
+pub(crate) async fn prepare_mappings_for_password_change(
     state: &AppState,
     user: &crate::ui::auth::User,
     verified_password: &Password,
@@ -22,7 +22,7 @@ pub async fn prepare_mappings_for_password_change(
         .map_err(|error| error.to_string())
 }
 
-pub async fn authenticate_user_on_server(
+pub(crate) async fn authenticate_user_on_server(
     state: &AppState,
     user: &crate::ui::auth::User,
     server: &Server,

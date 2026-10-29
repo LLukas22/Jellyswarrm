@@ -31,9 +31,9 @@ impl std::fmt::Debug for MappingAuthenticationError {
 }
 
 pub(crate) struct MappingLogin {
-    pub response: crate::models::AuthenticateResponse,
-    pub username: String,
-    pub password: Option<crate::auth::encryption::Password>,
+    pub(crate) response: crate::models::AuthenticateResponse,
+    pub(crate) username: String,
+    pub(crate) password: Option<crate::auth::encryption::Password>,
 }
 
 /// Independent authenticated identity over the shared transport. Each operation
@@ -41,9 +41,9 @@ pub(crate) struct MappingLogin {
 /// a process-global cache, and dropping this handle never revokes a durable
 /// Quick Connect credential. Logout is an explicit session-lifecycle action.
 pub(crate) struct AuthenticatedMapping {
-    pub client: Arc<JellyfinClient>,
-    pub user: jellyfin_api::models::User,
-    pub system_info: jellyfin_api::models::PublicSystemInfo,
+    pub(crate) client: Arc<JellyfinClient>,
+    pub(crate) user: jellyfin_api::models::User,
+    pub(crate) system_info: jellyfin_api::models::PublicSystemInfo,
     credential_owner: CredentialOwner,
 }
 
@@ -352,7 +352,7 @@ impl<'a> MappingAuthenticator<'a> {
     }
 }
 
-pub fn mapping_device_id(server: &Server, user_id: &str) -> String {
+pub(crate) fn mapping_device_id(server: &Server, user_id: &str) -> String {
     format!("jellyswarrm-{}-{}", server.id, user_id)
 }
 
@@ -360,15 +360,11 @@ pub fn mapping_device_id(server: &Server, user_id: &str) -> String {
 mod tests {
     use super::*;
     use crate::{
-        auth::service::UserAuthorizationService,
-        config::{AppConfig, MIGRATOR},
+        auth::service::UserAuthorizationService, config::AppConfig,
         http::handlers::quick_connect::QuickConnectStorage,
-        libraries::service::VirtualLibraryService,
-        media::storage::MediaStorageService,
-        playback::sessions::SessionStorage,
-        processors::ProxyProcessors,
-        servers::storage::ServerStorageService,
-        AppState, DataContext,
+        libraries::service::VirtualLibraryService, media::storage::MediaStorageService,
+        persistence::MIGRATOR, playback::sessions::SessionStorage, processors::ProxyProcessors,
+        servers::storage::ServerStorageService, AppState, DataContext,
     };
     use std::sync::Arc;
     use wiremock::{
@@ -491,6 +487,7 @@ mod tests {
             crate::auth::encryption::MappingEncryptionKey::from_session_key(&config.session_key)
                 .unwrap();
         let context = DataContext {
+            paths: crate::config::Paths::temporary(),
             user_authorization: Arc::new(UserAuthorizationService::with_mapping_key(
                 pool.clone(),
                 mapping_key,

@@ -23,9 +23,9 @@ pub(crate) enum FetchOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SourceOutcome {
-    pub server_id: crate::servers::id::ServerId,
-    pub parent_id: Option<crate::application::identity::BackendItemId>,
-    pub outcome: FetchOutcome,
+    pub(crate) server_id: crate::servers::id::ServerId,
+    pub(crate) parent_id: Option<crate::application::identity::BackendItemId>,
+    pub(crate) outcome: FetchOutcome,
 }
 
 /// One authoritative fetch report. Unavailable targets are retained even when
@@ -89,12 +89,12 @@ pub(super) struct ScanProgress {
 }
 
 impl ScanProgress {
-    pub fn offset(&self) -> usize {
+    pub(crate) fn offset(&self) -> usize {
         self.paging.fetched_count()
     }
 
     #[cfg(test)]
-    pub fn accept(&mut self, page: &ItemsResponseVariants) -> Result<bool, PartialReason> {
+    pub(crate) fn accept(&mut self, page: &ItemsResponseVariants) -> Result<bool, PartialReason> {
         self.accept_typed(page)
             .map(|step| step == ScanStep::Complete)
             .map_err(|error| match error {
@@ -103,7 +103,7 @@ impl ScanProgress {
             })
     }
 
-    pub fn accept_typed(
+    pub(crate) fn accept_typed(
         &mut self,
         page: &ItemsResponseVariants,
     ) -> Result<ScanStep, ApplicationError> {

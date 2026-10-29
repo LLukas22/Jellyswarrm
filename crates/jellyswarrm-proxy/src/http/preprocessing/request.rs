@@ -157,7 +157,7 @@ pub(crate) async fn extract_request_infos(
     })
 }
 
-pub async fn axum_to_reqwest(req: Request) -> Result<reqwest::Request> {
+pub(crate) async fn axum_to_reqwest(req: Request) -> Result<reqwest::Request> {
     let original_uri = req
         .extensions()
         .get::<OriginalUri>()
@@ -185,7 +185,7 @@ pub async fn axum_to_reqwest(req: Request) -> Result<reqwest::Request> {
 }
 
 /// Try to parse the body of a reqwest::Request into serde_json::Value
-pub fn body_to_json(request: &reqwest::Request) -> Option<serde_json::Value> {
+pub(crate) fn body_to_json(request: &reqwest::Request) -> Option<serde_json::Value> {
     if let Some(content_type) = request
         .headers()
         .get(reqwest::header::CONTENT_TYPE)

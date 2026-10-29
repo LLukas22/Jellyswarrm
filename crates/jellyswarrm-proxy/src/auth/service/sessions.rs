@@ -5,7 +5,10 @@ impl UserAuthorizationService {
     /// Encrypt old session tokens before accepting requests. Legacy rows cannot
     /// be left in the DB indefinitely: a Quick Connect session holds the same
     /// durable backend token as its mapping.
-    pub async fn enable_session_encryption(&mut self, secret: &[u8]) -> Result<(), sqlx::Error> {
+    pub(crate) async fn enable_session_encryption(
+        &mut self,
+        secret: &[u8],
+    ) -> Result<(), sqlx::Error> {
         let key = MappingEncryptionKey::for_authorization_sessions(secret)
             .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
         let mut tx = self.pool.begin().await?;
@@ -33,7 +36,7 @@ impl UserAuthorizationService {
 
     /// Store authorization session
     #[cfg(not(test))]
-    pub async fn store_authorization_session(
+    pub(crate) async fn store_authorization_session(
         &self,
         user_id: &str,
         server: &Server,
@@ -55,7 +58,7 @@ impl UserAuthorizationService {
     }
 
     #[cfg(test)]
-    pub async fn store_authorization_session<'a, S>(
+    pub(crate) async fn store_authorization_session<'a, S>(
         &self,
         user_id: &str,
         server: S,
@@ -157,7 +160,7 @@ impl UserAuthorizationService {
     }
 
     /// Get authorization sessions and servers for a user by user ID
-    pub async fn get_user_sessions_by_user_id(
+    pub(crate) async fn get_user_sessions_by_user_id(
         &self,
         user_id: &str,
     ) -> Result<Option<(User, Vec<(AuthorizationSession, Server)>)>, sqlx::Error> {
@@ -170,7 +173,8 @@ impl UserAuthorizationService {
     }
 
     /// Get authorization sessions and servers for a user by proxy token.
-    pub async fn get_user_sessions_by_virtual_token(
+    #[cfg(test)]
+    pub(crate) async fn get_user_sessions_by_virtual_token(
         &self,
         virtual_token: &str,
     ) -> Result<Option<(User, Vec<(AuthorizationSession, Server)>)>, sqlx::Error> {
@@ -184,7 +188,7 @@ impl UserAuthorizationService {
     }
 
     ///Get authorization sessions with servers for a user
-    pub async fn get_user_sessions(
+    pub(crate) async fn get_user_sessions(
         &self,
         user_id: &str,
         device: Option<Device>,
@@ -262,7 +266,7 @@ impl UserAuthorizationService {
     }
 
     /// Resolve abbreviated authenticated headers without weakening normal device matching.
-    pub async fn get_user_sessions_for_partial_device(
+    pub(crate) async fn get_user_sessions_for_partial_device(
         &self,
         user_id: &str,
         device: Option<&Device>,
@@ -290,7 +294,7 @@ impl UserAuthorizationService {
     ///
     /// This is intentionally scoped to Android TV clients and is only meant for a one-time
     /// reconciliation path when strict device matching would otherwise miss existing sessions.
-    pub async fn rebind_android_tv_device_sessions_if_needed(
+    pub(crate) async fn rebind_android_tv_device_sessions_if_needed(
         &self,
         user_id: &str,
         incoming_device: &Device,
@@ -439,7 +443,7 @@ impl UserAuthorizationService {
     }
 
     /// Get counts of authorization sessions per server for a user.
-    pub async fn session_counts_by_server(
+    pub(crate) async fn session_counts_by_server(
         &self,
         user_id: &str,
     ) -> Result<Vec<(String, i64)>, sqlx::Error> {
@@ -460,25 +464,11 @@ impl UserAuthorizationService {
             .collect())
     }
 
-    /// Aggregate session counts for all users (user_id, canonical server URL, count).
-    pub async fn all_session_counts(&self) -> Result<Vec<(String, String, i64)>, sqlx::Error> {
-        let rows = sqlx::query(
-            r#"SELECT auth.user_id, s.url as url_norm, COUNT(*) as cnt
-                FROM authorization_sessions auth
-                JOIN server_mappings sm ON auth.mapping_id = sm.id
-                JOIN servers s ON sm.server_id = s.id
-                GROUP BY auth.user_id, sm.server_id"#,
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows
-            .into_iter()
-            .map(|r| (r.get("user_id"), r.get("url_norm"), r.get("cnt")))
-            .collect())
-    }
-
     /// Delete all authorization sessions for a given user.
-    pub async fn delete_all_sessions_for_user(&self, user_id: &str) -> Result<u64, sqlx::Error> {
+    pub(crate) async fn delete_all_sessions_for_user(
+        &self,
+        user_id: &str,
+    ) -> Result<u64, sqlx::Error> {
         let res = sqlx::query("DELETE FROM authorization_sessions WHERE user_id = ?")
             .bind(user_id)
             .execute(&self.pool)
@@ -487,7 +477,11 @@ impl UserAuthorizationService {
     }
 
     /// Delete authorization sessions for a specific mapping.
-    pub async fn delete_sessions_for_mapping(&self, mapping_id: i64) -> Result<u64, sqlx::Error> {
+    #[cfg(test)]
+    pub(crate) async fn delete_sessions_for_mapping(
+        &self,
+        mapping_id: i64,
+    ) -> Result<u64, sqlx::Error> {
         let res = sqlx::query("DELETE FROM authorization_sessions WHERE mapping_id = ?")
             .bind(mapping_id)
             .execute(&self.pool)

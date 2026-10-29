@@ -76,15 +76,15 @@ check: doctor
 
 # Run client HTTP contracts against the in-process proxy and isolated mock backends.
 http-test:
-    cargo test --locked --package jellyswarrm-proxy --bin jellyswarrm-proxy http_tests
+    cargo test --locked --package jellyswarrm-proxy --lib http_tests
 
 # Run configuration-dependent HTTP contracts with separate backend libraries.
 http-test-normal:
-    cargo test --locked --package jellyswarrm-proxy --bin jellyswarrm-proxy normal_servers
+    cargo test --locked --package jellyswarrm-proxy --lib normal_servers
 
 # Run configuration-dependent HTTP contracts with merged libraries and deduplicated media.
 http-test-merged:
-    cargo test --locked --package jellyswarrm-proxy --bin jellyswarrm-proxy merged_libraries
+    cargo test --locked --package jellyswarrm-proxy --lib merged_libraries
 
 # Refresh the client call-site inventory after installing the UI dependencies.
 http-routes-update:

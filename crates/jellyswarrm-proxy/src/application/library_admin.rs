@@ -27,9 +27,9 @@ pub(crate) enum DiscoveryStage {
 
 #[derive(Debug)]
 pub(crate) struct DiscoveryIssue {
-    pub server: Option<String>,
-    pub user: Option<String>,
-    pub stage: DiscoveryStage,
+    pub(crate) server: Option<String>,
+    pub(crate) user: Option<String>,
+    pub(crate) stage: DiscoveryStage,
 }
 
 pub(crate) struct LibraryAdministration<'a> {
@@ -237,8 +237,9 @@ mod tests {
     use super::*;
     use crate::{
         auth::encryption::{encrypt_password, Password},
-        config::{MediaStreamingMode, MIGRATOR},
+        config::MediaStreamingMode,
         media::MediaStorageService,
+        persistence::MIGRATOR,
     };
     use wiremock::{
         matchers::{method, path},

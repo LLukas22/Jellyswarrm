@@ -11,13 +11,13 @@ use crate::{servers::id::ServerId, servers::storage::ServerHealthStatus, AppStat
 
 #[derive(Template)]
 #[template(path = "admin/server_status.html")]
-pub struct ServerStatusTemplate {
-    pub error_message: Option<String>,
-    pub server_version: Option<String>,
+pub(crate) struct ServerStatusTemplate {
+    pub(crate) error_message: Option<String>,
+    pub(crate) server_version: Option<String>,
 }
 
 /// Check server status
-pub async fn check_server_status(
+pub(crate) async fn check_server_status(
     State(state): State<AppState>,
     Path(server_id): Path<ServerId>,
 ) -> impl IntoResponse {

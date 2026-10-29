@@ -12,7 +12,7 @@ use crate::{
     servers::storage::{Server, ServerStorageService},
 };
 
-pub fn normalize_library_id(id: &str) -> String {
+pub(crate) fn normalize_library_id(id: &str) -> String {
     match Uuid::parse_str(id) {
         Ok(uuid) => uuid.simple().to_string(),
         Err(_) => id.to_string(),
@@ -46,7 +46,7 @@ struct AutomaticRefreshGeneration {
 }
 
 #[derive(Debug, Clone)]
-pub struct VirtualLibraryService {
+pub(crate) struct VirtualLibraryService {
     pool: SqlitePool,
     server_storage: ServerStorageService,
     media_storage: MediaStorageService,
@@ -58,7 +58,7 @@ mod membership;
 mod resolution;
 
 impl VirtualLibraryService {
-    pub fn new(
+    pub(crate) fn new(
         pool: SqlitePool,
         server_storage: ServerStorageService,
         media_storage: MediaStorageService,

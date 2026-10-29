@@ -465,9 +465,10 @@ mod tests {
         auth::service::{
             AuthorizationSession, Device, LocalCredential, User, UserAuthorizationService,
         },
-        config::{AppConfig, MediaStreamingMode, MIGRATOR},
+        config::{AppConfig, MediaStreamingMode},
         libraries::service::{VirtualLibraryAccessScope, VirtualLibraryService},
         media::storage::MediaStorageService,
+        persistence::MIGRATOR,
         playback::sessions::SessionStorage,
         processors::request_analyzer::RequestBodyAnalysisResult,
         processors::ProxyProcessors,
@@ -496,6 +497,7 @@ mod tests {
             .await
             .unwrap();
         let data = DataContext {
+            paths: crate::config::Paths::temporary(),
             user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
             server_storage: Arc::new(servers.clone()),
             media_storage: Arc::new(media.clone()),

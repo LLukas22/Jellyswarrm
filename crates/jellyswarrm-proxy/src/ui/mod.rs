@@ -19,13 +19,13 @@ use crate::{
     AppState,
 };
 
-pub mod admin;
-pub mod auth;
-pub mod release_status;
-pub mod root;
-pub mod server_status;
-pub mod user;
-pub use auth::Backend;
+pub(crate) mod admin;
+pub(crate) mod auth;
+pub(crate) mod release_status;
+pub(crate) mod root;
+pub(crate) mod server_status;
+pub(crate) mod user;
+pub(crate) use auth::Backend;
 
 #[derive(RustEmbed)]
 #[folder = "src/ui/resources/"]
@@ -56,9 +56,9 @@ async fn resource_handler(Path(path): Path<String>) -> impl IntoResponse {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct JellyfinUiVersion {
-    pub version: String,
-    pub commit: String,
+pub(crate) struct JellyfinUiVersion {
+    pub(crate) version: String,
+    pub(crate) commit: String,
 }
 
 impl default::Default for JellyfinUiVersion {
@@ -92,10 +92,10 @@ fn get_jellyfin_ui_version() -> Option<JellyfinUiVersion> {
     }
 }
 
-pub static JELLYFIN_UI_VERSION: LazyLock<Option<JellyfinUiVersion>> =
+pub(crate) static JELLYFIN_UI_VERSION: LazyLock<Option<JellyfinUiVersion>> =
     LazyLock::new(get_jellyfin_ui_version);
 
-pub fn ui_routes() -> axum::Router<AppState> {
+pub(crate) fn ui_routes() -> axum::Router<AppState> {
     let admin_routes = Router::new()
         // Users
         .route("/users", get(admin::users::users_page))

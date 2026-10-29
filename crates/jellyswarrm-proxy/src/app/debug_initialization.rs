@@ -4,7 +4,7 @@ use crate::{
     servers::storage::ServerStorageService,
 };
 
-pub async fn initialize_debug_user(
+pub(crate) async fn initialize_debug_user(
     config: &DebugUser,
     server_ids: &[ServerId],
     user_authorization: &UserAuthorizationService,
@@ -39,7 +39,8 @@ mod tests {
     use crate::{
         auth::encryption::Password,
         auth::service::UserAuthorizationService,
-        config::{DebugUser, MediaStreamingMode, MIGRATOR},
+        config::{DebugUser, MediaStreamingMode},
+        persistence::MIGRATOR,
         servers::storage::ServerStorageService,
     };
     use sqlx::SqlitePool;

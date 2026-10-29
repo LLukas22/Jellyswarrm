@@ -2,7 +2,7 @@
 use super::*;
 
 impl VirtualLibraryService {
-    pub async fn list_groups(&self) -> Result<Vec<LibraryGroup>, sqlx::Error> {
+    pub(crate) async fn list_groups(&self) -> Result<Vec<LibraryGroup>, sqlx::Error> {
         let rows: Vec<(String, String, i32, Option<String>)> = sqlx::query_as(
             "SELECT virtual_id, name, sort_order, collection_type \
              FROM library_groups ORDER BY sort_order, name",
@@ -23,7 +23,7 @@ impl VirtualLibraryService {
             .collect())
     }
 
-    pub async fn create_group(&self, name: &str) -> Result<LibraryGroup, sqlx::Error> {
+    pub(crate) async fn create_group(&self, name: &str) -> Result<LibraryGroup, sqlx::Error> {
         let virtual_id = Uuid::new_v4().simple().to_string();
         sqlx::query(
             "INSERT INTO library_groups (virtual_id, name, sort_order) \
@@ -39,7 +39,11 @@ impl VirtualLibraryService {
             .ok_or(sqlx::Error::RowNotFound)
     }
 
-    pub async fn rename_group(&self, virtual_id: &str, name: &str) -> Result<bool, sqlx::Error> {
+    pub(crate) async fn rename_group(
+        &self,
+        virtual_id: &str,
+        name: &str,
+    ) -> Result<bool, sqlx::Error> {
         let virtual_id = normalize_library_id(virtual_id);
         let result = sqlx::query("UPDATE library_groups SET name = ? WHERE virtual_id = ?")
             .bind(name.trim())
@@ -49,7 +53,7 @@ impl VirtualLibraryService {
         Ok(result.rows_affected() > 0)
     }
 
-    pub async fn delete_group(&self, virtual_id: &str) -> Result<bool, sqlx::Error> {
+    pub(crate) async fn delete_group(&self, virtual_id: &str) -> Result<bool, sqlx::Error> {
         let virtual_id = normalize_library_id(virtual_id);
         let result = sqlx::query("DELETE FROM library_groups WHERE virtual_id = ?")
             .bind(virtual_id)
@@ -58,7 +62,7 @@ impl VirtualLibraryService {
         Ok(result.rows_affected() > 0)
     }
 
-    pub async fn add_member(
+    pub(crate) async fn add_member(
         &self,
         group_virtual_id: &str,
         server_id: ServerId,
@@ -140,7 +144,7 @@ impl VirtualLibraryService {
         Ok(())
     }
 
-    pub async fn remove_member(
+    pub(crate) async fn remove_member(
         &self,
         group_virtual_id: &str,
         server_id: ServerId,
@@ -165,7 +169,7 @@ impl VirtualLibraryService {
         Ok(result.rows_affected() > 0)
     }
 
-    pub async fn list_members(
+    pub(crate) async fn list_members(
         &self,
         group_virtual_id: &str,
     ) -> Result<Vec<LibraryGroupMemberRecord>, sqlx::Error> {
@@ -194,7 +198,7 @@ impl VirtualLibraryService {
             .collect())
     }
 
-    pub async fn get_assignments(
+    pub(crate) async fn get_assignments(
         &self,
     ) -> Result<HashMap<(ServerId, String), LibraryAssignment>, sqlx::Error> {
         let rows: Vec<(i64, String, String, String, i32, Option<String>)> = sqlx::query_as(
@@ -231,7 +235,10 @@ impl VirtualLibraryService {
             .collect())
     }
 
-    pub async fn get_group(&self, virtual_id: &str) -> Result<Option<LibraryGroup>, sqlx::Error> {
+    pub(crate) async fn get_group(
+        &self,
+        virtual_id: &str,
+    ) -> Result<Option<LibraryGroup>, sqlx::Error> {
         let virtual_id = normalize_library_id(virtual_id);
         let row: Option<(String, String, i32, Option<String>)> = sqlx::query_as(
             "SELECT virtual_id, name, sort_order, collection_type \

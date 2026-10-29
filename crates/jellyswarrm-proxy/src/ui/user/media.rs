@@ -15,48 +15,48 @@ use crate::{
     AppState,
 };
 
-pub struct ServerInfo {
-    pub id: ServerId,
-    pub name: String,
+pub(crate) struct ServerInfo {
+    pub(crate) id: ServerId,
+    pub(crate) name: String,
 }
 
-pub struct LibraryWithCount {
-    pub id: String,
-    pub name: String,
-    pub count: i32,
+pub(crate) struct LibraryWithCount {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) count: i32,
 }
 
 #[derive(Template)]
 #[template(path = "user/user_media.html")]
-pub struct UserMediaTemplate {
-    pub servers: Vec<ServerInfo>,
-    pub ui_route: String,
+pub(crate) struct UserMediaTemplate {
+    pub(crate) servers: Vec<ServerInfo>,
+    pub(crate) ui_route: String,
 }
 
 #[derive(Template)]
 #[template(path = "user/server_libraries.html")]
-pub struct ServerLibrariesTemplate {
-    pub server_id: ServerId,
-    pub libraries: Vec<LibraryWithCount>,
-    pub ui_route: String,
+pub(crate) struct ServerLibrariesTemplate {
+    pub(crate) server_id: ServerId,
+    pub(crate) libraries: Vec<LibraryWithCount>,
+    pub(crate) ui_route: String,
 }
 
 #[derive(Template)]
 #[template(path = "user/library_items.html")]
-pub struct LibraryItemsTemplate {
-    pub server_id: ServerId,
-    pub library_id: String,
-    pub items: Vec<BaseItem>,
-    pub next_page: Option<i32>,
-    pub ui_route: String,
+pub(crate) struct LibraryItemsTemplate {
+    pub(crate) server_id: ServerId,
+    pub(crate) library_id: String,
+    pub(crate) items: Vec<BaseItem>,
+    pub(crate) next_page: Option<i32>,
+    pub(crate) ui_route: String,
 }
 
 #[derive(serde::Deserialize)]
-pub struct Pagination {
-    pub page: Option<i32>,
+pub(crate) struct Pagination {
+    pub(crate) page: Option<i32>,
 }
 
-pub async fn get_user_media(
+pub(crate) async fn get_user_media(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> impl IntoResponse {
@@ -89,7 +89,7 @@ pub async fn get_user_media(
     }
 }
 
-pub async fn get_server_libraries(
+pub(crate) async fn get_server_libraries(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Path(server_id): Path<ServerId>,
@@ -162,7 +162,7 @@ pub async fn get_server_libraries(
     }
 }
 
-pub async fn get_library_items(
+pub(crate) async fn get_library_items(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Path((server_id, library_id)): Path<(ServerId, String)>,
@@ -229,7 +229,7 @@ pub async fn get_library_items(
     }
 }
 
-pub async fn proxy_media_image(
+pub(crate) async fn proxy_media_image(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Path((server_id, item_id)): Path<(ServerId, String)>,

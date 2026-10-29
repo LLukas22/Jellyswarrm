@@ -15,37 +15,37 @@ use crate::servers::id::ServerId;
 const PLAYBACK_SESSION_TTL: Duration = Duration::from_secs(12 * 60 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SessionRevision(uuid::Uuid);
+pub(crate) struct SessionRevision(uuid::Uuid);
 
 #[derive(Debug, Clone)]
-pub struct PlaybackSession {
-    pub session_id: String, // Unique identifier for the session
-    pub item_id: String,    // ID of the media item being played
-    pub user_id: UserId,
-    pub server_id: ServerId,
+pub(crate) struct PlaybackSession {
+    pub(crate) session_id: String, // Unique identifier for the session
+    pub(crate) item_id: String,    // ID of the media item being played
+    pub(crate) user_id: UserId,
+    pub(crate) server_id: ServerId,
     /// Exact backend item selected by PlaybackInfo, shared by its item aliases.
-    pub original_item_id: Option<String>,
+    pub(crate) original_item_id: Option<String>,
 }
 
 /// A snapshot of one binding and its fencing token. Only storage can pair them;
 /// consumers cannot replace the session while retaining an unrelated revision.
 #[derive(Debug, Clone)]
-pub struct RevisionedPlaybackSession {
+pub(crate) struct RevisionedPlaybackSession {
     session: PlaybackSession,
     revision: SessionRevision,
 }
 
 impl RevisionedPlaybackSession {
-    pub fn session(&self) -> &PlaybackSession {
+    pub(crate) fn session(&self) -> &PlaybackSession {
         &self.session
     }
     #[cfg(test)]
-    pub fn revision(&self) -> SessionRevision {
+    pub(crate) fn revision(&self) -> SessionRevision {
         self.revision
     }
 
     #[cfg(test)]
-    pub fn into_parts(self) -> (PlaybackSession, SessionRevision) {
+    pub(crate) fn into_parts(self) -> (PlaybackSession, SessionRevision) {
         (self.session, self.revision)
     }
 }
@@ -60,7 +60,7 @@ impl From<PlaybackSession> for RevisionedPlaybackSession {
     }
 }
 
-pub struct SessionStorage {
+pub(crate) struct SessionStorage {
     sessions: RwLock<Vec<TrackedPlaybackSession>>,
     live_streams: RwLock<LiveStreams>,
     session_ttl: Duration,
@@ -73,22 +73,22 @@ struct LiveStreams {
 }
 
 /// An unpublished identity reservation. Dropping it never changes a binding.
-pub struct PreparedLiveStream {
+pub(crate) struct PreparedLiveStream {
     binding: LiveStreamBinding,
 }
 
 impl PreparedLiveStream {
-    pub fn virtual_id(&self) -> &str {
+    pub(crate) fn virtual_id(&self) -> &str {
         self.binding.virtual_id.as_str()
     }
 }
 
 #[derive(Clone)]
-pub struct LiveStreamBinding {
-    pub virtual_id: VirtualLiveStreamId,
-    pub original_id: BackendLiveStreamId,
-    pub user_id: ViewerId,
-    pub server_id: ServerId,
+pub(crate) struct LiveStreamBinding {
+    pub(crate) virtual_id: VirtualLiveStreamId,
+    pub(crate) original_id: BackendLiveStreamId,
+    pub(crate) user_id: ViewerId,
+    pub(crate) server_id: ServerId,
     updated_at: Instant,
 }
 
@@ -108,7 +108,7 @@ impl SessionStorage {
     // Historical fixtures keep wire-string convenience methods. Production APIs
     // require distinct ID namespaces, especially for session/viewer arguments.
     #[cfg(test)]
-    pub async fn register_live_stream(
+    pub(crate) async fn register_live_stream(
         &self,
         original: &str,
         viewer: &str,
@@ -120,7 +120,7 @@ impl SessionStorage {
             .to_owned()
     }
     #[cfg(test)]
-    pub async fn prepare_live_stream(
+    pub(crate) async fn prepare_live_stream(
         &self,
         original: &str,
         viewer: &str,
@@ -130,15 +130,15 @@ impl SessionStorage {
             .await
     }
     #[cfg(test)]
-    pub async fn live_stream(&self, id: &str, viewer: &str) -> Option<LiveStreamBinding> {
+    pub(crate) async fn live_stream(&self, id: &str, viewer: &str) -> Option<LiveStreamBinding> {
         self.live_binding(&id.into(), &viewer.into()).await
     }
     #[cfg(test)]
-    pub async fn remove_live_stream(&self, id: &str, viewer: &str) {
+    pub(crate) async fn remove_live_stream(&self, id: &str, viewer: &str) {
         self.close_live_binding(&id.into(), &viewer.into()).await;
     }
     #[cfg(test)]
-    pub async fn resolve_report_session(
+    pub(crate) async fn resolve_report_session(
         &self,
         id: &str,
         viewer: &str,
@@ -146,11 +146,11 @@ impl SessionStorage {
         self.resolve_report_binding(&id.into(), &viewer.into())
             .await
     }
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::with_session_ttl(PLAYBACK_SESSION_TTL)
     }
 
-    pub fn with_session_ttl(session_ttl: Duration) -> Self {
+    pub(crate) fn with_session_ttl(session_ttl: Duration) -> Self {
         SessionStorage {
             sessions: RwLock::new(Vec::new()),
             live_streams: RwLock::new(LiveStreams::default()),
@@ -158,7 +158,7 @@ impl SessionStorage {
         }
     }
 
-    pub async fn add_session(&self, mut session: PlaybackSession) {
+    pub(crate) async fn add_session(&self, mut session: PlaybackSession) {
         session.item_id =
             crate::media::storage::MediaStorageService::normalize_uuid(&session.item_id);
         let mut sessions = self.live_sessions().await;
@@ -196,7 +196,7 @@ impl SessionStorage {
         });
     }
 
-    pub async fn sessions_for_user(&self, user_id: &str) -> Vec<PlaybackSession> {
+    pub(crate) async fn sessions_for_user(&self, user_id: &str) -> Vec<PlaybackSession> {
         let user_id = UserId::new(user_id);
         self.live_sessions()
             .await
@@ -208,7 +208,7 @@ impl SessionStorage {
 
     /// Live IDs are backend-local, and may collide across servers. Keep their
     /// caller-scoped bindings independently of stop reports so close can follow stop.
-    pub async fn register_live_binding(
+    pub(crate) async fn register_live_binding(
         &self,
         original_id: &BackendLiveStreamId,
         user_id: &ViewerId,
@@ -224,7 +224,7 @@ impl SessionStorage {
         }
     }
 
-    pub async fn prepare_live_binding(
+    pub(crate) async fn prepare_live_binding(
         &self,
         original_id: &BackendLiveStreamId,
         user_id: &ViewerId,
@@ -266,7 +266,7 @@ impl SessionStorage {
 
     /// Revalidate every reservation before publishing any of them. Close invalidates
     /// outstanding reservations, so a late response cannot resurrect a closed ID.
-    pub async fn commit_live_streams(&self, plans: &[Arc<PreparedLiveStream>]) -> bool {
+    pub(crate) async fn commit_live_streams(&self, plans: &[Arc<PreparedLiveStream>]) -> bool {
         let mut streams = self.live_streams.write().await;
         if plans.iter().any(|plan| {
             !streams
@@ -298,7 +298,7 @@ impl SessionStorage {
         true
     }
 
-    pub async fn live_binding(
+    pub(crate) async fn live_binding(
         &self,
         id: &VirtualLiveStreamId,
         user_id: &ViewerId,
@@ -315,7 +315,7 @@ impl SessionStorage {
         Some(stream.clone())
     }
 
-    pub async fn close_live_binding(&self, id: &VirtualLiveStreamId, user_id: &ViewerId) {
+    pub(crate) async fn close_live_binding(&self, id: &VirtualLiveStreamId, user_id: &ViewerId) {
         let mut streams = self.live_streams.write().await;
         streams
             .bindings
@@ -327,7 +327,7 @@ impl SessionStorage {
         });
     }
 
-    pub async fn bind_original_item(
+    pub(crate) async fn bind_original_item(
         &self,
         session_id: &str,
         user_id: &str,
@@ -347,7 +347,8 @@ impl SessionStorage {
         }
     }
 
-    pub async fn get_session(&self, session_id: &str) -> Option<PlaybackSession> {
+    #[cfg(test)]
+    pub(crate) async fn get_session(&self, session_id: &str) -> Option<PlaybackSession> {
         let sessions = self.live_sessions().await;
 
         sessions
@@ -357,7 +358,7 @@ impl SessionStorage {
             .map(|tracked| tracked.session.clone())
     }
 
-    pub async fn get_session_for_user(
+    pub(crate) async fn get_session_for_user(
         &self,
         session_id: &str,
         user_id: &str,
@@ -374,7 +375,7 @@ impl SessionStorage {
             .map(|tracked| tracked.session.clone())
     }
 
-    pub async fn resolve_report_binding(
+    pub(crate) async fn resolve_report_binding(
         &self,
         session_id: &PlaybackSessionId,
         user_id: &ViewerId,
@@ -399,7 +400,10 @@ impl SessionStorage {
         Ok(None)
     }
 
-    pub async fn refresh_revisioned_session(&self, binding: &RevisionedPlaybackSession) -> bool {
+    pub(crate) async fn refresh_revisioned_session(
+        &self,
+        binding: &RevisionedPlaybackSession,
+    ) -> bool {
         self.refresh_session_for_user(
             &binding.session.session_id,
             &binding.session.user_id,
@@ -429,7 +433,8 @@ impl SessionStorage {
         refreshed
     }
 
-    pub async fn get_session_by_session_and_item_id(
+    #[cfg(test)]
+    pub(crate) async fn get_session_by_session_and_item_id(
         &self,
         session_id: &str,
         item_id: &str,
@@ -446,7 +451,7 @@ impl SessionStorage {
             .map(|tracked| tracked.session.clone())
     }
 
-    pub async fn get_sessions_by_item_id(&self, item_id: &str) -> Vec<PlaybackSession> {
+    pub(crate) async fn get_sessions_by_item_id(&self, item_id: &str) -> Vec<PlaybackSession> {
         let item_id = crate::media::storage::MediaStorageService::normalize_uuid(item_id);
         let sessions = self.live_sessions().await;
 
@@ -458,12 +463,13 @@ impl SessionStorage {
             .collect()
     }
 
-    pub async fn remove_session(&self, session_id: &str) {
+    #[cfg(test)]
+    pub(crate) async fn remove_session(&self, session_id: &str) {
         let mut sessions = self.sessions.write().await;
         sessions.retain(|tracked| tracked.session.session_id != session_id);
     }
 
-    pub async fn remove_revisioned_session(&self, binding: &RevisionedPlaybackSession) {
+    pub(crate) async fn remove_revisioned_session(&self, binding: &RevisionedPlaybackSession) {
         self.remove_session_for_user(
             &binding.session.session_id,
             &binding.session.user_id,
@@ -487,7 +493,7 @@ impl SessionStorage {
         });
     }
 
-    pub async fn remove_sessions_for_server(&self, server_id: ServerId) {
+    pub(crate) async fn remove_sessions_for_server(&self, server_id: ServerId) {
         let mut sessions = self.sessions.write().await;
         sessions.retain(|tracked| tracked.session.server_id != server_id);
     }

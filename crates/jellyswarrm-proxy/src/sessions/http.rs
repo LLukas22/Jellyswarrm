@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 type ApiResult<T> = Result<T, StatusCode>;
 
-pub fn router() -> Router<AppState> {
+pub(crate) fn router() -> Router<AppState> {
     jellyswarrm_macros::lowercase_routes! {
     Router::new()
         .route("/Sessions", get(list))

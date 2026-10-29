@@ -17,24 +17,24 @@ use crate::{
 
 #[derive(Template)]
 #[template(path = "user/index.html")]
-pub struct UserIndexTemplate {
-    pub version: Option<String>,
-    pub ui_route: String,
-    pub root: Option<String>,
-    pub jellyfin_ui_version: Option<JellyfinUiVersion>,
+pub(crate) struct UserIndexTemplate {
+    pub(crate) version: Option<String>,
+    pub(crate) ui_route: String,
+    pub(crate) root: Option<String>,
+    pub(crate) jellyfin_ui_version: Option<JellyfinUiVersion>,
 }
 
 #[derive(Template)]
 #[template(path = "admin/index.html")]
-pub struct AdminIndexTemplate {
-    pub version: Option<String>,
-    pub ui_route: String,
-    pub root: Option<String>,
-    pub jellyfin_ui_version: Option<JellyfinUiVersion>,
+pub(crate) struct AdminIndexTemplate {
+    pub(crate) version: Option<String>,
+    pub(crate) ui_route: String,
+    pub(crate) root: Option<String>,
+    pub(crate) jellyfin_ui_version: Option<JellyfinUiVersion>,
 }
 
 /// Root/home page
-pub async fn index(
+pub(crate) async fn index(
     State(state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> impl IntoResponse {

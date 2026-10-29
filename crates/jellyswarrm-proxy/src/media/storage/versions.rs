@@ -5,7 +5,7 @@ impl MediaStorageService {
     /// Resolve episode continuity from persisted catalog identity, not the
     /// short-lived display-metadata cache. Ambiguous or foreign-viewer parent
     /// identities cannot establish a preference.
-    pub async fn get_episode_series_id(
+    pub(crate) async fn get_episode_series_id(
         &self,
         virtual_media_id: &str,
         viewer: &str,
@@ -43,7 +43,7 @@ impl MediaStorageService {
         Ok((series.len() == 1).then(|| series.into_iter().next().unwrap()))
     }
 
-    pub async fn get_media_version_group(
+    pub(crate) async fn get_media_version_group(
         &self,
         virtual_media_id: &str,
     ) -> Result<Option<MediaVersionGroup>, sqlx::Error> {
@@ -71,7 +71,7 @@ impl MediaStorageService {
     /// Detail-only reverse lookup. Never infer a group from memberships that
     /// have not been exposed as source routes. Multiple viewer scopes must agree
     /// on the owner and exact active membership; use only the oldest group.
-    pub async fn get_media_version_detail_route(
+    pub(crate) async fn get_media_version_detail_route(
         &self,
         virtual_media_id: &str,
         viewer: &str,
@@ -127,7 +127,7 @@ impl MediaStorageService {
 
     /// Navigation may use a published superset of filtered observations.
     /// Incomparable groups still cannot establish a unique parent identity.
-    pub async fn get_media_parent_group_id(
+    pub(crate) async fn get_media_parent_group_id(
         &self,
         virtual_media_id: &str,
         viewer: &str,
@@ -138,7 +138,7 @@ impl MediaStorageService {
 
     /// Prefer the catalog being reconciled. Filtered search/latest scopes may
     /// observe fewer copies; they must not veto that catalog's parent identity.
-    pub async fn get_media_parent_group_id_for_scope(
+    pub(crate) async fn get_media_parent_group_id_for_scope(
         &self,
         virtual_media_id: &str,
         viewer: &str,
@@ -201,7 +201,7 @@ impl MediaStorageService {
             .map(|(id, _)| id.clone()))
     }
 
-    pub async fn get_media_version_members(
+    pub(crate) async fn get_media_version_members(
         &self,
         group_id: i64,
     ) -> Result<Vec<MediaVersionMember>, sqlx::Error> {
@@ -260,7 +260,7 @@ impl MediaStorageService {
             .collect()
     }
 
-    pub async fn get_media_version_members_by_virtual_id(
+    pub(crate) async fn get_media_version_members_by_virtual_id(
         &self,
         group_virtual_id: &str,
     ) -> Result<Vec<MediaVersionMember>, sqlx::Error> {
@@ -273,7 +273,7 @@ impl MediaStorageService {
     /// Replaces source routing observations only for members included in this
     /// detail response, leaving inaccessible or temporarily offline members
     /// untouched.
-    pub async fn replace_media_version_sources(
+    pub(crate) async fn replace_media_version_sources(
         &self,
         group_id: i64,
         generation: ReconciliationGeneration,
@@ -292,7 +292,7 @@ impl MediaStorageService {
 
     /// PlaybackInfo can be filtered by source, live stream, or client capabilities.
     /// Record its positive observations without removing other advertised versions.
-    pub async fn observe_media_version_sources(
+    pub(crate) async fn observe_media_version_sources(
         &self,
         group_id: i64,
         generation: ReconciliationGeneration,
@@ -453,7 +453,7 @@ impl MediaStorageService {
         Ok(())
     }
 
-    pub async fn get_media_version_source_route(
+    pub(crate) async fn get_media_version_source_route(
         &self,
         group_id: i64,
         source_virtual_id: &str,

@@ -29,7 +29,7 @@ struct RequestedItem {
 pub(super) struct RequestedItems(Vec<RequestedItem>);
 
 impl RequestedItems {
-    pub async fn resolve(
+    pub(crate) async fn resolve(
         state: &CatalogService,
         request: &CatalogRequest,
     ) -> Result<Option<Self>, ApplicationError> {
@@ -119,7 +119,7 @@ impl RequestedItems {
         Ok((!entries.is_empty()).then_some(Self(entries)))
     }
 
-    pub async fn fetch(
+    pub(crate) async fn fetch(
         self,
         state: &CatalogService,
         request: CatalogRequest,

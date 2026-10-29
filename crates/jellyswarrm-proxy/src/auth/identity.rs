@@ -41,7 +41,7 @@ pub(crate) fn request_device(
 }
 
 #[derive(Clone)]
-pub enum JellyfinAuthorization {
+pub(crate) enum JellyfinAuthorization {
     Authorization(Authorization),
     XMediaBrowser(String),
     ApiKey(String),
@@ -72,7 +72,7 @@ impl fmt::Debug for JellyfinAuthorization {
 }
 
 impl JellyfinAuthorization {
-    pub fn token_ref(&self) -> Option<&str> {
+    pub(crate) fn token_ref(&self) -> Option<&str> {
         match self {
             JellyfinAuthorization::Authorization(auth) => auth.token.as_deref(),
             JellyfinAuthorization::XMediaBrowser(token)
@@ -82,11 +82,11 @@ impl JellyfinAuthorization {
         }
     }
 
-    pub fn token(&self) -> Option<String> {
+    pub(crate) fn token(&self) -> Option<String> {
         self.token_ref().map(str::to_string)
     }
 
-    pub fn get_device(&self, headers: &http::HeaderMap) -> Option<Device> {
+    pub(crate) fn get_device(&self, headers: &http::HeaderMap) -> Option<Device> {
         match self {
             JellyfinAuthorization::Authorization(auth) => Some(Device {
                 client: auth.client.clone(),
@@ -120,7 +120,7 @@ impl JellyfinAuthorization {
         }
     }
 
-    pub fn from_request(req: &reqwest::Request) -> Option<Self> {
+    pub(crate) fn from_request(req: &reqwest::Request) -> Option<Self> {
         let headers = req.headers();
         if let Some(auth_header) = headers.get("authorization") {
             if let Ok(auth_str) = auth_header.to_str() {

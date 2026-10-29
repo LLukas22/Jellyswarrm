@@ -3,6 +3,7 @@
 Large test modules live here, named for the component they exercise. Each owning
 source module includes its file with `#[cfg(test)]` and `#[path = "..."]`.
 This preserves private access, `super::` imports, and existing test filters.
+The owning modules are declared by `src/lib.rs`, so use the library test target.
 
 Owners now include `auth/service/mod.rs`, `libraries/service/mod.rs`,
 `media/storage/mod.rs`, `http/preprocessing/mod.rs`, and `http/handlers/`.
@@ -20,5 +21,5 @@ broaden visibility merely to make tests compile. Playlist contracts live in
 Run all proxy tests from the repository root:
 
 ```sh
-cargo test --locked -p jellyswarrm-proxy --bin jellyswarrm-proxy
+cargo test --locked -p jellyswarrm-proxy --lib
 ```

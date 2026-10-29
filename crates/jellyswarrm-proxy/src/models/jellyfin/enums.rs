@@ -2,7 +2,7 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BaseItemKind {
+pub(crate) enum BaseItemKind {
     AggregateFolder,
     Audio,
     AudioBook,
@@ -149,7 +149,7 @@ impl Default for BaseItemKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum CollectionType {
+pub(crate) enum CollectionType {
     #[default]
     Unknown,
     Movies,
@@ -168,7 +168,7 @@ pub enum CollectionType {
 }
 
 impl CollectionType {
-    pub fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         match self {
             Self::Unknown => "unknown",
             Self::Movies => "movies",
@@ -224,7 +224,7 @@ impl<'de> Deserialize<'de> for CollectionType {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
-pub enum ItemSortBy {
+pub(crate) enum ItemSortBy {
     Default,
     AiredSeasonOrder,
     Album,
@@ -271,7 +271,7 @@ impl std::str::FromStr for ItemSortBy {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
-pub enum SortOrder {
+pub(crate) enum SortOrder {
     #[default]
     Ascending,
     Descending,

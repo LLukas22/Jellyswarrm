@@ -3,26 +3,30 @@
 use crate::{media::storage::MediaMapping, servers::id::ServerId, servers::storage::Server};
 
 #[derive(Debug, Clone, sqlx::FromRow)]
-pub struct AutomaticVirtualLibrary {
-    pub virtual_id: String,
-    pub collection_type: String,
-    pub name: String,
+pub(crate) struct AutomaticVirtualLibrary {
+    pub(crate) virtual_id: String,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Collection type is asserted by library tests")
+    )]
+    pub(crate) collection_type: String,
+    pub(crate) name: String,
 }
 
 #[derive(Debug, Clone)]
-pub struct VirtualLibraryMember {
-    pub mapping: MediaMapping,
-    pub server: Server,
+pub(crate) struct VirtualLibraryMember {
+    pub(crate) mapping: MediaMapping,
+    pub(crate) server: Server,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VirtualLibraryAccessScope {
+pub(crate) struct VirtualLibraryAccessScope {
     user_id: crate::auth::user_id::UserId,
     server_ids: Vec<ServerId>,
 }
 
 impl VirtualLibraryAccessScope {
-    pub fn new(
+    pub(crate) fn new(
         user_id: impl Into<crate::auth::user_id::UserId>,
         server_ids: impl IntoIterator<Item = ServerId>,
     ) -> Self {
@@ -49,31 +53,39 @@ impl VirtualLibraryAccessScope {
 }
 
 #[derive(Debug, Clone)]
-pub struct LibraryGroup {
-    pub virtual_id: String,
-    pub name: String,
-    pub sort_order: i32,
-    pub collection_type: Option<String>,
+pub(crate) struct LibraryGroup {
+    pub(crate) virtual_id: String,
+    pub(crate) name: String,
+    #[expect(
+        dead_code,
+        reason = "Ordering is applied in SQL; retain the group record's sort metadata"
+    )]
+    pub(crate) sort_order: i32,
+    pub(crate) collection_type: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-pub struct LibraryGroupMemberRecord {
-    pub group_virtual_id: String,
-    pub server_id: ServerId,
-    pub original_library_id: String,
-    pub library_name: String,
+pub(crate) struct LibraryGroupMemberRecord {
+    #[expect(
+        dead_code,
+        reason = "Retain the owning group in decoded membership diagnostics"
+    )]
+    pub(crate) group_virtual_id: String,
+    pub(crate) server_id: ServerId,
+    pub(crate) original_library_id: String,
+    pub(crate) library_name: String,
 }
 
 #[derive(Debug, Clone)]
-pub struct LibraryAssignment {
-    pub group_virtual_id: String,
-    pub group_name: String,
-    pub group_sort_order: i32,
-    pub collection_type: Option<String>,
+pub(crate) struct LibraryAssignment {
+    pub(crate) group_virtual_id: String,
+    pub(crate) group_name: String,
+    pub(crate) group_sort_order: i32,
+    pub(crate) collection_type: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum AssignLibraryError {
+pub(crate) enum AssignLibraryError {
     #[error(transparent)]
     Database(#[from] sqlx::Error),
     #[error("virtual library not found")]
@@ -88,29 +100,29 @@ pub enum AssignLibraryError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DiscoveredLibrary {
-    pub server_id: ServerId,
-    pub original_library_id: String,
-    pub name: String,
-    pub collection_type: String,
+pub(crate) struct DiscoveredLibrary {
+    pub(crate) server_id: ServerId,
+    pub(crate) original_library_id: String,
+    pub(crate) name: String,
+    pub(crate) collection_type: String,
 }
 
 #[derive(Debug, Clone)]
-pub struct ResolvedVirtualLibrary {
-    pub name: String,
-    pub members: Vec<VirtualLibraryMember>,
-    pub catalog_scope_key: String,
+pub(crate) struct ResolvedVirtualLibrary {
+    pub(crate) name: String,
+    pub(crate) members: Vec<VirtualLibraryMember>,
+    pub(crate) catalog_scope_key: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LibraryGrouping {
+pub(crate) enum LibraryGrouping {
     Automatic,
     Configured,
     None,
 }
 
 #[derive(Debug, Clone)]
-pub enum VirtualLibraryResolution {
+pub(crate) enum VirtualLibraryResolution {
     Unknown,
     Empty { name: String },
     Resolved(ResolvedVirtualLibrary),

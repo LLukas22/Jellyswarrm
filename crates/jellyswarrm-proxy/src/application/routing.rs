@@ -38,12 +38,12 @@ use crate::{
 };
 
 pub(crate) struct RoutingServices<'a> {
-    pub media_storage: &'a MediaStorageService,
-    pub server_storage: &'a ServerStorageService,
-    pub play_sessions: &'a SessionStorage,
-    pub urls: &'a UrlProcessor,
-    pub config: &'a SettingsView,
-    pub selection: &'a crate::application::url_selection::UrlSelection,
+    pub(crate) media_storage: &'a MediaStorageService,
+    pub(crate) server_storage: &'a ServerStorageService,
+    pub(crate) play_sessions: &'a SessionStorage,
+    pub(crate) urls: &'a UrlProcessor,
+    pub(crate) config: &'a SettingsView,
+    pub(crate) selection: &'a crate::application::url_selection::UrlSelection,
 }
 
 pub(crate) async fn resolve_server(

@@ -162,7 +162,7 @@ impl<'a> ServerAdministration<'a> {
 mod tests {
     use super::*;
     use crate::{
-        config::MIGRATOR, media::MediaStorageService, playback::sessions::PlaybackSession,
+        media::MediaStorageService, persistence::MIGRATOR, playback::sessions::PlaybackSession,
     };
 
     #[tokio::test]

@@ -1,7 +1,7 @@
 //! Filter hop-by-hop and proxy-inappropriate headers for outgoing and streamed HTTP traffic.
 use axum::http::{HeaderMap, HeaderName};
 
-pub fn remove_hop_by_hop_headers(headers: &mut HeaderMap) {
+pub(crate) fn remove_hop_by_hop_headers(headers: &mut HeaderMap) {
     headers.remove(hyper::header::CONNECTION);
     headers.remove(HeaderName::from_static("keep-alive"));
     headers.remove(hyper::header::PROXY_AUTHENTICATE);
@@ -13,7 +13,7 @@ pub fn remove_hop_by_hop_headers(headers: &mut HeaderMap) {
     headers.remove(hyper::header::UPGRADE);
 }
 
-pub fn is_hop_by_hop_header(name: &HeaderName) -> bool {
+pub(crate) fn is_hop_by_hop_header(name: &HeaderName) -> bool {
     matches!(
         name.as_str(),
         "connection"

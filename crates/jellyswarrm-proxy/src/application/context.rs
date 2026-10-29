@@ -18,7 +18,7 @@ pub(crate) enum Principal {
 
 pub(crate) struct BackendAccessSnapshot {
     /// Usable device sessions; authorization lives separately in access_scope.
-    pub sessions: Option<Vec<(AuthorizationSession, Server)>>,
+    pub(crate) sessions: Option<Vec<(AuthorizationSession, Server)>>,
 }
 
 pub(crate) struct RequestContext {

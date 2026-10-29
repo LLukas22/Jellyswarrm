@@ -1,5 +1,5 @@
 //! Regression coverage for credentials, account mappings, and authorization-session invariants.
-use crate::config::MIGRATOR;
+use crate::persistence::MIGRATOR;
 
 use super::*;
 

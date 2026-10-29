@@ -2,7 +2,7 @@
 use crate::models::MediaItem;
 
 #[derive(Debug, Clone)]
-pub enum ItemPresentation {
+pub(crate) enum ItemPresentation {
     Original,
     Server(String),
     Duplicate(String),
@@ -11,9 +11,9 @@ pub enum ItemPresentation {
 /// Original metadata plus a deferred display decision. Sorting and identity
 /// reconciliation never see proxy-decorated strings.
 #[derive(Debug, Clone)]
-pub struct CatalogItem {
-    pub item: MediaItem,
-    pub presentation: ItemPresentation,
+pub(crate) struct CatalogItem {
+    pub(crate) item: MediaItem,
+    pub(crate) presentation: ItemPresentation,
 }
 
 impl From<MediaItem> for CatalogItem {
@@ -38,7 +38,7 @@ impl std::ops::DerefMut for CatalogItem {
 }
 
 impl CatalogItem {
-    pub fn present(mut self) -> MediaItem {
+    pub(crate) fn present(mut self) -> MediaItem {
         match &self.presentation {
             ItemPresentation::Original => {}
             ItemPresentation::Server(name) => {
@@ -61,13 +61,13 @@ fn append_server(name: &mut String, server: &str) {
 /// Presentation is applied to server-specific items only, after translation
 /// and grouping have decided which items remain visible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ItemNamePolicy {
+pub(crate) enum ItemNamePolicy {
     Preserve,
     IncludeServerName,
 }
 
 impl ItemNamePolicy {
-    pub fn annotate(self, item: MediaItem, server_name: &str) -> CatalogItem {
+    pub(crate) fn annotate(self, item: MediaItem, server_name: &str) -> CatalogItem {
         CatalogItem {
             item,
             presentation: match self {
@@ -76,7 +76,7 @@ impl ItemNamePolicy {
             },
         }
     }
-    pub fn apply(self, item: &mut MediaItem, server_name: &str) {
+    pub(crate) fn apply(self, item: &mut MediaItem, server_name: &str) {
         if self == Self::IncludeServerName
             && !item
                 .collection_type

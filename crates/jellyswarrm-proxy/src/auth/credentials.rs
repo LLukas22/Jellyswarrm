@@ -30,7 +30,7 @@ pub(super) async fn password_work<T: Send + 'static>(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
-pub enum LocalCredential {
+pub(crate) enum LocalCredential {
     Passwordless,
     Password(HashedPassword),
     Argon2(HashedPassword),
@@ -43,7 +43,7 @@ impl LocalCredential {
     const EMPTY_PASSWORD_HASH: &'static str =
         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
-    pub async fn from_password(password: &Password) -> Result<Self, sqlx::Error> {
+    pub(crate) async fn from_password(password: &Password) -> Result<Self, sqlx::Error> {
         let password = password.clone();
         password_work(move || Self::hash_password(&password)).await
     }
@@ -63,7 +63,7 @@ impl LocalCredential {
         }
     }
 
-    pub async fn verify_async(&self, password: &Password) -> Result<bool, sqlx::Error> {
+    pub(crate) async fn verify_async(&self, password: &Password) -> Result<bool, sqlx::Error> {
         let credential = self.clone();
         let password = password.clone();
         password_work(move || credential.verify(&password)).await
@@ -81,14 +81,14 @@ impl LocalCredential {
         }
     }
 
-    pub fn mapping_key(&self) -> HashedPassword {
+    pub(crate) fn mapping_key(&self) -> HashedPassword {
         match self {
             Self::Passwordless => HashedPassword::from_password(""),
             Self::Password(password_hash) | Self::Argon2(password_hash) => password_hash.clone(),
         }
     }
 
-    pub fn session_auth_hash(&self) -> &[u8] {
+    pub(crate) fn session_auth_hash(&self) -> &[u8] {
         match self {
             Self::Passwordless => Self::EMPTY_PASSWORD_HASH.as_bytes(),
             Self::Password(password_hash) | Self::Argon2(password_hash) => {

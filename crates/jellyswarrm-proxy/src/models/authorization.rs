@@ -2,39 +2,42 @@
 use percent_encoding::percent_decode_str;
 use std::fmt;
 
-pub fn generate_token() -> String {
+pub(crate) fn generate_token() -> String {
     use uuid::Uuid;
     Uuid::new_v4().simple().to_string()
 }
 
 // See https://github.com/jellyfin/jellyfin/blob/master/Jellyfin.Server.Implementations/Security/AuthorizationContext.cs
 #[derive(Clone)]
-pub struct Authorization {
-    pub client: String,
-    pub device: String,
-    pub device_id: String,
-    pub version: String,
-    pub token: Option<String>,
+pub(crate) struct Authorization {
+    pub(crate) client: String,
+    pub(crate) device: String,
+    pub(crate) device_id: String,
+    pub(crate) version: String,
+    pub(crate) token: Option<String>,
 }
 
 impl Authorization {
     /// Parse authorization header with support for MediaBrowser and Emby prefixes
-    pub fn parse(header_value: &str) -> Result<Self, String> {
+    pub(crate) fn parse(header_value: &str) -> Result<Self, String> {
         Self::parse_with_legacy(header_value, false)
     }
 
     /// Parse authorization header with optional legacy Emby support
-    pub fn parse_with_legacy(header_value: &str, enable_legacy: bool) -> Result<Self, String> {
+    pub(crate) fn parse_with_legacy(
+        header_value: &str,
+        enable_legacy: bool,
+    ) -> Result<Self, String> {
         Self::parse_internal(header_value, enable_legacy, false)
     }
 
     /// Authenticated requests may omit metadata available in the stored session.
     /// Missing metadata is represented by empty strings; login parsing stays strict.
-    pub fn parse_request(header_value: &str) -> Result<Self, String> {
+    pub(crate) fn parse_request(header_value: &str) -> Result<Self, String> {
         Self::parse_internal(header_value, false, true)
     }
 
-    pub fn has_complete_metadata(&self) -> bool {
+    pub(crate) fn has_complete_metadata(&self) -> bool {
         !self.client.is_empty()
             && !self.device.is_empty()
             && !self.device_id.is_empty()
@@ -98,7 +101,7 @@ impl Authorization {
     }
 
     /// Convert to MediaBrowser authorization header string
-    pub fn to_header_value(&self) -> String {
+    pub(crate) fn to_header_value(&self) -> String {
         let mut result = format!(
             "MediaBrowser Client=\"{}\", Device=\"{}\", DeviceId=\"{}\", Version=\"{}\"",
             self.client, self.device, self.device_id, self.version
@@ -112,7 +115,7 @@ impl Authorization {
     }
 
     /// Convert to a log-safe authorization header string with secrets redacted.
-    pub fn to_redacted_header_value(&self) -> String {
+    pub(crate) fn to_redacted_header_value(&self) -> String {
         let mut result = format!(
             "MediaBrowser Client=\"{}\", Device=\"{}\", DeviceId=\"{}\", Version=\"{}\"",
             self.client, self.device, self.device_id, self.version
@@ -125,22 +128,9 @@ impl Authorization {
         result
     }
 
-    /// Convert to header value without "MediaBrowser " prefix
-    pub fn to_params_string(&self) -> String {
-        let mut result = format!(
-            "Client=\"{}\", Device=\"{}\", DeviceId=\"{}\", Version=\"{}\"",
-            self.client, self.device, self.device_id, self.version
-        );
-
-        if let Some(token) = &self.token {
-            result.push_str(&format!(", Token=\"{token}\""));
-        }
-
-        result
-    }
-
     /// Get a short string representation for logging
-    pub fn to_short_string(&self) -> String {
+    #[cfg(test)]
+    pub(crate) fn to_short_string(&self) -> String {
         format!(
             "{} on {} ({})",
             self.client,

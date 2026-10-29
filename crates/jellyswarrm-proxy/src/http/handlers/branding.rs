@@ -32,7 +32,7 @@ async fn fetch_custom_css(server_storage: &ServerStorageService, servers: &[Serv
     String::new()
 }
 
-pub async fn handle_branding(
+pub(crate) async fn handle_branding(
     State(state): State<AppState>,
 ) -> Result<Json<BrandingConfig>, StatusCode> {
     let servers = state
@@ -78,7 +78,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::config::{MediaStreamingMode, MIGRATOR};
+    use crate::{config::MediaStreamingMode, persistence::MIGRATOR};
 
     async fn test_storage() -> ServerStorageService {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();

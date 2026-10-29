@@ -18,14 +18,14 @@ use crate::servers::id::ServerId;
 use crate::servers::url::ServerUrl;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
-pub struct Server {
-    pub id: ServerId,
-    pub name: String,
-    pub url: ServerUrl,
-    pub priority: i32,
-    pub media_streaming_mode: MediaStreamingMode,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub updated_at: chrono::DateTime<chrono::Utc>,
+pub(crate) struct Server {
+    pub(crate) id: ServerId,
+    pub(crate) name: String,
+    pub(crate) url: ServerUrl,
+    pub(crate) priority: i32,
+    pub(crate) media_streaming_mode: MediaStreamingMode,
+    pub(crate) created_at: chrono::DateTime<chrono::Utc>,
+    pub(crate) updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl Server {
@@ -75,13 +75,13 @@ pub(crate) fn parse_server_url_column(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServerAdmin {
-    pub id: i64,
-    pub server_id: ServerId,
-    pub username: String,
-    pub password: EncryptedPassword,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub updated_at: chrono::DateTime<chrono::Utc>,
+pub(crate) struct ServerAdmin {
+    pub(crate) id: i64,
+    pub(crate) server_id: ServerId,
+    pub(crate) username: String,
+    pub(crate) password: EncryptedPassword,
+    pub(crate) created_at: chrono::DateTime<chrono::Utc>,
+    pub(crate) updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl<'r> sqlx::FromRow<'r, SqliteRow> for ServerAdmin {
@@ -98,7 +98,7 @@ impl<'r> sqlx::FromRow<'r, SqliteRow> for ServerAdmin {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ServerHealthStatus {
+pub(crate) enum ServerHealthStatus {
     /// Server is healthy
     Healthy(PublicSystemInfo),
     /// Server is unhealthy with reason
@@ -106,21 +106,21 @@ pub enum ServerHealthStatus {
 }
 
 impl ServerHealthStatus {
-    pub fn is_healthy(&self) -> bool {
+    pub(crate) fn is_healthy(&self) -> bool {
         matches!(self, ServerHealthStatus::Healthy(_))
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct ServerStorageService {
+pub(crate) struct ServerStorageService {
     pool: SqlitePool,
     health_status: Arc<RwLock<HashMap<ServerId, ServerHealthStatus>>>,
-    pub http_client: reqwest::Client,
-    pub client_info: ClientInfo,
+    pub(crate) http_client: reqwest::Client,
+    pub(crate) client_info: ClientInfo,
 }
 
 impl ServerStorageService {
-    pub fn new(pool: SqlitePool) -> Self {
+    pub(crate) fn new(pool: SqlitePool) -> Self {
         let http_client = reqwest::Client::builder()
             .user_agent(concat!(
                 "Jellyswarrm API Client/",
@@ -143,7 +143,7 @@ impl ServerStorageService {
         }
     }
 
-    pub async fn add_server(
+    pub(crate) async fn add_server(
         &self,
         name: &str,
         url: &str,
@@ -185,7 +185,7 @@ impl ServerStorageService {
         Ok(server_id)
     }
 
-    pub async fn upsert_preconfigured_server(
+    pub(crate) async fn upsert_preconfigured_server(
         &self,
         name: &str,
         url: &str,
@@ -231,22 +231,10 @@ impl ServerStorageService {
         Ok(ServerId::new(existing_id))
     }
 
-    pub async fn get_server_by_name(&self, name: &str) -> Result<Option<Server>, sqlx::Error> {
-        let row = sqlx::query(
-            r#"
-            SELECT id, name, url, priority, media_streaming_mode, created_at, updated_at
-            FROM servers 
-            WHERE name = ?
-            "#,
-        )
-        .bind(name)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        row.map(Server::from_row).transpose()
-    }
-
-    pub async fn get_server_by_id(&self, id: ServerId) -> Result<Option<Server>, sqlx::Error> {
+    pub(crate) async fn get_server_by_id(
+        &self,
+        id: ServerId,
+    ) -> Result<Option<Server>, sqlx::Error> {
         let row = sqlx::query(
             r#"
             SELECT id, name, url, priority, media_streaming_mode, created_at, updated_at
@@ -261,7 +249,7 @@ impl ServerStorageService {
         row.map(Server::from_row).transpose()
     }
 
-    pub async fn list_servers(&self) -> Result<Vec<Server>, sqlx::Error> {
+    pub(crate) async fn list_servers(&self) -> Result<Vec<Server>, sqlx::Error> {
         let rows = sqlx::query(
             r#"
             SELECT id, name, url, priority, media_streaming_mode, created_at, updated_at
@@ -275,7 +263,7 @@ impl ServerStorageService {
         rows.into_iter().map(Server::from_row).collect()
     }
 
-    pub async fn update_server_priority(
+    pub(crate) async fn update_server_priority(
         &self,
         server_id: ServerId,
         new_priority: i32,
@@ -298,7 +286,7 @@ impl ServerStorageService {
         Ok(result.rows_affected() > 0)
     }
 
-    pub async fn update_server_media_streaming_mode(
+    pub(crate) async fn update_server_media_streaming_mode(
         &self,
         server_id: ServerId,
         media_streaming_mode: MediaStreamingMode,
@@ -321,7 +309,7 @@ impl ServerStorageService {
         Ok(result.rows_affected() > 0)
     }
 
-    pub async fn delete_server(&self, server_id: ServerId) -> Result<bool, sqlx::Error> {
+    pub(crate) async fn delete_server(&self, server_id: ServerId) -> Result<bool, sqlx::Error> {
         let result = sqlx::query(
             r#"
             DELETE FROM servers 
@@ -337,7 +325,8 @@ impl ServerStorageService {
         Ok(result.rows_affected() > 0)
     }
 
-    pub async fn delete_server_by_name(&self, name: &str) -> Result<bool, sqlx::Error> {
+    #[cfg(test)]
+    pub(crate) async fn delete_server_by_name(&self, name: &str) -> Result<bool, sqlx::Error> {
         let result = sqlx::query(
             r#"
             DELETE FROM servers 
@@ -360,7 +349,7 @@ impl ServerStorageService {
         }
     }
 
-    pub async fn check_servers_health(&self) {
+    pub(crate) async fn check_servers_health(&self) {
         let servers = match self.list_servers().await {
             Ok(s) => s,
             Err(e) => {
@@ -414,7 +403,7 @@ impl ServerStorageService {
         }
     }
 
-    pub async fn server_status(&self, server_id: ServerId) -> ServerHealthStatus {
+    pub(crate) async fn server_status(&self, server_id: ServerId) -> ServerHealthStatus {
         let health = self.health_status.read().await;
         health
             .get(&server_id)
@@ -425,7 +414,7 @@ impl ServerStorageService {
     }
 
     /// Get the best available server (highest priority, healthy, active)
-    pub async fn get_best_server(&self) -> Result<Option<Server>, sqlx::Error> {
+    pub(crate) async fn get_best_server(&self) -> Result<Option<Server>, sqlx::Error> {
         let servers = self.list_servers().await?;
 
         if servers.is_empty() {
@@ -449,7 +438,7 @@ impl ServerStorageService {
         }
     }
 
-    pub async fn add_server_admin(
+    pub(crate) async fn add_server_admin(
         &self,
         server_id: ServerId,
         username: &str,
@@ -476,7 +465,7 @@ impl ServerStorageService {
         Ok(admin_id)
     }
 
-    pub async fn get_server_admin(
+    pub(crate) async fn get_server_admin(
         &self,
         server_id: ServerId,
     ) -> Result<Option<ServerAdmin>, sqlx::Error> {
@@ -494,7 +483,10 @@ impl ServerStorageService {
         Ok(row)
     }
 
-    pub async fn delete_server_admin(&self, server_id: ServerId) -> Result<bool, sqlx::Error> {
+    pub(crate) async fn delete_server_admin(
+        &self,
+        server_id: ServerId,
+    ) -> Result<bool, sqlx::Error> {
         let result = sqlx::query(
             r#"
             DELETE FROM server_admins 
@@ -511,7 +503,7 @@ impl ServerStorageService {
 
 #[cfg(test)]
 mod tests {
-    use crate::config::MIGRATOR;
+    use crate::persistence::MIGRATOR;
 
     use super::*;
 

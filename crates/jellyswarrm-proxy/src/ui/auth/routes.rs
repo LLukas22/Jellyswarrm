@@ -17,7 +17,7 @@ use crate::{
 
 #[derive(Template)]
 #[template(path = "login.html")]
-pub struct LoginTemplate {
+pub(crate) struct LoginTemplate {
     messages: Vec<Message>,
     next: Option<String>,
     ui_route: String,
@@ -26,11 +26,11 @@ pub struct LoginTemplate {
 // This allows us to extract the "next" field from the query string. We use this
 // to redirect after log in.
 #[derive(Debug, Deserialize)]
-pub struct NextUrl {
+pub(crate) struct NextUrl {
     next: Option<String>,
 }
 
-pub fn router() -> axum::Router<AppState> {
+pub(crate) fn router() -> axum::Router<AppState> {
     Router::new()
         .route("/login", post(self::post::login))
         .route("/login", get(self::get::login))
@@ -43,7 +43,7 @@ mod post {
 
     use super::*;
 
-    pub async fn login(
+    pub(crate) async fn login(
         State(state): axum::extract::State<AppState>,
         mut auth_session: AuthSession,
         messages: Messages,
@@ -87,7 +87,7 @@ mod get {
 
     use super::*;
 
-    pub async fn login(
+    pub(crate) async fn login(
         State(state): axum::extract::State<AppState>,
         messages: Messages,
         Query(NextUrl { next }): Query<NextUrl>,
@@ -107,7 +107,7 @@ mod get {
         )
     }
 
-    pub async fn logout(
+    pub(crate) async fn logout(
         State(state): axum::extract::State<AppState>,
         mut auth_session: AuthSession,
     ) -> impl IntoResponse {

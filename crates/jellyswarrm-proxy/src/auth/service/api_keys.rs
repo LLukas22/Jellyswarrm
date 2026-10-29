@@ -2,7 +2,7 @@
 use super::*;
 
 impl UserAuthorizationService {
-    pub async fn create_api_key(
+    pub(crate) async fn create_api_key(
         &self,
         user_id: &str,
         app_name: &str,
@@ -22,7 +22,7 @@ impl UserAuthorizationService {
         .await
     }
 
-    pub async fn list_api_keys(
+    pub(crate) async fn list_api_keys(
         &self,
         user_id: &str,
     ) -> Result<Vec<VirtualUserApiKey>, sqlx::Error> {
@@ -39,7 +39,7 @@ impl UserAuthorizationService {
         .await
     }
 
-    pub async fn is_read_only_api_key(&self, token: &str) -> Result<bool, sqlx::Error> {
+    pub(crate) async fn is_read_only_api_key(&self, token: &str) -> Result<bool, sqlx::Error> {
         sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM virtual_user_api_keys \
              WHERE access_token = ?)",

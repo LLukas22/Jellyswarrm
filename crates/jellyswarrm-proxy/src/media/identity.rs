@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use crate::models::{enums::BaseItemKind, MediaItem};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum MediaProvider {
+pub(crate) enum MediaProvider {
     Tmdb,
     Imdb,
     Tvdb,
@@ -13,7 +13,7 @@ pub enum MediaProvider {
 }
 
 impl MediaProvider {
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Tmdb => "tmdb",
             Self::Imdb => "imdb",
@@ -22,7 +22,7 @@ impl MediaProvider {
         }
     }
 
-    pub fn parse(value: &str) -> Option<Self> {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
         match value {
             "tmdb" => Some(Self::Tmdb),
             "imdb" => Some(Self::Imdb),
@@ -34,7 +34,7 @@ impl MediaProvider {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum MediaKind {
+pub(crate) enum MediaKind {
     Movie,
     Series,
     Season,
@@ -42,9 +42,9 @@ pub enum MediaKind {
 }
 
 impl MediaKind {
-    pub const ALL: [Self; 4] = [Self::Movie, Self::Series, Self::Season, Self::Episode];
+    pub(crate) const ALL: [Self; 4] = [Self::Movie, Self::Series, Self::Season, Self::Episode];
 
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Movie => "movie",
             Self::Series => "series",
@@ -53,7 +53,7 @@ impl MediaKind {
         }
     }
 
-    pub fn parse(value: &str) -> Option<Self> {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
         match value {
             "movie" => Some(Self::Movie),
             "series" => Some(Self::Series),
@@ -63,7 +63,7 @@ impl MediaKind {
         }
     }
 
-    pub fn from_item_kind(kind: &BaseItemKind) -> Option<Self> {
+    pub(crate) fn from_item_kind(kind: &BaseItemKind) -> Option<Self> {
         match kind {
             BaseItemKind::Movie => Some(Self::Movie),
             BaseItemKind::Series => Some(Self::Series),
@@ -77,7 +77,7 @@ impl MediaKind {
     /// Movies keep their original behavior; Jellyfin v12 adds multi-versions
     /// for episodes, and series/seasons collapse alongside them so a show
     /// present on several backends appears once.
-    pub fn has_media_sources(self) -> bool {
+    pub(crate) fn has_media_sources(self) -> bool {
         matches!(self, Self::Movie | Self::Episode)
     }
 }
@@ -89,15 +89,15 @@ impl MediaKind {
 /// substitution. Applies to movies as well as shows (series, seasons and
 /// episodes — Jellyfin v12 supports multi-versions for episodes).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct MediaAlias {
-    pub provider: MediaProvider,
-    pub kind: MediaKind,
-    pub provider_id: String,
+pub(crate) struct MediaAlias {
+    pub(crate) provider: MediaProvider,
+    pub(crate) kind: MediaKind,
+    pub(crate) provider_id: String,
 }
 
 impl MediaAlias {
     /// Parent series of an episode identified by matched series coordinates.
-    pub fn episode_series_id(&self) -> Option<&str> {
+    pub(crate) fn episode_series_id(&self) -> Option<&str> {
         if self.provider != MediaProvider::SeriesGroup || self.kind != MediaKind::Episode {
             return None;
         }
@@ -106,7 +106,7 @@ impl MediaAlias {
             .map(|(series, _)| series)
     }
 
-    pub fn from_item(item: &MediaItem) -> BTreeSet<Self> {
+    pub(crate) fn from_item(item: &MediaItem) -> BTreeSet<Self> {
         let Some(kind) = MediaKind::from_item_kind(&item.item_type) else {
             return BTreeSet::new();
         };
@@ -150,7 +150,7 @@ impl MediaAlias {
     /// A numbered season belongs to its matched series regardless of its
     /// localized title or missing/inconsistent season-level provider metadata.
     /// Missing numbers must not be confused with season zero (specials).
-    pub fn for_season(item: &MediaItem, series_group_id: &str) -> Option<Self> {
+    pub(crate) fn for_season(item: &MediaItem, series_group_id: &str) -> Option<Self> {
         if item.item_type != BaseItemKind::Season {
             return None;
         }
@@ -171,7 +171,7 @@ impl MediaAlias {
 
     /// Episode titles and episode-level provider metadata can differ between
     /// localized copies. Use the matched series and explicit coordinates.
-    pub fn for_episode(item: &MediaItem, series_group_id: &str) -> Option<Self> {
+    pub(crate) fn for_episode(item: &MediaItem, series_group_id: &str) -> Option<Self> {
         if item.item_type != BaseItemKind::Episode {
             return None;
         }
@@ -229,11 +229,11 @@ impl MediaAlias {
     /// sharing the same numeric provider ID never merge. Legacy rows written
     /// before show support contain only `tmdb`/`imdb`/`tvdb` and are read
     /// back as movies.
-    pub fn storage_provider(&self) -> String {
+    pub(crate) fn storage_provider(&self) -> String {
         format!("{}:{}", self.provider.as_str(), self.kind.as_str())
     }
 
-    pub fn parse_storage(provider: &str, provider_id: &str) -> Option<Self> {
+    pub(crate) fn parse_storage(provider: &str, provider_id: &str) -> Option<Self> {
         if let Some((provider_part, kind_part)) = provider.split_once(':') {
             Some(Self {
                 provider: MediaProvider::parse(provider_part)?,
@@ -251,18 +251,18 @@ impl MediaAlias {
 }
 
 #[derive(Debug, Clone)]
-pub struct MediaObservation {
-    pub virtual_media_id: String,
-    pub kind: MediaKind,
-    pub aliases: BTreeSet<MediaAlias>,
+pub(crate) struct MediaObservation {
+    pub(crate) virtual_media_id: String,
+    pub(crate) kind: MediaKind,
+    pub(crate) aliases: BTreeSet<MediaAlias>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StableMediaGroup {
-    pub virtual_media_id: String,
-    pub active_member_count: usize,
-    pub ambiguous: bool,
-    pub published: bool,
+pub(crate) struct StableMediaGroup {
+    pub(crate) virtual_media_id: String,
+    pub(crate) active_member_count: usize,
+    pub(crate) ambiguous: bool,
+    pub(crate) published: bool,
 }
 
 #[cfg(test)]

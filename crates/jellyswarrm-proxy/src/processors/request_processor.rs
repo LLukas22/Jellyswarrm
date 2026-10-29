@@ -16,13 +16,13 @@ use crate::servers::storage::Server;
 use crate::{auth::UserAuthorizationService, media::MediaStorageService};
 use std::sync::Arc;
 
-pub struct RequestProcessor {
+pub(crate) struct RequestProcessor {
     media_storage: Arc<MediaStorageService>,
     user_ids: BackendUserIds,
 }
 
 impl RequestProcessor {
-    pub fn new(
+    pub(crate) fn new(
         media_storage: Arc<MediaStorageService>,
         authorization: Arc<UserAuthorizationService>,
     ) -> Self {
@@ -56,13 +56,13 @@ impl RequestProcessor {
 }
 
 #[allow(dead_code)]
-pub struct RequestProcessingContext {
-    pub user: Option<User>,
-    pub server: Server,
-    pub sessions: Option<Vec<(AuthorizationSession, Server)>>,
-    pub auth: Option<JellyfinAuthorization>,
-    pub session: Option<AuthorizationSession>,
-    pub new_auth: Option<JellyfinAuthorization>,
+pub(crate) struct RequestProcessingContext {
+    pub(crate) user: Option<User>,
+    pub(crate) server: Server,
+    pub(crate) sessions: Option<Vec<(AuthorizationSession, Server)>>,
+    pub(crate) auth: Option<JellyfinAuthorization>,
+    pub(crate) session: Option<AuthorizationSession>,
+    pub(crate) new_auth: Option<JellyfinAuthorization>,
 }
 
 #[async_trait]
@@ -174,10 +174,11 @@ mod tests {
     use crate::DataContext;
     use crate::{
         auth::service::{Device, UserAuthorizationService},
-        config::{AppConfig, MediaStreamingMode, MIGRATOR},
+        config::{AppConfig, MediaStreamingMode},
         libraries::service::VirtualLibraryService,
         media::identity::{MediaAlias, MediaKind, MediaObservation, MediaProvider},
         media::storage::{MediaCatalogSnapshot, MediaStorageService},
+        persistence::MIGRATOR,
         playback::sessions::SessionStorage,
         processors::process_json,
         servers::id::ServerId,
@@ -192,6 +193,7 @@ mod tests {
         let media_storage = MediaStorageService::new(pool.clone());
 
         let data_context = DataContext {
+            paths: crate::config::Paths::temporary(),
             user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
             server_storage: Arc::new(server_storage.clone()),
             media_storage: Arc::new(media_storage.clone()),

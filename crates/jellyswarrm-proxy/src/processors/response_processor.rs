@@ -20,14 +20,14 @@ use crate::{
 };
 
 #[derive(Clone)]
-pub struct ResponseProcessor {
+pub(crate) struct ResponseProcessor {
     media_storage: Arc<MediaStorageService>,
     user_authorization: Arc<UserAuthorizationService>,
     delivery: DeliveryUrlTranslator,
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum PlaylistResponseError {
+pub(crate) enum PlaylistResponseError {
     #[error("Playlist sharing cannot be represented completely by local users")]
     IncompleteSharing,
     #[error("Invalid playlist sharing response")]
@@ -37,7 +37,7 @@ pub enum PlaylistResponseError {
 }
 
 impl ResponseProcessor {
-    pub fn new(
+    pub(crate) fn new(
         media_storage: Arc<MediaStorageService>,
         user_authorization: Arc<UserAuthorizationService>,
     ) -> Self {
@@ -143,15 +143,15 @@ impl ResponseProcessor {
     }
 }
 
-pub struct ResponseProcessingContext {
-    pub server: Server,
-    pub proxy_server_id: String,
-    pub proxy_api_key: Option<String>,
-    pub profile: ResponseProcessingProfile,
+pub(crate) struct ResponseProcessingContext {
+    pub(crate) server: Server,
+    pub(crate) proxy_server_id: String,
+    pub(crate) proxy_api_key: Option<String>,
+    pub(crate) profile: ResponseProcessingProfile,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResponseProcessingProfile {
+pub(crate) enum ResponseProcessingProfile {
     Media,
     BestEffortMedia,
     PlaylistPermissions,
@@ -159,7 +159,7 @@ pub enum ResponseProcessingProfile {
 }
 
 impl ResponseProcessingProfile {
-    pub fn for_proxy_request(method: &hyper::Method, path: &str) -> Self {
+    pub(crate) fn for_proxy_request(method: &hyper::Method, path: &str) -> Self {
         let segments = crate::upstream::url::decoded_path_segments(path.trim_end_matches('/'));
         let permission_read = match segments.as_slice() {
             [tag, _] => tag.eq_ignore_ascii_case("Playlists"),
@@ -175,7 +175,7 @@ impl ResponseProcessingProfile {
         }
     }
 
-    pub fn requires_json(self) -> bool {
+    pub(crate) fn requires_json(self) -> bool {
         matches!(self, Self::PlaylistPermissions)
     }
 }

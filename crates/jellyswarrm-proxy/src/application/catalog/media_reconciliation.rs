@@ -221,10 +221,10 @@ async fn get_reconciled_catalog_uncached(
 }
 
 pub(super) struct ReconciliationContext<'a> {
-    pub viewer: &'a str,
-    pub catalog_scope_key: &'a str,
-    pub series_group: Option<&'a str>,
-    pub generation: ReconciliationMode,
+    pub(crate) viewer: &'a str,
+    pub(crate) catalog_scope_key: &'a str,
+    pub(crate) series_group: Option<&'a str>,
+    pub(crate) generation: ReconciliationMode,
 }
 
 /// Shared refresh/interactive reconciliation. No incoming request, observation,
@@ -463,7 +463,9 @@ pub(crate) async fn get_aggregate_show_items_typed(
 mod tests {
     use super::*;
     use crate::application::catalog::request_policy::is_authoritative_media_inventory_request;
-    use crate::{config::MIGRATOR, media::storage::MediaStorageService, servers::storage::Server};
+    use crate::{
+        media::storage::MediaStorageService, persistence::MIGRATOR, servers::storage::Server,
+    };
 
     #[tokio::test]
     async fn partial_inventories_retain_sightings_until_a_full_inventory_removes_them() {

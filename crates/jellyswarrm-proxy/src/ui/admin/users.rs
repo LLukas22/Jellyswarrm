@@ -22,49 +22,49 @@ use crate::{
 
 #[derive(Template)]
 #[template(path = "admin/users.html")]
-pub struct UsersPageTemplate {
-    pub ui_route: String,
+pub(crate) struct UsersPageTemplate {
+    pub(crate) ui_route: String,
 }
 
-pub struct UserWithMappings {
-    pub user: User,
-    pub mappings: Vec<(ServerMapping, Server, i64)>, // per mapping session count
-    pub available_servers: Vec<Server>,              // servers not yet mapped
-    pub total_sessions: i64,
+pub(crate) struct UserWithMappings {
+    pub(crate) user: User,
+    pub(crate) mappings: Vec<(ServerMapping, Server, i64)>, // per mapping session count
+    pub(crate) available_servers: Vec<Server>,              // servers not yet mapped
+    pub(crate) total_sessions: i64,
 }
 
 #[derive(Template)]
 #[template(path = "admin/user_list.html")]
-pub struct UserListTemplate {
-    pub users: Vec<UserWithMappings>,
-    pub ui_route: String,
-    pub sync_report: Option<Vec<ServerSyncResult>>,
+pub(crate) struct UserListTemplate {
+    pub(crate) users: Vec<UserWithMappings>,
+    pub(crate) ui_route: String,
+    pub(crate) sync_report: Option<Vec<ServerSyncResult>>,
 }
 
 #[derive(Template)]
 #[template(path = "admin/user_item.html")]
-pub struct UserItemTemplate {
-    pub uwm: UserWithMappings,
-    pub ui_route: String,
+pub(crate) struct UserItemTemplate {
+    pub(crate) uwm: UserWithMappings,
+    pub(crate) ui_route: String,
 }
 
 #[derive(Deserialize)]
-pub struct AddUserForm {
-    pub username: String,
-    pub password: Password,
+pub(crate) struct AddUserForm {
+    pub(crate) username: String,
+    pub(crate) password: Password,
     #[serde(default)]
-    pub enable_federation: bool,
+    pub(crate) enable_federation: bool,
 }
 
 #[derive(Deserialize)]
-pub struct AddMappingForm {
-    pub user_id: String,
-    pub server_id: ServerId,
-    pub mapped_username: String,
-    pub mapped_password: Password,
+pub(crate) struct AddMappingForm {
+    pub(crate) user_id: String,
+    pub(crate) server_id: ServerId,
+    pub(crate) mapped_username: String,
+    pub(crate) mapped_password: Password,
 }
 
-pub async fn create_user_with_mappings(
+pub(crate) async fn create_user_with_mappings(
     state: &AppState,
     user: User,
     servers: &[Server],
@@ -119,7 +119,7 @@ pub async fn create_user_with_mappings(
 }
 
 /// Main users page
-pub async fn users_page(State(state): State<AppState>) -> impl IntoResponse {
+pub(crate) async fn users_page(State(state): State<AppState>) -> impl IntoResponse {
     let template = UsersPageTemplate {
         ui_route: state.get_ui_route().await,
     };
@@ -132,7 +132,7 @@ pub async fn users_page(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
-pub async fn get_user_item(state: &AppState, user_id: &str) -> impl IntoResponse {
+pub(crate) async fn get_user_item(state: &AppState, user_id: &str) -> impl IntoResponse {
     let servers = match state.server_storage.list_servers().await {
         Ok(s) => s,
         Err(e) => {
@@ -237,12 +237,15 @@ async fn get_user_list_impl(
 }
 
 /// List users with mappings
-pub async fn get_user_list(State(state): State<AppState>) -> impl IntoResponse {
+pub(crate) async fn get_user_list(State(state): State<AppState>) -> impl IntoResponse {
     get_user_list_impl(&state, None).await
 }
 
 /// Add user
-pub async fn add_user(State(state): State<AppState>, Form(form): Form<AddUserForm>) -> Response {
+pub(crate) async fn add_user(
+    State(state): State<AppState>,
+    Form(form): Form<AddUserForm>,
+) -> Response {
     if form.username.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -289,13 +292,13 @@ pub async fn add_user(State(state): State<AppState>, Form(form): Form<AddUserFor
 }
 
 #[derive(Deserialize)]
-pub struct DeleteUserForm {
+pub(crate) struct DeleteUserForm {
     #[serde(default)]
-    pub delete_federated: bool,
+    pub(crate) delete_federated: bool,
 }
 
 /// Delete user
-pub async fn delete_user(
+pub(crate) async fn delete_user(
     State(state): State<AppState>,
     Path(user_id): Path<String>,
     Form(form): Form<DeleteUserForm>,
@@ -355,7 +358,7 @@ pub async fn delete_user(
 }
 
 /// Add mapping
-pub async fn add_mapping(
+pub(crate) async fn add_mapping(
     State(state): State<AppState>,
     Form(form): Form<AddMappingForm>,
 ) -> Response {
@@ -495,7 +498,7 @@ pub async fn add_mapping(
 }
 
 /// Delete mapping
-pub async fn delete_mapping(
+pub(crate) async fn delete_mapping(
     State(state): State<AppState>,
     Path((user_id, mapping_id)): Path<(String, i64)>,
 ) -> Response {
@@ -522,7 +525,7 @@ pub async fn delete_mapping(
 }
 
 /// Delete sessions
-pub async fn delete_sessions(
+pub(crate) async fn delete_sessions(
     State(state): State<AppState>,
     Path(user_id): Path<String>,
 ) -> Response {

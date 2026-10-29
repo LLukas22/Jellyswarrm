@@ -8,9 +8,9 @@ pub(crate) struct CatalogRequestPolicy {
     pub(super) pagination: Pagination,
     pub(super) sort: super::postprocessing::SortPolicy,
     pub(super) episode_start_id: Option<String>,
-    pub inventory_types: BTreeSet<MediaKind>,
-    pub upstream_limited: bool,
-    pub reconcile_playback: bool,
+    pub(crate) inventory_types: BTreeSet<MediaKind>,
+    pub(crate) upstream_limited: bool,
+    pub(crate) reconcile_playback: bool,
     playback_filters: Vec<PlaybackFilter>,
 }
 
@@ -31,7 +31,7 @@ impl PlaybackFilter {
 }
 
 impl CatalogRequestPolicy {
-    pub fn from_url(url: &url::Url) -> Self {
+    pub(crate) fn from_url(url: &url::Url) -> Self {
         let sort = super::postprocessing::SortPolicy::from_url(url);
         let path = url.path().trim_end_matches('/').to_ascii_lowercase();
         let episode_start_id = (path.contains("/shows/") && path.ends_with("/episodes"))
@@ -72,7 +72,7 @@ impl CatalogRequestPolicy {
         }
     }
 
-    pub fn prepare_upstream(&self, url: &mut url::Url, include_identity: bool) {
+    pub(crate) fn prepare_upstream(&self, url: &mut url::Url, include_identity: bool) {
         if self.episode_start_id.is_some() {
             // The anchor can live on only one member server. Fetch every
             // member's episodes and apply the inclusive window after merging.
@@ -143,7 +143,7 @@ impl CatalogRequestPolicy {
         }
     }
 
-    pub fn matches_playback(&self, item: &crate::models::MediaItem) -> bool {
+    pub(crate) fn matches_playback(&self, item: &crate::models::MediaItem) -> bool {
         !self.reconcile_playback
             || self.playback_filters.iter().all(|filter| match filter {
                 PlaybackFilter::Played(played) => {

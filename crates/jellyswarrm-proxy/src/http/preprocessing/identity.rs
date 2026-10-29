@@ -1,13 +1,13 @@
 //! Parse incoming requests and resolve their local caller identity.
 use super::*;
 
-pub struct RequestIdentity {
-    pub auth: Option<JellyfinAuthorization>,
-    pub user: Option<User>,
-    pub device: Option<Device>,
+pub(crate) struct RequestIdentity {
+    pub(crate) auth: Option<JellyfinAuthorization>,
+    pub(crate) user: Option<User>,
+    pub(crate) device: Option<Device>,
 }
 
-pub async fn resolve_request_identity_from_headers_uri(
+pub(crate) async fn resolve_request_identity_from_headers_uri(
     headers: &http::HeaderMap,
     uri: &http::Uri,
     state: &AppState,
@@ -22,7 +22,7 @@ pub async fn resolve_request_identity_from_headers_uri(
     Ok(RequestIdentity { auth, user, device })
 }
 
-pub async fn get_user_from_request(
+pub(crate) async fn get_user_from_request(
     auth: &Option<JellyfinAuthorization>,
     state: &AppState,
 ) -> Result<Option<User>> {

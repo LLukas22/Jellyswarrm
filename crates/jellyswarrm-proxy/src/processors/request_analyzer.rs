@@ -18,7 +18,7 @@ use crate::{
     servers::ServerStorageService,
 };
 
-pub struct RequestAnalyzer {
+pub(crate) struct RequestAnalyzer {
     media_storage: Arc<MediaStorageService>,
     server_storage: Arc<ServerStorageService>,
     play_sessions: Arc<SessionStorage>,
@@ -26,7 +26,7 @@ pub struct RequestAnalyzer {
 }
 
 impl RequestAnalyzer {
-    pub fn new(
+    pub(crate) fn new(
         media_storage: Arc<MediaStorageService>,
         server_storage: Arc<ServerStorageService>,
         play_sessions: Arc<SessionStorage>,
@@ -71,21 +71,21 @@ impl RequestAnalyzer {
 }
 
 #[derive(Debug, Default)]
-pub struct RequestBodyAnalysisResult {
-    pub found_ids: Vec<String>,
-    pub found_session_ids: Vec<String>,
-    pub found_user_ids: Vec<String>,
-    pub servers: Vec<Server>,
-    pub users: Vec<User>,
-    pub authoritative_play_session: Option<RevisionedPlaybackSession>,
-    pub requested_play_session_id: Option<String>,
-    pub requested_play_item_id: Option<String>,
-    pub requested_play_source_id: Option<String>,
+pub(crate) struct RequestBodyAnalysisResult {
+    pub(crate) found_ids: Vec<String>,
+    pub(crate) found_session_ids: Vec<String>,
+    pub(crate) found_user_ids: Vec<String>,
+    pub(crate) servers: Vec<Server>,
+    pub(crate) users: Vec<User>,
+    pub(crate) authoritative_play_session: Option<RevisionedPlaybackSession>,
+    pub(crate) requested_play_session_id: Option<String>,
+    pub(crate) requested_play_item_id: Option<String>,
+    pub(crate) requested_play_source_id: Option<String>,
 }
 
 impl RequestBodyAnalysisResult {
     /// Returns the server with the highest occurance in the servers vector, or None if the vector is empty.
-    pub fn get_server(&self) -> Option<Server> {
+    pub(crate) fn get_server(&self) -> Option<Server> {
         if self.servers.is_empty() {
             return None;
         }
@@ -98,7 +98,7 @@ impl RequestBodyAnalysisResult {
     }
 
     /// Returns the user with the highest occurance in the users vector, or None if the vector is empty.
-    pub fn get_user(&self) -> Option<User> {
+    pub(crate) fn get_user(&self) -> Option<User> {
         if self.users.is_empty() {
             return None;
         }
@@ -112,15 +112,15 @@ impl RequestBodyAnalysisResult {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlaybackSessionAction {
+pub(crate) enum PlaybackSessionAction {
     Start,
     Refresh,
     Remove,
 }
 
-pub struct RequestAnalysisContext {
-    pub authenticated_user_id: Option<crate::auth::user_id::UserId>,
-    pub playback_session_action: Option<PlaybackSessionAction>,
+pub(crate) struct RequestAnalysisContext {
+    pub(crate) authenticated_user_id: Option<crate::auth::user_id::UserId>,
+    pub(crate) playback_session_action: Option<PlaybackSessionAction>,
 }
 
 #[async_trait]

@@ -17,7 +17,7 @@ use tokio::{
     time::{Duration, Instant, MissedTickBehavior},
 };
 
-pub async fn websocket(
+pub(crate) async fn websocket(
     State(state): State<AppState>,
     session: SessionContext,
     ws: WebSocketUpgrade,

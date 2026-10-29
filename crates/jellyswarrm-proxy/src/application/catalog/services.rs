@@ -19,26 +19,26 @@ use std::sync::Arc;
 
 #[derive(Clone)]
 pub(crate) struct CatalogProcessors {
-    pub url_processor: UrlProcessor,
-    pub response_processor: ResponseProcessor,
+    pub(crate) url_processor: UrlProcessor,
+    pub(crate) response_processor: ResponseProcessor,
 }
 
 #[derive(Clone)]
 pub(crate) struct CatalogService {
-    pub media_storage: Arc<MediaStorageService>,
-    pub server_storage: Arc<ServerStorageService>,
-    pub virtual_library_service: Arc<VirtualLibraryService>,
-    pub play_sessions: Arc<SessionStorage>,
-    pub config: SettingsView,
-    pub selection: crate::application::url_selection::UrlSelection,
-    pub processors: CatalogProcessors,
-    pub upstream: Arc<dyn JsonUpstream>,
-    pub client_sessions: Arc<crate::sessions::ClientSessionService>,
-    pub catalog_snapshots: Arc<super::snapshots::CatalogSnapshots>,
+    pub(crate) media_storage: Arc<MediaStorageService>,
+    pub(crate) server_storage: Arc<ServerStorageService>,
+    pub(crate) virtual_library_service: Arc<VirtualLibraryService>,
+    pub(crate) play_sessions: Arc<SessionStorage>,
+    pub(crate) config: SettingsView,
+    pub(crate) selection: crate::application::url_selection::UrlSelection,
+    pub(crate) processors: CatalogProcessors,
+    pub(crate) upstream: Arc<dyn JsonUpstream>,
+    pub(crate) client_sessions: Arc<crate::sessions::ClientSessionService>,
+    pub(crate) catalog_snapshots: Arc<super::snapshots::CatalogSnapshots>,
 }
 
 impl CatalogService {
-    pub fn routing_services(&self) -> RoutingServices<'_> {
+    pub(crate) fn routing_services(&self) -> RoutingServices<'_> {
         RoutingServices {
             media_storage: &self.media_storage,
             server_storage: &self.server_storage,
@@ -48,7 +48,7 @@ impl CatalogService {
             urls: &self.processors.url_processor,
         }
     }
-    pub async fn get_url_prefix(&self) -> Option<String> {
+    pub(crate) async fn get_url_prefix(&self) -> Option<String> {
         self.config
             .read()
             .await
@@ -56,13 +56,13 @@ impl CatalogService {
             .as_ref()
             .map(ToString::to_string)
     }
-    pub async fn deduplicate_media_enabled(&self) -> bool {
+    pub(crate) async fn deduplicate_media_enabled(&self) -> bool {
         self.config.read().await.deduplicate_media
     }
-    pub async fn merge_libraries_enabled(&self) -> bool {
+    pub(crate) async fn merge_libraries_enabled(&self) -> bool {
         self.config.read().await.merge_libraries
     }
-    pub async fn process_response_json_typed(
+    pub(crate) async fn process_response_json_typed(
         &self,
         payload: &mut serde_json::Value,
         server: &Server,
@@ -79,7 +79,7 @@ impl CatalogService {
         )
         .await
     }
-    pub async fn execute_processed_json(
+    pub(crate) async fn execute_processed_json(
         &self,
         request: reqwest::Request,
         server: &Server,

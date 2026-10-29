@@ -2,11 +2,12 @@
 //! independently observable backends. Unmatched upstream requests return 404.
 use crate::{
     auth::service::{Device, User},
-    config::{AppConfig, MediaStreamingMode, MIGRATOR},
+    config::{AppConfig, MediaStreamingMode},
     http::handlers::quick_connect::QuickConnectStorage,
     libraries::service::VirtualLibraryService,
     media::storage::MediaStorageService,
     models::Authorization,
+    persistence::MIGRATOR,
     playback::sessions::SessionStorage,
     processors::ProxyProcessors,
     servers::storage::ServerStorageService,
@@ -90,6 +91,7 @@ impl Fixture {
         let servers = ServerStorageService::new(pool.clone());
         let media = MediaStorageService::new(pool.clone());
         let data = DataContext {
+            paths: crate::config::Paths::temporary(),
             user_authorization: Arc::new(
                 crate::app::authorization::build_authorization(pool.clone(), &config)
                     .await

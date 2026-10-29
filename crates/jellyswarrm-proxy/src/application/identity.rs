@@ -1,7 +1,7 @@
 //! Identity namespaces at selection/translation boundaries. These wrappers do
 //! not validate ID syntax: Jellyfin IDs may be opaque, non-UUID strings.
 //! Local viewer UUIDs use the canonical user-ID representation.
-//! Deliberately no Deref, AsRef<str>, or cross-namespace conversions: leaving a
+//! Deliberately no `Deref`, `AsRef<str>`, or cross-namespace conversions: leaving a
 //! namespace requires an explicit wire/storage-boundary decision.
 
 #[derive(Debug, Clone, PartialEq, Eq)]

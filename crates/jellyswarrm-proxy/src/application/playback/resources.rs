@@ -339,9 +339,10 @@ mod tests {
     ) {
         use crate::{
             auth::service::{LocalCredential, User, UserAuthorizationService},
-            config::{AppConfig, MIGRATOR},
+            config::AppConfig,
             libraries::service::VirtualLibraryService,
             media::storage::MediaStorageService,
+            persistence::MIGRATOR,
             playback::sessions::SessionStorage,
             processors::ProxyProcessors,
             servers::storage::ServerStorageService,
@@ -372,6 +373,7 @@ mod tests {
             .await
             .unwrap();
         let data = DataContext {
+            paths: crate::config::Paths::temporary(),
             user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
             server_storage: Arc::new(servers.clone()),
             media_storage: Arc::new(media.clone()),

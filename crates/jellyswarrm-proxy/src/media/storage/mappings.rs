@@ -3,7 +3,7 @@ use super::*;
 
 impl MediaStorageService {
     /// Create or get a media mapping
-    pub async fn get_or_create_media_mapping(
+    pub(crate) async fn get_or_create_media_mapping(
         &self,
         original_media_id: &str,
         server: &Server,
@@ -81,7 +81,7 @@ impl MediaStorageService {
         Err(sqlx::Error::RowNotFound)
     }
 
-    pub fn normalize_uuid(s: &str) -> String {
+    pub(crate) fn normalize_uuid(s: &str) -> String {
         match Uuid::parse_str(s) {
             Ok(uuid) => uuid.simple().to_string(),
             Err(_) => s.to_string(),
@@ -89,7 +89,7 @@ impl MediaStorageService {
     }
 
     /// Get media mapping by virtual media ID
-    pub async fn get_media_mapping_by_virtual(
+    pub(crate) async fn get_media_mapping_by_virtual(
         &self,
         virtual_media_id: &str,
     ) -> Result<Option<MediaMapping>, sqlx::Error> {
@@ -110,7 +110,7 @@ impl MediaStorageService {
     }
 
     /// Get media mapping by original media ID and server
-    pub async fn get_media_mapping_by_original(
+    pub(crate) async fn get_media_mapping_by_original(
         &self,
         original_media_id: &str,
         server_id: ServerId,
@@ -136,7 +136,7 @@ impl MediaStorageService {
     /// settings are never cached with stable media identity. A read that began
     /// before a registry commit may finish with its earlier snapshot; subsequent
     /// reads see the committed settings/deletion without invalidation races.
-    pub async fn get_media_mapping_with_server(
+    pub(crate) async fn get_media_mapping_with_server(
         &self,
         virtual_media_id: &str,
     ) -> Result<Option<(MediaMapping, Server)>, sqlx::Error> {
@@ -187,7 +187,11 @@ impl MediaStorageService {
     }
 
     /// Delete a media mapping
-    pub async fn delete_media_mapping(&self, virtual_media_id: &str) -> Result<bool, sqlx::Error> {
+    #[cfg(test)]
+    pub(crate) async fn delete_media_mapping(
+        &self,
+        virtual_media_id: &str,
+    ) -> Result<bool, sqlx::Error> {
         let result = sqlx::query(
             r#"
             DELETE FROM media_mappings WHERE virtual_media_id = ?
@@ -215,31 +219,5 @@ impl MediaStorageService {
         } else {
             Ok(false)
         }
-    }
-
-    /// Delete all media mappings for a specific server
-    pub async fn delete_media_mappings_by_server(
-        &self,
-        server: &Server,
-    ) -> Result<u64, sqlx::Error> {
-        let result = sqlx::query(
-            r#"
-            DELETE FROM media_mappings WHERE server_id = ?
-            "#,
-        )
-        .bind(server.id.as_i64())
-        .execute(&self.pool)
-        .await?;
-
-        let deleted_count = result.rows_affected();
-        if deleted_count > 0 {
-            info!(
-                "Deleted {} media mappings for server: {}",
-                deleted_count,
-                server.url.as_str()
-            );
-        }
-        self.original_mapping_cache.invalidate_all();
-        Ok(deleted_count)
     }
 }

@@ -230,9 +230,10 @@ mod tests {
     use super::*;
     use crate::{
         auth::quick_connect::{QuickConnectStorage, RedemptionError},
-        config::{AppConfig, MediaStreamingMode, MIGRATOR},
+        config::{AppConfig, MediaStreamingMode},
         libraries::VirtualLibraryService,
         media::MediaStorageService,
+        persistence::MIGRATOR,
         playback::sessions::SessionStorage,
         processors::ProxyProcessors,
         servers::ServerStorageService,
@@ -276,6 +277,7 @@ mod tests {
             .unwrap();
         let media = MediaStorageService::new(pool.clone());
         let data = DataContext {
+            paths: crate::config::Paths::temporary(),
             user_authorization: Arc::new(authorization),
             server_storage: Arc::new(servers.clone()),
             media_storage: Arc::new(media.clone()),

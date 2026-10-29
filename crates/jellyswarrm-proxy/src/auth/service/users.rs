@@ -8,7 +8,7 @@ impl UserAuthorizationService {
     }
 
     /// Create or get a user by username without changing an existing credential.
-    pub async fn get_or_create_user(
+    pub(crate) async fn get_or_create_user(
         &self,
         username: &str,
         password: &Password,
@@ -56,7 +56,7 @@ impl UserAuthorizationService {
 
     /// Resolve an existing login identity or create it after upstream authentication.
     /// A concurrent creator is accepted only when it used the same local credential.
-    pub async fn resolve_or_create_login_user(
+    pub(crate) async fn resolve_or_create_login_user(
         &self,
         username: &str,
         password: &Password,
@@ -81,7 +81,7 @@ impl UserAuthorizationService {
     }
 
     /// Create a new user. Fails if a user with the same normalized username already exists.
-    pub async fn create_user(
+    pub(crate) async fn create_user(
         &self,
         username: &str,
         password: &Password,
@@ -120,7 +120,10 @@ impl UserAuthorizationService {
     }
 
     /// Get user by username (case-insensitive, trimmed)
-    pub async fn get_user_by_username(&self, username: &str) -> Result<Option<User>, sqlx::Error> {
+    pub(crate) async fn get_user_by_username(
+        &self,
+        username: &str,
+    ) -> Result<Option<User>, sqlx::Error> {
         let user = sqlx::query_as::<_, User>(
             r#"
             SELECT id, virtual_key, original_username, original_password_hash,
@@ -137,7 +140,7 @@ impl UserAuthorizationService {
     }
 
     /// Get user by virtual key
-    pub async fn get_user_by_virtual_key(
+    pub(crate) async fn get_user_by_virtual_key(
         &self,
         virtual_key: &str,
     ) -> Result<Option<User>, sqlx::Error> {
@@ -157,7 +160,7 @@ impl UserAuthorizationService {
     }
 
     /// Resolve either a login token or an application API key to its virtual user.
-    pub async fn get_user_by_token(&self, token: &str) -> Result<Option<User>, sqlx::Error> {
+    pub(crate) async fn get_user_by_token(&self, token: &str) -> Result<Option<User>, sqlx::Error> {
         if let Some(user) = self.get_user_by_virtual_key(token).await? {
             return Ok(Some(user));
         }
@@ -177,7 +180,7 @@ impl UserAuthorizationService {
     }
 
     /// Get user by virtual ID, accepting equivalent UUID formats.
-    pub async fn get_user_by_id(&self, id: &str) -> Result<Option<User>, sqlx::Error> {
+    pub(crate) async fn get_user_by_id(&self, id: &str) -> Result<Option<User>, sqlx::Error> {
         let user = sqlx::query_as::<_, User>(
             r#"
             SELECT id, virtual_key, original_username, original_password_hash,
@@ -194,7 +197,7 @@ impl UserAuthorizationService {
     }
 
     /// Get user by credentials
-    pub async fn get_user_by_credentials(
+    pub(crate) async fn get_user_by_credentials(
         &self,
         username: &str,
         password: &Password,
@@ -253,7 +256,7 @@ impl UserAuthorizationService {
     }
 
     /// List all users
-    pub async fn list_users(&self) -> Result<Vec<User>, sqlx::Error> {
+    pub(crate) async fn list_users(&self) -> Result<Vec<User>, sqlx::Error> {
         let users = sqlx::query_as::<_, User>(
             r#"
             SELECT id, virtual_key, original_username, original_password_hash,
@@ -268,7 +271,7 @@ impl UserAuthorizationService {
     }
 
     /// Delete a user
-    pub async fn delete_user(&self, user_id: &str) -> Result<bool, sqlx::Error> {
+    pub(crate) async fn delete_user(&self, user_id: &str) -> Result<bool, sqlx::Error> {
         let res = sqlx::query("DELETE FROM users WHERE id = ?")
             .bind(user_id)
             .execute(&self.pool)
@@ -277,7 +280,7 @@ impl UserAuthorizationService {
     }
 
     /// Update user password and re-encrypt server mappings
-    pub async fn update_user_password(
+    pub(crate) async fn update_user_password(
         &self,
         user_id: &str,
         old_password: &Password,
@@ -438,7 +441,7 @@ impl UserAuthorizationService {
     }
 
     /// Verify user password
-    pub async fn verify_user_password(
+    pub(crate) async fn verify_user_password(
         &self,
         user_id: &str,
         password: &Password,

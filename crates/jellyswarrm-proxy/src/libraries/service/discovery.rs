@@ -2,7 +2,7 @@
 use super::*;
 
 impl VirtualLibraryService {
-    pub async fn get_or_create_automatic_library(
+    pub(crate) async fn get_or_create_automatic_library(
         &self,
         collection_type: &str,
         name: &str,
@@ -39,7 +39,7 @@ impl VirtualLibraryService {
         .await
     }
 
-    pub async fn get_automatic_library_by_collection_type(
+    pub(crate) async fn get_automatic_library_by_collection_type(
         &self,
         collection_type: &str,
     ) -> Result<Option<AutomaticVirtualLibrary>, sqlx::Error> {
@@ -52,7 +52,7 @@ impl VirtualLibraryService {
         .await
     }
 
-    pub async fn begin_automatic_library_refresh(
+    pub(crate) async fn begin_automatic_library_refresh(
         &self,
         access_scope: &VirtualLibraryAccessScope,
     ) -> u64 {
@@ -64,7 +64,7 @@ impl VirtualLibraryService {
         state.latest_started
     }
 
-    pub async fn reconcile_automatic_library_members(
+    pub(crate) async fn reconcile_automatic_library_members(
         &self,
         access_scope: &VirtualLibraryAccessScope,
         refresh_generation: u64,
@@ -186,7 +186,7 @@ impl VirtualLibraryService {
         Ok(members)
     }
 
-    pub async fn track_discovered_libraries(
+    pub(crate) async fn track_discovered_libraries(
         &self,
         libraries: &[DiscoveredLibrary],
     ) -> Result<(), sqlx::Error> {
@@ -201,13 +201,13 @@ impl VirtualLibraryService {
 
     /// Use the shared persistent clock so in-flight inventories remain ordered
     /// across service clones and independently for each viewer/backend pair.
-    pub async fn begin_viewer_inventory(
+    pub(crate) async fn begin_viewer_inventory(
         &self,
     ) -> Result<crate::media::storage::ReconciliationGeneration, sqlx::Error> {
         self.media_storage.begin_media_reconciliation().await
     }
 
-    pub async fn replace_viewer_libraries(
+    pub(crate) async fn replace_viewer_libraries(
         &self,
         user_id: &str,
         server_id: ServerId,
@@ -243,7 +243,7 @@ impl VirtualLibraryService {
         tx.commit().await
     }
 
-    pub async fn replace_discovered_libraries(
+    pub(crate) async fn replace_discovered_libraries(
         &self,
         server_id: ServerId,
         libraries: &[DiscoveredLibrary],
@@ -272,7 +272,9 @@ impl VirtualLibraryService {
         tx.commit().await
     }
 
-    pub async fn list_discovered_libraries(&self) -> Result<Vec<DiscoveredLibrary>, sqlx::Error> {
+    pub(crate) async fn list_discovered_libraries(
+        &self,
+    ) -> Result<Vec<DiscoveredLibrary>, sqlx::Error> {
         let rows: Vec<(i64, String, String, String)> = sqlx::query_as(
             "SELECT server_id, original_library_id, name, collection_type \
              FROM discovered_libraries ORDER BY server_id, name, original_library_id",
@@ -293,7 +295,7 @@ impl VirtualLibraryService {
             .collect())
     }
 
-    pub async fn get_discovered_library(
+    pub(crate) async fn get_discovered_library(
         &self,
         server_id: ServerId,
         original_library_id: &str,

@@ -4,7 +4,7 @@ use crate::{application, sessions, upstream};
 use crate::{
     auth::quick_connect::QuickConnectStorage,
     auth::{encryption::Password, federation::FederatedUserService, UserAuthorizationService},
-    config::{AppConfig, MediaStreamingMode},
+    config::AppConfig,
     libraries::VirtualLibraryService,
     media::MediaStorageService,
     playback::sessions::SessionStorage,
@@ -13,23 +13,23 @@ use crate::{
 };
 use std::sync::Arc;
 #[derive(Clone)]
-pub struct AppState {
-    pub reqwest_client: reqwest::Client,
-    pub streaming_reqwest_client: reqwest::Client,
-    pub user_authorization: Arc<UserAuthorizationService>,
-    pub server_storage: Arc<ServerStorageService>,
-    pub media_storage: Arc<MediaStorageService>,
-    pub virtual_library_service: Arc<VirtualLibraryService>,
-    pub play_sessions: Arc<SessionStorage>,
-    pub config: Arc<tokio::sync::RwLock<AppConfig>>,
+pub(crate) struct AppState {
+    pub(crate) reqwest_client: reqwest::Client,
+    pub(crate) streaming_reqwest_client: reqwest::Client,
+    pub(crate) user_authorization: Arc<UserAuthorizationService>,
+    pub(crate) server_storage: Arc<ServerStorageService>,
+    pub(crate) media_storage: Arc<MediaStorageService>,
+    pub(crate) virtual_library_service: Arc<VirtualLibraryService>,
+    pub(crate) play_sessions: Arc<SessionStorage>,
+    pub(crate) config: Arc<tokio::sync::RwLock<AppConfig>>,
     configuration: crate::config::service::ConfigurationService,
     pub(crate) settings: crate::config::SettingsView,
     pub(crate) url_selection: application::url_selection::UrlSelection,
-    pub processors: Arc<ProxyProcessors>,
-    pub quick_connect: QuickConnectStorage,
-    pub federated_users: Arc<FederatedUserService>,
-    pub syncplay: Arc<SyncPlayService>,
-    pub client_sessions: Arc<sessions::ClientSessionService>,
+    pub(crate) processors: Arc<ProxyProcessors>,
+    pub(crate) quick_connect: QuickConnectStorage,
+    pub(crate) federated_users: Arc<FederatedUserService>,
+    pub(crate) syncplay: Arc<SyncPlayService>,
+    pub(crate) client_sessions: Arc<sessions::ClientSessionService>,
     pub(crate) catalog_snapshots: Arc<application::catalog::snapshots::CatalogSnapshots>,
 }
 
@@ -172,7 +172,7 @@ impl AppState {
             selection: &self.url_selection,
         }
     }
-    pub fn new(
+    pub(crate) fn new(
         reqwest_client: reqwest::Client,
         streaming_reqwest_client: reqwest::Client,
         data_context: DataContext,
@@ -205,6 +205,7 @@ impl AppState {
             settings: crate::config::SettingsView::new(data_context.config.clone()),
             configuration: crate::config::service::ConfigurationService::new(
                 data_context.config.clone(),
+                data_context.paths,
             ),
             config: data_context.config,
             processors: Arc::new(proxy_processors),
@@ -218,7 +219,7 @@ impl AppState {
         }
     }
 
-    pub async fn get_ui_route(&self) -> String {
+    pub(crate) async fn get_ui_route(&self) -> String {
         let config = self.config.read().await;
         if let Some(prefix) = &config.url_prefix {
             format!("{}/{}", prefix, config.ui_route)
@@ -227,17 +228,17 @@ impl AppState {
         }
     }
 
-    pub async fn get_url_prefix(&self) -> Option<String> {
+    pub(crate) async fn get_url_prefix(&self) -> Option<String> {
         let config = self.config.read().await;
         config.url_prefix.as_ref().map(|prefix| prefix.to_string())
     }
 
-    pub async fn get_admin_password(&self) -> Password {
+    pub(crate) async fn get_admin_password(&self) -> Password {
         let config = self.config.read().await;
         config.password.clone()
     }
 
-    pub async fn remove_prefix_from_path<'a>(&self, path: &'a str) -> &'a str {
+    pub(crate) async fn remove_prefix_from_path<'a>(&self, path: &'a str) -> &'a str {
         let config = self.config.read().await;
         if let Some(prefix) = &config.url_prefix {
             path.trim_start_matches(&format!("/{}", prefix))
@@ -246,22 +247,8 @@ impl AppState {
         }
     }
 
-    pub async fn get_media_streaming_mode(&self) -> MediaStreamingMode {
-        let config = self.config.read().await;
-        config.media_streaming_mode
-    }
-
-    pub async fn auto_create_users_on_login(&self) -> bool {
-        let config = self.config.read().await;
-        config.auto_create_users_on_login
-    }
-
-    pub async fn merge_libraries_enabled(&self) -> bool {
+    pub(crate) async fn merge_libraries_enabled(&self) -> bool {
         self.config.read().await.merge_libraries
-    }
-
-    pub async fn deduplicate_media_enabled(&self) -> bool {
-        self.config.read().await.deduplicate_media
     }
 }
 
@@ -279,11 +266,12 @@ impl From<crate::DataContext> for crate::processors::url_processor::UrlProcessor
 
 #[derive(Clone)]
 /// Struct holding shared services and configuration
-pub struct DataContext {
-    pub user_authorization: Arc<UserAuthorizationService>,
-    pub server_storage: Arc<ServerStorageService>,
-    pub media_storage: Arc<MediaStorageService>,
-    pub virtual_library_service: Arc<VirtualLibraryService>,
-    pub play_sessions: Arc<SessionStorage>,
-    pub config: Arc<tokio::sync::RwLock<AppConfig>>,
+pub(crate) struct DataContext {
+    pub(crate) paths: crate::config::Paths,
+    pub(crate) user_authorization: Arc<UserAuthorizationService>,
+    pub(crate) server_storage: Arc<ServerStorageService>,
+    pub(crate) media_storage: Arc<MediaStorageService>,
+    pub(crate) virtual_library_service: Arc<VirtualLibraryService>,
+    pub(crate) play_sessions: Arc<SessionStorage>,
+    pub(crate) config: Arc<tokio::sync::RwLock<AppConfig>>,
 }

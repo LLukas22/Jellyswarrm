@@ -8,17 +8,17 @@ use std::{
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-pub const OUTBOUND_CAPACITY: usize = 64;
+pub(crate) const OUTBOUND_CAPACITY: usize = 64;
 
 #[derive(Clone, Default)]
-pub struct ConnectionHub(Arc<Mutex<HashMap<String, Connection>>>);
+pub(crate) struct ConnectionHub(Arc<Mutex<HashMap<String, Connection>>>);
 struct Connection {
     generation: Uuid,
     sender: mpsc::Sender<String>,
 }
 
 impl ConnectionHub {
-    pub fn register(&self, id: String, sender: mpsc::Sender<String>) -> Uuid {
+    pub(crate) fn register(&self, id: String, sender: mpsc::Sender<String>) -> Uuid {
         let generation = Uuid::new_v4();
         self.0
             .lock()
@@ -27,7 +27,7 @@ impl ConnectionHub {
         generation
     }
 
-    pub fn unregister(&self, id: &str, generation: Uuid) -> bool {
+    pub(crate) fn unregister(&self, id: &str, generation: Uuid) -> bool {
         let mut connections = self.0.lock().unwrap();
         if connections
             .get(id)
@@ -40,11 +40,11 @@ impl ConnectionHub {
         }
     }
 
-    pub fn remove(&self, id: &str) {
+    pub(crate) fn remove(&self, id: &str) {
         self.0.lock().unwrap().remove(id);
     }
 
-    pub fn is_current(&self, id: &str, generation: Uuid) -> bool {
+    pub(crate) fn is_current(&self, id: &str, generation: Uuid) -> bool {
         self.0
             .lock()
             .unwrap()
@@ -52,7 +52,7 @@ impl ConnectionHub {
             .is_some_and(|c| c.generation == generation && !c.sender.is_closed())
     }
 
-    pub fn is_connected(&self, id: &str) -> bool {
+    pub(crate) fn is_connected(&self, id: &str) -> bool {
         self.0
             .lock()
             .unwrap()
@@ -60,7 +60,7 @@ impl ConnectionHub {
             .is_some_and(|c| !c.sender.is_closed())
     }
 
-    pub fn send<T: Serialize>(
+    pub(crate) fn send<T: Serialize>(
         &self,
         id: &str,
         message_type: &str,
