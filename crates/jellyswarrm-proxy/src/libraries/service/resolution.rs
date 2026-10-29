@@ -1,5 +1,6 @@
 //! Resolve authorized virtual libraries and select deterministic backend routes.
 use super::*;
+use crate::servers::routing::compare_routes;
 
 impl VirtualLibraryService {
     pub(crate) async fn library_grouping(
@@ -76,7 +77,7 @@ impl VirtualLibraryService {
             .into_iter()
             .filter(|member| server_is_allowed(member.server.id, access_scope, required_server_id))
             .max_by(|left, right| {
-                compare_virtual_library_routes(
+                compare_routes(
                     &left.server,
                     &left.mapping.original_media_id,
                     &right.server,

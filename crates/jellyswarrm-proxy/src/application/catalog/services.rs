@@ -1,10 +1,6 @@
 //! Catalog-only capabilities, owned so bounded source tasks can share them.
 use crate::{
-    application::{
-        error::ApplicationError,
-        routing::RoutingServices,
-        upstream::{execute_payload, JsonUpstream},
-    },
+    application::{error::ApplicationError, routing::RoutingServices, upstream::execute_payload},
     config::SettingsView,
     libraries::service::VirtualLibraryService,
     media::storage::MediaStorageService,
@@ -14,6 +10,7 @@ use crate::{
         url_processor::UrlProcessor,
     },
     servers::storage::{Server, ServerStorageService},
+    upstream::jellyfin::json::JsonUpstream,
 };
 use std::sync::Arc;
 

@@ -1,6 +1,7 @@
 //! Production client routes, item-detail methods, URL-prefix wrapping, and root monitoring endpoints.
+use super::sessions;
 use super::{assets::index_handler, proxy::proxy_handler};
-use crate::{sessions, ui::ui_routes, AppState};
+use crate::http::state::AppState;
 use axum::{
     extract::Request,
     response::IntoResponse,
@@ -10,12 +11,10 @@ use axum::{
 use jellyswarrm_macros::lowercase_routes;
 use std::net::SocketAddr;
 use tracing::info;
-pub(crate) fn routes(ui_route: &str) -> Router<AppState> {
+pub(crate) fn routes() -> Router<AppState> {
     lowercase_routes! {
         Router::new()
             .merge(sessions::router())
-            // UI Management routes
-            .nest(&format!("/{ui_route}"), ui_routes())
             .route("/", get(index_handler))
             .route(
                 "/QuickConnect/Enabled",

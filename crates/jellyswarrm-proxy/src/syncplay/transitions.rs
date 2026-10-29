@@ -2,8 +2,9 @@
 //! the feature's write lock; HTTP callers cannot supply arbitrary mutations.
 use super::{
     models::*,
-    service::{SessionContext, SyncPlayService, SyncPlayState},
+    service::{SyncPlayService, SyncPlayState},
 };
+use crate::sessions::SessionContext;
 use chrono::{DateTime, Duration, Utc};
 use std::collections::HashSet;
 use uuid::Uuid;

@@ -8,16 +8,16 @@ use tracing::{error, warn};
 use super::services::CatalogService;
 use crate::{
     application::catalog::input::CatalogRequest,
+    application::upstream::response_json_to_payload_typed,
+    domain::server_id::ServerId,
     libraries::service::{
-        compare_virtual_library_routes, normalize_library_id, VirtualLibraryAccessScope,
-        VirtualLibraryResolution,
+        normalize_library_id, VirtualLibraryAccessScope, VirtualLibraryResolution,
     },
     media::presentation::{CatalogItem, ItemNamePolicy},
     models::MediaItem,
     processors::response_processor::ResponseProcessingProfile,
-    servers::id::ServerId,
+    servers::routing::compare_routes,
     servers::storage::Server,
-    upstream::jellyfin::json::response_json_to_payload_typed,
 };
 
 use super::{
@@ -486,12 +486,7 @@ fn preferred_library_source_index(group: &[ServerMediaItem]) -> Option<usize> {
         .iter()
         .enumerate()
         .max_by(|(_, left), (_, right)| {
-            compare_virtual_library_routes(
-                &left.server,
-                &left.item.id,
-                &right.server,
-                &right.item.id,
-            )
+            compare_routes(&left.server, &left.item.id, &right.server, &right.item.id)
         })
         .map(|(index, _)| index)
 }
@@ -510,12 +505,7 @@ fn preferred_library_image_source_index(group: &[ServerMediaItem]) -> Option<usi
                 .is_some_and(|tags| tags.contains_key("Primary"))
         })
         .max_by(|(_, left), (_, right)| {
-            compare_virtual_library_routes(
-                &left.server,
-                &left.item.id,
-                &right.server,
-                &right.item.id,
-            )
+            compare_routes(&left.server, &left.item.id, &right.server, &right.item.id)
         })
         .map(|(index, _)| index)
 }

@@ -30,6 +30,7 @@ config = { workspace = true }
 futures-util = { workspace = true }
 hex = { workspace = true }
 hkdf = { workspace = true }
+http = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true }
 jellyfin-api = { workspace = true }

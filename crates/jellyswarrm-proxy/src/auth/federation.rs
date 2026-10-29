@@ -4,8 +4,8 @@ use std::sync::Arc;
 use tracing::{error, info, warn};
 
 use crate::{
-    auth::encryption::{decrypt_password, HashedPassword, Password},
     auth::service::UserAuthorizationService,
+    domain::security::{decrypt_password, HashedPassword, Password},
     servers::storage::ServerStorageService,
 };
 use jellyfin_api::JellyfinClient;
@@ -32,19 +32,19 @@ pub(crate) struct ServerSyncResult {
 pub(crate) struct FederatedUserService {
     server_storage: Arc<ServerStorageService>,
     user_authorization: Arc<UserAuthorizationService>,
-    config: Arc<tokio::sync::RwLock<crate::config::AppConfig>>,
+    credentials: crate::config::AdminCredentials,
 }
 
 impl FederatedUserService {
-    pub(crate) fn new_from_components(
+    pub(crate) fn new(
         server_storage: Arc<ServerStorageService>,
         user_authorization: Arc<UserAuthorizationService>,
-        config: Arc<tokio::sync::RwLock<crate::config::AppConfig>>,
+        credentials: crate::config::AdminCredentials,
     ) -> Self {
         Self {
             server_storage,
             user_authorization,
-            config,
+            credentials,
         }
     }
 
@@ -66,11 +66,8 @@ impl FederatedUserService {
             }
         };
 
-        let config = self.config.read().await;
-        let admin_password: HashedPassword = config.password.clone().into();
+        let admin_password: HashedPassword = self.credentials.password().into();
         let mapping_key = HashedPassword::from_password(password.as_str());
-
-        drop(config);
 
         for server in servers {
             // Check if we have admin credentials for this server
@@ -296,8 +293,8 @@ impl FederatedUserService {
             }
         };
 
-        let config = self.config.read().await;
-        let admin_password = &config.password;
+        let password = self.credentials.password();
+        let admin_password = &password;
 
         for server in servers {
             if let Some(admin) = match self.server_storage.get_server_admin(server.id).await {

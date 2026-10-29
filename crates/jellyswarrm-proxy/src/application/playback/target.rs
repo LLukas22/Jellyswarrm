@@ -2,11 +2,11 @@
 //! availability/status policy; this module never falls back from an explicit owner.
 use crate::{
     application::context::{AuthorizedTarget, RequestContext, TargetError},
+    domain::server_id::ServerId,
     media::storage::{MediaMapping, MediaStorageService},
     playback::sessions::{
         LiveStreamBinding, PlaybackSession, RevisionedPlaybackSession, SessionStorage,
     },
-    servers::id::ServerId,
     servers::storage::ServerStorageService,
 };
 
@@ -155,7 +155,7 @@ impl MediaTargetResolver<'_> {
                     .into_iter()
                     .filter(|member| member.server.id == backend.server().id)
                     .max_by(|left, right| {
-                        crate::libraries::service::compare_virtual_library_routes(
+                        crate::servers::routing::compare_routes(
                             &left.server,
                             &left.mapping.original_media_id,
                             &right.server,
@@ -316,8 +316,8 @@ impl MediaTargetResolver<'_> {
 /// Shared viewer authority for delivery, live-open and transcoder cancellation.
 pub(crate) async fn owned_session(
     sessions: &SessionStorage,
-    id: &crate::playback::identity::PlaybackSessionId,
-    viewer: &crate::playback::identity::ViewerId,
+    id: &crate::domain::playback::PlaybackSessionId,
+    viewer: &crate::domain::playback::ViewerId,
 ) -> Result<Option<RevisionedPlaybackSession>, ResolutionError> {
     sessions
         .resolve_report_binding(id, viewer)
@@ -330,8 +330,8 @@ pub(crate) async fn owned_session(
 pub(crate) async fn live_target(
     context: &RequestContext,
     sessions: &SessionStorage,
-    id: &crate::playback::identity::VirtualLiveStreamId,
-    viewer: &crate::playback::identity::ViewerId,
+    id: &crate::domain::playback::VirtualLiveStreamId,
+    viewer: &crate::domain::playback::ViewerId,
 ) -> Result<(AuthorizedTarget, LiveStreamBinding), ResolutionError> {
     let binding = sessions
         .live_binding(id, viewer)
@@ -346,7 +346,7 @@ pub(crate) fn matching_session(
     session: Option<&str>,
     viewer: Option<&str>,
 ) -> Result<PlaybackSession, usize> {
-    let viewer = viewer.map(crate::auth::user_id::UserId::new);
+    let viewer = viewer.map(crate::domain::user_id::UserId::new);
     candidates.retain(|candidate| {
         session.is_none_or(|id| candidate.session_id == id)
             && viewer.as_ref().is_none_or(|id| &candidate.user_id == id)

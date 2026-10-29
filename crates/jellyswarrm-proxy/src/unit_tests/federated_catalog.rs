@@ -1,5 +1,4 @@
 //! Federated catalog regressions for merging, pagination, scoping, and backend failures.
-use std::sync::Arc;
 
 use super::media_reconciliation::{
     get_aggregate_show_items_typed, get_virtual_library_items_typed,
@@ -7,16 +6,9 @@ use super::media_reconciliation::{
 use super::*;
 use crate::application::catalog::library_resolution::ResolvedCatalogParent;
 use crate::{
-    auth::quick_connect::QuickConnectStorage,
-    auth::service::{AuthorizationSession, Device, UserAuthorizationService},
-    config::AppConfig,
-    libraries::service::{VirtualLibraryAccessScope, VirtualLibraryService},
-    media::storage::MediaStorageService,
-    persistence::MIGRATOR,
-    playback::sessions::SessionStorage,
-    processors::ProxyProcessors,
-    servers::storage::{Server, ServerStorageService},
-    AppState, DataContext,
+    auth::service::AuthorizationSession, config::AppConfig,
+    libraries::service::VirtualLibraryAccessScope, persistence::MIGRATOR, protocol::device::Device,
+    servers::storage::Server, test_support::MediaFixture,
 };
 use serde_json::{json, Value};
 use wiremock::{
@@ -25,7 +17,7 @@ use wiremock::{
 };
 
 pub(crate) async fn setup() -> (
-    AppState,
+    MediaFixture,
     sqlx::SqlitePool,
     Vec<(AuthorizationSession, Server)>,
     Vec<MockServer>,
@@ -36,32 +28,13 @@ pub(crate) async fn setup() -> (
         .await
         .unwrap();
     MIGRATOR.run(&pool).await.unwrap();
-    let server_storage = ServerStorageService::new(pool.clone());
-    let media_storage = MediaStorageService::new(pool.clone());
-    let context = DataContext {
-        paths: crate::config::Paths::temporary(),
-        user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
-        server_storage: Arc::new(server_storage.clone()),
-        media_storage: Arc::new(media_storage.clone()),
-        virtual_library_service: Arc::new(VirtualLibraryService::new(
-            pool.clone(),
-            server_storage,
-            media_storage,
-        )),
-        play_sessions: Arc::new(SessionStorage::new()),
-        config: Arc::new(tokio::sync::RwLock::new(AppConfig {
+    let state = MediaFixture::new(
+        pool.clone(),
+        AppConfig {
             deduplicate_media: true,
             merge_libraries: false,
             ..AppConfig::default()
-        })),
-    };
-    let processors = ProxyProcessors::new(context.clone());
-    let state = AppState::new(
-        reqwest::Client::new(),
-        reqwest::Client::new(),
-        context,
-        processors,
-        QuickConnectStorage::new(),
+        },
     );
     let mut sessions = Vec::new();
     let mut upstreams = Vec::new();
@@ -99,10 +72,10 @@ pub(crate) async fn setup() -> (
 }
 
 pub(crate) async fn fixture_member_parent_ids(
-    state: &AppState,
+    state: &MediaFixture,
     sessions: &[(AuthorizationSession, Server)],
     original_parent_id: &str,
-) -> std::collections::HashMap<crate::servers::id::ServerId, String> {
+) -> std::collections::HashMap<crate::domain::server_id::ServerId, String> {
     let mut ids = std::collections::HashMap::new();
     for (_, server) in sessions {
         let mapping = state

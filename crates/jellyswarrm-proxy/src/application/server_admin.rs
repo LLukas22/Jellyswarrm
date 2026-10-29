@@ -2,10 +2,11 @@
 //! requests resolve fresh server settings and cannot reuse earlier catalog keys.
 use crate::{
     application::catalog::snapshots::CatalogSnapshots,
-    auth::encryption::{encrypt_password, EncryptionError, HashedPassword, Password},
     config::MediaStreamingMode,
+    domain::security::{encrypt_password, EncryptionError, HashedPassword, Password},
+    domain::server_id::ServerId,
     playback::sessions::SessionStorage,
-    servers::{id::ServerId, ServerStorageService},
+    servers::ServerStorageService,
 };
 
 /// Narrow credential-administration workflow, independent of templates, incoming
@@ -167,7 +168,7 @@ mod tests {
 
     #[tokio::test]
     async fn administrator_credentials_are_verified_encrypted_and_failure_atomic() {
-        use crate::auth::encryption::decrypt_password;
+        use crate::domain::security::decrypt_password;
         use wiremock::{
             matchers::{method, path},
             Mock, MockServer, ResponseTemplate,

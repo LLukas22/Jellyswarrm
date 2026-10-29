@@ -3,22 +3,26 @@ mod app;
 mod application;
 mod auth;
 mod config;
+mod domain;
 mod http;
 #[cfg(test)]
 mod http_tests;
 mod libraries;
 mod media;
 mod models;
+mod outbound;
 mod persistence;
 mod playback;
 mod processors;
+mod protocol;
 mod servers;
 mod sessions;
 mod syncplay;
 mod ui;
 mod upstream;
 
-pub(crate) use app::{AppState, DataContext};
+#[cfg(test)]
+mod test_support;
 
 /// Run the Jellyswarrm server until shutdown.
 ///

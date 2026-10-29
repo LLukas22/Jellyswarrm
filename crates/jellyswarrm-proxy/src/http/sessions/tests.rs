@@ -1,11 +1,13 @@
 //! HTTP/WebSocket integration tests with real SQLite authorization and zero-upstream assertions.
-use super::*;
+use crate::application::sessions::decorate_authentication;
+use crate::sessions::models;
 use crate::{
-    auth::service::Device,
     http_tests::support::{device, Fixture},
-    models::Authorization,
+    protocol::authorization::Authorization,
+    protocol::device::Device,
 };
 use axum::http::StatusCode;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tokio::{
@@ -430,29 +432,6 @@ async fn messages_playback_reports_and_syncplay_share_the_same_target() {
 }
 
 #[tokio::test]
-async fn bounded_transport_replacement_and_closed_channels() {
-    let hub = transport::ConnectionHub::default();
-    let (tx, mut rx) = mpsc::channel(1);
-    let old = hub.register("session".into(), tx);
-    hub.send("session", "Play", &json!({})).unwrap();
-    assert_eq!(
-        hub.send("session", "Play", &json!({})),
-        Err(StatusCode::SERVICE_UNAVAILABLE)
-    );
-    rx.recv().await.unwrap();
-    let (tx, rx2) = mpsc::channel(1);
-    let new = hub.register("session".into(), tx);
-    assert!(!hub.unregister("session", old));
-    assert!(hub.is_current("session", new));
-    drop(rx2);
-    assert_eq!(
-        hub.send("session", "Play", &json!({})),
-        Err(StatusCode::CONFLICT)
-    );
-    assert!(!hub.is_connected("session"));
-}
-
-#[tokio::test]
 async fn identity_reconnect_revocation_and_authentication_dto_are_consistent() {
     let f = Fixture::new().await;
     let authorization = Authorization {
@@ -676,7 +655,10 @@ async fn query_capabilities_filters_browse_and_admin_reset_are_local() {
         .status(),
         StatusCode::CONFLICT
     );
-    end_user_sessions(&f.state, &f.user.id).await;
+    f.state
+        .session_operations()
+        .end_user_sessions(&f.user.id)
+        .await;
     assert!(!f.state.client_sessions.transport.is_connected(id));
     assert!(f.state.client_sessions.get(id).await.is_none());
     f.no_upstream_requests().await;
@@ -700,7 +682,7 @@ async fn encoded_session_paths_do_not_escape_local_handling() {
 
 #[test]
 fn discovery_filter_does_not_change_the_callers_device_identity() {
-    let auth = crate::http::preprocessing::JellyfinAuthorization::Authorization(Authorization {
+    let auth = crate::protocol::identity::JellyfinAuthorization::Authorization(Authorization {
         client: "Test".into(),
         device: "Web".into(),
         device_id: "web".into(),
@@ -712,7 +694,7 @@ fn discovery_filter_does_not_change_the_callers_device_identity() {
         url::Url::parse("http://local/Sessions?DeviceId=tv").unwrap(),
     );
     assert_eq!(
-        crate::http::preprocessing::request_device(&request, Some(&auth))
+        crate::protocol::identity::request_device(request.headers(), request.url(), Some(&auth))
             .unwrap()
             .device_id,
         "web"
@@ -721,9 +703,9 @@ fn discovery_filter_does_not_change_the_callers_device_identity() {
         reqwest::Method::GET,
         url::Url::parse("http://local/socket?deviceId=tv").unwrap(),
     );
-    let token = crate::http::preprocessing::JellyfinAuthorization::XEmbyToken("token".into());
+    let token = crate::protocol::identity::JellyfinAuthorization::XEmbyToken("token".into());
     assert_eq!(
-        crate::http::preprocessing::request_device(&request, Some(&token))
+        crate::protocol::identity::request_device(request.headers(), request.url(), Some(&token))
             .unwrap()
             .device_id,
         "tv"

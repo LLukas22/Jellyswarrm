@@ -1,10 +1,8 @@
 //! Incoming request identity, body translation, authorization, and playback-report regressions.
 use super::*;
-use crate::models::Authorization;
-use crate::processors::url_processor::{
-    matches_case_insensitive, MEDIA_ID_PATH_TAGS, MEDIA_ID_QUERY_TAGS,
-};
-use crate::upstream::url::contains_id;
+use crate::protocol::authorization::Authorization;
+use crate::protocol::routes::{matches_case_insensitive, MEDIA_ID_PATH_TAGS, MEDIA_ID_QUERY_TAGS};
+use crate::protocol::url::contains_id;
 
 #[test]
 fn media_id_tags_cover_audio_paths_and_item_id_queries() {
@@ -37,17 +35,11 @@ fn media_id_tags_cover_audio_paths_and_item_id_queries() {
     ));
 }
 
-use crate::auth::service::UserAuthorizationService;
-use crate::http::handlers::quick_connect::QuickConnectStorage;
-use crate::libraries::service::VirtualLibraryService;
-use crate::media::storage::MediaStorageService;
-use crate::playback::sessions::{PlaybackSession, SessionStorage};
-use crate::servers::id::ServerId;
-use crate::servers::storage::ServerStorageService;
+use crate::domain::server_id::ServerId;
+use crate::playback::sessions::PlaybackSession;
+use crate::test_support::adapters::AdapterFixture;
 use crate::{config::AppConfig, persistence::MIGRATOR};
-use crate::{processors::ProxyProcessors, DataContext};
 use sqlx::SqlitePool;
-use std::sync::Arc;
 use wiremock::{
     matchers::{header, method, path, query_param},
     Mock, MockServer, ResponseTemplate,
@@ -55,7 +47,7 @@ use wiremock::{
 
 #[tokio::test]
 async fn abbreviated_seasons_headers_dispatch_with_stored_credentials() {
-    let state = create_test_app_state().await;
+    let state = media_fixture().await;
     let caller = test_user(&state, "streamyfin").await;
     let other = test_user(&state, "other").await;
     let upstream = MockServer::start().await;
@@ -236,37 +228,15 @@ async fn abbreviated_seasons_headers_dispatch_with_stored_credentials() {
         .is_empty());
 }
 
-async fn create_test_app_state() -> AppState {
+async fn media_fixture() -> MediaState {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
     MIGRATOR.run(&pool).await.unwrap();
-    let server_storage = ServerStorageService::new(pool.clone());
-    let media_storage = MediaStorageService::new(pool.clone());
-
-    let data_context = DataContext {
-        paths: crate::config::Paths::temporary(),
-        user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
-        server_storage: Arc::new(server_storage.clone()),
-        media_storage: Arc::new(media_storage.clone()),
-        virtual_library_service: Arc::new(VirtualLibraryService::new(
-            pool,
-            server_storage,
-            media_storage,
-        )),
-        play_sessions: Arc::new(SessionStorage::new()),
-        config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
-    };
-    let processors = ProxyProcessors::new(data_context.clone());
-
-    AppState::new(
-        reqwest::Client::new(),
-        reqwest::Client::new(),
-        data_context,
-        processors,
-        QuickConnectStorage::new(),
-    )
+    AdapterFixture::new(pool, AppConfig::default())
+        .await
+        .media_state
 }
 
-async fn preprocessed_image_request(state: &AppState, upstream: &MockServer) -> reqwest::Request {
+async fn preprocessed_image_request(state: &MediaState, upstream: &MockServer) -> reqwest::Request {
     let server_id = state
         .server_storage
         .add_server(
@@ -321,7 +291,7 @@ async fn image_request_uses_upstream_host_and_non_default_port() {
         .expect(1)
         .mount(&upstream)
         .await;
-    let state = create_test_app_state().await;
+    let state = media_fixture().await;
     let request = preprocessed_image_request(&state, &upstream).await;
 
     let response = state.reqwest_client.execute(request).await.unwrap();
@@ -358,7 +328,7 @@ async fn image_request_follows_cross_origin_redirects_with_destination_host() {
         .expect(1)
         .mount(&images)
         .await;
-    let state = create_test_app_state().await;
+    let state = media_fixture().await;
     let request = preprocessed_image_request(&state, &upstream).await;
 
     let response = state.reqwest_client.execute(request).await.unwrap();
@@ -387,7 +357,7 @@ async fn image_request_follows_same_origin_redirects_preserving_authorization() 
         .expect(1)
         .mount(&upstream)
         .await;
-    let state = create_test_app_state().await;
+    let state = media_fixture().await;
     let request = preprocessed_image_request(&state, &upstream).await;
     let authorization = request.headers()[reqwest::header::AUTHORIZATION].clone();
 
@@ -405,7 +375,7 @@ async fn image_request_follows_same_origin_redirects_preserving_authorization() 
     }
 }
 
-async fn test_user(state: &AppState, name: &str) -> User {
+async fn test_user(state: &MediaState, name: &str) -> User {
     state
         .user_authorization
         .get_or_create_user(name, &"password123".into())
@@ -427,37 +397,39 @@ fn json_post(path: &str, token: &str, body: serde_json::Value) -> Request {
 
 #[tokio::test]
 async fn resolve_identity_ignores_valid_userid_path_segment_without_auth() {
-    let state = create_test_app_state().await;
+    let state = media_fixture().await;
     let victim = test_user(&state, "victim").await;
 
     let headers = http::HeaderMap::new();
     let uri: http::Uri = format!("/Users/{}", victim.id).parse().unwrap();
 
-    let identity = resolve_request_identity_from_headers_uri(&headers, &uri, &state)
-        .await
-        .unwrap();
+    let identity =
+        resolve_request_identity_from_headers_uri(&headers, &uri, &state.user_authorization)
+            .await
+            .unwrap();
 
     assert!(identity.user.is_none());
 }
 
 #[tokio::test]
 async fn resolve_identity_ignores_valid_userid_query_on_user_views_without_auth() {
-    let state = create_test_app_state().await;
+    let state = media_fixture().await;
     let victim = test_user(&state, "victim").await;
 
     let headers = http::HeaderMap::new();
     let uri: http::Uri = format!("/UserViews?userId={}", victim.id).parse().unwrap();
 
-    let identity = resolve_request_identity_from_headers_uri(&headers, &uri, &state)
-        .await
-        .unwrap();
+    let identity =
+        resolve_request_identity_from_headers_uri(&headers, &uri, &state.user_authorization)
+            .await
+            .unwrap();
 
     assert!(identity.user.is_none());
 }
 
 #[tokio::test]
 async fn resolve_identity_ignores_valid_userid_query_on_user_items_resume_without_auth() {
-    let state = create_test_app_state().await;
+    let state = media_fixture().await;
     let victim = test_user(&state, "victim").await;
 
     let headers = http::HeaderMap::new();
@@ -465,16 +437,17 @@ async fn resolve_identity_ignores_valid_userid_query_on_user_items_resume_withou
         .parse()
         .unwrap();
 
-    let identity = resolve_request_identity_from_headers_uri(&headers, &uri, &state)
-        .await
-        .unwrap();
+    let identity =
+        resolve_request_identity_from_headers_uri(&headers, &uri, &state.user_authorization)
+            .await
+            .unwrap();
 
     assert!(identity.user.is_none());
 }
 
 #[tokio::test]
 async fn resolve_identity_treats_malformed_authorization_header_as_unauthenticated() {
-    let state = create_test_app_state().await;
+    let state = media_fixture().await;
     let victim = test_user(&state, "victim").await;
 
     let mut headers = http::HeaderMap::new();
@@ -484,9 +457,10 @@ async fn resolve_identity_treats_malformed_authorization_header_as_unauthenticat
     );
     let uri: http::Uri = format!("/UserViews?userId={}", victim.id).parse().unwrap();
 
-    let identity = resolve_request_identity_from_headers_uri(&headers, &uri, &state)
-        .await
-        .unwrap();
+    let identity =
+        resolve_request_identity_from_headers_uri(&headers, &uri, &state.user_authorization)
+            .await
+            .unwrap();
 
     assert!(identity.auth.is_none());
     assert!(identity.user.is_none());
@@ -494,7 +468,7 @@ async fn resolve_identity_treats_malformed_authorization_header_as_unauthenticat
 
 #[tokio::test]
 async fn resolve_identity_resolves_authenticated_user_ignoring_different_userid_in_url() {
-    let state = create_test_app_state().await;
+    let state = media_fixture().await;
     let caller = test_user(&state, "caller").await;
     let other = test_user(&state, "other").await;
 
@@ -514,16 +488,17 @@ async fn resolve_identity_resolves_authenticated_user_ignoring_different_userid_
     );
     let uri: http::Uri = format!("/UserViews?userId={}", other.id).parse().unwrap();
 
-    let identity = resolve_request_identity_from_headers_uri(&headers, &uri, &state)
-        .await
-        .unwrap();
+    let identity =
+        resolve_request_identity_from_headers_uri(&headers, &uri, &state.user_authorization)
+            .await
+            .unwrap();
 
     assert_eq!(identity.user.unwrap().id, caller.id);
 }
 
 #[tokio::test]
 async fn invalid_token_cannot_adopt_user_from_request_body() {
-    let state = create_test_app_state().await;
+    let state = media_fixture().await;
     let victim = test_user(&state, "victim").await;
     let request = json_post(
         "/Sessions/Capabilities/Full",
@@ -543,7 +518,7 @@ async fn invalid_token_cannot_adopt_user_from_request_body() {
     assert!(sessions.is_none());
 }
 
-async fn playback_server(state: &AppState) -> Server {
+async fn playback_server(state: &MediaState) -> Server {
     let server_id = state
         .server_storage
         .add_server(
@@ -580,7 +555,7 @@ fn authorization_session(caller: &User, server: &Server) -> AuthorizationSession
 
 #[tokio::test]
 async fn playback_reports_route_without_cached_session_authority() {
-    let state = create_test_app_state().await;
+    let state = media_fixture().await;
     let caller = test_user(&state, "caller").await;
     let server = playback_server(&state).await;
     let item = state
@@ -684,7 +659,7 @@ async fn playback_reports_route_without_cached_session_authority() {
 
 #[tokio::test]
 async fn playback_report_rejects_unavailable_or_conflicting_routes() {
-    let state = create_test_app_state().await;
+    let state = media_fixture().await;
     let caller = test_user(&state, "caller").await;
     let server = playback_server(&state).await;
     let item = state
@@ -765,7 +740,7 @@ async fn playback_report_rejects_ambiguous_aggregate_without_session_or_source()
     use crate::media::storage::{MediaCatalogSnapshot, MediaVersionSourceObservation};
     use std::collections::BTreeSet;
 
-    let state = create_test_app_state().await;
+    let state = media_fixture().await;
     let mut snapshots = Vec::new();
     let mut sessions = Vec::new();
     let mut mappings = Vec::new();
@@ -885,7 +860,7 @@ async fn playback_report_rejects_ambiguous_aggregate_without_session_or_source()
 
 #[tokio::test]
 async fn playback_reports_reject_missing_auth_and_conflicting_fields() {
-    let state = create_test_app_state().await;
+    let state = media_fixture().await;
     let caller = test_user(&state, "caller").await;
     for (token, body) in [
         (
@@ -932,7 +907,7 @@ async fn playback_reports_reject_missing_auth_and_conflicting_fields() {
 
 #[tokio::test]
 async fn blank_session_alias_does_not_clear_known_authority() {
-    let state = create_test_app_state().await;
+    let state = media_fixture().await;
     let caller = test_user(&state, "caller").await;
     state
         .play_sessions
@@ -978,7 +953,7 @@ async fn blank_session_alias_does_not_clear_known_authority() {
 
 #[tokio::test]
 async fn progress_rejects_a_session_owned_by_another_user() {
-    let state = create_test_app_state().await;
+    let state = media_fixture().await;
     let caller = test_user(&state, "caller").await;
     state
         .play_sessions

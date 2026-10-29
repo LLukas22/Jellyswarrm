@@ -4,20 +4,23 @@ use tokio::task::JoinSet;
 use tower_sessions::ExpiredDeletion;
 use tower_sessions_sqlx_store::SqliteStore;
 
-use crate::AppState;
+use crate::{auth::quick_connect::QuickConnectStorage, servers::ServerStorageService};
 
 pub(super) struct ApplicationRuntime {
     tasks: JoinSet<()>,
 }
 
 impl ApplicationRuntime {
-    pub(super) fn start(state: &AppState, store: SqliteStore, health_interval: u64) -> Self {
+    pub(super) fn start(
+        servers: ServerStorageService,
+        quick_connect: QuickConnectStorage,
+        store: SqliteStore,
+        health_interval: u64,
+    ) -> Self {
         let mut tasks = JoinSet::new();
-        let servers = state.server_storage.clone();
         tasks.spawn(async move {
             servers.health_check_loop(health_interval).await;
         });
-        let quick_connect = state.quick_connect.clone();
         tasks.spawn(async move {
             quick_connect.cleanup_loop().await;
         });

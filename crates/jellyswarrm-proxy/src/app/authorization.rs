@@ -1,7 +1,6 @@
 //! Production authorization composition, shared with full HTTP fixtures.
 use crate::{
-    auth::{encryption::MappingEncryptionKey, UserAuthorizationService},
-    config::AppConfig,
+    auth::UserAuthorizationService, config::AppConfig, domain::security::MappingEncryptionKey,
 };
 
 pub(crate) async fn build_authorization(

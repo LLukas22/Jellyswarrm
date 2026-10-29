@@ -1,4 +1,4 @@
-//! Authorize client-session discovery and remote-control operations for the current user.
+//! Cross-service media authorization for client control and SyncPlay workflows.
 use crate::libraries::service::VirtualLibraryAccessScope;
 
 /// Read-only media authorization capability shared by client control and

@@ -1,8 +1,6 @@
 //! Authenticate client WebSockets and manage subscriptions and bounded notification delivery.
-use super::{
-    models::InboundMessage, snapshots, transport::OUTBOUND_CAPACITY, valid_session, SessionContext,
-};
-use crate::AppState;
+use crate::http::state::SessionState;
+use crate::sessions::{models::InboundMessage, transport::OUTBOUND_CAPACITY, SessionContext};
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -18,7 +16,7 @@ use tokio::{
 };
 
 pub(crate) async fn websocket(
-    State(state): State<AppState>,
+    State(state): State<SessionState>,
     session: SessionContext,
     ws: WebSocketUpgrade,
 ) -> Result<Response, StatusCode> {
@@ -42,7 +40,7 @@ fn subscription_interval(data: &serde_json::Value) -> Option<(Duration, Duration
     ))
 }
 
-async fn handle(state: AppState, session: SessionContext, socket: WebSocket) {
+async fn handle(state: SessionState, session: SessionContext, socket: WebSocket) {
     let (mut sender, mut receiver) = socket.split();
     let (tx, mut rx) = mpsc::channel(OUTBOUND_CAPACITY);
     let generation = state
@@ -87,12 +85,12 @@ async fn handle(state: AppState, session: SessionContext, socket: WebSocket) {
                 if !transport.is_current(&session.session_id, generation) || last_inbound.elapsed() > Duration::from_secs(60) { break; }
                 if auth_check.elapsed() >= Duration::from_secs(15) {
                     let Some(current) = state.client_sessions.get(&session.session_id).await else { break; };
-                    if !matches!(valid_session(&state, &current).await, Ok(true)) { break; }
+                    if !matches!(state.session_operations().valid_session(&current).await, Ok(true)) { break; }
                     auth_check = Instant::now();
                 }
                 if let Some((next, period)) = subscription {
                     if Instant::now() >= next {
-                        match snapshots(&state, &session.user.id).await {
+                        match state.session_operations().snapshots(&session.user.id).await {
                             Ok(sessions) => if transport.send(&session.session_id, "Sessions", &sessions).is_err() { break; },
                             Err(_) => break,
                         }

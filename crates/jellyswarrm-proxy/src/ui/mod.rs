@@ -10,13 +10,10 @@ use axum::{
 use axum_login::login_required;
 use hyper::StatusCode;
 use rust_embed::RustEmbed;
-use std::{default, sync::LazyLock};
-use tracing::error;
 
 use crate::{
-    http::assets::Asset,
+    http::state::AppState,
     ui::auth::{AuthenticatedUser, UserRole},
-    AppState,
 };
 
 pub(crate) mod admin;
@@ -54,46 +51,6 @@ async fn resource_handler(Path(path): Path<String>) -> impl IntoResponse {
         Err(StatusCode::NOT_FOUND)
     }
 }
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub(crate) struct JellyfinUiVersion {
-    pub(crate) version: String,
-    pub(crate) commit: String,
-}
-
-impl default::Default for JellyfinUiVersion {
-    fn default() -> Self {
-        JellyfinUiVersion {
-            version: "unknown".to_string(),
-            commit: "unknown".to_string(),
-        }
-    }
-}
-
-fn get_jellyfin_ui_version() -> Option<JellyfinUiVersion> {
-    if let Some(file) = Asset::get("ui-version.env") {
-        let content = String::from_utf8_lossy(&file.data);
-        let mut version = "unknown";
-        let mut commit = "unknown";
-        for line in content.lines() {
-            if line.starts_with("UI_VERSION=") {
-                version = line.trim_start_matches("UI_VERSION=");
-            } else if line.starts_with("UI_COMMIT=") {
-                commit = line.trim_start_matches("UI_COMMIT=");
-            }
-        }
-        Some(JellyfinUiVersion {
-            version: version.to_string(),
-            commit: commit.to_string(),
-        })
-    } else {
-        error!("Failed to load Jellyfin UI version info from embedded resources");
-        None
-    }
-}
-
-pub(crate) static JELLYFIN_UI_VERSION: LazyLock<Option<JellyfinUiVersion>> =
-    LazyLock::new(get_jellyfin_ui_version);
 
 pub(crate) fn ui_routes() -> axum::Router<AppState> {
     let admin_routes = Router::new()

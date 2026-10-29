@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use serde_with::skip_serializing_none;
 
 use crate::{
-    auth::encryption::Password,
+    domain::security::Password,
     models::{enums::CollectionType, jellyfin::enums::BaseItemKind},
 };
 

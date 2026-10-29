@@ -4,7 +4,8 @@
 use crate::{
     application::accounts::services::AuthenticationService,
     auth::quick_connect::Redemption,
-    models::{AuthenticateResponse, Authorization, SyncPlayUserAccessType},
+    models::{AuthenticateResponse, SyncPlayUserAccessType},
+    protocol::authorization::Authorization,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -135,7 +136,6 @@ async fn authenticate_and_register(
 ) -> Result<AuthenticateResponse, crate::auth::mapping_authentication::MappingAuthenticationError> {
     let mut response = state
         .mapping_authenticator()
-        .await
         .authenticate_for_client(
             user,
             server,
@@ -175,7 +175,7 @@ async fn authenticate_and_register(
     response.user.policy.is_administrator = false;
     response.user.policy.sync_play_access = SyncPlayUserAccessType::CreateAndJoinGroups;
     response.access_token = user.virtual_key.clone();
-    crate::sessions::decorate_authentication(
+    crate::application::sessions::decorate_authentication(
         &state.client_sessions,
         &state.settings.read().await.server_id,
         user,
@@ -231,13 +231,8 @@ mod tests {
     use crate::{
         auth::quick_connect::{QuickConnectStorage, RedemptionError},
         config::{AppConfig, MediaStreamingMode},
-        libraries::VirtualLibraryService,
-        media::MediaStorageService,
         persistence::MIGRATOR,
-        playback::sessions::SessionStorage,
-        processors::ProxyProcessors,
         servers::ServerStorageService,
-        AppState, DataContext,
     };
     use std::sync::Arc;
     use wiremock::{
@@ -275,27 +270,19 @@ mod tests {
             )
             .await
             .unwrap();
-        let media = MediaStorageService::new(pool.clone());
-        let data = DataContext {
-            paths: crate::config::Paths::temporary(),
+        let state = AuthenticationService {
             user_authorization: Arc::new(authorization),
             server_storage: Arc::new(servers.clone()),
-            media_storage: Arc::new(media.clone()),
-            virtual_library_service: Arc::new(VirtualLibraryService::new(
-                pool.clone(),
-                servers,
-                media,
+            settings: crate::config::SettingsView::new(Arc::new(tokio::sync::RwLock::new(
+                config.clone(),
+            ))),
+            reqwest_client: reqwest::Client::new(),
+            client_sessions: Arc::new(crate::sessions::ClientSessionService::new(
+                Default::default(),
             )),
-            play_sessions: Arc::new(SessionStorage::new()),
-            config: Arc::new(tokio::sync::RwLock::new(config)),
+            admin_password: config.password,
         };
-        let state = AppState::new(
-            reqwest::Client::new(),
-            reqwest::Client::new(),
-            data.clone(),
-            ProxyProcessors::new(data),
-            QuickConnectStorage::new(),
-        );
+        let quick_connect = QuickConnectStorage::new();
         Mock::given(method("GET"))
             .and(path("/Users/Me"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -305,15 +292,10 @@ mod tests {
             .expect(2)
             .mount(&backend)
             .await;
-        let view =
-            state
-                .quick_connect
-                .initiate("device".into(), "TV".into(), "App".into(), "1".into());
+        let view = quick_connect.initiate("device".into(), "TV".into(), "App".into(), "1".into());
         let secret = view.secret.as_str().into();
-        assert!(state
-            .quick_connect
-            .approve(&view.code.as_str().into(), user.id.clone()));
-        let reservation = state.quick_connect.begin_redemption(&secret).unwrap();
+        assert!(quick_connect.approve(&view.code.as_str().into(), user.id.clone()));
+        let reservation = quick_connect.begin_redemption(&secret).unwrap();
         let before = Arc::new(RegistrationPause::default());
         let after = Arc::new(RegistrationPause::default());
         let finished = Arc::new(tokio::sync::Notify::new());
@@ -332,15 +314,7 @@ mod tests {
         let caller = {
             let state = state.clone();
             let client = client.clone();
-            tokio::spawn(async move {
-                redeem_with_hooks(
-                    &state.authentication_service().await,
-                    reservation,
-                    client,
-                    hooks,
-                )
-                .await
-            })
+            tokio::spawn(async move { redeem_with_hooks(&state, reservation, client, hooks).await })
         };
         tokio::time::timeout(std::time::Duration::from_secs(5), before.entered.notified())
             .await
@@ -353,7 +327,7 @@ mod tests {
             .unwrap();
         assert_eq!(rows, 0);
         assert!(matches!(
-            state.quick_connect.begin_redemption(&secret),
+            quick_connect.begin_redemption(&secret),
             Err(RedemptionError::NotApproved)
         ));
         before.resume.notify_one();
@@ -367,20 +341,18 @@ mod tests {
             .unwrap();
         assert_eq!(rows, 1);
         assert!(matches!(
-            state.quick_connect.begin_redemption(&secret),
+            quick_connect.begin_redemption(&secret),
             Err(RedemptionError::NotApproved)
         ));
         after.resume.notify_one();
         tokio::time::timeout(std::time::Duration::from_secs(5), finished.notified())
             .await
             .unwrap();
-        let retry = state.quick_connect.begin_redemption(&secret).unwrap();
-        let response = redeem(&state.authentication_service().await, retry, client)
-            .await
-            .unwrap();
+        let retry = quick_connect.begin_redemption(&secret).unwrap();
+        let response = redeem(&state, retry, client).await.unwrap();
         assert_eq!(response.access_token, user.virtual_key);
         assert!(matches!(
-            state.quick_connect.begin_redemption(&secret),
+            quick_connect.begin_redemption(&secret),
             Err(RedemptionError::NotFound)
         ));
         let sessions = state

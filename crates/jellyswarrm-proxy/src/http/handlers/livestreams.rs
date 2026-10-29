@@ -10,11 +10,11 @@ use serde_json::Value;
 use crate::{
     application::playback::live::{self, LiveStreamActionResult},
     http::extractors::LiveInput,
-    AppState,
+    http::state::MediaState,
 };
 
 pub(crate) async fn post_live_stream_action(
-    State(state): State<AppState>,
+    State(state): State<MediaState>,
     LiveInput(preprocessed): LiveInput,
 ) -> Result<Response, StatusCode> {
     let result = live::post_live_stream_action_typed(&state.playback_service(), preprocessed)
@@ -27,7 +27,7 @@ pub(crate) async fn post_live_stream_action(
 }
 
 pub(crate) async fn post_livestream_open(
-    State(state): State<AppState>,
+    State(state): State<MediaState>,
     LiveInput(preprocessed): LiveInput,
 ) -> Result<Json<Value>, StatusCode> {
     live::post_livestream_open_typed(&state.playback_service(), preprocessed)

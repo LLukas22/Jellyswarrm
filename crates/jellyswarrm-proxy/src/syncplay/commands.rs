@@ -1,8 +1,6 @@
 //! Named transitions with synchronization and ordered publication owned by SyncPlay.
-use super::{
-    models::*,
-    service::{SessionContext, SyncPlayService},
-};
+use super::{models::*, service::SyncPlayService};
+use crate::sessions::SessionContext;
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
 use uuid::Uuid;

@@ -1,14 +1,15 @@
 //! Enforce read-only API-key permissions before incoming requests reach handlers.
-use crate::AppState;
+use crate::auth::UserAuthorizationService;
 use axum::{
     extract::{Request, State},
     http::{Method, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
 };
+use std::sync::Arc;
 use tracing::error;
 pub(crate) async fn enforce_read_only_api_keys(
-    State(state): State<AppState>,
+    State(state): State<Arc<UserAuthorizationService>>,
     request: Request,
     next: Next,
 ) -> Response {
@@ -33,7 +34,7 @@ pub(crate) async fn enforce_read_only_api_keys(
         return next.run(request).await;
     };
 
-    match state.user_authorization.is_read_only_api_key(token).await {
+    match state.is_read_only_api_key(token).await {
         Ok(true) => StatusCode::FORBIDDEN.into_response(),
         Ok(false) => next.run(request).await,
         Err(error) => {

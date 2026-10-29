@@ -12,8 +12,24 @@ use uuid::Uuid;
 
 #[cfg(test)]
 use crate::auth::service::User;
-use crate::sessions::transport::ConnectionHub;
-pub(crate) use crate::sessions::SessionContext;
+use crate::sessions::{
+    transport::{ConnectionHub, DeliveryError},
+    SessionContext,
+};
+
+#[derive(thiserror::Error)]
+pub(crate) enum RemoteCommandError {
+    #[error("target playback is controlled by SyncPlay")]
+    GroupPlayback,
+    #[error("remote command delivery failed")]
+    Delivery(#[from] DeliveryError),
+}
+
+impl std::fmt::Debug for RemoteCommandError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
 
 use super::models::{
     GroupInfoDto, GroupParticipant, GroupStateType, GroupStateUpdate, GroupUpdateEnvelope,
@@ -245,12 +261,15 @@ impl SyncPlayService {
         message_type: &str,
         data: &Value,
         playback_mutation: bool,
-    ) -> Result<(), axum::http::StatusCode> {
+    ) -> Result<(), RemoteCommandError> {
         let state = self.state.read().await;
         if playback_mutation && state.session_to_group.contains_key(session_id) {
-            return Err(axum::http::StatusCode::CONFLICT);
+            return Err(RemoteCommandError::GroupPlayback);
         }
-        state.transport.send(session_id, message_type, data)
+        state
+            .transport
+            .send(session_id, message_type, data)
+            .map_err(Into::into)
     }
 
     #[cfg(test)]
@@ -625,7 +644,7 @@ impl SyncPlayService {
 mod tests {
     use super::super::models::SyncPlayQueueItem;
     use super::*;
-    use crate::{auth::encryption::HashedPassword, auth::service::LocalCredential};
+    use crate::{auth::service::LocalCredential, domain::security::HashedPassword};
     use chrono::DateTime;
     use tokio::time::{timeout, Duration};
 

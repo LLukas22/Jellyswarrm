@@ -98,7 +98,7 @@ async fn http_catalog_input_validates_offline_ids_without_initial_backend_select
         .create_user("catalog-input", &"password".into())
         .await
         .unwrap();
-    let authorization = crate::models::Authorization {
+    let authorization = crate::protocol::authorization::Authorization {
         client: "test".into(),
         device: "test".into(),
         device_id: "test".into(),
@@ -151,7 +151,11 @@ async fn http_catalog_input_validates_offline_ids_without_initial_backend_select
             "/Items",
             axum::routing::get(get_items_from_all_servers_if_not_restricted),
         )
-        .with_state(state.clone());
+        .with_state(
+            crate::test_support::adapters::AdapterFixture::from_media(state.clone())
+                .await
+                .media_state,
+        );
     let send = |uri: String| {
         let app = app.clone();
         let auth = format!("MediaBrowser Client=\"test\", Device=\"test\", DeviceId=\"test\", Version=\"1\", Token=\"{}\"", user.virtual_key);
@@ -245,8 +249,8 @@ async fn admin_library_page_discovers_mapped_users_without_prior_catalog_request
     let (mut state, pool, sessions, upstreams) = setup().await;
     state.user_authorization = Arc::new(UserAuthorizationService::with_mapping_key(
         pool,
-        crate::auth::encryption::MappingEncryptionKey::from_session_key(&[7; 64]).unwrap(),
-        (&state.get_admin_password().await).into(),
+        crate::domain::security::MappingEncryptionKey::from_session_key(&[7; 64]).unwrap(),
+        (&state.config.read().await.password).into(),
     ));
     let server = &sessions[0].1;
     Mock::given(method("GET"))
@@ -309,7 +313,10 @@ async fn admin_library_page_discovers_mapped_users_without_prior_catalog_request
         .await
         .unwrap()
         .is_empty());
-    let response = crate::ui::admin::libraries::library_groups_list(State(state.clone()))
+    let management = crate::test_support::adapters::AdapterFixture::from_media(state.clone())
+        .await
+        .management;
+    let response = crate::ui::admin::libraries::library_groups_list(State(management.clone()))
         .await
         .into_response();
     assert_eq!(response.status(), StatusCode::OK);
@@ -338,7 +345,7 @@ async fn admin_library_page_discovers_mapped_users_without_prior_catalog_request
     };
     let request_count = upstreams[0].received_requests().await.unwrap().len();
     let created = create_group(
-        State(state.clone()),
+        State(management.clone()),
         axum::Form(CreateGroupForm {
             name: "Test group".into(),
         }),
@@ -360,7 +367,7 @@ async fn admin_library_page_discovers_mapped_users_without_prior_catalog_request
         .clone();
     responses.push(
         assign_library(
-            State(state.clone()),
+            State(management.clone()),
             axum::Form(AssignLibraryForm {
                 group_virtual_id: group_id.clone(),
                 server_id: server.id.as_i64(),
@@ -371,7 +378,7 @@ async fn admin_library_page_discovers_mapped_users_without_prior_catalog_request
     );
     responses.push(
         rename_group(
-            State(state.clone()),
+            State(management.clone()),
             axum::extract::Path(group_id.clone()),
             axum::Form(RenameGroupForm {
                 name: "Renamed group".into(),
@@ -381,7 +388,7 @@ async fn admin_library_page_discovers_mapped_users_without_prior_catalog_request
     );
     responses.push(
         remove_member(
-            State(state.clone()),
+            State(management.clone()),
             axum::extract::Path(group_id.clone()),
             axum::Form(RemoveMemberForm {
                 server_id: server.id.as_i64(),
@@ -390,7 +397,7 @@ async fn admin_library_page_discovers_mapped_users_without_prior_catalog_request
         )
         .await,
     );
-    responses.push(delete_group(State(state.clone()), axum::extract::Path(group_id)).await);
+    responses.push(delete_group(State(management.clone()), axum::extract::Path(group_id)).await);
     for response in responses {
         assert_eq!(response.status(), StatusCode::OK);
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -408,7 +415,7 @@ async fn admin_library_page_discovers_mapped_users_without_prior_catalog_request
 
     // An explicit refresh still contacts upstreams and reports failures.
     upstreams[0].reset().await;
-    let response = crate::ui::admin::libraries::library_groups_list(State(state.clone()))
+    let response = crate::ui::admin::libraries::library_groups_list(State(management))
         .await
         .into_response();
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -437,7 +444,7 @@ async fn check_web_album_sorting(sort_by: &str, ascending_names: &[&str]) {
         .create_user("album-viewer", &"password".into())
         .await
         .unwrap();
-    let authorization = crate::models::Authorization {
+    let authorization = crate::protocol::authorization::Authorization {
         client: "album-test".into(),
         device: "test".into(),
         device_id: "album-test".into(),
@@ -513,7 +520,11 @@ async fn check_web_album_sorting(sort_by: &str, ascending_names: &[&str]) {
                 crate::http::handlers::federated::get_items_from_all_servers_if_not_restricted,
             ),
         )
-        .with_state(state.clone());
+        .with_state(
+            crate::test_support::adapters::AdapterFixture::from_media(state.clone())
+                .await
+                .media_state,
+        );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base_url = format!("http://{}", listener.local_addr().unwrap());
     let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -529,7 +540,7 @@ async fn check_web_album_sorting(sort_by: &str, ascending_names: &[&str]) {
                 expected.reverse();
             }
             for (start, limit) in [(0, 4), (1, 2)] {
-                let mut request = state.reqwest_client.get(format!("{base_url}/Items"))
+                let mut request = reqwest::Client::new().get(format!("{base_url}/Items"))
                     .header("Authorization", format!("MediaBrowser Client=\"album-test\", Device=\"test\", DeviceId=\"album-test\", Version=\"1\", Token=\"{}\"", user.virtual_key))
                     .query(&[
                         ("userId", user.id.as_str()), ("includeItemTypes", "MusicAlbum"),

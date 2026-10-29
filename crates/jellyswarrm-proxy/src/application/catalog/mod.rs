@@ -109,7 +109,7 @@ pub(crate) async fn get_show_children(
     state: &CatalogService,
     preprocessed: CatalogRequest,
 ) -> Result<serde_json::Value, ApplicationError> {
-    use crate::upstream::url::contains_id;
+    use crate::protocol::url::contains_id;
 
     let aggregate_id = contains_id(preprocessed.original_request.url(), "Shows");
     let Some(aggregate_id) = aggregate_id else {
@@ -354,7 +354,10 @@ pub(super) async fn finalize_items_response_typed(
         request.url(),
         state.get_url_prefix().await.as_deref(),
     ) {
-        if let Some(auth) = crate::auth::identity::JellyfinAuthorization::from_request(request) {
+        if let Some(auth) = crate::protocol::identity::JellyfinAuthorization::from_headers_url(
+            request.headers(),
+            request.url(),
+        ) {
             if let Some(token) = auth.token_ref() {
                 crate::application::response::media_response(
                     &state.client_sessions,

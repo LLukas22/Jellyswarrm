@@ -1,7 +1,8 @@
 //! SyncPlay access-check orchestration. Incoming adapters neither choose whose
 //! library access to check nor commit after an unchecked asynchronous gap.
 use crate::{
-    sessions::{access::MediaAccess, SessionContext},
+    application::sessions::access::MediaAccess,
+    sessions::SessionContext,
     syncplay::{
         models::{GroupInfoDto, PlayRequestDto, QueueRequestDto, SyncPlayGroup},
         service::SyncPlayService,

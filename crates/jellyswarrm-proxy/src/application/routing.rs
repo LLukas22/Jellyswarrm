@@ -29,8 +29,9 @@ impl From<RoutingError> for crate::application::error::ApplicationError {
 
 use crate::application::playback::reports;
 use crate::auth::service::AuthorizationSession;
-use crate::libraries::service::{compare_virtual_library_routes, VirtualLibraryAccessScope};
+use crate::libraries::service::VirtualLibraryAccessScope;
 use crate::processors::request_analyzer::RequestBodyAnalysisResult;
+use crate::servers::routing::compare_routes;
 use crate::servers::storage::Server;
 use crate::{
     config::SettingsView, media::storage::MediaStorageService, playback::sessions::SessionStorage,
@@ -54,7 +55,7 @@ pub(crate) async fn resolve_server(
     access_scope: Option<&VirtualLibraryAccessScope>,
 ) -> Result<(Server, Option<AuthorizationSession>, bool)> {
     let config = state.config.read().await;
-    let path = crate::upstream::url::decoded_path_segments(match &config.url_prefix {
+    let path = crate::protocol::url::decoded_path_segments(match &config.url_prefix {
         Some(prefix) => request
             .url()
             .path()
@@ -192,7 +193,7 @@ pub(crate) async fn server_from_body_media_aggregate_ids(
             }
         }
         if let Some(member) = healthy_members.into_iter().max_by(|left, right| {
-            compare_virtual_library_routes(
+            compare_routes(
                 &left.server,
                 &left.mapping.original_media_id,
                 &right.server,

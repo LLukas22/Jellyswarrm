@@ -12,9 +12,9 @@ use serde::Deserialize;
 use tracing::{error, info};
 
 use crate::{
+    domain::server_id::ServerId,
+    http::state::ManagementState,
     libraries::service::{normalize_library_id, AssignLibraryError, LibraryGroupMemberRecord},
-    servers::id::ServerId,
-    AppState,
 };
 
 #[derive(Template)]
@@ -114,13 +114,13 @@ pub(crate) struct UpdateMergeLibrariesForm {
     pub(crate) merge_libraries: bool,
 }
 
-pub(crate) async fn libraries_page(State(state): State<AppState>) -> impl IntoResponse {
-    let merge_libraries = state.merge_libraries_enabled().await;
+pub(crate) async fn libraries_page(State(state): State<ManagementState>) -> impl IntoResponse {
+    let merge_libraries = state.settings.read().await.merge_libraries;
     let template = LibrariesPageTemplate {
         merge_libraries,
         has_merge_libraries_error: false,
         merge_libraries_error: String::new(),
-        ui_route: state.get_ui_route().await,
+        ui_route: state.paths.ui_route(),
     };
     match template.render() {
         Ok(html) => Html(html).into_response(),
@@ -152,12 +152,12 @@ fn render_merge_libraries_control(
 }
 
 pub(crate) async fn update_merge_libraries(
-    State(state): State<AppState>,
+    State(state): State<ManagementState>,
     Form(form): Form<UpdateMergeLibrariesForm>,
 ) -> Response {
-    let ui_route = state.get_ui_route().await;
+    let ui_route = state.paths.ui_route();
     let save_result = state
-        .configuration_service()
+        .configuration
         .set_library_merging(form.merge_libraries)
         .await;
 
@@ -165,7 +165,7 @@ pub(crate) async fn update_merge_libraries(
         Ok(()) => render_merge_libraries_control(form.merge_libraries, ui_route, None),
         Err(error) => {
             error!("Failed to save automatic library merging setting: {error}");
-            let current_value = state.merge_libraries_enabled().await;
+            let current_value = state.settings.read().await.merge_libraries;
             render_merge_libraries_control(
                 current_value,
                 ui_route,
@@ -175,10 +175,9 @@ pub(crate) async fn update_merge_libraries(
     }
 }
 
-pub(crate) async fn library_groups_list(State(state): State<AppState>) -> impl IntoResponse {
+pub(crate) async fn library_groups_list(State(state): State<ManagementState>) -> impl IntoResponse {
     let errors = state
         .library_administration()
-        .await
         .refresh()
         .await
         .into_iter()
@@ -194,12 +193,12 @@ pub(crate) async fn library_groups_list(State(state): State<AppState>) -> impl I
     }
 }
 
-async fn render_library_groups_list(state: &AppState) -> Result<String, String> {
+async fn render_library_groups_list(state: &ManagementState) -> Result<String, String> {
     render_library_groups_list_with_errors(state, None).await
 }
 
 async fn render_library_groups_list_with_errors(
-    state: &AppState,
+    state: &ManagementState,
     discovery_errors: Option<Vec<String>>,
 ) -> Result<String, String> {
     let groups = state
@@ -307,7 +306,7 @@ async fn render_library_groups_list_with_errors(
     let template = LibraryGroupsListTemplate {
         groups: group_views,
         discovered_libraries: discovered_views,
-        ui_route: state.get_ui_route().await,
+        ui_route: state.paths.ui_route(),
         discovery_errors,
     };
 
@@ -338,7 +337,7 @@ fn discovery_message(issue: crate::application::library_admin::DiscoveryIssue) -
 }
 
 pub(crate) async fn create_group(
-    State(state): State<AppState>,
+    State(state): State<ManagementState>,
     Form(form): Form<CreateGroupForm>,
 ) -> Response {
     if form.name.trim().is_empty() {
@@ -378,7 +377,7 @@ pub(crate) async fn create_group(
 }
 
 pub(crate) async fn delete_group(
-    State(state): State<AppState>,
+    State(state): State<ManagementState>,
     Path(virtual_id): Path<String>,
 ) -> Response {
     match state
@@ -407,7 +406,7 @@ pub(crate) async fn delete_group(
 }
 
 pub(crate) async fn assign_library(
-    State(state): State<AppState>,
+    State(state): State<ManagementState>,
     Form(form): Form<AssignLibraryForm>,
 ) -> Response {
     let server_id = ServerId::new(form.server_id);
@@ -481,7 +480,7 @@ pub(crate) async fn assign_library(
 }
 
 pub(crate) async fn rename_group(
-    State(state): State<AppState>,
+    State(state): State<ManagementState>,
     Path(virtual_id): Path<String>,
     Form(form): Form<RenameGroupForm>,
 ) -> Response {
@@ -519,7 +518,7 @@ pub(crate) async fn rename_group(
 }
 
 pub(crate) async fn remove_member(
-    State(state): State<AppState>,
+    State(state): State<ManagementState>,
     Path(group_virtual_id): Path<String>,
     Form(form): Form<RemoveMemberForm>,
 ) -> Response {

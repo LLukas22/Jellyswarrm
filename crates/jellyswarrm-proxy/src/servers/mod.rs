@@ -1,6 +1,6 @@
 //! Backend server identities, normalized URLs, registry persistence, and health tracking.
 
-pub(crate) mod id;
+pub(crate) mod routing;
 pub(crate) mod storage;
 pub(crate) mod url;
 

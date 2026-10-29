@@ -1,13 +1,5 @@
-//! Recognize playback reports and retain test helpers for backend-specific playback routing.
+//! Test helpers for target-bound wire preparation and playback-report routing.
 use super::*;
-pub(crate) async fn playback_session_action(
-    method: &http::Method,
-    request_path: &str,
-    state: &AppState,
-) -> Option<PlaybackSessionAction> {
-    let path = state.remove_prefix_from_path(request_path).await;
-    crate::processors::request_analyzer::playback_session_action(method, path)
-}
 
 #[cfg(test)]
 pub(crate) async fn apply_to_request(
@@ -15,11 +7,11 @@ pub(crate) async fn apply_to_request(
     server: &Server,
     session: &Option<AuthorizationSession>,
     auth: &Option<JellyfinAuthorization>,
-    state: &AppState,
+    state: &MediaState,
     access_scope: Option<&VirtualLibraryAccessScope>,
 ) {
-    let prefix = state.get_url_prefix().await;
-    crate::upstream::jellyfin::request::UpstreamRequestBuilder::new(
+    let prefix = state.paths.url_prefix();
+    crate::application::request::UpstreamRequestBuilder::new(
         &state.processors.url_processor,
         prefix.as_deref(),
     )
@@ -40,7 +32,7 @@ pub(crate) async fn apply_to_request(
 pub(super) async fn resolve_playback_report_server(
     sessions: &Option<Vec<(AuthorizationSession, Server)>>,
     analysis: &RequestBodyAnalysisResult,
-    state: &AppState,
+    state: &MediaState,
 ) -> Result<(Server, Option<AuthorizationSession>, bool)> {
     crate::application::playback::reports::resolve_server(sessions, analysis, &state.media_storage)
         .await

@@ -2,16 +2,16 @@
 //! selected server; only this application capability chooses among candidates.
 use super::routing::RoutingError;
 use crate::{
+    domain::server_id::ServerId,
     libraries::service::{
-        compare_virtual_library_routes, VirtualLibraryAccessScope, VirtualLibraryResolution,
-        VirtualLibraryService,
+        VirtualLibraryAccessScope, VirtualLibraryResolution, VirtualLibraryService,
     },
     media::storage::{MediaMapping, MediaStorageService, MediaVersionMember},
-    processors::url_processor::{
-        matches_case_insensitive, selected_media_source, MEDIA_ID_PATH_TAGS, MEDIA_ID_QUERY_TAGS,
-    },
-    servers::{id::ServerId, Server, ServerStorageService},
-    upstream::url::contains_id,
+    processors::url_processor::selected_media_source,
+    protocol::routes::{matches_case_insensitive, MEDIA_ID_PATH_TAGS, MEDIA_ID_QUERY_TAGS},
+    protocol::url::contains_id,
+    servers::routing::compare_routes,
+    servers::{Server, ServerStorageService},
 };
 type Result<T> = std::result::Result<T, RoutingError>;
 use std::sync::Arc;
@@ -202,7 +202,7 @@ impl UrlSelection {
             }
         }
         Ok(healthy.into_iter().max_by(|left, right| {
-            compare_virtual_library_routes(
+            compare_routes(
                 &left.server,
                 &left.mapping.original_media_id,
                 &right.server,

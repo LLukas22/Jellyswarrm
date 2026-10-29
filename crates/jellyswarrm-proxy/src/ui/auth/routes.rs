@@ -11,8 +11,8 @@ use axum_messages::{Message, Messages};
 use serde::Deserialize;
 
 use crate::{
+    http::state::{AdapterPaths, AppState},
     ui::auth::{AuthSession, Credentials},
-    AppState,
 };
 
 #[derive(Template)]
@@ -44,7 +44,7 @@ mod post {
     use super::*;
 
     pub(crate) async fn login(
-        State(state): axum::extract::State<AppState>,
+        State(state): axum::extract::State<AdapterPaths>,
         mut auth_session: AuthSession,
         messages: Messages,
         Form(creds): Form<Credentials>,
@@ -54,11 +54,11 @@ mod post {
             Ok(None) => {
                 messages.error("Invalid credentials");
 
-                let mut login_url = format!("/{}/login", state.get_ui_route().await);
+                let mut login_url = format!("/{}/login", state.ui_route());
                 if let Some(next) = creds.next {
                     login_url = format!("{login_url}?next={next}");
                 } else {
-                    login_url = format!("{login_url}?next=/{}", state.get_ui_route().await);
+                    login_url = format!("{login_url}?next=/{}", state.ui_route());
                 }
 
                 return Redirect::to(&login_url).into_response();
@@ -75,7 +75,7 @@ mod post {
         if let Some(ref next) = creds.next {
             Redirect::to(next)
         } else {
-            Redirect::to(&format!("/{}", state.get_ui_route().await))
+            Redirect::to(&format!("/{}", state.ui_route()))
         }
         .into_response()
     }
@@ -88,19 +88,16 @@ mod get {
     use super::*;
 
     pub(crate) async fn login(
-        State(state): axum::extract::State<AppState>,
+        State(state): axum::extract::State<AdapterPaths>,
         messages: Messages,
         Query(NextUrl { next }): Query<NextUrl>,
     ) -> Html<String> {
-        info!(
-            "Rendering login page, base={:?}",
-            state.get_ui_route().await
-        );
+        info!("Rendering login page, base={:?}", state.ui_route());
         Html(
             LoginTemplate {
                 messages: messages.into_iter().collect(),
                 next,
-                ui_route: state.get_ui_route().await,
+                ui_route: state.ui_route(),
             }
             .render()
             .unwrap(),
@@ -108,13 +105,11 @@ mod get {
     }
 
     pub(crate) async fn logout(
-        State(state): axum::extract::State<AppState>,
+        State(state): axum::extract::State<AdapterPaths>,
         mut auth_session: AuthSession,
     ) -> impl IntoResponse {
         match auth_session.logout().await {
-            Ok(_) => {
-                Redirect::to(&format!("/{}/login", state.get_ui_route().await)).into_response()
-            }
+            Ok(_) => Redirect::to(&format!("/{}/login", state.ui_route())).into_response(),
             Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         }
     }

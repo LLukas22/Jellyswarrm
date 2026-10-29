@@ -1873,6 +1873,7 @@ dependencies = [
  "futures-util",
  "hex",
  "hkdf",
+ "http",
  "http-body-util",
  "hyper",
  "jellyfin-api",

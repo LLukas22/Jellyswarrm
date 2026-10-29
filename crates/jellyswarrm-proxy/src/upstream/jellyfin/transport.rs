@@ -5,8 +5,8 @@ pub(crate) enum JsonTransportError {
     Transport(#[source] reqwest::Error),
     #[error("upstream response failure")]
     Status(hyper::StatusCode),
-    #[error("invalid upstream JSON")]
-    Json(#[source] serde_json::Error),
+    #[error("outgoing JSON body preparation failed")]
+    RequestBody(#[from] crate::outbound::json::JsonBodyError),
 }
 
 // Never render authenticated URLs, body excerpts, or underlying diagnostics.
@@ -14,14 +14,6 @@ impl std::fmt::Debug for JsonTransportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(self, f)
     }
-}
-
-pub(crate) async fn execute<T: serde::de::DeserializeOwned>(
-    client: &reqwest::Client,
-    request: reqwest::Request,
-) -> Result<T, JsonTransportError> {
-    serde_json::from_str(&execute_document(client, request).await?)
-        .map_err(JsonTransportError::Json)
 }
 
 pub(crate) async fn execute_document(

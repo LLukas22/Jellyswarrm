@@ -286,7 +286,7 @@ fn ensure_global_sort_fields(url: &mut url::Url) {
 
 fn ensure_item_fields(url: &mut url::Url, required_fields: &[&str]) {
     for required_field in required_fields {
-        crate::upstream::url::ensure_query_list_value(url, "Fields", required_field);
+        crate::protocol::url::ensure_query_list_value(url, "Fields", required_field);
     }
 }
 

@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
-use crate::auth::user_id::UserId;
+use crate::domain::user_id::UserId;
 use chrono::{DateTime, Duration, Utc};
 use rand::Rng;
 use serde::Serialize;

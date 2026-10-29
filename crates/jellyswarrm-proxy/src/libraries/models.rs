@@ -1,6 +1,6 @@
 //! Virtual library records, assignment errors, grouping modes, and access-scoped resolution results.
 
-use crate::{media::storage::MediaMapping, servers::id::ServerId, servers::storage::Server};
+use crate::{domain::server_id::ServerId, media::storage::MediaMapping, servers::storage::Server};
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub(crate) struct AutomaticVirtualLibrary {
@@ -21,13 +21,13 @@ pub(crate) struct VirtualLibraryMember {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct VirtualLibraryAccessScope {
-    user_id: crate::auth::user_id::UserId,
+    user_id: crate::domain::user_id::UserId,
     server_ids: Vec<ServerId>,
 }
 
 impl VirtualLibraryAccessScope {
     pub(crate) fn new(
-        user_id: impl Into<crate::auth::user_id::UserId>,
+        user_id: impl Into<crate::domain::user_id::UserId>,
         server_ids: impl IntoIterator<Item = ServerId>,
     ) -> Self {
         let mut server_ids = server_ids.into_iter().collect::<Vec<_>>();

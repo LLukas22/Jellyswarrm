@@ -2,11 +2,6 @@
 use percent_encoding::percent_decode_str;
 use std::fmt;
 
-pub(crate) fn generate_token() -> String {
-    use uuid::Uuid;
-    Uuid::new_v4().simple().to_string()
-}
-
 // See https://github.com/jellyfin/jellyfin/blob/master/Jellyfin.Server.Implementations/Security/AuthorizationContext.cs
 #[derive(Clone)]
 pub(crate) struct Authorization {

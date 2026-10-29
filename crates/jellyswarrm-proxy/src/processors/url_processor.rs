@@ -7,45 +7,21 @@ use crate::{
     auth::service::AuthorizationSession,
     auth::UserAuthorizationService,
     config::SettingsView,
+    domain::server_id::ServerId,
     libraries::service::VirtualLibraryAccessScope,
     libraries::VirtualLibraryService,
     media::storage::{MediaMapping, MediaVersionMember},
     media::MediaStorageService,
     playback::sessions::SessionStorage,
-    servers::id::ServerId,
+    protocol::url::{contains_id, decoded_path_segments, is_id_like, replace_id},
     servers::storage::Server,
-    upstream::url::{contains_id, decoded_path_segments, is_id_like, replace_id},
 };
 use std::sync::Arc;
 
-pub(crate) static MEDIA_ID_PATH_TAGS: &[&str] = &[
-    "Items",
-    "Items/RemoteSearch/Apply",
-    "Audio",
-    "Shows",
-    "Videos",
-    "Playlists",
-    "Collections",
-    "PlayedItems",
-    "FavoriteItems",
-    "MediaSegments",
-    "PlayingItems",
-    "Recordings",
-    "Channels",
-    "Programs",
-    "SeriesTimers",
-    "Timers",
-    "UserFavoriteItems",
-    "UserItems",
-    "UserPlayedItems",
-];
-
-pub(crate) use super::field_matcher::{
-    matches_case_insensitive, API_KEY_QUERY_TAGS, MEDIA_ID_QUERY_TAGS,
+use crate::protocol::routes::{
+    matches_case_insensitive, API_KEY_QUERY_TAGS, MEDIA_ID_PATH_TAGS, MEDIA_ID_QUERY_TAGS,
+    USER_ID_PATH_TAGS, USER_ID_QUERY_TAGS,
 };
-
-pub(crate) static USER_ID_PATH_TAGS: &[&str] = &["Users"];
-pub(crate) static USER_ID_QUERY_TAGS: &[&str] = &["UserId"];
 
 fn path_media_source_id(url: &url::Url) -> Option<String> {
     decoded_path_segments(url.path())
@@ -597,9 +573,7 @@ fn server_is_allowed(
 #[cfg(test)]
 mod tests {
     use crate::{
-        auth::{service::User, user_id::UserId},
-        models::Authorization,
-        DataContext,
+        auth::service::User, domain::user_id::UserId, protocol::authorization::Authorization,
     };
 
     #[tokio::test]
@@ -701,15 +675,15 @@ mod tests {
             .unwrap()
             .unwrap()
             .1;
-        let processor = UrlProcessor::from(DataContext {
-            paths: crate::config::Paths::temporary(),
-            user_authorization: Arc::new(user_authorization),
-            server_storage: Arc::new(server_storage),
-            media_storage: Arc::new(media_storage),
-            virtual_library_service: Arc::new(virtual_libraries),
-            play_sessions: Arc::new(SessionStorage::new()),
-            config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
-        });
+        let processor = UrlProcessor::new(
+            Arc::new(media_storage),
+            Arc::new(virtual_libraries),
+            Arc::new(SessionStorage::new()),
+            Arc::new(user_authorization),
+            crate::config::SettingsView::new(Arc::new(tokio::sync::RwLock::new(
+                AppConfig::default(),
+            ))),
+        );
         (processor, user, sessions)
     }
 

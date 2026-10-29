@@ -1,19 +1,19 @@
 //! Management UI authentication backend, user roles, and authenticated route context.
 use std::sync::Arc;
 
-use crate::auth::user_id::UserId;
+use crate::domain::user_id::UserId;
 use axum::{
     extract::FromRequestParts,
     http::{request::Parts, StatusCode},
 };
 use axum_login::{AuthUser, AuthnBackend, UserId as AuthUserId};
 use serde::{Deserialize, Serialize};
-use tokio::{sync::RwLock, task};
+use tokio::task;
 use tracing::info;
 
 use crate::{
     auth::service::{LocalCredential, UserAuthorizationService},
-    config::AppConfig,
+    config::AdminCredentials,
 };
 
 mod routes;
@@ -88,18 +88,21 @@ pub(crate) struct Credentials {
     pub(crate) next: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct Backend {
-    config: Arc<RwLock<AppConfig>>,
+    credentials: AdminCredentials,
     user_auth: Arc<UserAuthorizationService>,
 }
 
 impl Backend {
     pub(crate) fn new(
-        config: Arc<RwLock<AppConfig>>,
+        credentials: AdminCredentials,
         user_auth: Arc<UserAuthorizationService>,
     ) -> Self {
-        Self { config, user_auth }
+        Self {
+            credentials,
+            user_auth,
+        }
     }
 }
 
@@ -121,15 +124,15 @@ impl AuthnBackend for Backend {
         creds: Self::Credentials,
     ) -> Result<Option<Self::User>, Self::Error> {
         let password = creds.password.into();
-        let config = self.config.read().await;
         info!("Authenticating user: {}", creds.username);
-        if creds.username == config.username && password == config.password {
+        if creds.username == self.credentials.username() && password == self.credentials.password()
+        {
             info!("Admin authentication successful");
             // If the password is correct, we return the default user.
             let user = User {
                 id: "admin".into(),
                 username: creds.username,
-                local_credential: LocalCredential::Password(config.password.clone().into()),
+                local_credential: LocalCredential::Password(self.credentials.password().into()),
                 role: UserRole::Admin,
             };
             return Ok(Some(user));
@@ -159,11 +162,10 @@ impl AuthnBackend for Backend {
         user_id: &AuthUserId<Self>,
     ) -> Result<Option<Self::User>, Self::Error> {
         if user_id.as_str() == "admin" {
-            let config = self.config.read().await;
             return Ok(Some(User {
                 id: "admin".into(),
-                username: config.username.clone(),
-                local_credential: LocalCredential::Password(config.password.clone().into()),
+                username: self.credentials.username().to_owned(),
+                local_credential: LocalCredential::Password(self.credentials.password().into()),
                 role: UserRole::Admin,
             }));
         }

@@ -3,7 +3,8 @@ use axum::{extract::Query, extract::State, http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
 use tracing::error;
 
-use crate::{http::extractors::RequirePrimaryUser, AppState};
+use crate::{auth::UserAuthorizationService, http::extractors::RequirePrimaryUser};
+use std::sync::Arc;
 
 #[derive(Deserialize)]
 pub(crate) struct CreateApiKeyQuery {
@@ -27,7 +28,7 @@ pub(crate) struct ApiKeyList {
 }
 
 pub(crate) async fn create_api_key(
-    State(state): State<AppState>,
+    State(state): State<Arc<UserAuthorizationService>>,
     Query(query): Query<CreateApiKeyQuery>,
     RequirePrimaryUser(user): RequirePrimaryUser,
 ) -> Result<StatusCode, StatusCode> {
@@ -36,7 +37,6 @@ pub(crate) async fn create_api_key(
     }
 
     state
-        .user_authorization
         .create_api_key(&user.id, &query.app)
         .await
         .map_err(|error| {
@@ -48,17 +48,13 @@ pub(crate) async fn create_api_key(
 }
 
 pub(crate) async fn list_api_keys(
-    State(state): State<AppState>,
+    State(state): State<Arc<UserAuthorizationService>>,
     RequirePrimaryUser(user): RequirePrimaryUser,
 ) -> Result<Json<ApiKeyList>, StatusCode> {
-    let keys = state
-        .user_authorization
-        .list_api_keys(&user.id)
-        .await
-        .map_err(|error| {
-            error!("Failed to list virtual API keys: {error}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let keys = state.list_api_keys(&user.id).await.map_err(|error| {
+        error!("Failed to list virtual API keys: {error}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     let items = keys
         .into_iter()
         .map(|key| ApiKeyItem {

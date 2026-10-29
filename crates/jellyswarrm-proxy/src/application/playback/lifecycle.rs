@@ -1,11 +1,11 @@
 //! Local playback report transitions. Planning never mutates session storage;
 //! callers commit only after upstream success and response construction.
 use crate::{
+    domain::server_id::ServerId,
     playback::sessions::{
         PlaybackSession, PreparedLiveStream, RevisionedPlaybackSession, SessionStorage,
     },
     processors::request_analyzer::{PlaybackSessionAction, RequestBodyAnalysisResult},
-    servers::id::ServerId,
 };
 
 /// The sole application owner of local binding writes. Call only at the
@@ -100,8 +100,8 @@ impl<'a> PlaybackLifecycle<'a> {
 
     pub(crate) async fn close_live(
         &self,
-        id: &crate::playback::identity::VirtualLiveStreamId,
-        viewer: &crate::playback::identity::ViewerId,
+        id: &crate::domain::playback::VirtualLiveStreamId,
+        viewer: &crate::domain::playback::ViewerId,
     ) {
         self.sessions.close_live_binding(id, viewer).await;
     }

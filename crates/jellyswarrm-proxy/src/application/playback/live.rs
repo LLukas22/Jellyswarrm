@@ -8,14 +8,15 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use crate::{
+    application::request::UpstreamRequestBuilder,
     application::{
         context::RequestContext,
         error::ApplicationError,
         playback::{response::track_play_session, selection::record_playback_sources},
     },
     models::MediaSource,
+    outbound::json::set_json_body_typed,
     processors::{response_processor::ResponseProcessingProfile, url_processor::play_session_id},
-    upstream::jellyfin::{json::set_json_body_typed, request::UpstreamRequestBuilder},
 };
 
 /// Virtualize opaque live IDs and their delivery URL references together.

@@ -158,8 +158,8 @@ pub(crate) async fn resolve_cancellation(
 mod tests {
     use super::*;
     use crate::{
-        auth::service::Device, config::MediaStreamingMode, persistence::MIGRATOR,
-        playback::sessions::PlaybackSession, servers::id::ServerId,
+        config::MediaStreamingMode, domain::server_id::ServerId, persistence::MIGRATOR,
+        playback::sessions::PlaybackSession, protocol::device::Device,
         servers::storage::ServerStorageService,
     };
 

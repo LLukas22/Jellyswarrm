@@ -1,10 +1,13 @@
 //! Expose client-session discovery, capabilities, playback reports, and remote-control HTTP routes.
-use super::{
+use super::error::status;
+use crate::sessions::{
     models::{Capabilities, GeneralCommand, MessageCommand},
-    service::ClientSession,
-    snapshots, valid_session, SessionContext,
+    SessionContext,
 };
-use crate::{auth::user_id::UserId, AppState};
+use crate::{
+    domain::user_id::UserId,
+    http::state::{AppState, SessionState},
+};
 use axum::{
     body::to_bytes,
     extract::{Path, Request, State},
@@ -96,7 +99,7 @@ impl Params {
 }
 
 async fn list(
-    State(state): State<AppState>,
+    State(state): State<SessionState>,
     caller: SessionContext,
     uri: Uri,
 ) -> ApiResult<Json<Vec<Value>>> {
@@ -107,8 +110,11 @@ async fn list(
     }
     let active = p.number::<u32>("ActiveWithinSeconds")?;
     let cutoff = active.map(|s| chrono::Utc::now() - chrono::Duration::seconds(i64::from(s)));
-    let sessions = snapshots(&state, &caller.user.id)
-        .await?
+    let sessions = state
+        .session_operations()
+        .snapshots(&caller.user.id)
+        .await
+        .map_err(status)?
         .into_iter()
         .filter(|s| {
             (controllable.is_none() || s["SupportsRemoteControl"] == true)
@@ -124,25 +130,8 @@ async fn list(
     Ok(Json(sessions))
 }
 
-async fn target(state: &AppState, caller: &SessionContext, id: &str) -> ApiResult<ClientSession> {
-    let target = state
-        .client_sessions
-        .get(id)
-        .await
-        .ok_or(StatusCode::NOT_FOUND)?;
-    if target.user_id != caller.user.id || !valid_session(state, &target).await? {
-        return Err(StatusCode::NOT_FOUND);
-    }
-    if !state.client_sessions.transport.is_connected(id)
-        || !target.capabilities.supports_media_control
-    {
-        return Err(StatusCode::CONFLICT);
-    }
-    Ok(target)
-}
-
 async fn dispatch(
-    State(state): State<AppState>,
+    State(state): State<SessionState>,
     caller: SessionContext,
     Path(path): Path<String>,
     req: Request,
@@ -151,6 +140,7 @@ async fn dispatch(
         return Err(StatusCode::NOT_IMPLEMENTED);
     }
     let p = Params::new(req.uri())?;
+    let operations = state.session_operations();
     let path = path.trim_end_matches('/').to_ascii_lowercase();
     let path = path.as_str();
     if matches!(path, "capabilities" | "capabilities/full") {
@@ -177,30 +167,28 @@ async fn dispatch(
         {
             return Err(StatusCode::BAD_REQUEST);
         }
-        state
-            .client_sessions
-            .capabilities(&caller.session_id, capabilities)
-            .await?;
+        operations
+            .capabilities(&caller, capabilities)
+            .await
+            .map_err(status)?;
         return Ok(StatusCode::NO_CONTENT);
     }
     if path == "logout" {
-        state.syncplay.end_session(&caller.session_id).await;
-        state.client_sessions.remove(&caller.session_id).await;
+        operations.logout(&caller).await;
         return Ok(StatusCode::NO_CONTENT);
     }
     if path == "viewing" {
         p.own_id("SessionId", &caller)?;
         let id = item_id(p.required("ItemId")?)?;
-        require_media(&state, &caller.user.id, std::slice::from_ref(&id), None).await?;
-        state.client_sessions.viewing(&caller.session_id, &id).await;
+        operations.viewing(&caller, &id).await.map_err(status)?;
         return Ok(StatusCode::NO_CONTENT);
     }
     let parts: Vec<_> = path.split('/').collect();
     let [id, action, rest @ ..] = parts.as_slice() else {
         return Err(StatusCode::NOT_IMPLEMENTED);
     };
-    let target = target(&state, &caller, id).await?;
-    let (message_type, data, playback_mutation) = match (*action, rest) {
+    let target = operations.target(&caller, id).await.map_err(status)?;
+    let (message_type, data) = match (*action, rest) {
         ("playing", []) => {
             let command = canonical(
                 p.required("PlayCommand")?,
@@ -214,24 +202,10 @@ async fn dispatch(
             if items.is_empty() || items.len() > 1000 {
                 return Err(StatusCode::BAD_REQUEST);
             }
-            for item in &items {
-                if let Some(metadata) = state
-                    .client_sessions
-                    .media_metadata(&target.token, item)
-                    .await
-                {
-                    if let Some(media_type) = metadata["MediaType"].as_str() {
-                        if !target
-                            .capabilities
-                            .playable_media_types
-                            .iter()
-                            .any(|t| t.eq_ignore_ascii_case(media_type))
-                        {
-                            return Err(StatusCode::CONFLICT);
-                        }
-                    }
-                }
-            }
+            operations
+                .check_playable(&target, &items)
+                .await
+                .map_err(status)?;
             let start_index = p.number::<usize>("StartIndex")?;
             if start_index.is_some_and(|index| index >= items.len()) {
                 return Err(StatusCode::BAD_REQUEST);
@@ -240,13 +214,10 @@ async fn dispatch(
             // An explicit source belongs to the selected starting item.
             let mut validation_items = items.clone();
             validation_items.swap(0, start_index.unwrap_or(0));
-            require_media(
-                &state,
-                &target.user_id,
-                &validation_items,
-                source.as_deref(),
-            )
-            .await?;
+            operations
+                .require_target_media(&target, &validation_items, source.as_deref())
+                .await
+                .map_err(status)?;
             (
                 "Play",
                 json!({"PlayCommand": command, "ItemIds": items,
@@ -254,7 +225,6 @@ async fn dispatch(
                 "MediaSourceId": source, "AudioStreamIndex": stream_index(&p, "AudioStreamIndex")?,
                 "SubtitleStreamIndex": stream_index(&p, "SubtitleStreamIndex")?,
                 "ControllingUserId": caller.user.id}),
-                true,
             )
         }
         ("playing", [command]) => {
@@ -282,15 +252,14 @@ async fn dispatch(
             (
                 "Playstate",
                 json!({"Command": command, "SeekPositionTicks": position, "ControllingUserId": caller.user.id}),
-                true,
             )
         }
-        ("command", []) => {
-            general(&state, &caller, &target, body::<GeneralCommand>(req).await?).await?
-        }
-        ("command" | "system", [name]) => {
-            general(
-                &state,
+        ("command", []) => operations
+            .general_command(&caller, &target, body::<GeneralCommand>(req).await?)
+            .await
+            .map_err(status)?,
+        ("command" | "system", [name]) => operations
+            .general_command(
                 &caller,
                 &target,
                 GeneralCommand {
@@ -298,8 +267,8 @@ async fn dispatch(
                     arguments: BTreeMap::new(),
                 },
             )
-            .await?
-        }
+            .await
+            .map_err(status)?,
         ("message", []) => {
             let message = body::<MessageCommand>(req).await?;
             let mut arguments = BTreeMap::from([
@@ -316,20 +285,20 @@ async fn dispatch(
             if let Some(timeout) = message.timeout_ms {
                 arguments.insert("TimeoutMs".into(), timeout.to_string());
             }
-            general(
-                &state,
-                &caller,
-                &target,
-                GeneralCommand {
-                    name: "DisplayMessage".into(),
-                    arguments,
-                },
-            )
-            .await?
+            operations
+                .general_command(
+                    &caller,
+                    &target,
+                    GeneralCommand {
+                        name: "DisplayMessage".into(),
+                        arguments,
+                    },
+                )
+                .await
+                .map_err(status)?
         }
-        ("viewing", []) => {
-            general(
-                &state,
+        ("viewing", []) => operations
+            .general_command(
                 &caller,
                 &target,
                 GeneralCommand {
@@ -341,20 +310,14 @@ async fn dispatch(
                     ]),
                 },
             )
-            .await?
-        }
+            .await
+            .map_err(status)?,
         _ => return Err(StatusCode::NOT_IMPLEMENTED),
     };
-    // Recheck lifecycle and capability state after asynchronous media/credential validation.
-    let current = self::target(&state, &caller, id).await?;
-    if message_type == "GeneralCommand" && !supports(&current, data["Name"].as_str().unwrap_or(""))
-    {
-        return Err(StatusCode::CONFLICT);
-    }
-    state
-        .syncplay
-        .send_remote_command(id, message_type, &data, playback_mutation)
-        .await?;
+    operations
+        .send(&caller, id, message_type, &data)
+        .await
+        .map_err(status)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -382,133 +345,4 @@ fn stream_index(p: &Params, key: &str) -> ApiResult<Option<i32>> {
         return Err(StatusCode::BAD_REQUEST);
     }
     Ok(index)
-}
-async fn require_media(
-    state: &AppState,
-    user_id: &str,
-    items: &[String],
-    source: Option<&str>,
-) -> ApiResult<()> {
-    if !state
-        .media_access()
-        .allows(user_id, items, source)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    {
-        return Err(StatusCode::NOT_FOUND);
-    }
-    Ok(())
-}
-fn supports(target: &ClientSession, name: &str) -> bool {
-    target
-        .capabilities
-        .supported_commands
-        .iter()
-        .any(|c| c.eq_ignore_ascii_case(name))
-}
-
-async fn general(
-    state: &AppState,
-    caller: &SessionContext,
-    target: &ClientSession,
-    command: GeneralCommand,
-) -> ApiResult<(&'static str, Value, bool)> {
-    let name = canonical(
-        &command.name,
-        &[
-            "MoveUp",
-            "MoveDown",
-            "MoveLeft",
-            "MoveRight",
-            "PageUp",
-            "PageDown",
-            "PreviousLetter",
-            "NextLetter",
-            "ToggleOsd",
-            "ToggleContextMenu",
-            "Select",
-            "Back",
-            "TakeScreenshot",
-            "SendKey",
-            "SendString",
-            "GoHome",
-            "GoToSettings",
-            "VolumeUp",
-            "VolumeDown",
-            "Mute",
-            "Unmute",
-            "ToggleMute",
-            "SetVolume",
-            "SetAudioStreamIndex",
-            "SetSubtitleStreamIndex",
-            "ToggleFullscreen",
-            "DisplayContent",
-            "GoToSearch",
-            "DisplayMessage",
-            "SetRepeatMode",
-            "ChannelUp",
-            "ChannelDown",
-            "Guide",
-            "ToggleStats",
-            "SetShuffleQueue",
-            "ToggleOsdMenu",
-            "SetMaxStreamingBitrate",
-            "SetPlaybackOrder",
-            "PlayMediaSource",
-            "PlayTrailers",
-            "PlayState",
-            "PlayNext",
-            "Play",
-        ],
-    )?;
-    if !supports(target, name) {
-        return Err(StatusCode::CONFLICT);
-    }
-    let arg = |key: &str| {
-        command
-            .arguments
-            .iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case(key))
-            .map(|(_, v)| v.as_str())
-    };
-    let mut items = Vec::new();
-    if let Some(id) = arg("ItemId") {
-        items.push(item_id(id)?);
-    }
-    if let Some(ids) = arg("ItemIds") {
-        for id in ids.split(',') {
-            items.push(item_id(id.trim())?);
-        }
-    }
-    if matches!(name, "DisplayContent" | "PlayMediaSource" | "PlayTrailers") && items.is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    if let Some(source) = arg("MediaSourceId") {
-        if items.is_empty() {
-            return Err(StatusCode::BAD_REQUEST);
-        }
-        require_media(state, &target.user_id, &items, Some(&item_id(source)?)).await?;
-    } else if !items.is_empty() {
-        require_media(state, &target.user_id, &items, None).await?;
-    }
-    // Navigation and keyboard commands can trigger playback in a client; conservatively
-    // reject all except presentation/volume controls while a target belongs to SyncPlay.
-    let playback_mutation = !matches!(
-        name,
-        "VolumeUp"
-            | "VolumeDown"
-            | "Mute"
-            | "Unmute"
-            | "ToggleMute"
-            | "SetVolume"
-            | "DisplayMessage"
-            | "ToggleFullscreen"
-            | "ToggleStats"
-            | "TakeScreenshot"
-    );
-    Ok((
-        "GeneralCommand",
-        json!({"Name": name, "Arguments": command.arguments, "ControllingUserId": caller.user.id}),
-        playback_mutation,
-    ))
 }

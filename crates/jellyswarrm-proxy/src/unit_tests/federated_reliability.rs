@@ -195,7 +195,7 @@ async fn snapshots_coalesce_builds_and_keep_random_and_tied_pages_stable() {
 #[tokio::test]
 async fn snapshots_are_scoped_to_viewer_token_targets_and_display_configuration() {
     use crate::{
-        auth::identity::JellyfinAuthorization, libraries::service::VirtualLibraryAccessScope,
+        libraries::service::VirtualLibraryAccessScope, protocol::identity::JellyfinAuthorization,
     };
     let (state, _, sessions, upstreams) = setup().await;
     let service = state.catalog_service();
@@ -565,10 +565,16 @@ async fn numbered_episode_versions_keep_ranges_distinct_and_route_same_server_co
     assert_eq!(member_virtual_id, &sibling.mapping.virtual_media_id);
     let mut normalized = detail_request.original_request.try_clone().unwrap();
     *normalized.url_mut() =
-        crate::upstream::url::replace_path_id(normalized.url(), "Items", member_virtual_id)
+        crate::protocol::url::replace_path_id(normalized.url(), "Items", member_virtual_id)
             .unwrap();
-    let prefix = state.get_url_prefix().await;
-    let built = crate::upstream::jellyfin::request::UpstreamRequestBuilder::new(
+    let prefix = state
+        .settings
+        .read()
+        .await
+        .url_prefix
+        .as_ref()
+        .map(ToString::to_string);
+    let built = crate::application::request::UpstreamRequestBuilder::new(
         &state.processors.url_processor,
         prefix.as_deref(),
     )

@@ -2,12 +2,12 @@
 //! Collecting caller context never constructs a backend request.
 
 use crate::{
+    application::request::remap_authorization,
     application::{
         context::{AuthorizedTarget, RequestContext, TargetError},
         error::ApplicationError,
     },
     processors::request_analyzer::RequestBodyAnalysisResult,
-    upstream::jellyfin::request::remap_authorization,
 };
 
 pub(crate) struct OperationRequest {
@@ -20,7 +20,7 @@ pub(crate) struct OperationRequest {
 /// backend is selected or encoded while collecting these caller-owned inputs.
 pub(crate) struct CollectedRequest {
     pub(crate) original_request: reqwest::Request,
-    pub(crate) auth: Option<crate::auth::identity::JellyfinAuthorization>,
+    pub(crate) auth: Option<crate::protocol::identity::JellyfinAuthorization>,
     pub(crate) user: Option<crate::auth::service::User>,
     pub(crate) sessions: Option<
         Vec<(

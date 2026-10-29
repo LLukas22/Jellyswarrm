@@ -10,9 +10,9 @@ use jellyfin_api::models::{BaseItem, IncludeItemTypes};
 use tracing::error;
 
 use crate::{
-    servers::id::ServerId,
+    domain::server_id::ServerId,
+    http::state::ManagementState,
     ui::{auth::AuthenticatedUser, user::common::authenticate_user_on_server},
-    AppState,
 };
 
 pub(crate) struct ServerInfo {
@@ -57,7 +57,7 @@ pub(crate) struct Pagination {
 }
 
 pub(crate) async fn get_user_media(
-    State(state): State<AppState>,
+    State(state): State<ManagementState>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> impl IntoResponse {
     let servers = match state.user_authorization.get_mapped_servers(&user.id).await {
@@ -78,7 +78,7 @@ pub(crate) async fn get_user_media(
 
     let template = UserMediaTemplate {
         servers: server_infos,
-        ui_route: state.get_ui_route().await,
+        ui_route: state.paths.ui_route(),
     };
     match template.render() {
         Ok(html) => Html(html).into_response(),
@@ -90,7 +90,7 @@ pub(crate) async fn get_user_media(
 }
 
 pub(crate) async fn get_server_libraries(
-    State(state): State<AppState>,
+    State(state): State<ManagementState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Path(server_id): Path<ServerId>,
 ) -> impl IntoResponse {
@@ -140,7 +140,7 @@ pub(crate) async fn get_server_libraries(
                 let template = ServerLibrariesTemplate {
                     server_id,
                     libraries,
-                    ui_route: state.get_ui_route().await,
+                    ui_route: state.paths.ui_route(),
                 };
                 match template.render() {
                     Ok(html) => Html(html).into_response(),
@@ -163,7 +163,7 @@ pub(crate) async fn get_server_libraries(
 }
 
 pub(crate) async fn get_library_items(
-    State(state): State<AppState>,
+    State(state): State<ManagementState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Path((server_id, library_id)): Path<(ServerId, String)>,
     Query(pagination): Query<Pagination>,
@@ -209,7 +209,7 @@ pub(crate) async fn get_library_items(
                     library_id,
                     items: response.items,
                     next_page,
-                    ui_route: state.get_ui_route().await,
+                    ui_route: state.paths.ui_route(),
                 };
                 match template.render() {
                     Ok(html) => Html(html).into_response(),
@@ -230,7 +230,7 @@ pub(crate) async fn get_library_items(
 }
 
 pub(crate) async fn proxy_media_image(
-    State(state): State<AppState>,
+    State(state): State<ManagementState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Path((server_id, item_id)): Path<(ServerId, String)>,
 ) -> impl IntoResponse {

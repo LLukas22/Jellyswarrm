@@ -6,11 +6,11 @@ use std::{
 
 use tokio::sync::{RwLock, RwLockWriteGuard};
 
-use crate::auth::user_id::UserId;
-use crate::playback::identity::{
+use crate::domain::playback::{
     BackendLiveStreamId, PlaybackSessionId, ViewerId, VirtualLiveStreamId,
 };
-use crate::servers::id::ServerId;
+use crate::domain::server_id::ServerId;
+use crate::domain::user_id::UserId;
 
 const PLAYBACK_SESSION_TTL: Duration = Duration::from_secs(12 * 60 * 60);
 

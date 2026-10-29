@@ -2,7 +2,6 @@
 use std::{fmt, ops::Deref};
 
 use serde::{Deserialize, Serialize};
-use sqlx::{database::Database, error::BoxDynError, Decode, Encode, Sqlite, Type};
 
 /// A local user identifier in its canonical form.
 ///
@@ -69,32 +68,6 @@ impl Deref for UserId {
 impl fmt::Display for UserId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
-    }
-}
-
-impl Type<Sqlite> for UserId {
-    fn type_info() -> <Sqlite as Database>::TypeInfo {
-        <String as Type<Sqlite>>::type_info()
-    }
-
-    fn compatible(ty: &<Sqlite as Database>::TypeInfo) -> bool {
-        <String as Type<Sqlite>>::compatible(ty)
-    }
-}
-
-impl<'q> Encode<'q, Sqlite> for UserId {
-    fn encode_by_ref(
-        &self,
-        buf: &mut <Sqlite as Database>::ArgumentBuffer<'q>,
-    ) -> Result<sqlx::encode::IsNull, BoxDynError> {
-        <String as Encode<Sqlite>>::encode_by_ref(&self.0, buf)
-    }
-}
-
-impl<'r> Decode<'r, Sqlite> for UserId {
-    fn decode(value: <Sqlite as Database>::ValueRef<'r>) -> Result<Self, BoxDynError> {
-        // A derived transparent decoder would bypass normalization.
-        <String as Decode<Sqlite>>::decode(value).map(Self::from)
     }
 }
 

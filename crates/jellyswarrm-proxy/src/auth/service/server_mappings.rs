@@ -8,7 +8,7 @@ pub(crate) enum MappingCredentialError {
     #[error("mapping encryption key unavailable")]
     MissingKey,
     #[error("unable to decrypt saved mapping credential")]
-    Encryption(#[from] crate::auth::encryption::EncryptionError),
+    Encryption(#[from] crate::domain::security::EncryptionError),
 }
 
 impl UserAuthorizationService {
@@ -543,7 +543,7 @@ impl UserAuthorizationService {
     /// this server. Multiple devices are fine; ambiguous account aliases aren't.
     pub(crate) async fn virtual_user_id_for_backend(
         &self,
-        server_id: crate::servers::id::ServerId,
+        server_id: crate::domain::server_id::ServerId,
         original_user_id: &str,
     ) -> Result<Option<String>, sqlx::Error> {
         let ids: Vec<String> = sqlx::query_scalar(

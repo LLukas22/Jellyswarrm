@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use super::field_matcher::{matches_case_insensitive, API_KEY_QUERY_TAGS, MEDIA_ID_QUERY_TAGS};
-use crate::{media::MediaStorageService, servers::Server, upstream::url::is_id_like};
+use crate::protocol::routes::{matches_case_insensitive, API_KEY_QUERY_TAGS, MEDIA_ID_QUERY_TAGS};
+use crate::{media::MediaStorageService, protocol::url::is_id_like, servers::Server};
 
 #[derive(Clone)]
 pub(crate) struct DeliveryUrlTranslator {

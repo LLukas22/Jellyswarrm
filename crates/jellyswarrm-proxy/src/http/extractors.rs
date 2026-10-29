@@ -1,24 +1,31 @@
 //! Extract authenticated, access-scoped application inputs from incoming Axum requests.
-use axum::extract::{FromRequest, Request};
+use axum::extract::{FromRef, FromRequest, Request};
 use hyper::StatusCode;
 use tracing::error;
 
 use crate::{
-    auth::service::User, http::preprocessing::resolve_request_identity_from_headers_uri, AppState,
+    auth::service::User,
+    http::{preprocessing::resolve_request_identity_from_headers_uri, state::MediaState},
 };
 
 pub(crate) struct RequirePrimaryUser(pub(crate) User);
 
-impl FromRequest<AppState> for RequirePrimaryUser {
+impl<S: Send + Sync> FromRequest<S> for RequirePrimaryUser
+where
+    std::sync::Arc<crate::auth::UserAuthorizationService>: FromRef<S>,
+{
     type Rejection = StatusCode;
 
-    async fn from_request(req: Request, state: &AppState) -> Result<Self, Self::Rejection> {
-        let identity = resolve_request_identity_from_headers_uri(req.headers(), req.uri(), state)
-            .await
-            .map_err(|error| {
-                error!("Failed to resolve API key caller: {error}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let authorization =
+            std::sync::Arc::<crate::auth::UserAuthorizationService>::from_ref(state);
+        let identity =
+            resolve_request_identity_from_headers_uri(req.headers(), req.uri(), &authorization)
+                .await
+                .map_err(|error| {
+                    error!("Failed to resolve API key caller: {error}");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?;
         let user = identity.user.ok_or(StatusCode::UNAUTHORIZED)?;
         let token = identity
             .auth
@@ -38,10 +45,14 @@ impl FromRequest<AppState> for RequirePrimaryUser {
 pub(crate) struct OperationInput(pub(crate) crate::application::input::OperationRequest);
 pub(crate) use OperationInput as PlaybackInput;
 
-impl FromRequest<AppState> for OperationInput {
+impl<S: Send + Sync> FromRequest<S> for OperationInput
+where
+    MediaState: FromRef<S>,
+{
     type Rejection = StatusCode;
 
-    async fn from_request(req: Request, state: &AppState) -> Result<Self, Self::Rejection> {
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let state = MediaState::from_ref(state);
         use crate::application::{context::RequestContext, input::OperationRequest};
         let crate::application::input::CollectedRequest {
             original_request,
@@ -50,7 +61,7 @@ impl FromRequest<AppState> for OperationInput {
             sessions,
             body_analysis,
             access_scope,
-        } = crate::http::preprocessing::extract_request_infos(req, state, None)
+        } = crate::http::preprocessing::extract_request_infos(req, &state, None)
             .await
             .map_err(input_status)?;
         let context = RequestContext::new(&original_request, auth, user, sessions, access_scope);
@@ -67,10 +78,14 @@ pub(crate) struct LiveInput(pub(crate) crate::application::playback::live::LiveR
 /// Catalog authentication and scope collection without selecting or rewriting a backend.
 pub(crate) struct CatalogInput(pub(crate) crate::application::catalog::input::CatalogRequest);
 
-impl FromRequest<AppState> for CatalogInput {
+impl<S: Send + Sync> FromRequest<S> for CatalogInput
+where
+    MediaState: FromRef<S>,
+{
     type Rejection = StatusCode;
 
-    async fn from_request(req: Request, state: &AppState) -> Result<Self, Self::Rejection> {
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let state = MediaState::from_ref(state);
         use crate::application::{catalog::input::CatalogRequest, context::RequestContext};
         let crate::application::input::CollectedRequest {
             original_request,
@@ -79,7 +94,7 @@ impl FromRequest<AppState> for CatalogInput {
             sessions,
             body_analysis,
             access_scope,
-        } = crate::http::preprocessing::extract_request_infos(req, state, None)
+        } = crate::http::preprocessing::extract_request_infos(req, &state, None)
             .await
             .map_err(input_error)?;
         let context = RequestContext::new(&original_request, auth, user, sessions, access_scope);
@@ -93,10 +108,14 @@ impl FromRequest<AppState> for CatalogInput {
     }
 }
 
-impl FromRequest<AppState> for LiveInput {
+impl<S: Send + Sync> FromRequest<S> for LiveInput
+where
+    MediaState: FromRef<S>,
+{
     type Rejection = StatusCode;
 
-    async fn from_request(req: Request, state: &AppState) -> Result<Self, Self::Rejection> {
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let state = MediaState::from_ref(state);
         use crate::application::{context::RequestContext, playback::live::LiveRequest};
         let crate::application::input::CollectedRequest {
             original_request,
@@ -105,7 +124,7 @@ impl FromRequest<AppState> for LiveInput {
             sessions,
             body_analysis,
             access_scope,
-        } = crate::http::preprocessing::extract_request_infos(req, state, None)
+        } = crate::http::preprocessing::extract_request_infos(req, &state, None)
             .await
             .map_err(input_error)?;
         let context = RequestContext::new(&original_request, auth, user, sessions, access_scope);

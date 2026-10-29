@@ -2,12 +2,27 @@
 
 use std::{io, pin::Pin};
 
-use crate::application::error::ApplicationError;
 use futures_util::{Stream, StreamExt};
 use hyper::{body::Bytes, header, HeaderMap, StatusCode};
 
 use super::hls;
 use crate::upstream::headers::remove_hop_by_hop_headers;
+
+#[derive(thiserror::Error)]
+pub(crate) enum DeliveryError {
+    #[error("upstream transport failure")]
+    Transport(#[source] reqwest::Error),
+    #[error("redirect encoding failed")]
+    Header(#[source] hyper::header::InvalidHeaderValue),
+    #[error("playlist delivery failed")]
+    Playlist(#[from] hls::HlsError),
+}
+
+impl std::fmt::Debug for DeliveryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
 
 /// Concrete transport dependencies, with authorization resolved by the caller.
 pub(crate) struct DeliveryContext<'a> {
@@ -42,7 +57,7 @@ pub(crate) struct DeliveryResponse {
 pub(crate) fn redirect(
     request: &reqwest::Request,
     backend_token: Option<&str>,
-) -> Result<DeliveryResponse, ApplicationError> {
+) -> Result<DeliveryResponse, DeliveryError> {
     let mut url = request.url().clone();
     // Redirects cannot carry the upstream Authorization header. Replace any
     // existing query credential with Jellyfin's canonical query token.
@@ -50,9 +65,9 @@ pub(crate) fn redirect(
         let pairs = url
             .query_pairs()
             .filter(|(key, _)| {
-                !crate::processors::url_processor::matches_case_insensitive(
+                !crate::protocol::routes::matches_case_insensitive(
                     key,
-                    crate::processors::url_processor::API_KEY_QUERY_TAGS,
+                    crate::protocol::routes::API_KEY_QUERY_TAGS,
                 )
             })
             .map(|(key, value)| (key.into_owned(), value.into_owned()))
@@ -65,8 +80,7 @@ pub(crate) fn redirect(
     let mut headers = HeaderMap::new();
     headers.insert(
         header::LOCATION,
-        header::HeaderValue::from_str(url.as_ref())
-            .map_err(|error| ApplicationError::Internal(error.into()))?,
+        header::HeaderValue::from_str(url.as_ref()).map_err(DeliveryError::Header)?,
     );
     headers.insert(
         header::REFERRER_POLICY,
@@ -84,7 +98,7 @@ pub(crate) fn redirect(
 pub(crate) async fn proxy(
     context: &DeliveryContext<'_>,
     mut request: reqwest::Request,
-) -> Result<DeliveryResponse, ApplicationError> {
+) -> Result<DeliveryResponse, DeliveryError> {
     let playlist_path = hls::is_playlist_path(request.url());
     let head = request.method() == reqwest::Method::HEAD;
     request.headers_mut().insert(
@@ -106,7 +120,7 @@ pub(crate) async fn proxy(
         .streaming_client
         .execute(request)
         .await
-        .map_err(|error| ApplicationError::UpstreamTransport(error.without_url()))?;
+        .map_err(|error| DeliveryError::Transport(error.without_url()))?;
 
     if playlist_path || hls::is_playlist_type(response.headers()) {
         let playlist = hls::response(&context.hls, response, head).await?;

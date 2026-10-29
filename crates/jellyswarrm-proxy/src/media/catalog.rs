@@ -2,10 +2,10 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    libraries::service::compare_virtual_library_routes,
     media::identity::{MediaAlias, MediaKind, StableMediaGroup},
     media::presentation::{CatalogItem, ItemPresentation},
     models::{enums::BaseItemKind, MediaItem},
+    servers::routing::compare_routes,
     servers::storage::Server,
 };
 
@@ -189,12 +189,7 @@ pub(crate) fn merge_media_group(mut members: Vec<TaggedMediaItem>, group_id: &st
         .iter()
         .enumerate()
         .max_by(|(_, left), (_, right)| {
-            compare_virtual_library_routes(
-                &left.server,
-                &left.item.id,
-                &right.server,
-                &right.item.id,
-            )
+            compare_routes(&left.server, &left.item.id, &right.server, &right.item.id)
         })
         .expect("media group is never empty")
         .0;
@@ -405,8 +400,8 @@ mod tests {
 
     use crate::{
         config::MediaStreamingMode,
+        domain::server_id::ServerId,
         media::identity::{MediaKind, MediaProvider},
-        servers::id::ServerId,
         servers::url::ServerUrl,
     };
 

@@ -1,10 +1,10 @@
 //! Shared user-page helpers for mapping validation, credentials, and rendering context.
-use crate::{auth::encryption::Password, servers::storage::Server, AppState};
+use crate::{domain::security::Password, http::state::ManagementState, servers::storage::Server};
 
 /// Validate ambiguous legacy values before the local password transaction.
 /// Do not accept a cached token as proof of the saved password's correctness.
 pub(crate) async fn prepare_mappings_for_password_change(
-    state: &AppState,
+    state: &ManagementState,
     user: &crate::ui::auth::User,
     verified_password: &Password,
 ) -> Result<(), String> {
@@ -16,14 +16,13 @@ pub(crate) async fn prepare_mappings_for_password_change(
         .ok_or("Local user not found")?;
     state
         .mapping_authenticator()
-        .await
         .prepare_password_change(&local_user, &state.server_storage, verified_password)
         .await
         .map_err(|error| error.to_string())
 }
 
 pub(crate) async fn authenticate_user_on_server(
-    state: &AppState,
+    state: &ManagementState,
     user: &crate::ui::auth::User,
     server: &Server,
 ) -> Result<crate::auth::mapping_authentication::AuthenticatedMapping, String> {
@@ -41,7 +40,6 @@ pub(crate) async fn authenticate_user_on_server(
         .ok_or("Local user not found")?;
     state
         .mapping_authenticator()
-        .await
         .authenticate(&local_user, server, &mapping)
         .await
         .map_err(|error| error.to_string())

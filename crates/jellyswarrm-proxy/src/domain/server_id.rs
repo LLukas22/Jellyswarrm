@@ -1,4 +1,4 @@
-//! Typed backend server identifiers and their serialization/database conversions.
+//! Typed backend server identifiers with transparent wire representation.
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]

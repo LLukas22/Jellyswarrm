@@ -1,6 +1,6 @@
 //! Initialize configured debug users and backend mappings in debug builds only.
 use crate::{
-    auth::service::UserAuthorizationService, config::DebugUser, servers::id::ServerId,
+    auth::service::UserAuthorizationService, config::DebugUser, domain::server_id::ServerId,
     servers::storage::ServerStorageService,
 };
 
@@ -37,9 +37,9 @@ pub(crate) async fn initialize_debug_user(
 #[cfg(test)]
 mod tests {
     use crate::{
-        auth::encryption::Password,
         auth::service::UserAuthorizationService,
         config::{DebugUser, MediaStreamingMode},
+        domain::security::Password,
         persistence::MIGRATOR,
         servers::storage::ServerStorageService,
     };
@@ -50,7 +50,7 @@ mod tests {
     async fn setup() -> (
         UserAuthorizationService,
         ServerStorageService,
-        Vec<crate::servers::id::ServerId>,
+        Vec<crate::domain::server_id::ServerId>,
     ) {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         MIGRATOR.run(&pool).await.unwrap();

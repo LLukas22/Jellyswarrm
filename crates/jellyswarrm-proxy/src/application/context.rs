@@ -2,10 +2,11 @@
 //!
 //! Credentials deliberately have no derived Debug/Serialize implementation.
 use crate::{
-    auth::identity::{request_device, JellyfinAuthorization},
-    auth::service::{AuthorizationSession, Device, User},
+    auth::service::{AuthorizationSession, User},
+    domain::server_id::ServerId,
     libraries::service::VirtualLibraryAccessScope,
-    servers::id::ServerId,
+    protocol::device::Device,
+    protocol::identity::{request_device, JellyfinAuthorization},
     servers::storage::Server,
 };
 
@@ -49,7 +50,7 @@ impl RequestContext {
         sessions: Option<Vec<(AuthorizationSession, Server)>>,
         access_scope: Option<VirtualLibraryAccessScope>,
     ) -> Self {
-        let device = request_device(request, auth.as_ref());
+        let device = request_device(request.headers(), request.url(), auth.as_ref());
         let (identity, legacy_user) = match (auth, user) {
             (Some(authorization), Some(user)) => (
                 CallerIdentity::ProxyUser {
@@ -115,10 +116,10 @@ impl RequestContext {
         analysis: Option<&crate::processors::request_analyzer::RequestBodyAnalysisResult>,
         urls: &crate::application::url_selection::UrlSelection,
     ) -> Result<(), super::routing::RoutingError> {
-        use crate::processors::url_processor::{MEDIA_ID_PATH_TAGS, MEDIA_ID_QUERY_TAGS};
+        use crate::protocol::routes::{MEDIA_ID_PATH_TAGS, MEDIA_ID_QUERY_TAGS};
         if let Some(scope) = &self.access_scope {
             for tag in MEDIA_ID_PATH_TAGS {
-                if let Some(id) = crate::upstream::url::contains_id(url, tag) {
+                if let Some(id) = crate::protocol::url::contains_id(url, tag) {
                     urls.validate_media_access(&id, scope).await?;
                 }
             }
@@ -160,10 +161,7 @@ impl RequestContext {
         AuthorizedTarget::new(
             server.clone(),
             Some(session.clone()),
-            crate::upstream::jellyfin::request::remap_authorization(
-                self.authorization(),
-                Some(session),
-            ),
+            crate::application::request::remap_authorization(self.authorization(), Some(session)),
             self.access_scope.clone(),
         )
     }

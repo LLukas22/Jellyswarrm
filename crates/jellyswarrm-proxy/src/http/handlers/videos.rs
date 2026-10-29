@@ -2,12 +2,15 @@
 use axum::{extract::State, response::Response};
 use hyper::StatusCode;
 
-use crate::{application::playback::resources, http::extractors::PlaybackInput, AppState};
+use crate::{
+    application::playback::resources,
+    http::{extractors::PlaybackInput, state::MediaState},
+};
 
 mod delivery;
 
 pub(crate) async fn get_video_resource(
-    State(state): State<AppState>,
+    State(state): State<MediaState>,
     PlaybackInput(operation): PlaybackInput,
 ) -> Result<Response, StatusCode> {
     delivery::response(
@@ -18,7 +21,7 @@ pub(crate) async fn get_video_resource(
 }
 
 pub(crate) async fn get_stream(
-    State(state): State<AppState>,
+    State(state): State<MediaState>,
     PlaybackInput(operation): PlaybackInput,
 ) -> Result<Response, StatusCode> {
     delivery::response(

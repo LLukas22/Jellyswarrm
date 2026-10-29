@@ -1,9 +1,9 @@
-//! Target-bound request construction. This module never selects a backend.
+//! Compose translation and wire encoding for an application-authorized target.
 use crate::{
-    application::context::AuthorizedTarget, auth::identity::JellyfinAuthorization,
-    auth::service::AuthorizationSession, libraries::service::VirtualLibraryAccessScope,
-    processors::url_processor::UrlProcessor, servers::storage::Server,
-    upstream::headers::remove_hop_by_hop_headers, upstream::url::join_server_url,
+    application::context::AuthorizedTarget, auth::service::AuthorizationSession,
+    libraries::service::VirtualLibraryAccessScope, processors::url_processor::UrlProcessor,
+    protocol::identity::JellyfinAuthorization, protocol::url::join_server_url,
+    servers::storage::Server, upstream::headers::remove_hop_by_hop_headers,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -146,7 +146,6 @@ mod tests {
         persistence::MIGRATOR,
         playback::sessions::SessionStorage,
         servers::storage::ServerStorageService,
-        DataContext,
     };
 
     async fn fixture() -> (UrlProcessor, MediaStorageService, Server, Server) {
@@ -170,15 +169,15 @@ mod tests {
         }
         let media = MediaStorageService::new(pool.clone());
         let libraries = VirtualLibraryService::new(pool.clone(), servers.clone(), media.clone());
-        let urls = UrlProcessor::from(DataContext {
-            paths: crate::config::Paths::temporary(),
-            user_authorization: Arc::new(UserAuthorizationService::new(pool)),
-            server_storage: Arc::new(servers),
-            media_storage: Arc::new(media.clone()),
-            virtual_library_service: Arc::new(libraries),
-            play_sessions: Arc::new(SessionStorage::new()),
-            config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
-        });
+        let urls = UrlProcessor::new(
+            Arc::new(media.clone()),
+            Arc::new(libraries),
+            Arc::new(SessionStorage::new()),
+            Arc::new(UserAuthorizationService::new(pool)),
+            crate::config::SettingsView::new(Arc::new(tokio::sync::RwLock::new(
+                AppConfig::default(),
+            ))),
+        );
         (urls, media, backends.remove(0), backends.remove(0))
     }
 

@@ -1,9 +1,6 @@
 //! SyncPlay HTTP extraction, access checks, and response policy. State mutation
 //! and ordered notifications belong to named commands in the SyncPlay feature.
-use crate::{
-    syncplay::{models::*, service::SessionContext},
-    AppState,
-};
+use crate::{http::state::SessionState, sessions::SessionContext, syncplay::models::*};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -16,7 +13,7 @@ use tracing::{debug, info};
 use uuid::Uuid;
 
 pub(crate) async fn create_group(
-    State(state): State<AppState>,
+    State(state): State<SessionState>,
     session: SessionContext,
     Json(payload): Json<NewGroupRequestDto>,
 ) -> Result<Json<GroupInfoDto>, StatusCode> {
@@ -29,7 +26,7 @@ pub(crate) async fn create_group(
 }
 
 pub(crate) async fn join_group(
-    State(state): State<AppState>,
+    State(state): State<SessionState>,
     session: SessionContext,
     Json(payload): Json<JoinGroupRequestDto>,
 ) -> Result<StatusCode, StatusCode> {
@@ -46,7 +43,7 @@ pub(crate) async fn join_group(
 }
 
 pub(crate) async fn leave_group(
-    State(state): State<AppState>,
+    State(state): State<SessionState>,
     session: SessionContext,
 ) -> Result<StatusCode, StatusCode> {
     info!("SyncPlay leave requested");
@@ -55,7 +52,7 @@ pub(crate) async fn leave_group(
 }
 
 pub(crate) async fn list_groups(
-    State(state): State<AppState>,
+    State(state): State<SessionState>,
     session: SessionContext,
 ) -> Result<Json<Vec<GroupInfoDto>>, StatusCode> {
     state
@@ -67,7 +64,7 @@ pub(crate) async fn list_groups(
 }
 
 pub(crate) async fn get_group(
-    State(state): State<AppState>,
+    State(state): State<SessionState>,
     session: SessionContext,
     Path(group_id): Path<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
@@ -84,7 +81,7 @@ pub(crate) async fn get_group(
 }
 
 pub(crate) async fn set_new_queue(
-    State(state): State<AppState>,
+    State(state): State<SessionState>,
     session: SessionContext,
     Json(payload): Json<PlayRequestDto>,
 ) -> Result<StatusCode, StatusCode> {
@@ -97,7 +94,7 @@ pub(crate) async fn set_new_queue(
 }
 
 pub(crate) async fn queue_items(
-    State(state): State<AppState>,
+    State(state): State<SessionState>,
     session: SessionContext,
     Json(payload): Json<QueueRequestDto>,
 ) -> Result<StatusCode, StatusCode> {
@@ -110,7 +107,7 @@ pub(crate) async fn queue_items(
 }
 
 pub(crate) async fn set_playlist_item(
-    State(state): State<AppState>,
+    State(state): State<SessionState>,
     session: SessionContext,
     Json(payload): Json<SetPlaylistItemRequestDto>,
 ) -> Result<StatusCode, StatusCode> {
@@ -118,7 +115,7 @@ pub(crate) async fn set_playlist_item(
     Ok(StatusCode::NO_CONTENT)
 }
 pub(crate) async fn remove_from_playlist(
-    State(state): State<AppState>,
+    State(state): State<SessionState>,
     session: SessionContext,
     Json(payload): Json<RemoveFromPlaylistRequestDto>,
 ) -> Result<StatusCode, StatusCode> {
@@ -126,7 +123,7 @@ pub(crate) async fn remove_from_playlist(
     Ok(StatusCode::NO_CONTENT)
 }
 pub(crate) async fn move_playlist_item(
-    State(state): State<AppState>,
+    State(state): State<SessionState>,
     session: SessionContext,
     Json(payload): Json<MovePlaylistItemRequestDto>,
 ) -> Result<StatusCode, StatusCode> {
@@ -134,28 +131,28 @@ pub(crate) async fn move_playlist_item(
     Ok(StatusCode::NO_CONTENT)
 }
 pub(crate) async fn unpause(
-    State(state): State<AppState>,
+    State(state): State<SessionState>,
     session: SessionContext,
 ) -> Result<StatusCode, StatusCode> {
     state.syncplay.unpause(&session).await;
     Ok(StatusCode::NO_CONTENT)
 }
 pub(crate) async fn pause(
-    State(state): State<AppState>,
+    State(state): State<SessionState>,
     session: SessionContext,
 ) -> Result<StatusCode, StatusCode> {
     state.syncplay.pause(&session).await;
     Ok(StatusCode::NO_CONTENT)
 }
 pub(crate) async fn stop(
-    State(state): State<AppState>,
+    State(state): State<SessionState>,
     session: SessionContext,
 ) -> Result<StatusCode, StatusCode> {
     state.syncplay.stop(&session).await;
     Ok(StatusCode::NO_CONTENT)
 }
 pub(crate) async fn seek(
-    State(state): State<AppState>,
+    State(state): State<SessionState>,
     session: SessionContext,
     Json(payload): Json<SeekRequestDto>,
 ) -> Result<StatusCode, StatusCode> {
@@ -163,7 +160,7 @@ pub(crate) async fn seek(
     Ok(StatusCode::NO_CONTENT)
 }
 pub(crate) async fn buffering(
-    State(state): State<AppState>,
+    State(state): State<SessionState>,
     session: SessionContext,
     Json(payload): Json<BufferRequestDto>,
 ) -> Result<StatusCode, StatusCode> {
@@ -171,7 +168,7 @@ pub(crate) async fn buffering(
     Ok(StatusCode::NO_CONTENT)
 }
 pub(crate) async fn ready(
-    State(state): State<AppState>,
+    State(state): State<SessionState>,
     session: SessionContext,
     Json(payload): Json<BufferRequestDto>,
 ) -> Result<StatusCode, StatusCode> {
@@ -179,7 +176,7 @@ pub(crate) async fn ready(
     Ok(StatusCode::NO_CONTENT)
 }
 pub(crate) async fn set_ignore_wait(
-    State(state): State<AppState>,
+    State(state): State<SessionState>,
     session: SessionContext,
     Json(payload): Json<IgnoreWaitRequestDto>,
 ) -> Result<StatusCode, StatusCode> {
@@ -187,7 +184,7 @@ pub(crate) async fn set_ignore_wait(
     Ok(StatusCode::NO_CONTENT)
 }
 pub(crate) async fn next_item(
-    State(state): State<AppState>,
+    State(state): State<SessionState>,
     session: SessionContext,
     payload: Option<Json<NextItemRequestDto>>,
 ) -> Result<StatusCode, StatusCode> {
@@ -201,7 +198,7 @@ pub(crate) async fn next_item(
     Ok(StatusCode::NO_CONTENT)
 }
 pub(crate) async fn previous_item(
-    State(state): State<AppState>,
+    State(state): State<SessionState>,
     session: SessionContext,
     payload: Option<Json<NextItemRequestDto>>,
 ) -> Result<StatusCode, StatusCode> {
@@ -215,7 +212,7 @@ pub(crate) async fn previous_item(
     Ok(StatusCode::NO_CONTENT)
 }
 pub(crate) async fn set_repeat_mode(
-    State(state): State<AppState>,
+    State(state): State<SessionState>,
     session: SessionContext,
     Json(payload): Json<SetRepeatModeRequestDto>,
 ) -> Result<StatusCode, StatusCode> {
@@ -223,7 +220,7 @@ pub(crate) async fn set_repeat_mode(
     Ok(StatusCode::NO_CONTENT)
 }
 pub(crate) async fn set_shuffle_mode(
-    State(state): State<AppState>,
+    State(state): State<SessionState>,
     session: SessionContext,
     Json(payload): Json<SetShuffleModeRequestDto>,
 ) -> Result<StatusCode, StatusCode> {
@@ -231,7 +228,7 @@ pub(crate) async fn set_shuffle_mode(
     Ok(StatusCode::NO_CONTENT)
 }
 pub(crate) async fn ping(
-    State(state): State<AppState>,
+    State(state): State<SessionState>,
     session: SessionContext,
     Json(payload): Json<PingRequestDto>,
 ) -> Result<StatusCode, StatusCode> {

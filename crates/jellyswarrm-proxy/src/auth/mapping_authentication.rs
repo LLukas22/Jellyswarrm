@@ -33,7 +33,7 @@ impl std::fmt::Debug for MappingAuthenticationError {
 pub(crate) struct MappingLogin {
     pub(crate) response: crate::models::AuthenticateResponse,
     pub(crate) username: String,
-    pub(crate) password: Option<crate::auth::encryption::Password>,
+    pub(crate) password: Option<crate::domain::security::Password>,
 }
 
 /// Independent authenticated identity over the shared transport. Each operation
@@ -67,7 +67,7 @@ impl AuthenticatedMapping {
 pub(crate) struct MappingAuthenticator<'a> {
     authorization: &'a crate::auth::UserAuthorizationService,
     transport: reqwest::Client,
-    admin_password: crate::auth::encryption::Password,
+    admin_password: crate::domain::security::Password,
 }
 
 impl<'a> MappingAuthenticator<'a> {
@@ -75,8 +75,8 @@ impl<'a> MappingAuthenticator<'a> {
         &self,
         user: &LocalUser,
         mapping: &ServerMapping,
-        verified_password: Option<&crate::auth::encryption::Password>,
-    ) -> Result<crate::auth::encryption::Password, MappingAuthenticationError> {
+        verified_password: Option<&crate::domain::security::Password>,
+    ) -> Result<crate::domain::security::Password, MappingAuthenticationError> {
         Ok(self.authorization.decrypt_server_mapping_password(
             mapping,
             &user.local_credential.mapping_key(),
@@ -93,7 +93,7 @@ impl<'a> MappingAuthenticator<'a> {
         &self,
         user: &LocalUser,
         servers: &crate::servers::ServerStorageService,
-        verified_password: &crate::auth::encryption::Password,
+        verified_password: &crate::domain::security::Password,
     ) -> Result<(), MappingAuthenticationError> {
         let mappings = self
             .authorization
@@ -137,7 +137,7 @@ impl<'a> MappingAuthenticator<'a> {
         &self,
         server: &Server,
         username: &str,
-        password: &crate::auth::encryption::Password,
+        password: &crate::domain::security::Password,
         client_info: ClientInfo,
     ) -> Result<MappingLogin, MappingAuthenticationError> {
         let client = JellyfinClient::new_with_client(
@@ -157,7 +157,7 @@ impl<'a> MappingAuthenticator<'a> {
     pub(crate) fn new(
         authorization: &'a crate::auth::UserAuthorizationService,
         transport: reqwest::Client,
-        admin_password: crate::auth::encryption::Password,
+        admin_password: crate::domain::security::Password,
     ) -> Self {
         Self {
             authorization,
@@ -254,7 +254,7 @@ impl<'a> MappingAuthenticator<'a> {
         user: &LocalUser,
         server: &Server,
         mapping: &ServerMapping,
-        verified_password: Option<&crate::auth::encryption::Password>,
+        verified_password: Option<&crate::domain::security::Password>,
         client_info: ClientInfo,
     ) -> Result<MappingLogin, MappingAuthenticationError> {
         self.validate_owner(user, server, mapping)?;
@@ -360,11 +360,7 @@ pub(crate) fn mapping_device_id(server: &Server, user_id: &str) -> String {
 mod tests {
     use super::*;
     use crate::{
-        auth::service::UserAuthorizationService, config::AppConfig,
-        http::handlers::quick_connect::QuickConnectStorage,
-        libraries::service::VirtualLibraryService, media::storage::MediaStorageService,
-        persistence::MIGRATOR, playback::sessions::SessionStorage, processors::ProxyProcessors,
-        servers::storage::ServerStorageService, AppState, DataContext,
+        auth::service::UserAuthorizationService, config::AppConfig, persistence::MIGRATOR,
     };
     use std::sync::Arc;
     use wiremock::{
@@ -374,9 +370,9 @@ mod tests {
 
     #[tokio::test]
     async fn client_login_accepts_verified_legacy_password_without_registering_a_session() {
-        use crate::auth::{
-            encryption::{encrypt_password, HashedPassword},
-            service::CredentialFormat,
+        use crate::{
+            auth::service::CredentialFormat,
+            domain::security::{encrypt_password, HashedPassword},
         };
         use wiremock::matchers::body_json;
         let backend = MockServer::start().await;
@@ -456,7 +452,7 @@ mod tests {
         use std::error::Error;
         let error = MappingAuthenticationError::Credential(
             crate::auth::service::MappingCredentialError::Encryption(
-                crate::auth::encryption::EncryptionError::PasswordDecryptionFailed,
+                crate::domain::security::EncryptionError::PasswordDecryptionFailed,
             ),
         );
         let cause = error.source().unwrap();
@@ -466,7 +462,7 @@ mod tests {
         assert!(cause
             .source()
             .unwrap()
-            .downcast_ref::<crate::auth::encryption::EncryptionError>()
+            .downcast_ref::<crate::domain::security::EncryptionError>()
             .is_some());
         assert_eq!(error.to_string(), "Saved credential could not be decrypted");
     }
@@ -480,37 +476,17 @@ mod tests {
             .await
             .unwrap();
         MIGRATOR.run(&pool).await.unwrap();
-        let server_storage = ServerStorageService::new(pool.clone());
-        let media_storage = MediaStorageService::new(pool.clone());
         let config = AppConfig::default();
         let mapping_key =
-            crate::auth::encryption::MappingEncryptionKey::from_session_key(&config.session_key)
+            crate::domain::security::MappingEncryptionKey::from_session_key(&config.session_key)
                 .unwrap();
-        let context = DataContext {
-            paths: crate::config::Paths::temporary(),
-            user_authorization: Arc::new(UserAuthorizationService::with_mapping_key(
-                pool.clone(),
-                mapping_key,
-                (&config.password).into(),
-            )),
-            server_storage: Arc::new(server_storage.clone()),
-            media_storage: Arc::new(media_storage.clone()),
-            virtual_library_service: Arc::new(VirtualLibraryService::new(
-                pool.clone(),
-                server_storage,
-                media_storage,
-            )),
-            play_sessions: Arc::new(SessionStorage::new()),
-            config: Arc::new(tokio::sync::RwLock::new(config)),
-        };
-        let processors = ProxyProcessors::new(context.clone());
-        let state = AppState::new(
-            reqwest::Client::new(),
-            reqwest::Client::new(),
-            context,
-            processors,
-            QuickConnectStorage::new(),
+        let authorization = UserAuthorizationService::with_mapping_key(
+            pool.clone(),
+            mapping_key,
+            (&config.password).into(),
         );
+        let authenticator =
+            MappingAuthenticator::new(&authorization, reqwest::Client::new(), config.password);
         let server = Server::from_row(
             sqlx::query(
                 "INSERT INTO servers (name, url, priority) VALUES ('Backend', ?, 100) RETURNING *",
@@ -521,13 +497,11 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let local = state
-            .user_authorization
+        let local = authorization
             .create_user("local", &"password".into())
             .await
             .unwrap();
-        state
-            .user_authorization
+        authorization
             .add_quick_connect_mapping(
                 &local.id,
                 &server,
@@ -538,8 +512,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let mapping = state
-            .user_authorization
+        let mapping = authorization
             .get_server_mapping(&local.id, &server)
             .await
             .unwrap()
@@ -554,9 +527,7 @@ mod tests {
             })))
             .mount(&upstream)
             .await;
-        let (token, remote) = state
-            .mapping_authenticator()
-            .await
+        let (token, remote) = authenticator
             .validated_token(&local, &server, &mapping)
             .await
             .unwrap();
@@ -568,7 +539,6 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
             .mount(&upstream)
             .await;
-        let authenticator = state.mapping_authenticator().await;
         let first = authenticator
             .authenticate(&local, &server, &mapping)
             .await
@@ -609,16 +579,13 @@ mod tests {
             })))
             .mount(&upstream)
             .await;
-        assert!(state
-            .mapping_authenticator()
-            .await
+        assert!(authenticator
             .validated_token(&local, &server, &mapping)
             .await
             .is_err());
 
         upstream.reset().await;
-        state
-            .user_authorization
+        authorization
             .add_server_mapping(
                 &local.id,
                 &server,
@@ -628,8 +595,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let mapping = state
-            .user_authorization
+        let mapping = authorization
             .get_server_mapping(&local.id, &server)
             .await
             .unwrap()

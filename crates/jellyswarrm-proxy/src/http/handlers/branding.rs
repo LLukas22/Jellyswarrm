@@ -6,7 +6,6 @@ use jellyfin_api::JellyfinClient;
 use crate::{
     models::BrandingConfig,
     servers::storage::{Server, ServerStorageService},
-    AppState,
 };
 
 async fn fetch_custom_css(server_storage: &ServerStorageService, servers: &[Server]) -> String {
@@ -33,10 +32,9 @@ async fn fetch_custom_css(server_storage: &ServerStorageService, servers: &[Serv
 }
 
 pub(crate) async fn handle_branding(
-    State(state): State<AppState>,
+    State(state): State<std::sync::Arc<ServerStorageService>>,
 ) -> Result<Json<BrandingConfig>, StatusCode> {
     let servers = state
-        .server_storage
         .list_servers()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -54,7 +52,7 @@ pub(crate) async fn handle_branding(
             .collect();
         message.push_str(&server_links.join(", "));
 
-        fetch_custom_css(state.server_storage.as_ref(), &servers).await
+        fetch_custom_css(state.as_ref(), &servers).await
     } else {
         message.push_str("No servers configured.");
         String::new()

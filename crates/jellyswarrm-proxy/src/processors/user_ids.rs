@@ -1,8 +1,8 @@
 //! Narrow user-ID resolution shared by request-body and URL translation.
-use crate::auth::user_id::UserId;
+use crate::domain::user_id::UserId;
 use crate::{
     auth::{service::AuthorizationSession, UserAuthorizationService},
-    servers::id::ServerId,
+    domain::server_id::ServerId,
 };
 use std::sync::Arc;
 

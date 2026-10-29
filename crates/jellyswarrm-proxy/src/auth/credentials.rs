@@ -6,7 +6,7 @@ use argon2::{
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
-use crate::auth::encryption::{HashedPassword, Password};
+use crate::domain::security::{HashedPassword, Password};
 
 // Bound both CPU and memory use (Argon2id uses ~19 MiB per operation).
 // The permit stays in the blocking task even if its request is cancelled.

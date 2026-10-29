@@ -9,27 +9,23 @@ use axum::{
 use serde::Deserialize;
 use tracing::error;
 
-use crate::{auth::encryption::Password, ui::auth::AuthenticatedUser, AppState};
+use crate::{
+    domain::security::Password, http::state::ManagementState, ui::auth::AuthenticatedUser,
+};
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
-        auth::encryption::{HashedPassword, MappingEncryptionKey},
         auth::service::{CredentialFormat, UserAuthorizationService},
         config::AppConfig,
-        http::handlers::quick_connect::QuickConnectStorage,
-        libraries::service::VirtualLibraryService,
-        media::storage::MediaStorageService,
+        domain::security::{HashedPassword, MappingEncryptionKey},
         persistence::MIGRATOR,
-        playback::sessions::SessionStorage,
-        processors::ProxyProcessors,
-        servers::storage::{Server, ServerStorageService},
+        servers::storage::Server,
+        test_support::{adapters::AdapterFixture, MediaFixture},
         ui::auth::{User, UserRole},
-        DataContext,
     };
     use sqlx::SqlitePool;
-    use std::sync::Arc;
     use wiremock::{
         matchers::{body_json, method, path},
         Mock, MockServer, ResponseTemplate,
@@ -73,29 +69,10 @@ mod tests {
             MappingEncryptionKey::from_session_key(&config.session_key).unwrap(),
             (&config.password).into(),
         );
-        let server_storage = ServerStorageService::new(pool.clone());
-        let media_storage = MediaStorageService::new(pool.clone());
-        let context = DataContext {
-            paths: crate::config::Paths::temporary(),
-            user_authorization: Arc::new(service),
-            server_storage: Arc::new(server_storage.clone()),
-            media_storage: Arc::new(media_storage.clone()),
-            virtual_library_service: Arc::new(VirtualLibraryService::new(
-                pool,
-                server_storage,
-                media_storage,
-            )),
-            play_sessions: Arc::new(SessionStorage::new()),
-            config: Arc::new(tokio::sync::RwLock::new(config)),
-        };
-        let processors = ProxyProcessors::new(context.clone());
-        let state = AppState::new(
-            reqwest::Client::new(),
-            reqwest::Client::new(),
-            context,
-            processors,
-            QuickConnectStorage::new(),
-        );
+        let state =
+            AdapterFixture::from_media(MediaFixture::with_authorization(pool, config, service))
+                .await
+                .management;
         Mock::given(method("POST"))
             .and(path("/Users/AuthenticateByName"))
             .and(body_json(
@@ -229,12 +206,12 @@ pub(crate) struct ChangePasswordForm {
 }
 
 pub(crate) async fn get_user_profile(
-    State(state): State<AppState>,
+    State(state): State<ManagementState>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> impl IntoResponse {
     let template = UserProfileTemplate {
         username: user.username,
-        ui_route: state.get_ui_route().await,
+        ui_route: state.paths.ui_route(),
     };
 
     match template.render() {
@@ -247,7 +224,7 @@ pub(crate) async fn get_user_profile(
 }
 
 pub(crate) async fn post_user_password(
-    State(state): State<AppState>,
+    State(state): State<ManagementState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Form(form): Form<ChangePasswordForm>,
 ) -> impl IntoResponse {
@@ -278,8 +255,7 @@ pub(crate) async fn post_user_password(
                 )).into_response();
             }
             let admin_password = {
-                let config = state.config.read().await;
-                config.password.clone()
+                state.credentials.password()
             };
 
             match state
@@ -293,7 +269,7 @@ pub(crate) async fn post_user_password(
                 .await
             {
                 Ok(true) => {
-                    let logout_url = format!("/{}/logout", state.get_ui_route().await);
+                    let logout_url = format!("/{}/logout", state.paths.ui_route());
                     (
                         StatusCode::OK,
                         Html(format!(r#"

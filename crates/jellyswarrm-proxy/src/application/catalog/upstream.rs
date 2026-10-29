@@ -9,14 +9,14 @@ use tracing::{debug, error, trace, warn};
 
 use super::services::CatalogService;
 use crate::{
-    auth::identity::JellyfinAuthorization,
+    application::upstream::response_json_to_payload_typed,
     auth::service::AuthorizationSession,
+    domain::server_id::ServerId,
     libraries::service::DiscoveredLibrary,
     models::{ItemsResponseVariants, ItemsResponseWithCount},
     processors::response_processor::ResponseProcessingProfile,
-    servers::id::ServerId,
+    protocol::identity::JellyfinAuthorization,
     servers::storage::Server,
-    upstream::jellyfin::json::response_json_to_payload_typed,
 };
 
 use super::{
@@ -29,7 +29,7 @@ use super::{
     },
     scan::{CatalogReport, FetchOutcome, PartialReason, ScanProgress, SourceOutcome},
 };
-use crate::upstream::url::replace_path_id;
+use crate::protocol::url::replace_path_id;
 
 pub(crate) struct FetchedCatalog<T = ServerItems> {
     pub(crate) server_items: Vec<FetchedServerItems<T>>,
@@ -491,7 +491,7 @@ async fn fetch_items_from_server(
     server: Server,
     pagination: Pagination,
 ) -> Result<ServerItems, ApplicationError> {
-    let proxy_api_key = JellyfinAuthorization::from_request(&request)
+    let proxy_api_key = JellyfinAuthorization::from_headers_url(request.headers(), request.url())
         .and_then(|auth| auth.token_ref().map(str::to_string));
     let RawServerItems {
         mut response,
@@ -523,7 +523,7 @@ async fn fetch_paged_items_from_server(
     session: AuthorizationSession,
     server: Server,
 ) -> Result<FetchedServerItems, ApplicationError> {
-    let proxy_api_key = JellyfinAuthorization::from_request(&request)
+    let proxy_api_key = JellyfinAuthorization::from_headers_url(request.headers(), request.url())
         .and_then(|auth| auth.token_ref().map(str::to_string));
     let PagedItems {
         mut response,
@@ -752,7 +752,7 @@ async fn prepare_backend_request(
             .at(crate::application::error::FailureStage::CatalogEncoding)
     })?;
     let prefix = state.get_url_prefix().await;
-    crate::upstream::jellyfin::request::UpstreamRequestBuilder::new(
+    crate::application::request::UpstreamRequestBuilder::new(
         &state.processors.url_processor,
         prefix.as_deref(),
     )
@@ -863,27 +863,22 @@ async fn process_items_response_json(
 mod tests {
     use super::*;
     use crate::models::MediaItem;
-    use crate::AppState;
+    use crate::test_support::MediaFixture;
     use serde_json::json;
 
     async fn collision_fixture() -> (
-        AppState,
+        MediaFixture,
         CatalogFetchTarget,
         crate::media::storage::MediaMapping,
         wiremock::MockServer,
     ) {
         use crate::{
-            auth::service::{Device, UserAuthorizationService},
             config::{AppConfig, MediaStreamingMode},
-            libraries::service::VirtualLibraryService,
             media::storage::MediaStorageService,
             persistence::MIGRATOR,
-            playback::sessions::SessionStorage,
-            processors::ProxyProcessors,
+            protocol::device::Device,
             servers::storage::ServerStorageService,
-            DataContext,
         };
-        use std::sync::Arc;
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
         MIGRATOR.run(&pool).await.unwrap();
         let upstream = wiremock::MockServer::start().await;
@@ -915,22 +910,7 @@ mod tests {
             .get_or_create_media_mapping(&season_decoy.virtual_media_id, &server)
             .await
             .unwrap();
-        let data = DataContext {
-            paths: crate::config::Paths::temporary(),
-            user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
-            server_storage: Arc::new(servers.clone()),
-            media_storage: Arc::new(media.clone()),
-            virtual_library_service: Arc::new(VirtualLibraryService::new(pool, servers, media)),
-            play_sessions: Arc::new(SessionStorage::new()),
-            config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
-        };
-        let state = AppState::new(
-            reqwest::Client::new(),
-            reqwest::Client::new(),
-            data.clone(),
-            ProxyProcessors::new(data),
-            Default::default(),
-        );
+        let state = MediaFixture::new(pool, AppConfig::default());
         let session = AuthorizationSession {
             id: 1,
             user_id: "viewer".into(),

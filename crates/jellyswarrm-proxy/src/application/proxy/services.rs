@@ -53,5 +53,6 @@ impl ProxyService<'_> {
         self.processors
             .process_response_json_typed(payload, &context)
             .await
+            .map_err(Into::into)
     }
 }

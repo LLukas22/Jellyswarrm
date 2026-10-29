@@ -5,8 +5,8 @@ use hyper::StatusCode;
 use crate::{
     application::{details, playback::negotiation as playback},
     http::extractors::{OperationInput, PlaybackInput},
+    http::state::MediaState,
     models::PlaybackResponse,
-    AppState,
 };
 
 #[cfg(test)]
@@ -14,7 +14,7 @@ use crate::{
 mod tests;
 
 pub(crate) async fn get_item(
-    State(state): State<AppState>,
+    State(state): State<MediaState>,
     OperationInput(preprocessed): OperationInput,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     details::get_item_detail(&state.catalog_service(), preprocessed, true)
@@ -24,7 +24,7 @@ pub(crate) async fn get_item(
 }
 
 pub(crate) async fn get_items(
-    State(state): State<AppState>,
+    State(state): State<MediaState>,
     OperationInput(preprocessed): OperationInput,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     details::get_item_detail(&state.catalog_service(), preprocessed, false)
@@ -34,7 +34,7 @@ pub(crate) async fn get_items(
 }
 
 pub(crate) async fn get_items_list(
-    State(state): State<AppState>,
+    State(state): State<MediaState>,
     OperationInput(preprocessed): OperationInput,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     details::get_item_detail(&state.catalog_service(), preprocessed, false)
@@ -45,7 +45,7 @@ pub(crate) async fn get_items_list(
 
 #[axum::debug_handler]
 pub(crate) async fn post_playback_info(
-    State(state): State<AppState>,
+    State(state): State<MediaState>,
     PlaybackInput(input): PlaybackInput,
 ) -> Result<Json<PlaybackResponse>, StatusCode> {
     playback::post_playback_info_typed(&state.playback_service(), input)

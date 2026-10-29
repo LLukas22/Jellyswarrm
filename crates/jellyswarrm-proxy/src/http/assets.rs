@@ -1,5 +1,7 @@
 //! Serve embedded web assets and the root index, preserving exact `/web` lookup semantics.
-use crate::AppState;
+use crate::servers::ServerStorageService;
+use std::sync::Arc;
+pub(crate) mod version;
 use axum::{
     body::Body,
     extract::{Request, State},
@@ -14,10 +16,10 @@ use tracing::{debug, error};
 pub(crate) struct Asset;
 
 pub(super) async fn index_handler(
-    State(state): State<AppState>,
+    State(state): State<Arc<ServerStorageService>>,
     _req: Request,
 ) -> Result<Response<Body>, StatusCode> {
-    let servers = state.server_storage.list_servers().await.map_err(|e| {
+    let servers = state.list_servers().await.map_err(|e| {
         error!("Failed to list servers: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;

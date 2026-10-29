@@ -19,11 +19,11 @@ pub(crate) struct AuthenticationService {
     pub(crate) settings: SettingsView,
     pub(crate) reqwest_client: reqwest::Client,
     pub(crate) client_sessions: Arc<ClientSessionService>,
-    pub(crate) admin_password: crate::auth::encryption::Password,
+    pub(crate) admin_password: crate::domain::security::Password,
 }
 
 impl AuthenticationService {
-    pub(crate) async fn mapping_authenticator(&self) -> MappingAuthenticator<'_> {
+    pub(crate) fn mapping_authenticator(&self) -> MappingAuthenticator<'_> {
         MappingAuthenticator::new(
             &self.user_authorization,
             self.reqwest_client.clone(),

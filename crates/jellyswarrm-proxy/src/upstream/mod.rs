@@ -3,4 +3,3 @@
 pub(crate) mod jellyfin;
 
 pub(crate) mod headers;
-pub(crate) mod url;

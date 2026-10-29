@@ -1,5 +1,4 @@
 //! Shared bounded WebSocket delivery for client sessions and SyncPlay.
-use axum::http::StatusCode;
 use serde::Serialize;
 use std::{
     collections::HashMap,
@@ -10,11 +9,35 @@ use uuid::Uuid;
 
 pub(crate) const OUTBOUND_CAPACITY: usize = 64;
 
+#[derive(thiserror::Error)]
+pub(crate) enum DeliveryError {
+    #[error("session message encoding failed")]
+    Encoding(#[source] serde_json::Error),
+    #[error("session connection is unavailable")]
+    Disconnected,
+    #[error("session delivery queue is full")]
+    Backpressure,
+}
+
+impl std::fmt::Debug for DeliveryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct ConnectionHub(Arc<Mutex<HashMap<String, Connection>>>);
 struct Connection {
     generation: Uuid,
     sender: mpsc::Sender<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct Envelope<'a> {
+    data: &'a serde_json::Value,
+    message_id: String,
+    message_type: &'a str,
 }
 
 impl ConnectionHub {
@@ -65,19 +88,72 @@ impl ConnectionHub {
         id: &str,
         message_type: &str,
         data: &T,
-    ) -> Result<(), StatusCode> {
-        let text = serde_json::to_string(&serde_json::json!({
-            "MessageType": message_type, "MessageId": Uuid::new_v4().simple().to_string(), "Data": data
-        })).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    ) -> Result<(), DeliveryError> {
+        // Keep the existing Value normalization (including object-key ordering),
+        // but propagate serialization failures instead of panicking inside json!.
+        let data = serde_json::to_value(data).map_err(DeliveryError::Encoding)?;
+        let text = serde_json::to_string(&Envelope {
+            data: &data,
+            message_id: Uuid::new_v4().simple().to_string(),
+            message_type,
+        })
+        .map_err(DeliveryError::Encoding)?;
         let mut connections = self.0.lock().unwrap();
-        let connection = connections.get(id).ok_or(StatusCode::CONFLICT)?;
+        let connection = connections.get(id).ok_or(DeliveryError::Disconnected)?;
         match connection.sender.try_send(text) {
             Ok(()) => Ok(()),
-            Err(mpsc::error::TrySendError::Full(_)) => Err(StatusCode::SERVICE_UNAVAILABLE),
+            Err(mpsc::error::TrySendError::Full(_)) => Err(DeliveryError::Backpressure),
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 connections.remove(id);
-                Err(StatusCode::CONFLICT)
+                Err(DeliveryError::Disconnected)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn encoding_failure_retains_its_cause_without_rendering_private_data() {
+        struct Unserializable;
+        impl Serialize for Unserializable {
+            fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("private message data"))
+            }
+        }
+        let error = ConnectionHub::default()
+            .send("session", "Play", &Unserializable)
+            .unwrap_err();
+        assert!(matches!(error, DeliveryError::Encoding(_)));
+        assert!(std::error::Error::source(&error)
+            .unwrap()
+            .is::<serde_json::Error>());
+        assert!(!format!("{error:?}").contains("private message data"));
+    }
+
+    #[tokio::test]
+    async fn bounded_transport_replacement_and_closed_channels() {
+        let hub = ConnectionHub::default();
+        let (tx, mut rx) = mpsc::channel(1);
+        let old = hub.register("session".into(), tx);
+        hub.send("session", "Play", &json!({})).unwrap();
+        assert!(matches!(
+            hub.send("session", "Play", &json!({})),
+            Err(DeliveryError::Backpressure)
+        ));
+        rx.recv().await.unwrap();
+        let (tx, rx2) = mpsc::channel(1);
+        let new = hub.register("session".into(), tx);
+        assert!(!hub.unregister("session", old));
+        assert!(hub.is_current("session", new));
+        drop(rx2);
+        assert!(matches!(
+            hub.send("session", "Play", &json!({})),
+            Err(DeliveryError::Disconnected)
+        ));
+        assert!(!hub.is_connected("session"));
     }
 }

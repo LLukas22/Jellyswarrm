@@ -1,5 +1,5 @@
 //! Backend approvals owned by one server instance. Removal atomically claims redemption.
-use crate::{auth::user_id::UserId, servers::id::ServerId};
+use crate::{domain::server_id::ServerId, domain::user_id::UserId};
 use moka::future::Cache;
 use std::time::{Duration, Instant};
 

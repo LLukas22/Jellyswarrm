@@ -1,20 +1,17 @@
 //! HTTP item-handler regressions using the owning handler module and shared fixtures.
-use std::{collections::BTreeSet, sync::Arc};
+use crate::test_support::MediaFixture;
+use std::collections::BTreeSet;
 
 use super::*;
 use crate::{
     application::{context::RequestContext, input::OperationRequest},
-    auth::service::{AuthorizationSession, Device, UserAuthorizationService},
+    auth::service::AuthorizationSession,
     config::{AppConfig, MediaStreamingMode},
-    http::handlers::quick_connect::QuickConnectStorage,
-    libraries::service::{VirtualLibraryAccessScope, VirtualLibraryService},
+    libraries::service::VirtualLibraryAccessScope,
     media::identity::{MediaAlias, MediaKind, MediaObservation, MediaProvider},
-    media::storage::{MediaCatalogSnapshot, MediaStorageService},
+    media::storage::MediaCatalogSnapshot,
     persistence::MIGRATOR,
-    playback::sessions::SessionStorage,
-    processors::ProxyProcessors,
-    servers::storage::ServerStorageService,
-    DataContext,
+    protocol::device::Device,
 };
 use serde_json::json;
 use wiremock::{
@@ -39,30 +36,12 @@ async fn check_selected_source_detail(catalog_scopes: &[&str]) {
         .await
         .unwrap();
     MIGRATOR.run(&pool).await.unwrap();
-    let server_storage = ServerStorageService::new(pool.clone());
-    let media_storage = MediaStorageService::new(pool.clone());
-    let context = DataContext {
-        paths: crate::config::Paths::temporary(),
-        user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
-        server_storage: Arc::new(server_storage.clone()),
-        media_storage: Arc::new(media_storage.clone()),
-        virtual_library_service: Arc::new(VirtualLibraryService::new(
-            pool,
-            server_storage,
-            media_storage,
-        )),
-        play_sessions: Arc::new(SessionStorage::new()),
-        config: Arc::new(tokio::sync::RwLock::new(AppConfig {
+    let state = MediaFixture::new(
+        pool,
+        AppConfig {
             include_server_name_in_media: true,
             ..AppConfig::default()
-        })),
-    };
-    let state = AppState::new(
-        reqwest::Client::new(),
-        reqwest::Client::new(),
-        context.clone(),
-        ProxyProcessors::new(context),
-        QuickConnectStorage::new(),
+        },
     );
     let mut upstreams = Vec::new();
     let mut sessions = Vec::new();
@@ -214,7 +193,11 @@ async fn check_selected_source_detail(catalog_scopes: &[&str]) {
             Some(scope.clone()),
         );
         let Json(response) = get_item(
-            State(state.clone()),
+            State(
+                crate::test_support::adapters::AdapterFixture::from_media(state.clone())
+                    .await
+                    .media_state,
+            ),
             OperationInput(OperationRequest {
                 original_request,
                 context,

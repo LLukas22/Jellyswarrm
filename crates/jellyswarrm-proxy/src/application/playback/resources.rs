@@ -10,20 +10,20 @@ use hyper::StatusCode;
 use tracing::info;
 
 #[cfg(test)]
-use crate::AppState;
+use crate::test_support::MediaFixture;
 use crate::{
+    application::delivery::delivery_error,
+    application::request::UpstreamRequestBuilder,
     application::{
         context::{AuthorizedTarget, RequestContext},
         input::OperationRequest,
     },
-    auth::identity::JellyfinAuthorization,
     config::MediaStreamingMode,
     playback::sessions::PlaybackSession,
+    processors::hls::HlsUrlTranslation,
+    protocol::identity::JellyfinAuthorization,
     servers::storage::Server,
-    upstream::jellyfin::{
-        delivery::{self, DeliveryResponse},
-        request::UpstreamRequestBuilder,
-    },
+    upstream::jellyfin::delivery::{self, DeliveryResponse},
 };
 
 fn extract_stream_item_id(path: &str) -> Option<&str> {
@@ -111,7 +111,7 @@ async fn delivery_target(
     tracing::debug!(reason = ?plan.reason, "Playback delivery planned");
     if let Some(member) = plan.target.member {
         for tag in ["Videos", "Audio"] {
-            if let Some(url) = crate::upstream::url::replace_path_id(
+            if let Some(url) = crate::protocol::url::replace_path_id(
                 operation.original_request.url(),
                 tag,
                 &member.virtual_media_id,
@@ -142,8 +142,9 @@ async fn forward_media_request(
                 server.name,
                 url.path()
             );
-            let token = JellyfinAuthorization::from_request(&request).and_then(|auth| auth.token());
-            delivery::redirect(&request, token.as_deref())
+            let token = JellyfinAuthorization::from_headers_url(request.headers(), request.url())
+                .and_then(|auth| auth.token());
+            delivery::redirect(&request, token.as_deref()).map_err(delivery_error)
         }
         MediaStreamingMode::Proxy => {
             info!(
@@ -153,17 +154,19 @@ async fn forward_media_request(
                 url.path()
             );
             let timeout = state.config.read().await.timeout;
+            let translation = HlsUrlTranslation::new(
+                state.processors.url_processor,
+                server,
+                proxy_api_key,
+                viewer,
+            );
             let context = delivery::DeliveryContext::new(
                 state.streaming_reqwest_client,
-                crate::upstream::jellyfin::hls::HlsContext::new(
-                    state.processors.url_processor,
-                    server,
-                    proxy_api_key,
-                    viewer,
-                    timeout,
-                ),
+                crate::upstream::jellyfin::hls::HlsContext::new(&translation, timeout),
             );
-            delivery::proxy(&context, request).await
+            delivery::proxy(&context, request)
+                .await
+                .map_err(delivery_error)
         }
     }
 }
@@ -326,29 +329,24 @@ pub(crate) async fn get_stream_typed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::servers::id::ServerId;
+    use crate::domain::server_id::ServerId;
 
     async fn direct_fixture(
         mode: MediaStreamingMode,
     ) -> (
-        AppState,
+        MediaFixture,
         Server,
         RequestContext,
         String,
         wiremock::MockServer,
     ) {
         use crate::{
-            auth::service::{LocalCredential, User, UserAuthorizationService},
+            auth::service::{LocalCredential, User},
             config::AppConfig,
-            libraries::service::VirtualLibraryService,
             media::storage::MediaStorageService,
             persistence::MIGRATOR,
-            playback::sessions::SessionStorage,
-            processors::ProxyProcessors,
             servers::storage::ServerStorageService,
-            DataContext,
         };
-        use std::sync::Arc;
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
         MIGRATOR.run(&pool).await.unwrap();
         let upstream = wiremock::MockServer::start().await;
@@ -372,22 +370,7 @@ mod tests {
             .get_or_create_media_mapping("upstream-item", &server)
             .await
             .unwrap();
-        let data = DataContext {
-            paths: crate::config::Paths::temporary(),
-            user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
-            server_storage: Arc::new(servers.clone()),
-            media_storage: Arc::new(media.clone()),
-            virtual_library_service: Arc::new(VirtualLibraryService::new(pool, servers, media)),
-            play_sessions: Arc::new(SessionStorage::new()),
-            config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
-        };
-        let state = AppState::new(
-            reqwest::Client::new(),
-            reqwest::Client::new(),
-            data.clone(),
-            ProxyProcessors::new(data),
-            Default::default(),
-        );
+        let state = MediaFixture::new(pool, AppConfig::default());
         let original = reqwest::Request::new(
             reqwest::Method::GET,
             "http://proxy.example/".parse().unwrap(),
@@ -412,15 +395,12 @@ mod tests {
     #[tokio::test]
     async fn delivery_transport_retains_cause_without_authenticated_url() {
         let (state, server, _, _, _) = direct_fixture(MediaStreamingMode::Proxy).await;
+        let translation =
+            HlsUrlTranslation::new(&state.processors.url_processor, &server, None, None);
+        let client = reqwest::Client::new();
         let context = delivery::DeliveryContext::new(
-            &state.streaming_reqwest_client,
-            crate::upstream::jellyfin::hls::HlsContext::new(
-                &state.processors.url_processor,
-                &server,
-                None,
-                None,
-                5,
-            ),
+            &client,
+            crate::upstream::jellyfin::hls::HlsContext::new(&translation, 5),
         );
         let request = reqwest::Request::new(
             reqwest::Method::GET,
@@ -430,7 +410,7 @@ mod tests {
         );
         let error = match delivery::proxy(&context, request).await {
             Ok(_) => panic!("unsupported scheme must fail transport"),
-            Err(error) => error,
+            Err(error) => delivery_error(error),
         };
         use std::error::Error;
 

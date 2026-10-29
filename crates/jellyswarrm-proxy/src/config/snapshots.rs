@@ -1,7 +1,22 @@
 //! Startup resource inputs versus the explicit set of dynamically publishable
 //! values. AppConfig remains the persisted/backwards-compatible file envelope.
 use super::{AppConfig, DebugUser, MediaStreamingMode, PreconfiguredServer, UrlSegment};
-use crate::auth::encryption::Password;
+use crate::domain::security::Password;
+
+/// Immutable, scoped administrator credentials, without configuration mutation.
+#[derive(Clone)]
+pub(crate) struct AdminCredentials {
+    username: String,
+    password: Password,
+}
+impl AdminCredentials {
+    pub(crate) fn username(&self) -> &str {
+        &self.username
+    }
+    pub(crate) fn password(&self) -> Password {
+        self.password.clone()
+    }
+}
 
 // Deliberately no Debug: session keys must never appear in diagnostics.
 #[derive(Clone, PartialEq, Eq)]
@@ -64,6 +79,12 @@ impl SettingsView {
 }
 
 impl AppConfig {
+    pub(crate) fn admin_credentials(&self) -> AdminCredentials {
+        AdminCredentials {
+            username: self.username.clone(),
+            password: self.password.clone(),
+        }
+    }
     pub(crate) fn startup_config(&self) -> StartupConfig {
         StartupConfig {
             host: self.host.clone(),
@@ -108,6 +129,24 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn scoped_credentials_are_immutable_and_settings_remain_secret_free() {
+        let config = std::sync::Arc::new(tokio::sync::RwLock::new(AppConfig::default()));
+        let credentials = config.read().await.admin_credentials();
+        let original_password = credentials.password();
+        let original_username = credentials.username().to_owned();
+        let settings = SettingsView::new(config.clone());
+        {
+            let mut config = config.write().await;
+            config.password = "different test password".into();
+            config.username = "different admin".into();
+            config.server_name = "published name".into();
+        }
+        assert_eq!(credentials.password(), original_password);
+        assert_eq!(credentials.username(), original_username);
+        assert_eq!(settings.read().await.server_name, "published name");
+    }
 
     #[tokio::test]
     async fn request_view_owns_a_coherent_snapshot_without_holding_the_config_lock() {

@@ -6,15 +6,16 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     application::input::OperationRequest,
-    auth::encryption::Password,
+    application::request::UpstreamRequestBuilder,
+    application::upstream::execute_json_request_typed as execute_json_request,
     auth::service::LocalCredential,
-    models::{AuthenticateRequest, AuthenticateResponse, Authorization, SyncPlayUserAccessType},
-    upstream::jellyfin::{
-        json::execute_json_request_typed as execute_json_request, request::UpstreamRequestBuilder,
-    },
+    domain::security::Password,
+    models::{AuthenticateRequest, AuthenticateResponse, SyncPlayUserAccessType},
+    protocol::authorization::Authorization,
 };
 
 use anyhow::Result;
+pub(crate) mod identity;
 pub(crate) mod services;
 use services::{AccountService, AuthenticationService};
 
@@ -156,7 +157,7 @@ pub(crate) async fn server_info(
     // enabled this response, not X-Emby-Authorization after remapping.
     let is_seerr = matches!(
         input.context.authorization(),
-        Some(crate::auth::identity::JellyfinAuthorization::Authorization(authorization))
+        Some(crate::protocol::identity::JellyfinAuthorization::Authorization(authorization))
             if is_seerr_client(authorization)
     );
     if !is_seerr {
@@ -498,7 +499,7 @@ async fn decorate_auth_response(
     auth_response.user.policy.sync_play_access = SyncPlayUserAccessType::CreateAndJoinGroups;
     auth_response.access_token = user.virtual_key.clone();
     auth_response.user.id = user.id.to_string();
-    crate::sessions::decorate_authentication(
+    crate::application::sessions::decorate_authentication(
         &state.client_sessions,
         &state.settings.read().await.server_id,
         user,
@@ -525,9 +526,9 @@ mod tests {
         reported_server_version,
     };
     use crate::{
-        auth::encryption::{HashedPassword, Password},
         auth::service::LocalCredential,
-        models::Authorization,
+        domain::security::{HashedPassword, Password},
+        protocol::authorization::Authorization,
     };
 
     fn authorization(client: &str, device: &str) -> Authorization {
@@ -644,7 +645,7 @@ async fn authenticate_on_server(
         device_id: authorization.device_id,
         version: authorization.version,
     };
-    let authenticator = state.mapping_authenticator().await;
+    let authenticator = state.mapping_authenticator();
     let login = if let Some(mapping) = &server_mapping {
         let user = state
             .user_authorization
@@ -730,5 +731,5 @@ struct SuccessfulServerAuth {
     server: crate::servers::storage::Server,
     auth_response: AuthenticateResponse,
     final_username: String,
-    final_password: Option<crate::auth::encryption::Password>,
+    final_password: Option<crate::domain::security::Password>,
 }

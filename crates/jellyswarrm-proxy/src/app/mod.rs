@@ -1,12 +1,11 @@
-//! Process lifecycle and concrete service composition, including shared application state.
+//! Composition root: startup wiring, router assembly and process lifecycle.
 pub(crate) mod authorization;
 mod bootstrap;
+mod composition;
 #[cfg(debug_assertions)]
 mod debug_initialization;
 mod logging;
 pub(crate) mod router;
 mod runtime;
 mod shutdown;
-mod state;
 pub(crate) use bootstrap::run;
-pub(crate) use state::{AppState, DataContext};

@@ -13,3 +13,5 @@ pub(crate) use json_processor::{analyze_json, process_json};
 
 mod pipeline;
 pub(crate) use pipeline::ProxyProcessors;
+pub(crate) mod error;
+pub(crate) mod hls;

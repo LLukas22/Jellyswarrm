@@ -1,4 +1,4 @@
-//! Shared URL helpers for ID lookup/replacement and backend URL composition.
+//! Pure Jellyfin URL conventions for ID lookup/replacement and URL composition.
 use url::Url;
 use uuid::Uuid;
 

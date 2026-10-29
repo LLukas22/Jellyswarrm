@@ -11,7 +11,7 @@ use tracing::error;
 
 use crate::{
     config::service::{ConfigurationError, SettingsUpdate},
-    AppState,
+    http::state::SettingsState,
 };
 
 #[derive(Template)]
@@ -32,9 +32,9 @@ pub(crate) struct SettingsFormTemplate {
     pub(crate) ui_route: String,
 }
 
-pub(crate) async fn settings_page(State(state): State<AppState>) -> impl IntoResponse {
+pub(crate) async fn settings_page(State(state): State<SettingsState>) -> impl IntoResponse {
     let template = SettingsPageTemplate {
-        ui_route: state.get_ui_route().await,
+        ui_route: state.paths.ui_route(),
     };
     match template.render() {
         Ok(html) => Html(html).into_response(),
@@ -45,16 +45,16 @@ pub(crate) async fn settings_page(State(state): State<AppState>) -> impl IntoRes
     }
 }
 
-pub(crate) async fn settings_form(State(state): State<AppState>) -> impl IntoResponse {
-    let cfg = state.config.read().await.clone();
+pub(crate) async fn settings_form(State(state): State<SettingsState>) -> impl IntoResponse {
+    let cfg = state.settings.read().await;
     let form = SettingsFormTemplate {
-        server_id: cfg.server_id,
-        public_address: cfg.public_address,
-        server_name: cfg.server_name,
+        server_id: cfg.server_id.clone(),
+        public_address: cfg.public_address.clone(),
+        server_name: cfg.server_name.clone(),
         include_server_name_in_media: cfg.include_server_name_in_media,
         auto_create_users_on_login: cfg.auto_create_users_on_login,
         deduplicate_media: cfg.deduplicate_media,
-        ui_route: state.get_ui_route().await,
+        ui_route: state.paths.ui_route(),
     };
     match form.render() {
         Ok(html) => Html(html).into_response(),
@@ -79,11 +79,11 @@ pub(crate) struct SaveForm {
 }
 
 pub(crate) async fn save_settings(
-    State(state): State<AppState>,
+    State(state): State<SettingsState>,
     Form(form): Form<SaveForm>,
 ) -> Response {
     let save_result = state
-        .configuration_service()
+        .configuration
         .save(SettingsUpdate {
             public_address: form.public_address,
             server_name: form.server_name,
@@ -107,8 +107,8 @@ pub(crate) async fn save_settings(
     settings_form(State(state)).await.into_response()
 }
 
-pub(crate) async fn reload_config(State(state): State<AppState>) -> impl IntoResponse {
-    match state.configuration_service().reload().await {
+pub(crate) async fn reload_config(State(state): State<SettingsState>) -> impl IntoResponse {
+    match state.configuration.reload().await {
         Ok(()) => Html("<div class=\"alert\">Configuration reloaded</div>").into_response(),
         Err(ConfigurationError::SessionKeyChanged) => {
             (StatusCode::CONFLICT, Html("<div class=\"alert alert-error\">session_key cannot be changed while running</div>")).into_response()

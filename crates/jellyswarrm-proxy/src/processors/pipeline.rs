@@ -1,13 +1,14 @@
 //! Shared request/response processing with cause-preserving failures. Incoming
 //! adapters, not processors, choose client-facing messages and status codes.
+use super::error::ProcessingError;
 use super::{
     request_analyzer::RequestAnalyzer,
     request_processor::{RequestProcessingContext, RequestProcessor},
     response_processor::{ResponseProcessingContext, ResponseProcessingProfile, ResponseProcessor},
     url_processor::UrlProcessor,
 };
-use crate::upstream::jellyfin::json::set_json_body_typed;
-use crate::{application, processors, DataContext};
+use crate::outbound::json::set_json_body_typed;
+use crate::processors;
 use tracing::{debug, error};
 pub(crate) struct ProxyProcessors {
     pub(crate) request_processor: RequestProcessor,
@@ -17,23 +18,17 @@ pub(crate) struct ProxyProcessors {
 }
 
 impl ProxyProcessors {
-    pub(crate) fn new(data_context: DataContext) -> Self {
+    pub(crate) fn new(
+        request_processor: RequestProcessor,
+        request_analyzer: RequestAnalyzer,
+        response_processor: ResponseProcessor,
+        url_processor: UrlProcessor,
+    ) -> Self {
         Self {
-            request_processor: RequestProcessor::new(
-                data_context.media_storage.clone(),
-                data_context.user_authorization.clone(),
-            ),
-            request_analyzer: RequestAnalyzer::new(
-                data_context.media_storage.clone(),
-                data_context.server_storage.clone(),
-                data_context.play_sessions.clone(),
-                data_context.user_authorization.clone(),
-            ),
-            response_processor: ResponseProcessor::new(
-                data_context.media_storage.clone(),
-                data_context.user_authorization.clone(),
-            ),
-            url_processor: UrlProcessor::from(data_context),
+            request_processor,
+            request_analyzer,
+            response_processor,
+            url_processor,
         }
     }
 
@@ -42,14 +37,14 @@ impl ProxyProcessors {
         request: &mut reqwest::Request,
         context: &RequestProcessingContext,
         request_url: &url::Url,
-    ) -> Result<(), application::error::ApplicationError> {
+    ) -> Result<(), ProcessingError> {
         let Some(mut json_value) = buffered_json(request) else {
             return Ok(());
         };
 
         let response = processors::process_json(&mut json_value, &self.request_processor, context)
             .await
-            .map_err(application::input::request_body_error)?;
+            .map_err(ProcessingError::RequestBody)?;
 
         if response.was_modified {
             debug!("Modified JSON body for request to {}", request_url);
@@ -63,8 +58,7 @@ impl ProxyProcessors {
         &self,
         payload: &mut serde_json::Value,
         context: &ResponseProcessingContext,
-    ) -> Result<bool, application::error::ApplicationError> {
-        use application::error::ApplicationError;
+    ) -> Result<bool, ProcessingError> {
         let permissions_modified =
             if context.profile == ResponseProcessingProfile::PlaylistPermissions {
                 self.response_processor
@@ -72,14 +66,14 @@ impl ProxyProcessors {
                     .await
                     .map_err(|error| {
                         error!("Failed to process playlist sharing response: {error}");
-                        ApplicationError::PlaylistResponse(error)
+                        ProcessingError::Playlist(error)
                     })?
             } else {
                 false
             };
         let processed = processors::process_json(payload, &self.response_processor, context)
             .await
-            .map_err(ApplicationError::Internal)?;
+            .map_err(ProcessingError::Response)?;
 
         Ok(permissions_modified || processed.was_modified)
     }

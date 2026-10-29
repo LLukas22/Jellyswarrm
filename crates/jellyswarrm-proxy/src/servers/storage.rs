@@ -12,9 +12,9 @@ use jellyfin_api::{
     models::PublicSystemInfo,
 };
 
-use crate::auth::encryption::EncryptedPassword;
 use crate::config::MediaStreamingMode;
-use crate::servers::id::ServerId;
+use crate::domain::security::EncryptedPassword;
+use crate::domain::server_id::ServerId;
 use crate::servers::url::ServerUrl;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]

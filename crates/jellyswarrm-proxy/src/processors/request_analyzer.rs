@@ -7,13 +7,13 @@ use std::sync::Arc;
 use crate::{
     auth::service::User,
     auth::UserAuthorizationService,
-    libraries::service::compare_virtual_library_routes,
     media::MediaStorageService,
     playback::sessions::{RevisionedPlaybackSession, SessionStorage},
     processors::{
         field_matcher::{ID_FIELDS, MEDIA_ID_LIST_PARENT_FIELDS, SESSION_FIELDS, USER_FIELDS},
         json_processor::{JsonAnalyzer, JsonProcessingContext},
     },
+    servers::routing::compare_routes,
     servers::storage::Server,
     servers::ServerStorageService,
 };
@@ -59,7 +59,7 @@ impl RequestAnalyzer {
         Ok(healthy_members
             .into_iter()
             .max_by(|left, right| {
-                compare_virtual_library_routes(
+                compare_routes(
                     &left.server,
                     &left.mapping.original_media_id,
                     &right.server,
@@ -119,7 +119,7 @@ pub(crate) enum PlaybackSessionAction {
 }
 
 pub(crate) struct RequestAnalysisContext {
-    pub(crate) authenticated_user_id: Option<crate::auth::user_id::UserId>,
+    pub(crate) authenticated_user_id: Option<crate::domain::user_id::UserId>,
     pub(crate) playback_session_action: Option<PlaybackSessionAction>,
 }
 

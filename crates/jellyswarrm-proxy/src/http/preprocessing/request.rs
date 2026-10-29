@@ -2,12 +2,12 @@
 use super::*;
 pub(crate) async fn extract_request_infos(
     req: Request,
-    state: &AppState,
+    state: &MediaState,
     playback_session_action: Option<PlaybackSessionAction>,
 ) -> Result<crate::application::input::CollectedRequest> {
     let request = axum_to_reqwest(req).await?;
 
-    let auth = JellyfinAuthorization::from_request(&request);
+    let auth = JellyfinAuthorization::from_headers_url(request.headers(), request.url());
 
     if let Some(auth) = &auth {
         debug!("Extracted authorization: {:?}", auth);
@@ -15,7 +15,7 @@ pub(crate) async fn extract_request_infos(
         debug!("No authorization found in request");
     }
 
-    let device = request_device(&request, auth.as_ref());
+    let device = request_device(request.headers(), request.url(), auth.as_ref());
     let mut user = get_user_from_request(&auth, state).await?;
     if let (Some(user), Some(token)) = (user.as_ref(), auth.as_ref().and_then(|a| a.token_ref())) {
         state

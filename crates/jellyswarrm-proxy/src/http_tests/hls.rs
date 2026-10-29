@@ -98,8 +98,9 @@ async fn playlist_uri_attributes_and_reference_styles() {
             .any(|(key, value)| key == "Tag" && value == "a&b"));
         let upstream_path = f
             .state
-            .remove_prefix_from_path(url.path())
-            .await
+            .media_state
+            .paths
+            .remove_prefix(url.path())
             .replace(&f.items[0], &original);
         let body = if url.path().ends_with(".m3u8") {
             b"#EXTM3U\n#EXT-X-ENDLIST\n".to_vec()

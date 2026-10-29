@@ -17,7 +17,7 @@ use crate::{
 pub(super) async fn restrict_named_ids(
     state: &CatalogService,
     url: &mut url::Url,
-    server_id: crate::servers::id::ServerId,
+    server_id: crate::domain::server_id::ServerId,
 ) -> Result<bool, ApplicationError> {
     let guide = url
         .path()
@@ -126,7 +126,7 @@ pub(crate) async fn get_filters_typed(
                 .target(target.server.id)
                 .map_err(ApplicationError::TargetSelection)?;
             let prefix = state.get_url_prefix().await;
-            let request = crate::upstream::jellyfin::request::UpstreamRequestBuilder::new(
+            let request = crate::application::request::UpstreamRequestBuilder::new(
                 &state.processors.url_processor,
                 prefix.as_deref(),
             )

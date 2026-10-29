@@ -4,7 +4,7 @@ use super::*;
 #[tokio::test]
 async fn production_authentication_wiring_logs_in_with_encrypted_mappings_and_reuses_stored_sessions(
 ) {
-    use crate::auth::encryption::{EncryptedPassword, MappingEncryptionKey};
+    use crate::domain::security::{EncryptedPassword, MappingEncryptionKey};
     use wiremock::{
         matchers::{body_json, header_regex, method, path},
         Mock, ResponseTemplate,

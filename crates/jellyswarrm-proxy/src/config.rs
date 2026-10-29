@@ -4,6 +4,7 @@ pub(crate) mod service;
 pub(crate) use paths::Paths;
 mod snapshots;
 use serde::{Deserialize, Serialize};
+pub(crate) use snapshots::AdminCredentials;
 pub(crate) use snapshots::SettingsView;
 pub(crate) use snapshots::StartupConfig;
 
@@ -21,7 +22,7 @@ use jellyfin_api::ClientInfo;
 
 use base64::prelude::*;
 
-use crate::auth::encryption::Password;
+use crate::domain::security::Password;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) enum MediaStreamingMode {

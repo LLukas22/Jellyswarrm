@@ -1,6 +1,10 @@
 //! Handle Quick Connect initiation, polling, authorization, and temporary request storage.
-use crate::auth::user_id::UserId;
-use crate::{models::Authorization, AppState};
+use crate::domain::user_id::UserId;
+use crate::{
+    application::accounts::services::AuthenticationService,
+    auth::{quick_connect::QuickConnectStorage, UserAuthorizationService},
+    protocol::authorization::Authorization,
+};
 use axum::{
     extract::{Query, State},
     http::HeaderMap,
@@ -10,12 +14,11 @@ use hyper::StatusCode;
 use jellyswarrm_macros::multi_case_struct;
 use serde::Deserialize;
 use sha1::{Digest, Sha1};
+use std::sync::Arc;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::auth::quick_connect::QuickConnectSession;
-#[cfg(test)]
-pub(crate) use crate::auth::quick_connect::QuickConnectStorage;
 
 #[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
@@ -132,7 +135,7 @@ pub(crate) async fn handle_quick_connect_enabled() -> Result<Json<bool>, StatusC
 }
 
 pub(crate) async fn handle_quick_connect_initiate(
-    State(state): State<AppState>,
+    State(storage): State<QuickConnectStorage>,
     headers: HeaderMap,
 ) -> Result<Json<QuickConnectSession>, StatusCode> {
     let (device_id, device_name, app_name, app_version) = parse_client_info(&headers);
@@ -142,23 +145,20 @@ pub(crate) async fn handle_quick_connect_initiate(
         app_name, device_name, device_id
     );
 
-    let session = state
-        .quick_connect
-        .initiate(device_id, device_name, app_name, app_version);
+    let session = storage.initiate(device_id, device_name, app_name, app_version);
 
     Ok(Json(session))
 }
 
 pub(crate) async fn handle_quick_connect_authorize(
     Query(params): Query<AuthorizeQuery>,
-    State(state): State<AppState>,
+    State(storage): State<QuickConnectStorage>,
+    State(authorization): State<Arc<UserAuthorizationService>>,
     headers: HeaderMap,
 ) -> Result<Json<bool>, StatusCode> {
-    let user_id = resolve_authorize_user_id(&state, &headers, params.user_id).await?;
+    let user_id = resolve_authorize_user_id(&authorization, &headers, params.user_id).await?;
 
-    let success = state
-        .quick_connect
-        .approve(&params.code.as_str().into(), user_id.clone());
+    let success = storage.approve(&params.code.as_str().into(), user_id.clone());
 
     if success {
         info!(
@@ -172,7 +172,7 @@ pub(crate) async fn handle_quick_connect_authorize(
 }
 
 async fn resolve_authorize_user_id(
-    state: &AppState,
+    state: &UserAuthorizationService,
     headers: &HeaderMap,
     user_id: Option<UserId>,
 ) -> Result<UserId, StatusCode> {
@@ -182,7 +182,6 @@ async fn resolve_authorize_user_id(
     })?;
 
     let user = state
-        .user_authorization
         .get_user_by_virtual_key(&token)
         .await
         .map_err(|e| {
@@ -245,9 +244,9 @@ fn extract_virtual_token(headers: &HeaderMap) -> Option<String> {
 
 pub(crate) async fn handle_quick_connect_connect(
     Query(params): Query<ConnectQuery>,
-    State(state): State<AppState>,
+    State(storage): State<QuickConnectStorage>,
 ) -> Result<Json<QuickConnectSession>, StatusCode> {
-    if let Some(session) = state.quick_connect.poll(&params.secret.as_str().into()) {
+    if let Some(session) = storage.poll(&params.secret.as_str().into()) {
         Ok(Json(session))
     } else {
         Err(StatusCode::NOT_FOUND)
@@ -255,12 +254,12 @@ pub(crate) async fn handle_quick_connect_connect(
 }
 
 pub(crate) async fn handle_authenticate_with_quick_connect(
-    State(state): State<AppState>,
+    State(storage): State<QuickConnectStorage>,
+    State(state): State<AuthenticationService>,
     headers: HeaderMap,
     Json(request): Json<QuickConnectAuthenticateRequest>,
-) -> Result<crate::sessions::AuthenticationResponse, StatusCode> {
-    let redemption = state
-        .quick_connect
+) -> Result<crate::http::sessions::AuthenticationResponse, StatusCode> {
+    let redemption = storage
         .begin_redemption(&request.secret.as_str().into())
         .map_err(|error| match error {
             crate::auth::quick_connect::RedemptionError::NotFound => StatusCode::NOT_FOUND,
@@ -268,23 +267,21 @@ pub(crate) async fn handle_authenticate_with_quick_connect(
         })?;
     let authorization =
         effective_quick_connect_authorization(&headers, redemption.session(), redemption.user_id());
-    crate::application::quick_connect::redeem(
-        &state.authentication_service().await,
-        redemption,
-        authorization,
-    )
-    .await
-    .map(crate::sessions::authentication_response)
-    .map_err(|error| match error {
-        crate::application::quick_connect::QuickConnectError::Unauthorized => {
-            StatusCode::UNAUTHORIZED
-        }
-        crate::application::quick_connect::QuickConnectError::NoServers => StatusCode::NOT_FOUND,
-        crate::application::quick_connect::QuickConnectError::Storage(_)
-        | crate::application::quick_connect::QuickConnectError::CoordinatorStopped(_) => {
-            StatusCode::INTERNAL_SERVER_ERROR
-        }
-    })
+    crate::application::quick_connect::redeem(&state, redemption, authorization)
+        .await
+        .map(crate::http::sessions::authentication_response)
+        .map_err(|error| match error {
+            crate::application::quick_connect::QuickConnectError::Unauthorized => {
+                StatusCode::UNAUTHORIZED
+            }
+            crate::application::quick_connect::QuickConnectError::NoServers => {
+                StatusCode::NOT_FOUND
+            }
+            crate::application::quick_connect::QuickConnectError::Storage(_)
+            | crate::application::quick_connect::QuickConnectError::CoordinatorStopped(_) => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        })
 }
 
 #[cfg(test)]
@@ -307,65 +304,38 @@ mod tests {
         }
     }
     use crate::{
-        auth::service::{Device, UserAuthorizationService},
         config::{AppConfig, MediaStreamingMode},
-        media::storage::MediaStorageService,
         models::{AuthenticateResponse, SessionInfo, SyncPlayUserAccessType, User, UserPolicy},
         persistence::MIGRATOR,
-        playback::sessions::SessionStorage,
-        processors::ProxyProcessors,
-        servers::storage::ServerStorageService,
-        AppState, DataContext,
+        protocol::device::Device,
+        test_support::adapters::AdapterFixture,
     };
     use axum::{extract::Query, Json};
     use hyper::http::HeaderValue;
     use sqlx::SqlitePool;
-    use std::{collections::HashMap, sync::Arc};
+    use std::collections::HashMap;
     use wiremock::{
         matchers::{method, path},
         Mock, MockServer, ResponseTemplate,
     };
 
-    async fn create_test_app_state() -> AppState {
+    async fn adapter_fixture() -> AdapterFixture {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         MIGRATOR.run(&pool).await.unwrap();
-        let server_storage = ServerStorageService::new(pool.clone());
-        let media_storage = MediaStorageService::new(pool.clone());
-
-        let data_context = DataContext {
-            paths: crate::config::Paths::temporary(),
-            user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
-            server_storage: Arc::new(server_storage.clone()),
-            media_storage: Arc::new(media_storage.clone()),
-            virtual_library_service: Arc::new(
-                crate::libraries::service::VirtualLibraryService::new(
-                    pool,
-                    server_storage,
-                    media_storage,
-                ),
-            ),
-            play_sessions: Arc::new(SessionStorage::new()),
-            config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
-        };
-
-        let processors = ProxyProcessors::new(data_context.clone());
-
-        AppState::new(
-            reqwest::Client::new(),
-            reqwest::Client::new(),
-            data_context,
-            processors,
-            QuickConnectStorage::new(),
-        )
+        AdapterFixture::new(pool, AppConfig::default()).await
     }
 
     #[tokio::test]
     async fn authorize_cannot_use_user_id_as_a_substitute_for_caller_authentication() {
-        let state = create_test_app_state().await;
+        let state = adapter_fixture().await;
         assert_eq!(
-            resolve_authorize_user_id(&state, &HeaderMap::new(), Some("victim".into()))
-                .await
-                .unwrap_err(),
+            resolve_authorize_user_id(
+                &state.user_authorization,
+                &HeaderMap::new(),
+                Some("victim".into())
+            )
+            .await
+            .unwrap_err(),
             StatusCode::BAD_REQUEST
         );
         let user = state
@@ -376,13 +346,13 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("x-emby-token", user.virtual_key.parse().unwrap());
         assert_eq!(
-            resolve_authorize_user_id(&state, &headers, Some("victim".into()))
+            resolve_authorize_user_id(&state.user_authorization, &headers, Some("victim".into()))
                 .await
                 .unwrap_err(),
             StatusCode::FORBIDDEN
         );
         assert_eq!(
-            resolve_authorize_user_id(&state, &headers, Some(user.id.clone()))
+            resolve_authorize_user_id(&state.user_authorization, &headers, Some(user.id.clone()))
                 .await
                 .unwrap(),
             user.id
@@ -531,7 +501,7 @@ mod tests {
 
     #[tokio::test]
     async fn quick_connect_authentication_preserves_existing_web_session() {
-        let state = create_test_app_state().await;
+        let state = adapter_fixture().await;
         let upstream = MockServer::start().await;
 
         Mock::given(method("POST"))
@@ -635,7 +605,8 @@ mod tests {
                 code: quick_connect_session.code.clone(),
                 user_id: None,
             }),
-            axum::extract::State(state.clone()),
+            axum::extract::State(state.quick_connect.clone()),
+            axum::extract::State(state.user_authorization.clone()),
             browser_headers,
         )
         .await;
@@ -650,7 +621,8 @@ mod tests {
         );
 
         let auth_response = handle_authenticate_with_quick_connect(
-            axum::extract::State(state.clone()),
+            axum::extract::State(state.quick_connect.clone()),
+            axum::extract::State(state.authentication_service().await),
             tv_headers,
             Json(QuickConnectAuthenticateRequest {
                 secret: quick_connect_session.secret.clone(),

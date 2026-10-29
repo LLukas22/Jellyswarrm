@@ -3,20 +3,13 @@
 use crate::config::MediaStreamingMode;
 use crate::processors::response_processor::ResponseProcessingProfile;
 use crate::{
-    auth::{service::User, UserAuthorizationService},
+    auth::service::User,
     config::AppConfig,
-    http::{
-        handlers::quick_connect::QuickConnectStorage, proxy::proxy_handler,
-        router::item_detail_routes,
-    },
-    libraries::VirtualLibraryService,
-    media::MediaStorageService,
-    models::Authorization,
+    http::{proxy::proxy_handler, router::item_detail_routes},
     persistence::MIGRATOR,
-    playback::sessions::SessionStorage,
-    processors::ProxyProcessors,
-    servers::{Server, ServerStorageService},
-    AppState, DataContext,
+    protocol::authorization::Authorization,
+    servers::Server,
+    test_support::adapters::AdapterFixture,
 };
 use axum::{
     http::{Method, StatusCode},
@@ -24,14 +17,13 @@ use axum::{
 };
 use serde_json::{json, Value};
 use sqlx::sqlite::SqlitePoolOptions;
-use std::sync::Arc;
 use wiremock::{
     matchers::{body_json, method, path, query_param},
     Mock, MockServer, ResponseTemplate,
 };
 
 struct Fixture {
-    state: AppState,
+    state: AdapterFixture,
     pool: sqlx::SqlitePool,
     upstreams: Vec<MockServer>,
     servers: Vec<Server>,
@@ -64,28 +56,7 @@ impl Fixture {
             .await
             .unwrap();
         MIGRATOR.run(&pool).await.unwrap();
-        let servers = ServerStorageService::new(pool.clone());
-        let media = MediaStorageService::new(pool.clone());
-        let data = DataContext {
-            paths: crate::config::Paths::temporary(),
-            user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
-            server_storage: Arc::new(servers.clone()),
-            media_storage: Arc::new(media.clone()),
-            virtual_library_service: Arc::new(VirtualLibraryService::new(
-                pool.clone(),
-                servers,
-                media,
-            )),
-            play_sessions: Arc::new(SessionStorage::new()),
-            config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
-        };
-        let state = AppState::new(
-            reqwest::Client::new(),
-            reqwest::Client::new(),
-            data.clone(),
-            ProxyProcessors::new(data),
-            QuickConnectStorage::new(),
-        );
+        let state = AdapterFixture::new(pool.clone(), AppConfig::default()).await;
         let caller = state
             .user_authorization
             .create_user("caller", &"password".into())
@@ -126,7 +97,7 @@ impl Fixture {
         let app = Router::new()
             .route("/Items/{item_id}", item_detail_routes())
             .fallback(proxy_handler)
-            .with_state(state.clone());
+            .with_state(state.app_state().await);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let task = tokio::spawn(async move {
@@ -143,7 +114,7 @@ impl Fixture {
         }
     }
 
-    async fn map_user(state: &AppState, user: &User, server: &Server, upstream_id: &str) {
+    async fn map_user(state: &AdapterFixture, user: &User, server: &Server, upstream_id: &str) {
         state
             .user_authorization
             .add_server_mapping(

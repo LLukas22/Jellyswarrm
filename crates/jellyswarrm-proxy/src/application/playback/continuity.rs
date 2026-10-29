@@ -5,8 +5,8 @@ use crate::{
         context::{AuthorizedTarget, RequestContext},
         error::ApplicationError,
     },
+    domain::server_id::ServerId,
     media::storage::MediaStorageService,
-    servers::id::ServerId,
     sessions::ClientSessionService,
 };
 

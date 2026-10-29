@@ -3,9 +3,7 @@
 use super::debug_initialization;
 use super::shutdown::shutdown_signal;
 use crate::{
-    auth::quick_connect, libraries::VirtualLibraryService, media::MediaStorageService,
-    playback::sessions::SessionStorage, processors::ProxyProcessors, servers::ServerStorageService,
-    AppState, DataContext,
+    libraries::VirtualLibraryService, media::MediaStorageService, servers::ServerStorageService,
 };
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tower_sessions_sqlx_store::SqliteStore;
@@ -135,31 +133,25 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let data_context = DataContext {
-        paths: paths.clone(),
-        user_authorization: Arc::new(user_authorization.clone()),
-        server_storage: Arc::new(server_storage.clone()),
-        media_storage: Arc::new(media_storage.clone()),
-        virtual_library_service: Arc::new(virtual_library_service),
-        play_sessions: Arc::new(SessionStorage::new()),
-        config: Arc::new(tokio::sync::RwLock::new(loaded_config.clone())),
-    };
-
-    let proxy_processors = ProxyProcessors::new(data_context.clone());
-
-    let app_state = AppState::new(
-        reqwest_client,
-        streaming_reqwest_client,
-        data_context,
-        proxy_processors,
-        quick_connect::QuickConnectStorage::new(),
+    let app_state = super::composition::adapter_state(
+        super::composition::HttpClients {
+            api: reqwest_client,
+            streaming: streaming_reqwest_client,
+        },
+        loaded_config.clone(),
+        paths,
+        Arc::new(user_authorization.clone()),
+        Arc::new(server_storage.clone()),
+        Arc::new(media_storage),
+        Arc::new(virtual_library_service),
     );
 
     let session_store = SqliteStore::new(pool.clone());
     session_store.migrate().await?;
 
     let runtime = super::runtime::ApplicationRuntime::start(
-        &app_state,
+        server_storage,
+        axum::extract::FromRef::from_ref(&app_state),
         session_store.clone(),
         startup.server_background_check_interval_secs,
     );

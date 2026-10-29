@@ -9,18 +9,19 @@ use crate::application::catalog::services::CatalogService;
 use crate::{
     application::context::{RequestContext, TargetError},
     application::error::ApplicationError,
-    auth::identity::JellyfinAuthorization,
+    application::request::UpstreamRequestBuilder,
+    application::upstream::response_json_to_payload_typed,
     auth::service::AuthorizationSession,
-    libraries::service::{compare_virtual_library_routes, VirtualLibraryAccessScope},
+    libraries::service::VirtualLibraryAccessScope,
     media::storage::{
         MediaMapping, MediaVersionGroup, MediaVersionMember, MediaVersionSourceObservation,
     },
     models::{MediaItem, MediaSource},
     processors::response_processor::ResponseProcessingProfile,
+    protocol::identity::JellyfinAuthorization,
+    protocol::url::{ensure_query_list_value, replace_path_id},
+    servers::routing::compare_routes,
     servers::storage::Server,
-    upstream::jellyfin::json::response_json_to_payload_typed,
-    upstream::jellyfin::request::UpstreamRequestBuilder,
-    upstream::url::{ensure_query_list_value, replace_path_id},
 };
 
 const MEDIA_SOURCES_FIELD: &str = "MediaSources";
@@ -282,7 +283,7 @@ fn authorized_hosts(
 }
 
 fn compare_hosts(left: &VersionHost, right: &VersionHost) -> std::cmp::Ordering {
-    compare_virtual_library_routes(
+    compare_routes(
         &left.server,
         &left.member.mapping.original_media_id,
         &right.server,
@@ -295,7 +296,7 @@ fn compare_hosted_sources(
     left: &HostedMediaSources,
     right: &HostedMediaSources,
 ) -> std::cmp::Ordering {
-    compare_virtual_library_routes(
+    compare_routes(
         &left.server,
         &left.member_mapping.original_media_id,
         &right.server,
@@ -477,7 +478,7 @@ fn storage_error(error: sqlx::Error) -> ApplicationError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{config::MediaStreamingMode, servers::id::ServerId, servers::url::ServerUrl};
+    use crate::{config::MediaStreamingMode, domain::server_id::ServerId, servers::url::ServerUrl};
     use serde_json::json;
 
     fn server(server_id: i64, name: &str) -> Server {
@@ -497,7 +498,7 @@ mod tests {
             id,
             virtual_media_id: format!("virtual-{id}"),
             original_media_id: format!("original-{id}"),
-            server_id: crate::servers::id::ServerId::new(server_id),
+            server_id: crate::domain::server_id::ServerId::new(server_id),
             server_url: "http://example:8096".to_string(),
             created_at: chrono::Utc::now(),
         }
@@ -640,7 +641,7 @@ mod tests {
             &[member.id]
         ));
         session.original_item_id = Some(member.original_media_id.clone());
-        session.server_id = crate::servers::id::ServerId::new(99);
+        session.server_id = crate::domain::server_id::ServerId::new(99);
         assert!(!PreserveActiveNegotiatedSources::retain(
             &session,
             &route,

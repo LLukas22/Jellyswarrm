@@ -9,6 +9,7 @@ use serde_json::Value;
 use tracing::{debug, warn};
 
 use crate::{
+    application::request::{remap_authorization, UpstreamRequestBuilder},
     application::{
         context::AuthorizedTarget,
         error::ApplicationError,
@@ -16,13 +17,12 @@ use crate::{
         playback::{lifecycle::PendingPlaybackSessionUpdate, reports},
         response, routing,
     },
-    libraries::service::compare_virtual_library_routes,
     processors::request_analyzer::PlaybackSessionAction,
     processors::request_processor::RequestProcessingContext,
     processors::response_processor::ResponseProcessingProfile,
+    protocol::url::{decoded_path_segments, replace_path_id},
+    servers::routing::compare_routes,
     upstream::headers::is_hop_by_hop_header,
-    upstream::jellyfin::request::{remap_authorization, UpstreamRequestBuilder},
-    upstream::url::{decoded_path_segments, replace_path_id},
 };
 
 pub(crate) mod services;
@@ -34,7 +34,7 @@ async fn forwarded_success(
     state: &ProxyService<'_>,
     input: &OperationRequest,
     mutation_viewer: Option<&str>,
-    server_id: crate::servers::id::ServerId,
+    server_id: crate::domain::server_id::ServerId,
 ) {
     if let Some(viewer) = mutation_viewer {
         state.catalog_snapshots.invalidate_viewer(viewer);
@@ -389,7 +389,7 @@ pub(crate) async fn update_aggregate(
         );
     }
     members.sort_by(|left, right| {
-        compare_virtual_library_routes(
+        compare_routes(
             &right.server,
             &right.mapping.original_media_id,
             &left.server,
@@ -422,7 +422,7 @@ pub(crate) async fn update_aggregate(
     }
     let mut result = None;
     for (upstream, server) in targets {
-        let mut data: Value = crate::upstream::jellyfin::json::execute_json_request_typed(
+        let mut data: Value = crate::application::upstream::execute_json_request_typed(
             state.reqwest_client,
             upstream,
         )
@@ -457,26 +457,22 @@ pub(crate) async fn update_aggregate(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
 
     use super::*;
     use crate::{
         application::context::RequestContext,
-        auth::service::{
-            AuthorizationSession, Device, LocalCredential, User, UserAuthorizationService,
-        },
+        auth::service::{AuthorizationSession, LocalCredential, User},
         config::{AppConfig, MediaStreamingMode},
-        libraries::service::{VirtualLibraryAccessScope, VirtualLibraryService},
+        libraries::service::VirtualLibraryAccessScope,
         media::storage::MediaStorageService,
         persistence::MIGRATOR,
-        playback::sessions::SessionStorage,
         processors::request_analyzer::RequestBodyAnalysisResult,
-        processors::ProxyProcessors,
+        protocol::device::Device,
         servers::storage::ServerStorageService,
-        AppState, DataContext,
+        test_support::MediaFixture,
     };
 
-    async fn report_fixture() -> (AppState, OperationRequest, wiremock::MockServer) {
+    async fn report_fixture() -> (MediaFixture, OperationRequest, wiremock::MockServer) {
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
         MIGRATOR.run(&pool).await.unwrap();
         let upstream = wiremock::MockServer::start().await;
@@ -496,22 +492,7 @@ mod tests {
             .get_or_create_media_mapping("upstream-item", &server)
             .await
             .unwrap();
-        let data = DataContext {
-            paths: crate::config::Paths::temporary(),
-            user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
-            server_storage: Arc::new(servers.clone()),
-            media_storage: Arc::new(media.clone()),
-            virtual_library_service: Arc::new(VirtualLibraryService::new(pool, servers, media)),
-            play_sessions: Arc::new(SessionStorage::new()),
-            config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
-        };
-        let state = AppState::new(
-            reqwest::Client::new(),
-            reqwest::Client::new(),
-            data.clone(),
-            ProxyProcessors::new(data),
-            Default::default(),
-        );
+        let state = MediaFixture::new(pool, AppConfig::default());
         let mut original = reqwest::Request::new(
             reqwest::Method::POST,
             "http://proxy.example/Sessions/Playing".parse().unwrap(),

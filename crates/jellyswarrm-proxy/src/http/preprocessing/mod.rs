@@ -6,24 +6,25 @@ use axum::http;
 use http_body_util::BodyExt;
 use tracing::{debug, error};
 
-use crate::auth::service::{AuthorizationSession, Device, User};
+use crate::auth::service::{AuthorizationSession, User};
+use crate::http::state::MediaState;
 use crate::libraries::service::VirtualLibraryAccessScope;
 use crate::processors::analyze_json;
 use crate::processors::request_analyzer::{
     PlaybackSessionAction, RequestAnalysisContext, RequestBodyAnalysisResult,
 };
+#[cfg(test)]
+use crate::protocol::device::Device;
+use crate::protocol::identity::{request_device, JellyfinAuthorization};
 use crate::servers::storage::Server;
-use crate::AppState;
 
 mod identity;
+#[cfg(test)]
 mod playback;
 mod request;
 pub(crate) use identity::{get_user_from_request, resolve_request_identity_from_headers_uri};
-// Compatibility for incoming adapters and historical fixtures.
-pub(crate) use crate::auth::identity::{request_device, JellyfinAuthorization};
 #[cfg(test)]
 pub(crate) use playback::apply_to_request;
-pub(crate) use playback::playback_session_action;
 #[cfg(test)]
 use playback::resolve_playback_report_server;
 pub(crate) use request::extract_request_infos;

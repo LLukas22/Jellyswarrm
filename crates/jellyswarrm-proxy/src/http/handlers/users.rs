@@ -6,43 +6,46 @@ use axum::{
 use hyper::{HeaderMap, StatusCode};
 
 use crate::{
-    application::accounts, http::extractors::OperationInput, models::AuthenticateRequest, AppState,
+    application::accounts::{
+        self,
+        services::{AccountService, AuthenticationService},
+    },
+    http::extractors::OperationInput,
+    models::AuthenticateRequest,
 };
 
-pub(crate) async fn handle_public(
-    _state: State<AppState>,
-) -> Result<Json<Vec<crate::models::User>>, StatusCode> {
+pub(crate) async fn handle_public() -> Result<Json<Vec<crate::models::User>>, StatusCode> {
     Ok(Json(accounts::public_users()))
 }
 
 pub(crate) async fn handle_get_me(
-    State(state): State<AppState>,
+    State(state): State<AccountService>,
     OperationInput(input): OperationInput,
 ) -> Result<Json<crate::models::User>, StatusCode> {
-    accounts::get_me(&state.account_service().await, input)
+    accounts::get_me(&state, input)
         .await
         .map(Json)
         .map_err(|error| crate::http::handlers::pipeline_error::detail_status(&error))
 }
 
 pub(crate) async fn handle_get_user_by_id(
-    State(state): State<AppState>,
+    State(state): State<AccountService>,
     Path(_user_id): Path<String>,
     OperationInput(input): OperationInput,
 ) -> Result<Json<crate::models::User>, StatusCode> {
-    accounts::get_user_by_id(&state.account_service().await, input)
+    accounts::get_user_by_id(&state, input)
         .await
         .map(Json)
         .map_err(|error| crate::http::handlers::pipeline_error::detail_status(&error))
 }
 
 pub(crate) async fn handle_authenticate_by_name(
-    State(state): State<AppState>,
+    State(state): State<AuthenticationService>,
     headers: HeaderMap,
     Json(payload): Json<AuthenticateRequest>,
-) -> Result<crate::sessions::AuthenticationResponse, StatusCode> {
-    accounts::authenticate_by_name(&state.authentication_service().await, headers, payload)
+) -> Result<crate::http::sessions::AuthenticationResponse, StatusCode> {
+    accounts::authenticate_by_name(&state, headers, payload)
         .await
-        .map(crate::sessions::authentication_response)
+        .map(crate::http::sessions::authentication_response)
         .map_err(|error| crate::http::handlers::pipeline_error::detail_status(&error))
 }

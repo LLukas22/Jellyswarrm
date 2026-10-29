@@ -10,8 +10,8 @@ use serde::Deserialize;
 use tracing::{error, info};
 
 use crate::{
-    auth::encryption::Password, config::MediaStreamingMode, servers::id::ServerId,
-    servers::storage::Server, AppState,
+    config::MediaStreamingMode, domain::security::Password, domain::server_id::ServerId,
+    http::state::ManagementState, servers::storage::Server,
 };
 
 #[derive(Template)]
@@ -58,7 +58,7 @@ pub(crate) struct AddServerAdminForm {
     pub(crate) password: Password,
 }
 
-async fn render_server_list(state: &AppState) -> Result<String, String> {
+async fn render_server_list(state: &ManagementState) -> Result<String, String> {
     match state.server_storage.list_servers().await {
         Ok(servers) => {
             let mut servers_with_admin = Vec::new();
@@ -80,7 +80,7 @@ async fn render_server_list(state: &AppState) -> Result<String, String> {
 
             let template = ServerListTemplate {
                 servers: servers_with_admin,
-                ui_route: state.get_ui_route().await,
+                ui_route: state.paths.ui_route(),
             };
 
             template.render().map_err(|e| e.to_string())
@@ -90,9 +90,9 @@ async fn render_server_list(state: &AppState) -> Result<String, String> {
 }
 
 /// Main servers management page
-pub(crate) async fn servers_page(State(state): State<AppState>) -> impl IntoResponse {
+pub(crate) async fn servers_page(State(state): State<ManagementState>) -> impl IntoResponse {
     let template = ServersPageTemplate {
-        ui_route: state.get_ui_route().await,
+        ui_route: state.paths.ui_route(),
     };
 
     match template.render() {
@@ -105,7 +105,7 @@ pub(crate) async fn servers_page(State(state): State<AppState>) -> impl IntoResp
 }
 
 /// Get server list partial (for HTMX)
-pub(crate) async fn get_server_list(State(state): State<AppState>) -> impl IntoResponse {
+pub(crate) async fn get_server_list(State(state): State<ManagementState>) -> impl IntoResponse {
     match render_server_list(&state).await {
         Ok(html) => Html(html).into_response(),
         Err(e) => {
@@ -117,7 +117,7 @@ pub(crate) async fn get_server_list(State(state): State<AppState>) -> impl IntoR
 
 /// Add a new server
 pub(crate) async fn add_server(
-    State(state): State<AppState>,
+    State(state): State<ManagementState>,
     Form(form): Form<AddServerForm>,
 ) -> Response {
     // Validate the form data
@@ -213,7 +213,7 @@ pub(crate) async fn add_server(
 
 /// Update server media streaming mode
 pub(crate) async fn update_server_media_streaming_mode(
-    State(state): State<AppState>,
+    State(state): State<ManagementState>,
     Path(server_id): Path<ServerId>,
     Form(form): Form<UpdateMediaStreamingModeForm>,
 ) -> Response {
@@ -258,7 +258,7 @@ pub(crate) async fn update_server_media_streaming_mode(
 
 /// Delete a server
 pub(crate) async fn delete_server(
-    State(state): State<AppState>,
+    State(state): State<ManagementState>,
     Path(server_id): Path<ServerId>,
 ) -> Response {
     match state.server_administration().delete(server_id).await {
@@ -285,7 +285,7 @@ pub(crate) async fn delete_server(
 
 /// Update server priority
 pub(crate) async fn update_server_priority(
-    State(state): State<AppState>,
+    State(state): State<ManagementState>,
     Path(server_id): Path<ServerId>,
     Form(form): Form<UpdatePriorityForm>,
 ) -> Response {
@@ -325,13 +325,12 @@ pub(crate) async fn update_server_priority(
 
 /// Add server admin
 pub(crate) async fn add_server_admin(
-    State(state): State<AppState>,
+    State(state): State<ManagementState>,
     Path(server_id): Path<ServerId>,
     Form(form): Form<AddServerAdminForm>,
 ) -> Response {
     match state
         .server_credentials()
-        .await
         .save(server_id, &form.username, &form.password)
         .await
     {
@@ -373,10 +372,10 @@ fn server_credential_error(
 
 /// Delete server admin
 pub(crate) async fn delete_server_admin(
-    State(state): State<AppState>,
+    State(state): State<ManagementState>,
     Path(server_id): Path<ServerId>,
 ) -> Response {
-    match state.server_credentials().await.delete(server_id).await {
+    match state.server_credentials().delete(server_id).await {
         Ok(true) => {
             info!("Deleted admin for server ID: {}", server_id);
             get_server_list(State(state)).await.into_response()

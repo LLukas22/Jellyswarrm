@@ -8,11 +8,11 @@ use axum::{
 use tracing::{error, info};
 
 use crate::{
-    ui::{
-        auth::{AuthenticatedUser, UserRole},
-        JellyfinUiVersion, JELLYFIN_UI_VERSION,
+    http::{
+        assets::version::{JellyfinUiVersion, JELLYFIN_UI_VERSION},
+        state::AdapterPaths,
     },
-    AppState,
+    ui::auth::{AuthenticatedUser, UserRole},
 };
 
 #[derive(Template)]
@@ -35,14 +35,14 @@ pub(crate) struct AdminIndexTemplate {
 
 /// Root/home page
 pub(crate) async fn index(
-    State(state): State<AppState>,
+    State(state): State<AdapterPaths>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> impl IntoResponse {
     let response = if user.role == UserRole::User {
         let template = UserIndexTemplate {
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
-            ui_route: state.get_ui_route().await,
-            root: state.get_url_prefix().await,
+            ui_route: state.ui_route(),
+            root: state.url_prefix(),
             jellyfin_ui_version: JELLYFIN_UI_VERSION.clone(),
         };
 
@@ -57,8 +57,8 @@ pub(crate) async fn index(
         info!("Rendering admin dashboard for {}", user.username);
         let template = AdminIndexTemplate {
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
-            ui_route: state.get_ui_route().await,
-            root: state.get_url_prefix().await,
+            ui_route: state.ui_route(),
+            root: state.url_prefix(),
             jellyfin_ui_version: JELLYFIN_UI_VERSION.clone(),
         };
 

@@ -1,5 +1,5 @@
 //! Own virtual-library dependencies and coordinate discovery, membership, and resolution operations.
-use std::{cmp::Ordering, collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use tokio::sync::Mutex;
@@ -7,9 +7,8 @@ use tracing::debug;
 use uuid::Uuid;
 
 use crate::{
-    media::storage::MediaStorageService,
-    servers::id::ServerId,
-    servers::storage::{Server, ServerStorageService},
+    domain::server_id::ServerId, media::storage::MediaStorageService,
+    servers::storage::ServerStorageService,
 };
 
 pub(crate) fn normalize_library_id(id: &str) -> String {
@@ -17,20 +16,6 @@ pub(crate) fn normalize_library_id(id: &str) -> String {
         Ok(uuid) => uuid.simple().to_string(),
         Err(_) => id.to_string(),
     }
-}
-
-pub(crate) fn compare_virtual_library_routes(
-    left_server: &Server,
-    left_original_id: &str,
-    right_server: &Server,
-    right_original_id: &str,
-) -> Ordering {
-    left_server
-        .priority
-        .cmp(&right_server.priority)
-        .then_with(|| right_server.name.cmp(&left_server.name))
-        .then_with(|| right_server.id.as_i64().cmp(&left_server.id.as_i64()))
-        .then_with(|| left_original_id.cmp(right_original_id))
 }
 
 pub(crate) use super::models::{

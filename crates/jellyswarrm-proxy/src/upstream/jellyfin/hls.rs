@@ -3,35 +3,43 @@ use futures_util::StreamExt;
 use hyper::StatusCode;
 use std::{sync::LazyLock, time::Duration};
 
-use crate::{
-    processors::url_processor::UrlProcessor, servers::storage::Server,
-    upstream::headers::remove_hop_by_hop_headers,
-};
+use crate::{outbound::hls::PlaylistUrlTranslator, upstream::headers::remove_hop_by_hop_headers};
+
+#[derive(thiserror::Error)]
+pub(crate) enum HlsError {
+    #[error("unexpected playlist response status")]
+    Status(StatusCode),
+    #[error("invalid upstream playlist")]
+    InvalidPayload(&'static str),
+    #[error("playlist transport failed")]
+    Transport(#[source] reqwest::Error),
+    #[error("playlist decoding failed")]
+    Encoding(#[source] std::string::FromUtf8Error),
+    #[error("playlist deadline exceeded")]
+    Deadline(#[source] tokio::time::error::Elapsed),
+    #[error("playlist URL translation failed")]
+    Translation(#[source] anyhow::Error),
+}
+
+impl std::fmt::Debug for HlsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
 
 /// Already-authorized dependencies for rewriting a selected backend's playlist.
 /// The caller resolves the viewer; transport never looks up authorization or
-/// selects a playback session. URL identity mapping remains in UrlProcessor.
+/// selects a playback session. URL mapping is a supplied capability, not a
+/// dependency on any concrete processor or application service.
 pub(crate) struct HlsContext<'a> {
-    url_processor: &'a UrlProcessor,
-    server: &'a Server,
-    proxy_api_key: Option<&'a str>,
-    viewer: Option<&'a str>,
+    translator: &'a dyn PlaylistUrlTranslator,
     timeout: Duration,
 }
 
 impl<'a> HlsContext<'a> {
-    pub(crate) fn new(
-        url_processor: &'a UrlProcessor,
-        server: &'a Server,
-        proxy_api_key: Option<&'a str>,
-        viewer: Option<&'a str>,
-        timeout_seconds: u64,
-    ) -> Self {
+    pub(crate) fn new(translator: &'a dyn PlaylistUrlTranslator, timeout_seconds: u64) -> Self {
         Self {
-            url_processor,
-            server,
-            proxy_api_key,
-            viewer,
+            translator,
             timeout: Duration::from_secs(timeout_seconds.clamp(1, 300)),
         }
     }
@@ -78,21 +86,17 @@ pub(crate) async fn response(
     context: &HlsContext<'_>,
     upstream: reqwest::Response,
     head: bool,
-) -> Result<PlaylistResponse, crate::application::error::ApplicationError> {
-    use crate::application::error::ApplicationError;
+) -> Result<PlaylistResponse, HlsError> {
     // Do not leak partial, cached, compressed, or error-page playlist bodies.
     if upstream.status() != StatusCode::OK {
-        return Err(ApplicationError::UpstreamStatus(upstream.status())
-            .at(crate::application::error::FailureStage::HlsStatus));
+        return Err(HlsError::Status(upstream.status()));
     }
     if upstream
         .headers()
         .get(hyper::header::CONTENT_ENCODING)
         .is_some_and(|value| value != "identity")
     {
-        return Err(ApplicationError::InvalidUpstreamPayload(
-            "compressed HLS playlist",
-        ));
+        return Err(HlsError::InvalidPayload("compressed HLS playlist"));
     }
     let playlist = upstream.url().clone();
     let mut headers = upstream.headers().clone();
@@ -120,25 +124,18 @@ pub(crate) async fn response(
             let mut bytes = Vec::new();
             let mut stream = upstream.bytes_stream();
             while let Some(chunk) = stream.next().await {
-                let chunk = chunk
-                    .map_err(|error| ApplicationError::UpstreamTransport(error.without_url()))?;
+                let chunk = chunk.map_err(|error| HlsError::Transport(error.without_url()))?;
                 if chunk.len() > MAX_PLAYLIST_BYTES.saturating_sub(bytes.len()) {
-                    return Err(ApplicationError::InvalidUpstreamPayload(
+                    return Err(HlsError::InvalidPayload(
                         "HLS playlist exceeds buffer limit",
                     ));
                 }
                 bytes.extend_from_slice(&chunk);
             }
-            String::from_utf8(bytes).map_err(|error| {
-                ApplicationError::Internal(error.into())
-                    .at(crate::application::error::FailureStage::HlsTranslation)
-            })
+            String::from_utf8(bytes).map_err(HlsError::Encoding)
         })
         .await
-        .map_err(|error| {
-            ApplicationError::Internal(error.into())
-                .at(crate::application::error::FailureStage::HlsDeadline)
-        })??;
+        .map_err(HlsError::Deadline)??;
         rewrite(context, &playlist, &text).await?
     };
     Ok(PlaylistResponse { headers, body })
@@ -148,12 +145,9 @@ async fn rewrite(
     context: &HlsContext<'_>,
     playlist: &url::Url,
     text: &str,
-) -> Result<String, crate::application::error::ApplicationError> {
-    use crate::application::error::ApplicationError;
+) -> Result<String, HlsError> {
     if !text.trim_start_matches('\u{feff}').starts_with("#EXTM3U") {
-        return Err(ApplicationError::InvalidUpstreamPayload(
-            "invalid HLS playlist signature",
-        ));
+        return Err(HlsError::InvalidPayload("invalid HLS playlist signature"));
     }
     let mut output = String::with_capacity(text.len());
     for line in text.split_inclusive('\n') {
@@ -178,19 +172,10 @@ async fn rewrite(
             output.push_str(&line[end..range.start]);
             output.push_str(
                 &context
-                    .url_processor
-                    .server_to_client_hls_url(
-                        &line[range.clone()],
-                        playlist,
-                        context.server,
-                        context.proxy_api_key,
-                        context.viewer,
-                    )
+                    .translator
+                    .translate(&line[range.clone()], playlist)
                     .await
-                    .map_err(|error| {
-                        ApplicationError::Internal(error)
-                            .at(crate::application::error::FailureStage::HlsTranslation)
-                    })?,
+                    .map_err(HlsError::Translation)?,
             );
             end = range.end;
         }
@@ -207,13 +192,14 @@ mod tests {
     use crate::{
         auth::service::UserAuthorizationService,
         config::{AppConfig, MediaStreamingMode},
+        domain::server_id::ServerId,
         libraries::service::VirtualLibraryService,
         media::storage::MediaStorageService,
         persistence::MIGRATOR,
         playback::sessions::SessionStorage,
-        servers::id::ServerId,
+        processors::{hls::HlsUrlTranslation, url_processor::UrlProcessor},
         servers::storage::ServerStorageService,
-        DataContext,
+        servers::Server,
     };
 
     async fn dependencies() -> (UrlProcessor, Server) {
@@ -221,16 +207,16 @@ mod tests {
         MIGRATOR.run(&pool).await.unwrap();
         let servers = ServerStorageService::new(pool.clone());
         let media = MediaStorageService::new(pool.clone());
-        let libraries = VirtualLibraryService::new(pool.clone(), servers.clone(), media.clone());
-        let processor = UrlProcessor::from(DataContext {
-            paths: crate::config::Paths::temporary(),
-            user_authorization: Arc::new(UserAuthorizationService::new(pool)),
-            server_storage: Arc::new(servers),
-            media_storage: Arc::new(media),
-            virtual_library_service: Arc::new(libraries),
-            play_sessions: Arc::new(SessionStorage::new()),
-            config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
-        });
+        let libraries = VirtualLibraryService::new(pool.clone(), servers, media.clone());
+        let processor = UrlProcessor::new(
+            Arc::new(media),
+            Arc::new(libraries),
+            Arc::new(SessionStorage::new()),
+            Arc::new(UserAuthorizationService::new(pool)),
+            crate::config::SettingsView::new(Arc::new(tokio::sync::RwLock::new(
+                AppConfig::default(),
+            ))),
+        );
         let server = Server {
             id: ServerId::new(1),
             name: "Backend".into(),
@@ -248,7 +234,9 @@ mod tests {
         let (processor, server) = dependencies().await;
         // Deliberately not a stored authorization token: transport uses only
         // the already-resolved caller identity and credential supplied here.
-        let context = HlsContext::new(&processor, &server, Some("proxy-token"), Some("viewer"), 5);
+        let translation =
+            HlsUrlTranslation::new(&processor, &server, Some("proxy-token"), Some("viewer"));
+        let context = HlsContext::new(&translation, 5);
         let playlist = "http://backend.example/base/hls/master.m3u8"
             .parse()
             .unwrap();
@@ -272,16 +260,13 @@ mod tests {
     async fn explicit_context_bounds_timeout_and_rejects_non_playlists() {
         let (processor, server) = dependencies().await;
         for (configured, bounded) in [(0, 1), (5, 5), (u64::MAX, 300)] {
-            let context = HlsContext::new(&processor, &server, None, None, configured);
+            let translation = HlsUrlTranslation::new(&processor, &server, None, None);
+            let context = HlsContext::new(&translation, configured);
             assert_eq!(context.timeout, Duration::from_secs(bounded));
-            assert_eq!(
-                crate::http::handlers::pipeline_error::detail_status(
-                    &(rewrite(&context, &server.url, "not a playlist")
-                        .await
-                        .unwrap_err())
-                ),
-                StatusCode::BAD_GATEWAY
-            );
+            assert!(matches!(
+                rewrite(&context, &server.url, "not a playlist").await,
+                Err(HlsError::InvalidPayload("invalid HLS playlist signature"))
+            ));
         }
     }
 }

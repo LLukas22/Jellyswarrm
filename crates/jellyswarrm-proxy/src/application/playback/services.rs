@@ -1,11 +1,7 @@
 //! Explicit playback capabilities. No authentication/account services, catalog
 //! caches, SyncPlay, Quick Connect, or catch-all application state are available.
 use crate::{
-    application::{
-        error::ApplicationError,
-        routing::RoutingServices,
-        upstream::{execute_payload, JsonUpstream},
-    },
+    application::{error::ApplicationError, routing::RoutingServices, upstream::execute_payload},
     config::SettingsView,
     media::storage::MediaStorageService,
     playback::sessions::SessionStorage,
@@ -14,6 +10,7 @@ use crate::{
         url_processor::UrlProcessor,
     },
     servers::storage::{Server, ServerStorageService},
+    upstream::jellyfin::json::JsonUpstream,
 };
 
 pub(crate) struct PlaybackProcessors<'a> {

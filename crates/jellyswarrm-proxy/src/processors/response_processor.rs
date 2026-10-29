@@ -160,7 +160,7 @@ pub(crate) enum ResponseProcessingProfile {
 
 impl ResponseProcessingProfile {
     pub(crate) fn for_proxy_request(method: &hyper::Method, path: &str) -> Self {
-        let segments = crate::upstream::url::decoded_path_segments(path.trim_end_matches('/'));
+        let segments = crate::protocol::url::decoded_path_segments(path.trim_end_matches('/'));
         let permission_read = match segments.as_slice() {
             [tag, _] => tag.eq_ignore_ascii_case("Playlists"),
             [tag, _, users] | [tag, _, users, _] => {

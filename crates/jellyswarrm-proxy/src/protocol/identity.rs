@@ -1,14 +1,14 @@
 //! Normalized caller credentials and device identity, independent of incoming adapters.
-use crate::{auth::service::Device, models::Authorization};
-use hyper::http;
+use super::{authorization::Authorization, device::Device};
 use std::fmt;
 
 /// Resolve device identity consistently for HTTP and WebSocket requests.
 pub(crate) fn request_device(
-    request: &reqwest::Request,
+    headers: &http::HeaderMap,
+    url: &url::Url,
     auth: Option<&JellyfinAuthorization>,
 ) -> Option<Device> {
-    let mut device = auth.and_then(|a| a.get_device(request.headers()));
+    let mut device = auth.and_then(|a| a.get_device(headers));
     let explicit_device = matches!(
         auth,
         Some(
@@ -17,15 +17,13 @@ pub(crate) fn request_device(
     ) && device.as_ref().is_some_and(|d| !d.device_id.is_empty());
     // /Sessions?DeviceId is a target filter, not the caller's device identity.
     if !explicit_device
-        && !request
-            .url()
+        && !url
             .path()
             .trim_end_matches('/')
             .to_ascii_lowercase()
             .ends_with("/sessions")
     {
-        if let Some(device_id) = request
-            .url()
+        if let Some(device_id) = url
             .query_pairs()
             .find_map(|(k, v)| k.eq_ignore_ascii_case("deviceid").then(|| v.into_owned()))
         {
@@ -106,7 +104,7 @@ impl JellyfinAuthorization {
                 // Try to get device info from User-Agent header
                 if let Some(user_agent) = headers.get("user-agent") {
                     if let Ok(ua_str) = user_agent.to_str() {
-                        let device = crate::auth::service::Device::from_useragent(ua_str);
+                        let device = Device::from_useragent(ua_str);
                         return Some(Device {
                             client: device.client,
                             device: device.device,
@@ -120,8 +118,7 @@ impl JellyfinAuthorization {
         }
     }
 
-    pub(crate) fn from_request(req: &reqwest::Request) -> Option<Self> {
-        let headers = req.headers();
+    pub(crate) fn from_headers_url(headers: &http::HeaderMap, url: &url::Url) -> Option<Self> {
         if let Some(auth_header) = headers.get("authorization") {
             if let Ok(auth_str) = auth_header.to_str() {
                 if let Ok(auth) = Authorization::parse_request(auth_str) {
@@ -150,7 +147,7 @@ impl JellyfinAuthorization {
             }
         }
 
-        if let Some(auth) = req.url().query_pairs().find_map(|(k, v)| {
+        if let Some(auth) = url.query_pairs().find_map(|(k, v)| {
             if (k == "api_key") | (k == "ApiKey") {
                 Some(JellyfinAuthorization::ApiKey(v.to_string()))
             } else {
@@ -167,6 +164,46 @@ impl JellyfinAuthorization {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credential_precedence_is_preserved_without_a_transport_request() {
+        let url = url::Url::parse("http://proxy/Items?ApiKey=query-token").unwrap();
+        let mut headers = http::HeaderMap::new();
+        for (name, value) in [
+            ("authorization", r#"MediaBrowser Token="header-token""#),
+            (
+                "x-emby-authorization",
+                r#"MediaBrowser Token="emby-auth-token""#,
+            ),
+            ("x-mediabrowser-token", "media-token"),
+            ("x-emby-token", "emby-token"),
+        ] {
+            headers.insert(name, value.parse().unwrap());
+        }
+
+        for (name, expected) in [
+            ("authorization", "header-token"),
+            ("x-emby-authorization", "emby-auth-token"),
+            ("x-mediabrowser-token", "media-token"),
+            ("x-emby-token", "emby-token"),
+        ] {
+            assert_eq!(
+                JellyfinAuthorization::from_headers_url(&headers, &url)
+                    .unwrap()
+                    .token_ref(),
+                Some(expected)
+            );
+            headers.remove(name);
+        }
+        assert_eq!(
+            JellyfinAuthorization::from_headers_url(&headers, &url)
+                .unwrap()
+                .token_ref(),
+            Some("query-token")
+        );
+        let unsupported = url::Url::parse("http://proxy/Items?API_KEY=ignored").unwrap();
+        assert!(JellyfinAuthorization::from_headers_url(&headers, &unsupported).is_none());
+    }
 
     #[test]
     fn credential_debug_output_redacts_tokens() {
@@ -190,7 +227,7 @@ mod tests {
                 .unwrap(),
         );
         let auth = JellyfinAuthorization::ApiKey("key".into());
-        assert!(request_device(&request, Some(&auth)).is_none());
+        assert!(request_device(request.headers(), request.url(), Some(&auth)).is_none());
         let explicit = JellyfinAuthorization::Authorization(Authorization {
             client: "Test".into(),
             device: "Phone".into(),
@@ -199,7 +236,9 @@ mod tests {
             token: Some("key".into()),
         });
         assert_eq!(
-            request_device(&request, Some(&explicit)).unwrap().device_id,
+            request_device(request.headers(), request.url(), Some(&explicit))
+                .unwrap()
+                .device_id,
             "caller-device"
         );
     }

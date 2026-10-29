@@ -1,6 +1,6 @@
 //! Local user creation, login lookup, password changes, and credential upgrades.
 use super::*;
-use crate::auth::user_id::UserId;
+use crate::domain::user_id::UserId;
 
 impl UserAuthorizationService {
     pub(super) fn normalized_username_key(username: &str) -> String {

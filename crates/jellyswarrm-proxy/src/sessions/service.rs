@@ -1,9 +1,8 @@
 //! Maintain proxy-owned client presence, device metadata, playback state, and remote control.
 use super::{models::Capabilities, transport::ConnectionHub};
-use crate::auth::service::{Device, User};
-use crate::auth::user_id::UserId;
-use crate::servers::id::ServerId;
-use axum::http::StatusCode;
+use crate::domain::server_id::ServerId;
+use crate::domain::user_id::UserId;
+use crate::{auth::service::User, protocol::device::Device};
 use chrono::{DateTime, Duration, Utc};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -38,6 +37,11 @@ struct EpisodeServerPreference {
 }
 
 impl ClientSession {
+    /// Used only by application revocation checks and credential-scoped metadata.
+    pub(crate) fn token(&self) -> &str {
+        &self.token
+    }
+
     pub(crate) fn dto(&self, server_id: &str, transport: &ConnectionHub) -> Value {
         let connected = transport.is_connected(&self.id);
         let controllable = connected && self.capabilities.supports_media_control;
@@ -280,18 +284,9 @@ impl ClientSessionService {
         result
     }
 
-    pub(crate) async fn capabilities(
-        &self,
-        id: &str,
-        capabilities: Capabilities,
-    ) -> Result<(), StatusCode> {
-        self.entries
-            .write()
-            .await
-            .get_mut(id)
-            .ok_or(StatusCode::NOT_FOUND)?
-            .capabilities = capabilities;
-        Ok(())
+    pub(crate) async fn capabilities(&self, id: &str, capabilities: Capabilities) -> Option<()> {
+        self.entries.write().await.get_mut(id)?.capabilities = capabilities;
+        Some(())
     }
 
     pub(crate) async fn touch(&self, id: &str) {
@@ -409,7 +404,7 @@ mod tests {
             version: "1".into(),
         };
         let id = service.ensure(&user(), "secret", Some(&device)).await;
-        let server = crate::servers::id::ServerId::new(2);
+        let server = crate::domain::server_id::ServerId::new(2);
         service.remember_episode_server(&id, "show", server).await;
         assert_eq!(
             service.preferred_episode_server(&id, "show").await,

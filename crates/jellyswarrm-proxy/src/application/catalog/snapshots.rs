@@ -5,7 +5,9 @@ use super::{
     request_policy::is_upstream_limited_catalog_request,
 };
 use crate::application::error::ApplicationError;
-use crate::{application::catalog::input::CatalogRequest, auth::identity::JellyfinAuthorization};
+use crate::{
+    application::catalog::input::CatalogRequest, protocol::identity::JellyfinAuthorization,
+};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
@@ -175,8 +177,11 @@ impl SnapshotRequest {
             .and_then(|auth| auth.token_ref())
             .map(str::to_string)
             .or_else(|| {
-                JellyfinAuthorization::from_request(&request.original_request)
-                    .and_then(|auth| auth.token())
+                JellyfinAuthorization::from_headers_url(
+                    request.original_request.headers(),
+                    request.original_request.url(),
+                )
+                .and_then(|auth| auth.token())
             });
         let query = request.query();
         tracing::debug!(kind = ?query.kind, scope, "Planning catalog materialization");
@@ -299,7 +304,7 @@ mod materialization_tests {
             response: serde_json::json!({"Items": [{"Id": "a", "Future": {"kept": true}}, {"Id": "b"}], "TotalRecordCount": 2, "FutureEnvelope": 42}),
             report: crate::application::catalog::scan::CatalogReport::new(
                 vec![SourceOutcome {
-                    server_id: crate::servers::id::ServerId::new(1),
+                    server_id: crate::domain::server_id::ServerId::new(1),
                     parent_id: Some("library".into()),
                     outcome,
                 }],

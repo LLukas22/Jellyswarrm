@@ -4,7 +4,6 @@ use serde_json::Value;
 use tracing::debug;
 
 use super::user_ids::BackendUserIds;
-use crate::auth::identity::JellyfinAuthorization;
 use crate::auth::service::{AuthorizationSession, User};
 use crate::processors::field_matcher::{
     ID_FIELDS, MEDIA_ID_LIST_PARENT_FIELDS, SESSION_FIELDS, USER_FIELDS,
@@ -12,6 +11,7 @@ use crate::processors::field_matcher::{
 use crate::processors::json_processor::{
     JsonProcessingContext, JsonProcessingResult, JsonProcessor,
 };
+use crate::protocol::identity::JellyfinAuthorization;
 use crate::servers::storage::Server;
 use crate::{auth::UserAuthorizationService, media::MediaStorageService};
 use std::sync::Arc;
@@ -171,41 +171,25 @@ mod tests {
     use sqlx::SqlitePool;
 
     use super::*;
-    use crate::DataContext;
+    use crate::test_support::MediaFixture;
     use crate::{
-        auth::service::{Device, UserAuthorizationService},
+        auth::service::UserAuthorizationService,
         config::{AppConfig, MediaStreamingMode},
-        libraries::service::VirtualLibraryService,
+        domain::server_id::ServerId,
         media::identity::{MediaAlias, MediaKind, MediaObservation, MediaProvider},
         media::storage::{MediaCatalogSnapshot, MediaStorageService},
         persistence::MIGRATOR,
-        playback::sessions::SessionStorage,
         processors::process_json,
-        servers::id::ServerId,
+        protocol::device::Device,
         servers::storage::ServerStorageService,
         servers::url::ServerUrl,
     };
 
-    async fn test_data_context() -> (DataContext, SqlitePool) {
+    async fn processor_fixture() -> (MediaFixture, SqlitePool) {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         MIGRATOR.run(&pool).await.unwrap();
-        let server_storage = ServerStorageService::new(pool.clone());
-        let media_storage = MediaStorageService::new(pool.clone());
-
-        let data_context = DataContext {
-            paths: crate::config::Paths::temporary(),
-            user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
-            server_storage: Arc::new(server_storage.clone()),
-            media_storage: Arc::new(media_storage.clone()),
-            virtual_library_service: Arc::new(VirtualLibraryService::new(
-                pool.clone(),
-                server_storage,
-                media_storage,
-            )),
-            play_sessions: Arc::new(SessionStorage::new()),
-            config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
-        };
-        (data_context, pool)
+        let media = MediaFixture::new(pool.clone(), AppConfig::default());
+        (media, pool)
     }
 
     #[tokio::test]
@@ -217,7 +201,7 @@ mod tests {
                 RequestBodyAnalysisResult,
             },
         };
-        let (data, _) = test_data_context().await;
+        let (data, _) = processor_fixture().await;
         let analyzer = RequestAnalyzer::new(
             data.media_storage,
             data.server_storage,
@@ -269,8 +253,8 @@ mod tests {
 
     #[tokio::test]
     async fn body_transformation_preserves_media_list_and_user_storage_causes() {
-        let (data, pool) = test_data_context().await;
-        let processors = crate::processors::ProxyProcessors::new(data);
+        let (data, pool) = processor_fixture().await;
+        let processors = data.processors;
         let context = RequestProcessingContext {
             user: None,
             server: test_server(),
@@ -295,7 +279,7 @@ mod tests {
                 .process_request_body(&mut request, &context, &url)
                 .await
                 .unwrap_err();
-            let crate::application::error::ApplicationError::Internal(cause) = error else {
+            let crate::processors::error::ProcessingError::RequestBody(cause) = error else {
                 panic!("expected retained processing failure, got {error:?}");
             };
             assert!(crate::processors::ProcessingErrors::contains_cause::<
@@ -318,7 +302,7 @@ mod tests {
                 RequestAnalysisContext, RequestAnalyzer, RequestBodyAnalysisResult,
             },
         };
-        let (data, _) = test_data_context().await;
+        let (data, _) = processor_fixture().await;
         let id = data
             .server_storage
             .add_server(
@@ -430,7 +414,7 @@ mod tests {
         use crate::processors::request_analyzer::{
             RequestAnalysisContext, RequestAnalyzer, RequestBodyAnalysisResult,
         };
-        let (data, _) = test_data_context().await;
+        let (data, _) = processor_fixture().await;
         let server_id = data
             .server_storage
             .add_server(
@@ -519,7 +503,7 @@ mod tests {
 
     #[tokio::test]
     async fn user_id_rewrite_marks_request_body_modified() {
-        let data = test_data_context().await.0;
+        let data = processor_fixture().await.0;
         let processor = RequestProcessor::new(data.media_storage, data.user_authorization);
         let context = RequestProcessingContext {
             user: None,
@@ -541,7 +525,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_media_mapping_is_not_a_database_failure() {
-        let (data_context, pool) = test_data_context().await;
+        let (data_context, pool) = processor_fixture().await;
         let processor =
             RequestProcessor::new(data_context.media_storage, data_context.user_authorization);
         let context = RequestProcessingContext {

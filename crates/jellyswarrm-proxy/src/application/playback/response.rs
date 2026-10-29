@@ -4,13 +4,13 @@ use crate::application::error::ApplicationError;
 use tracing::info;
 
 #[cfg(test)]
-use crate::AppState;
+use crate::test_support::MediaFixture;
 use crate::{
+    application::upstream::response_json_to_payload_typed,
     auth::service::AuthorizationSession,
     models::{MediaSource, PlaybackRequest, PlaybackResponse},
     processors::response_processor::ResponseProcessingProfile,
     servers::storage::Server,
-    upstream::jellyfin::json::response_json_to_payload_typed,
 };
 
 fn parse_delivery_url(value: &str) -> Option<url::Url> {
@@ -236,27 +236,19 @@ fn extract_play_session_id_from_delivery_url(value: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
 
     use serde_json::json;
     use sqlx::SqlitePool;
 
     use super::*;
     use crate::{
-        auth::service::UserAuthorizationService,
         config::{AppConfig, MediaStreamingMode},
-        libraries::service::VirtualLibraryService,
-        media::storage::MediaStorageService,
+        domain::server_id::ServerId,
         persistence::MIGRATOR,
-        playback::sessions::SessionStorage,
-        processors::ProxyProcessors,
-        servers::id::ServerId,
-        servers::storage::ServerStorageService,
         servers::url::ServerUrl,
-        DataContext,
     };
 
-    async fn create_test_state() -> (AppState, Server) {
+    async fn create_test_state() -> (MediaFixture, Server) {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         MIGRATOR.run(&pool).await.unwrap();
 
@@ -290,35 +282,7 @@ mod tests {
             server_id: "proxy-server".to_string(),
             ..AppConfig::default()
         };
-        let server_storage = ServerStorageService::new(pool.clone());
-        let media_storage = MediaStorageService::new(pool.clone());
-
-        let data_context = DataContext {
-            paths: crate::config::Paths::temporary(),
-            user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
-            server_storage: Arc::new(server_storage.clone()),
-            media_storage: Arc::new(media_storage.clone()),
-            virtual_library_service: Arc::new(VirtualLibraryService::new(
-                pool,
-                server_storage,
-                media_storage,
-            )),
-            play_sessions: Arc::new(SessionStorage::new()),
-            config: Arc::new(tokio::sync::RwLock::new(config)),
-        };
-
-        let processors = ProxyProcessors::new(data_context.clone());
-
-        (
-            AppState::new(
-                reqwest::Client::new(),
-                reqwest::Client::new(),
-                data_context,
-                processors,
-                Default::default(),
-            ),
-            server,
-        )
+        (MediaFixture::new(pool, config), server)
     }
 
     #[tokio::test]

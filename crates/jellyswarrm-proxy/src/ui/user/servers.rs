@@ -13,11 +13,11 @@ use tracing::{error, info};
 use uuid::Uuid;
 
 use crate::{
-    auth::encryption::Password,
-    servers::id::ServerId,
+    domain::security::Password,
+    domain::server_id::ServerId,
+    http::state::ManagementState,
     servers::storage::Server,
     ui::{auth::AuthenticatedUser, user::common::authenticate_user_on_server},
-    AppState,
 };
 
 #[derive(Template)]
@@ -43,7 +43,7 @@ pub(crate) struct QuickConnectProgress {
 }
 
 pub(crate) async fn initiate_quick_connect(
-    State(state): State<AppState>,
+    State(state): State<ManagementState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Path(server_id): Path<ServerId>,
 ) -> Result<Json<QuickConnectProgress>, StatusCode> {
@@ -103,7 +103,7 @@ pub(crate) async fn initiate_quick_connect(
 }
 
 pub(crate) async fn finish_quick_connect(
-    State(state): State<AppState>,
+    State(state): State<ManagementState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Path((server_id, request_id)): Path<(ServerId, String)>,
 ) -> Result<Json<QuickConnectProgress>, StatusCode> {
@@ -150,8 +150,8 @@ pub(crate) async fn finish_quick_connect(
     if auth.access_token.is_empty() || auth.user.id.is_empty() {
         return Err(StatusCode::BAD_GATEWAY);
     }
-    let encryption_key: crate::auth::encryption::HashedPassword =
-        (&state.get_admin_password().await).into();
+    let encryption_key: crate::domain::security::HashedPassword =
+        (&state.credentials.password()).into();
     state
         .user_authorization
         .add_quick_connect_mapping(
@@ -183,7 +183,7 @@ pub(crate) struct UserServerStatusTemplate {
 }
 
 pub(crate) async fn get_user_servers(
-    State(state): State<AppState>,
+    State(state): State<ManagementState>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> impl IntoResponse {
     let mapped_servers = match state.user_authorization.get_mapped_servers(&user.id).await {
@@ -211,7 +211,7 @@ pub(crate) async fn get_user_servers(
         username: user.username,
         servers: mapped_servers,
         unmapped_servers,
-        ui_route: state.get_ui_route().await,
+        ui_route: state.paths.ui_route(),
     };
 
     match template.render() {
@@ -224,7 +224,7 @@ pub(crate) async fn get_user_servers(
 }
 
 pub(crate) async fn connect_server(
-    State(state): State<AppState>,
+    State(state): State<ManagementState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Path(server_id): Path<ServerId>,
     Form(form): Form<ConnectServerForm>,
@@ -291,7 +291,7 @@ pub(crate) async fn connect_server(
                     let mut response = StatusCode::OK.into_response();
                     response.headers_mut().insert(
                         "HX-Redirect",
-                        HeaderValue::from_str(&format!("/{}", state.get_ui_route().await)).unwrap(),
+                        HeaderValue::from_str(&format!("/{}", state.paths.ui_route())).unwrap(),
                     );
                     response
                 }
@@ -324,7 +324,7 @@ pub(crate) async fn connect_server(
 }
 
 pub(crate) async fn delete_server_mapping(
-    State(state): State<AppState>,
+    State(state): State<ManagementState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Path(server_id): Path<ServerId>,
 ) -> impl IntoResponse {
@@ -367,7 +367,7 @@ pub(crate) async fn delete_server_mapping(
                 let mut response = StatusCode::OK.into_response();
                 response.headers_mut().insert(
                     "HX-Redirect",
-                    HeaderValue::from_str(&format!("/{}", state.get_ui_route().await)).unwrap(),
+                    HeaderValue::from_str(&format!("/{}", state.paths.ui_route())).unwrap(),
                 );
                 return response;
             }
@@ -382,7 +382,7 @@ pub(crate) async fn delete_server_mapping(
 }
 
 pub(crate) async fn check_user_server_status(
-    State(state): State<AppState>,
+    State(state): State<ManagementState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Path(server_id): Path<ServerId>,
 ) -> impl IntoResponse {

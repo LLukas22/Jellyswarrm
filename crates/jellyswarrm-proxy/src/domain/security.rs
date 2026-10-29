@@ -14,9 +14,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::string::ToString;
 
+/// Generate the existing opaque UUID token representation without service state.
+pub(crate) fn generate_token() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
+}
+
 /// A wrapper type for plaintext passwords.
-#[derive(Clone, PartialEq, Eq, Hash, sqlx::Type, Serialize, Deserialize)]
-#[sqlx(transparent)]
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) struct Password(String);
 
 impl std::fmt::Debug for Password {
@@ -62,8 +66,7 @@ pub(crate) fn hash_password(password: &str) -> String {
 
 /// A wrapper type for hashed passwords.
 /// This does not contain the plaintext password, only the hashed version.
-#[derive(Clone, PartialEq, Eq, Debug, Hash, sqlx::Type, Serialize, Deserialize)]
-#[sqlx(transparent)]
+#[derive(Clone, PartialEq, Eq, Debug, Hash, Serialize, Deserialize)]
 pub(crate) struct HashedPassword(String);
 
 impl HashedPassword {
@@ -97,8 +100,7 @@ impl From<&Password> for HashedPassword {
 }
 
 /// A wrapper type for encrypted passwords.
-#[derive(Clone, PartialEq, Eq, Debug, Hash, sqlx::Type, Serialize, Deserialize)]
-#[sqlx(transparent)]
+#[derive(Clone, PartialEq, Eq, Debug, Hash, Serialize, Deserialize)]
 pub(crate) struct EncryptedPassword(String);
 
 /// A purpose-separated key derived from the persistent UI session secret.

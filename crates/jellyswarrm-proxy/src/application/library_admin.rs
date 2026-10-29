@@ -1,12 +1,8 @@
 //! Request-independent library discovery. Complete administrator inventories may
 //! replace stored inventories; mapped-user sightings are additive, never pruning.
 use crate::{
-    auth::{
-        encryption::{decrypt_password, HashedPassword},
-        mapping_authentication::MappingAuthenticator,
-        service::User,
-        UserAuthorizationService,
-    },
+    auth::{mapping_authentication::MappingAuthenticator, service::User, UserAuthorizationService},
+    domain::security::{decrypt_password, HashedPassword},
     libraries::{
         service::{normalize_library_id, DiscoveredLibrary},
         VirtualLibraryService,
@@ -214,7 +210,7 @@ fn issue(
 }
 
 fn discovered(
-    server_id: crate::servers::id::ServerId,
+    server_id: crate::domain::server_id::ServerId,
     folder: jellyfin_api::models::MediaFolder,
 ) -> Option<DiscoveredLibrary> {
     if folder
@@ -236,8 +232,8 @@ fn discovered(
 mod tests {
     use super::*;
     use crate::{
-        auth::encryption::{encrypt_password, Password},
         config::MediaStreamingMode,
+        domain::security::{encrypt_password, Password},
         media::MediaStorageService,
         persistence::MIGRATOR,
     };

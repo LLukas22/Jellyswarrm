@@ -77,6 +77,30 @@ impl ApplicationError {
     }
 }
 
+impl From<crate::outbound::json::JsonBodyError> for ApplicationError {
+    fn from(error: crate::outbound::json::JsonBodyError) -> Self {
+        use crate::outbound::json::JsonBodyError;
+        match error {
+            JsonBodyError::InvalidInput(reason) => Self::InvalidInput(reason),
+            JsonBodyError::Decode(error) => Self::InvalidRequestJson(error),
+            JsonBodyError::Encode(error) => Self::Serialization(error),
+            JsonBodyError::Header(error) => Self::Internal(error.into()),
+        }
+    }
+}
+
+impl From<crate::processors::error::ProcessingError> for ApplicationError {
+    fn from(error: crate::processors::error::ProcessingError) -> Self {
+        use crate::processors::error::ProcessingError;
+        match error {
+            ProcessingError::RequestBody(error) => super::input::request_body_error(error),
+            ProcessingError::Response(error) => Self::Internal(error),
+            ProcessingError::Playlist(error) => Self::PlaylistResponse(error),
+            ProcessingError::JsonBody(error) => error.into(),
+        }
+    }
+}
+
 // Deliberately do not format causes: transport URLs, payload validation errors,
 // and preparation errors may contain credentials or private upstream data.
 impl fmt::Display for ApplicationError {
@@ -151,6 +175,58 @@ impl Error for ApplicationError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn processor_conversion_classifies_body_failures_without_losing_storage_causes() {
+        use crate::processors::{error::ProcessingError, ProcessingErrors};
+        for storage_failed in [false, true] {
+            let mut causes = vec![anyhow::anyhow!("invalid selection")];
+            if storage_failed {
+                causes.push(anyhow::Error::new(sqlx::Error::PoolClosed).context("body field"));
+            }
+            let error = ApplicationError::from(ProcessingError::RequestBody(
+                ProcessingErrors { causes }.into(),
+            ));
+            assert_eq!(
+                matches!(error, ApplicationError::Internal(_)),
+                storage_failed
+            );
+            assert_eq!(
+                matches!(error, ApplicationError::RequestBody(_)),
+                !storage_failed
+            );
+            let cause = error
+                .source()
+                .unwrap()
+                .downcast_ref::<ProcessingErrors>()
+                .unwrap();
+            assert_eq!(
+                ProcessingErrors::contains_cause::<sqlx::Error>(cause),
+                storage_failed
+            );
+        }
+    }
+
+    #[test]
+    fn outgoing_json_conversion_preserves_request_and_encoding_causes() {
+        use crate::outbound::json::JsonBodyError;
+        let json_error = || serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+        for (body_error, decoding) in [
+            (JsonBodyError::Decode(json_error()), true),
+            (JsonBodyError::Encode(json_error()), false),
+        ] {
+            let error = ApplicationError::from(body_error);
+            assert_eq!(
+                matches!(error, ApplicationError::InvalidRequestJson(_)),
+                decoding
+            );
+            assert_eq!(
+                matches!(error, ApplicationError::Serialization(_)),
+                !decoding
+            );
+            assert!(error.source().unwrap().is::<serde_json::Error>());
+        }
+    }
 
     #[test]
     fn endpoint_contract_retains_typed_cause_without_reclassifying_upstream_denial() {

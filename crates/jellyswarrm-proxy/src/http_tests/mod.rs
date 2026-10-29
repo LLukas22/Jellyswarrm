@@ -44,7 +44,7 @@ mod preferences;
 mod resources;
 pub(crate) mod support;
 
-use crate::{config::MediaStreamingMode, models::Authorization};
+use crate::{config::MediaStreamingMode, protocol::authorization::Authorization};
 use axum::http::StatusCode;
 use serde_json::{json, Value};
 use std::sync::Arc;

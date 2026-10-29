@@ -11,17 +11,17 @@ mod tests;
 
 use crate::application::catalog::services::CatalogService;
 #[cfg(test)]
-use crate::AppState;
+use crate::test_support::MediaFixture;
 use crate::{
     application::details::sources::{
         merge_media_detail, normalize_detail_member, DetailMergeContext,
     },
     application::error::ApplicationError,
+    application::request::UpstreamRequestBuilder,
     application::{context::TargetError, input::OperationRequest},
     libraries::service::VirtualLibraryResolution,
     processors::response_processor::ResponseProcessingProfile,
-    upstream::jellyfin::request::UpstreamRequestBuilder,
-    upstream::url::{contains_id, ensure_query_list_value},
+    protocol::url::{contains_id, ensure_query_list_value},
 };
 
 /// Retry ordered virtual-library members only for an upstream response failure.
@@ -35,7 +35,7 @@ impl VirtualLibraryFallbackPolicy {
 
     fn order(members: &mut [crate::libraries::service::VirtualLibraryMember]) {
         members.sort_by(|left, right| {
-            crate::libraries::service::compare_virtual_library_routes(
+            crate::servers::routing::compare_routes(
                 &right.server,
                 &right.mapping.original_media_id,
                 &left.server,

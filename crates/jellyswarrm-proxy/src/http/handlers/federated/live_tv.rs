@@ -8,10 +8,10 @@ use axum::{
 use hyper::StatusCode;
 use serde_json::Value;
 
-use crate::{http::extractors::CatalogInput, AppState};
+use crate::http::{extractors::CatalogInput, state::MediaState};
 
 pub(crate) async fn post_live_tv_programs(
-    State(state): State<AppState>,
+    State(state): State<MediaState>,
     request: Request,
 ) -> Result<Json<Value>, StatusCode> {
     let (mut parts, body) = request.into_parts();

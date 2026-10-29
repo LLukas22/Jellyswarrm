@@ -2,24 +2,23 @@
 use sqlx::{Row, SqlitePool};
 use tracing::{debug, info, warn};
 
-use crate::auth::encryption::{
+use crate::domain::security::{
     decrypt_password, decrypt_password_with_key_material, encrypt_password, is_legacy_plaintext,
     EncryptedPassword, HashedPassword, MappingEncryptionKey, Password,
 };
-use crate::models::{generate_token, Authorization};
-use crate::servers::id::ServerId;
+use crate::domain::server_id::ServerId;
 use crate::servers::storage::Server;
 #[cfg(test)]
 use crate::servers::url::ServerUrl;
+use crate::{domain::security::generate_token, protocol::authorization::Authorization};
 
 #[cfg(test)]
 use super::credentials::password_work;
 pub(crate) use super::credentials::LocalCredential;
-use super::models::is_android_tv_client;
 pub(crate) use super::models::{
-    normalize_device, AuthorizationSession, CredentialFormat, Device, MappingAuth, ServerMapping,
-    User, VirtualUserApiKey,
+    AuthorizationSession, CredentialFormat, MappingAuth, ServerMapping, User, VirtualUserApiKey,
 };
+use crate::protocol::device::{is_android_tv_client, normalize_device, Device};
 #[derive(Debug, Clone)]
 pub(crate) struct UserAuthorizationService {
     pool: SqlitePool,

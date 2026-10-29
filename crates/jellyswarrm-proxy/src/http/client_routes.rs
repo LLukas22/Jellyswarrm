@@ -1,6 +1,6 @@
 //! Client library/playback API routes shared by production and HTTP contract tests.
 use super::{proxy::proxy_handler, router::item_detail_routes};
-use crate::AppState;
+use crate::http::state::AppState;
 use axum::{
     routing::{get, post},
     Router,

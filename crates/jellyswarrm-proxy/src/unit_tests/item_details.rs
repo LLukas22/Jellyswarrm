@@ -1,20 +1,15 @@
 //! Regression coverage for item-detail workflows, access scope, and backend selection.
-use std::sync::Arc;
 
 use super::*;
 use crate::{
     application::context::RequestContext,
-    auth::service::{AuthorizationSession, Device, UserAuthorizationService},
+    auth::service::AuthorizationSession,
     config::{AppConfig, MediaStreamingMode},
-    http::handlers::quick_connect::QuickConnectStorage,
-    http::preprocessing::JellyfinAuthorization,
-    libraries::service::{VirtualLibraryAccessScope, VirtualLibraryService},
-    media::storage::MediaStorageService,
+    libraries::service::VirtualLibraryAccessScope,
     persistence::MIGRATOR,
-    playback::sessions::SessionStorage,
-    processors::ProxyProcessors,
-    servers::storage::{Server, ServerStorageService},
-    DataContext,
+    protocol::device::Device,
+    protocol::identity::JellyfinAuthorization,
+    servers::storage::Server,
 };
 use serde_json::json;
 use wiremock::{
@@ -25,7 +20,7 @@ use wiremock::{
 const LIBRARY: &str = "11111111111111111111111111111111";
 
 struct Fixture {
-    state: AppState,
+    state: MediaFixture,
     upstreams: Vec<MockServer>,
     sessions: Vec<(AuthorizationSession, Server)>,
     library_id: String,
@@ -39,24 +34,7 @@ impl Fixture {
             .await
             .unwrap();
         MIGRATOR.run(&pool).await.unwrap();
-        let servers = ServerStorageService::new(pool.clone());
-        let media = MediaStorageService::new(pool.clone());
-        let context = DataContext {
-            paths: crate::config::Paths::temporary(),
-            user_authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
-            server_storage: Arc::new(servers.clone()),
-            media_storage: Arc::new(media.clone()),
-            virtual_library_service: Arc::new(VirtualLibraryService::new(pool, servers, media)),
-            play_sessions: Arc::new(SessionStorage::new()),
-            config: Arc::new(tokio::sync::RwLock::new(AppConfig::default())),
-        };
-        let state = AppState::new(
-            reqwest::Client::new(),
-            reqwest::Client::new(),
-            context.clone(),
-            ProxyProcessors::new(context),
-            QuickConnectStorage::new(),
-        );
+        let state = MediaFixture::new(pool, AppConfig::default());
         let mut upstreams = Vec::new();
         let mut sessions = Vec::new();
         for (index, status) in statuses.into_iter().enumerate() {

@@ -8,8 +8,9 @@ use hyper::StatusCode;
 use tracing::{debug, error, warn};
 
 #[cfg(test)]
-use crate::AppState;
+use crate::test_support::MediaFixture;
 use crate::{
+    application::request::UpstreamRequestBuilder,
     application::{
         error::ApplicationError,
         input::OperationRequest,
@@ -23,11 +24,8 @@ use crate::{
         },
     },
     models::{PlaybackRequest, PlaybackResponse},
-    upstream::jellyfin::{
-        json::{payload_from_request_typed, set_json_body_typed},
-        request::UpstreamRequestBuilder,
-    },
-    upstream::url::{contains_id, replace_path_id},
+    outbound::json::{payload_from_request_typed, set_json_body_typed},
+    protocol::url::{contains_id, replace_path_id},
 };
 
 pub(crate) async fn post_playback_info_typed(

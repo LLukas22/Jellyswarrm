@@ -1,22 +1,16 @@
 //! Real SQLite identity/session state, real production media routes, and two
 //! independently observable backends. Unmatched upstream requests return 404.
 use crate::{
-    auth::service::{Device, User},
+    auth::service::User,
     config::{AppConfig, MediaStreamingMode},
-    http::handlers::quick_connect::QuickConnectStorage,
-    libraries::service::VirtualLibraryService,
-    media::storage::MediaStorageService,
-    models::Authorization,
     persistence::MIGRATOR,
-    playback::sessions::SessionStorage,
-    processors::ProxyProcessors,
-    servers::storage::ServerStorageService,
-    AppState, DataContext,
+    protocol::authorization::Authorization,
+    protocol::device::Device,
+    test_support::{adapters::AdapterFixture, MediaFixture},
 };
 use axum::http::StatusCode;
 use futures_util::StreamExt;
 use serde_json::{json, Value};
-use std::sync::Arc;
 use tokio_tungstenite::connect_async;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,7 +29,7 @@ impl Scenario {
 
 pub(crate) struct Fixture {
     pub(crate) pool: sqlx::SqlitePool,
-    pub(crate) state: AppState,
+    pub(crate) state: AdapterFixture,
     pub(crate) user: User,
     pub(crate) other: User,
     pub(crate) upstreams: Vec<wiremock::MockServer>,
@@ -88,35 +82,18 @@ impl Fixture {
             .await
             .unwrap();
         MIGRATOR.run(&pool).await.unwrap();
-        let servers = ServerStorageService::new(pool.clone());
-        let media = MediaStorageService::new(pool.clone());
-        let data = DataContext {
-            paths: crate::config::Paths::temporary(),
-            user_authorization: Arc::new(
-                crate::app::authorization::build_authorization(pool.clone(), &config)
-                    .await
-                    .unwrap(),
-            ),
-            server_storage: Arc::new(servers.clone()),
-            media_storage: Arc::new(media.clone()),
-            virtual_library_service: Arc::new(VirtualLibraryService::new(
-                pool.clone(),
-                servers,
-                media,
-            )),
-            play_sessions: Arc::new(SessionStorage::new()),
-            config: Arc::new(tokio::sync::RwLock::new(AppConfig {
+        let authorization = crate::app::authorization::build_authorization(pool.clone(), &config)
+            .await
+            .unwrap();
+        let state = AdapterFixture::from_media(MediaFixture::with_authorization(
+            pool.clone(),
+            AppConfig {
                 url_prefix: Some("proxy".into()),
                 ..config
-            })),
-        };
-        let state = AppState::new(
-            reqwest::Client::new(),
-            reqwest::Client::new(),
-            data.clone(),
-            ProxyProcessors::new(data),
-            QuickConnectStorage::new(),
-        );
+            },
+            authorization,
+        ))
+        .await;
         let user = state
             .user_authorization
             .create_user("alice", &"password".into())
@@ -186,7 +163,7 @@ impl Fixture {
         session_store.migrate().await.unwrap();
         let startup = state.config.read().await.startup_config();
         let app = crate::app::router::build_router(
-            state.clone(),
+            state.app_state().await,
             &startup,
             pool.clone(),
             session_store,

@@ -19,7 +19,7 @@ opaque_identity!(VirtualLiveStreamId, BackendLiveStreamId, PlaybackSessionId);
 
 /// Caller identity keeps its namespace while sharing local-user normalization.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ViewerId(crate::auth::user_id::UserId);
+pub(crate) struct ViewerId(super::user_id::UserId);
 
 impl ViewerId {
     pub(crate) fn as_str(&self) -> &str {

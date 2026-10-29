@@ -13,14 +13,14 @@ use uuid::Uuid;
 
 #[cfg(test)]
 use crate::config::MediaStreamingMode;
-use crate::servers::id::ServerId;
+use crate::domain::server_id::ServerId;
 use crate::servers::storage::Server;
 #[cfg(test)]
 use crate::servers::url::ServerUrl;
 use crate::{
+    domain::security::generate_token,
     media::identity::{MediaAlias, MediaKind, MediaObservation, StableMediaGroup},
     media::scope::MediaCatalogScope,
-    models::generate_token,
 };
 use moka::future::Cache;
 
