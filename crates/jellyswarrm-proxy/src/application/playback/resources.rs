@@ -442,15 +442,13 @@ mod tests {
         use std::error::Error;
 
         assert!(matches!(error, ApplicationError::UpstreamTransport(_)));
-        assert!(
-            error
-                .source()
-                .unwrap()
-                .downcast_ref::<reqwest::Error>()
-                .unwrap()
-                .url()
-                .is_none()
-        );
+        assert!(error
+            .source()
+            .unwrap()
+            .downcast_ref::<reqwest::Error>()
+            .unwrap()
+            .url()
+            .is_none());
         assert!(!format!("{error:?}").contains("private-credential"));
     }
 
@@ -485,14 +483,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(failed.status, StatusCode::SERVICE_UNAVAILABLE);
-        assert!(
-            state
-                .play_sessions
-                .resolve_report_session("direct", "viewer")
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(state
+            .play_sessions
+            .resolve_report_session("direct", "viewer")
+            .await
+            .unwrap()
+            .is_none());
         upstream.reset().await;
         wiremock::Mock::given(wiremock::matchers::path("/Videos/upstream-item/stream"))
             .respond_with(
@@ -534,12 +530,10 @@ mod tests {
         }).await.unwrap();
         assert_eq!(response.status, StatusCode::TEMPORARY_REDIRECT);
         assert!(matches!(response.body, delivery::DeliveryBody::Empty));
-        assert!(
-            response.headers[hyper::header::LOCATION]
-                .to_str()
-                .unwrap()
-                .contains("/Audio/upstream-item/universal?PlaySessionId=redirect&Extension=kept")
-        );
+        assert!(response.headers[hyper::header::LOCATION]
+            .to_str()
+            .unwrap()
+            .contains("/Audio/upstream-item/universal?PlaySessionId=redirect&Extension=kept"));
         let (binding, _) = state
             .play_sessions
             .resolve_report_session("redirect", "viewer")

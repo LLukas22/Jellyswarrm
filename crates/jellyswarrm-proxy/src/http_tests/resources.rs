@@ -2,8 +2,8 @@
 //! headers and bytes must survive, without leaking a proxy key upstream.
 use super::*;
 use wiremock::{
-    Mock, ResponseTemplate,
     matchers::{header, method, path},
+    Mock, ResponseTemplate,
 };
 
 macro_rules! contracts {
@@ -124,11 +124,9 @@ async fn download_without_range_streams_before_upstream_finishes() {
         while !request.ends_with(b"\r\n\r\n") {
             request.push(socket.read_u8().await.unwrap());
         }
-        assert!(
-            !String::from_utf8_lossy(&request)
-                .to_lowercase()
-                .contains("\r\nrange:")
-        );
+        assert!(!String::from_utf8_lossy(&request)
+            .to_lowercase()
+            .contains("\r\nrange:"));
         socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=movie.mkv\r\nAccept-Ranges: bytes\r\n\r\n\x00\xff\r\n").await.unwrap();
         // The remaining bytes cannot arrive until the client has received the
         // headers and first chunk. A buffering proxy deadlocks and times out.
