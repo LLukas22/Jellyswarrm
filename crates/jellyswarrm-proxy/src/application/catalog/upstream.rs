@@ -761,8 +761,8 @@ async fn execute_raw_items_request(
     request: reqwest::Request,
     server: Server,
 ) -> Result<RawServerItems, ApplicationError> {
-    let response = crate::application::upstream::execute_payload::<serde_json::Value>(
-        &state.json_upstream(),
+    let response = crate::application::upstream::execute_json_request::<serde_json::Value>(
+        &state.reqwest_client,
         request,
     )
     .await

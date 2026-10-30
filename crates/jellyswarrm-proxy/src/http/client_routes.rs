@@ -20,7 +20,7 @@ use crate::{
     },
     http::assets::JELLYFIN_UI_VERSION,
     models::{AuthenticateRequest, PlaybackResponse, PublicServerInfo, ServerInfo, User},
-    upstream::jellyfin::delivery::{DeliveryBody, DeliveryResponse},
+    upstream::delivery::{DeliveryBody, DeliveryResponse},
 };
 use axum::{
     body::{to_bytes, Body},

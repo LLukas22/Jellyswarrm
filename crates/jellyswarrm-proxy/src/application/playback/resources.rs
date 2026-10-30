@@ -18,10 +18,12 @@ use crate::{
     },
     config::MediaStreamingMode,
     playback::PlaybackSession,
-    processors::hls::HlsUrlTranslation,
     protocol::identity::JellyfinAuthorization,
     servers::storage::Server,
-    upstream::jellyfin::delivery::{self, DeliveryResponse},
+    upstream::{
+        delivery::{self, DeliveryResponse},
+        hls::HlsContext,
+    },
 };
 
 fn extract_stream_item_id(path: &str) -> Option<&str> {
@@ -151,15 +153,15 @@ async fn forward_media_request(
                 url.path()
             );
             let timeout = state.config.read().await.timeout;
-            let translation = HlsUrlTranslation::new(
-                &state.processors.url_processor,
-                server,
-                proxy_api_key,
-                viewer,
-            );
             let context = delivery::DeliveryContext::new(
                 &state.streaming_reqwest_client,
-                crate::upstream::jellyfin::hls::HlsContext::new(&translation, timeout),
+                HlsContext::new(
+                    &state.processors.url_processor,
+                    server,
+                    proxy_api_key,
+                    viewer,
+                    timeout,
+                ),
             );
             delivery::proxy(&context, request)
                 .await
@@ -207,15 +209,15 @@ pub(crate) async fn get_download(
     let request = build_request(state, &resolved.target, &operation.original_request).await?;
     let timeout = state.config.read().await.timeout;
     let proxy_api_key = proxy_api_key(&operation.context);
-    let translation = HlsUrlTranslation::new(
-        &state.processors.url_processor,
-        resolved.target.server(),
-        proxy_api_key.as_deref(),
-        request_user_id(&operation.context),
-    );
     let context = delivery::DeliveryContext::new(
         &state.streaming_reqwest_client,
-        crate::upstream::jellyfin::hls::HlsContext::new(&translation, timeout),
+        HlsContext::new(
+            &state.processors.url_processor,
+            resolved.target.server(),
+            proxy_api_key.as_deref(),
+            request_user_id(&operation.context),
+            timeout,
+        ),
     );
     delivery::proxy(&context, request)
         .await
@@ -413,12 +415,10 @@ mod tests {
     #[tokio::test]
     async fn delivery_transport_retains_cause_without_authenticated_url() {
         let (state, server, _, _, _) = direct_fixture(MediaStreamingMode::Proxy).await;
-        let translation =
-            HlsUrlTranslation::new(&state.processors.url_processor, &server, None, None);
         let client = reqwest::Client::new();
         let context = delivery::DeliveryContext::new(
             &client,
-            crate::upstream::jellyfin::hls::HlsContext::new(&translation, 5),
+            HlsContext::new(&state.processors.url_processor, &server, None, None, 5),
         );
         let request = reqwest::Request::new(
             reqwest::Method::GET,

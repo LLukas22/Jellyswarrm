@@ -1,7 +1,7 @@
 //! Typed workflow decoding of upstream JSON documents. The execution contract
 //! belongs to upstream; it must never depend on this module.
 use super::error::ApplicationError;
-use crate::upstream::jellyfin::json::{JellyfinJsonUpstream, JsonUpstream};
+use crate::upstream::json;
 
 pub(crate) fn response_json_to_payload<T: serde::de::DeserializeOwned>(
     payload: serde_json::Value,
@@ -9,35 +9,24 @@ pub(crate) fn response_json_to_payload<T: serde::de::DeserializeOwned>(
     serde_json::from_value(payload).map_err(ApplicationError::InvalidProcessedJson)
 }
 
-pub(crate) async fn execute_payload<T: serde::de::DeserializeOwned>(
-    upstream: &dyn JsonUpstream,
-    request: reqwest::Request,
-) -> Result<T, ApplicationError> {
-    serde_json::from_str(&upstream.execute(request).await?)
-        .map_err(ApplicationError::InvalidUpstreamJson)
-}
-
-/// Concrete execution for workflows that do not keep a reusable capability.
 /// Decode the original document here, never through a JSON Value intermediary.
 pub(crate) async fn execute_json_request<T: serde::de::DeserializeOwned>(
     client: &reqwest::Client,
     request: reqwest::Request,
 ) -> Result<T, ApplicationError> {
-    execute_payload(
-        &JellyfinJsonUpstream {
-            client: client.clone(),
-        },
-        request,
-    )
-    .await
+    serde_json::from_str(&json::execute(client, request).await?)
+        .map_err(ApplicationError::InvalidUpstreamJson)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::upstream::jellyfin::json::JsonTransportError;
+    use crate::upstream::json::JsonTransportError;
     use std::error::Error;
-    use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+    use wiremock::{
+        matchers::{header, method, path},
+        Mock, MockServer, ResponseTemplate,
+    };
 
     #[tokio::test]
     async fn concrete_execution_preserves_json_cause_and_rejects_duplicate_dto_fields() {
@@ -96,35 +85,32 @@ mod tests {
         }
     }
 
-    struct FakeUpstream(&'static str);
-    #[async_trait::async_trait]
-    impl JsonUpstream for FakeUpstream {
-        async fn execute(&self, request: reqwest::Request) -> Result<String, JsonTransportError> {
-            assert_eq!(request.url().path(), "/opaque-item");
-            assert_eq!(request.headers()["x-extension"], "retained");
-            Ok(self.0.to_owned())
-        }
-        async fn execute_status(
-            &self,
-            _: reqwest::Request,
-        ) -> Result<hyper::StatusCode, JsonTransportError> {
-            Ok(hyper::StatusCode::NO_CONTENT)
-        }
-    }
-
-    #[tokio::test]
-    async fn workflow_can_use_a_fake_capability_and_retains_payload_error_cause() {
+    /// Serve `document` only for the expected path and retained extension header.
+    async fn opaque_item_upstream(document: &'static str) -> (MockServer, reqwest::Request) {
+        let upstream = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/opaque-item"))
+            .and(header("x-extension", "retained"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(document))
+            .expect(1)
+            .mount(&upstream)
+            .await;
         let mut request = reqwest::Request::new(
             reqwest::Method::GET,
-            "http://unused.invalid/opaque-item".parse().unwrap(),
+            format!("{}/opaque-item", upstream.uri()).parse().unwrap(),
         );
         request
             .headers_mut()
             .insert("x-extension", "retained".parse().unwrap());
-        let error =
-            execute_payload::<Vec<String>>(&FakeUpstream("{\"unexpected\": true}"), request)
-                .await
-                .unwrap_err();
+        (upstream, request)
+    }
+
+    #[tokio::test]
+    async fn workflow_retains_request_and_payload_error_cause() {
+        let (_upstream, request) = opaque_item_upstream("{\"unexpected\": true}").await;
+        let error = execute_json_request::<Vec<String>>(&reqwest::Client::new(), request)
+            .await
+            .unwrap_err();
         assert!(matches!(error, ApplicationError::InvalidUpstreamJson(_)));
         assert!(error.source().unwrap().is::<serde_json::Error>());
     }
@@ -136,17 +122,10 @@ mod tests {
             #[serde(rename = "Id")]
             _id: String,
         }
-        let mut request = reqwest::Request::new(
-            reqwest::Method::GET,
-            "http://unused.invalid/opaque-item".parse().unwrap(),
-        );
-        request
-            .headers_mut()
-            .insert("x-extension", "retained".parse().unwrap());
-        let error =
-            execute_payload::<Item>(&FakeUpstream("{\"Id\":\"one\",\"Id\":\"two\"}"), request)
-                .await
-                .unwrap_err();
+        let (_upstream, request) = opaque_item_upstream("{\"Id\":\"one\",\"Id\":\"two\"}").await;
+        let error = execute_json_request::<Item>(&reqwest::Client::new(), request)
+            .await
+            .unwrap_err();
         assert!(matches!(error, ApplicationError::InvalidUpstreamJson(_)));
         assert!(error
             .source()

@@ -153,7 +153,7 @@ authorization header.
 
 **Code:** [delivery selection](application/playback/resources.rs),
 [bindings](playback.rs),
-[streaming and redirects](upstream/jellyfin/delivery.rs).
+[streaming and redirects](upstream/delivery.rs).
 
 ## Sending a remote-control command
 

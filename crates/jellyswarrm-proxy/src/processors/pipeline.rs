@@ -7,8 +7,8 @@ use super::{
     response_processor::{ResponseProcessingContext, ResponseProcessingProfile, ResponseProcessor},
     url_processor::UrlProcessor,
 };
-use crate::outbound::json::set_json_body;
 use crate::processors;
+use crate::processors::set_json_body;
 use tracing::{debug, error};
 pub(crate) struct ProxyProcessors {
     pub(crate) request_processor: RequestProcessor,

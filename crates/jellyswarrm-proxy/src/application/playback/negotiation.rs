@@ -25,7 +25,7 @@ use crate::{
         },
     },
     models::{PlaybackRequest, PlaybackResponse},
-    outbound::json::{payload_from_request, set_json_body},
+    processors::{payload_from_request, set_json_body},
     protocol::url::{contains_id, replace_path_id},
 };
 
@@ -193,8 +193,8 @@ pub(crate) async fn post_playback_info(
     let original_item_id = contains_id(request.url(), "Items").ok_or(
         ApplicationError::InvalidInput("missing upstream playback item"),
     )?;
-    match crate::application::upstream::execute_payload::<PlaybackResponse>(
-        &state.json_upstream(),
+    match crate::application::upstream::execute_json_request::<PlaybackResponse>(
+        &state.reqwest_client,
         request,
     )
     .await

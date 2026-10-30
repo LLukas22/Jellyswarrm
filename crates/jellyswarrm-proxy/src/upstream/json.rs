@@ -1,6 +1,6 @@
 //! Jellyfin JSON wire normalization and execution, without workflow error policy.
 
-use crate::outbound::json::{payload_from_request, set_json_body, JsonBodyError};
+use crate::processors::{payload_from_request, set_json_body, JsonBodyError};
 #[cfg(test)]
 use hyper::StatusCode;
 use serde_json::Value;
@@ -12,7 +12,7 @@ pub(crate) enum JsonTransportError {
     #[error("upstream response failure")]
     Status(hyper::StatusCode),
     #[error("outgoing JSON body preparation failed")]
-    RequestBody(#[from] crate::outbound::json::JsonBodyError),
+    RequestBody(#[from] crate::processors::JsonBodyError),
 }
 
 // Never render authenticated URLs, body excerpts, or underlying diagnostics.
@@ -22,10 +22,13 @@ impl std::fmt::Debug for JsonTransportError {
     }
 }
 
-async fn execute_document(
+/// Keep the document intact until decoding, including duplicate DTO fields.
+/// Typed decoding and workflow failure policy belong to the application.
+pub(crate) async fn execute(
     client: &reqwest::Client,
-    request: reqwest::Request,
+    mut request: reqwest::Request,
 ) -> Result<String, JsonTransportError> {
+    sync_posted_guide_body(&mut request)?;
     let response = client
         .execute(request)
         .await
@@ -39,41 +42,15 @@ async fn execute_document(
         .map_err(|error| JsonTransportError::Transport(error.without_url()))
 }
 
-/// Transport-owned execution capability. Typed application decoding and workflow
-/// failure policy are deliberately not part of this contract.
-#[async_trait::async_trait]
-pub(crate) trait JsonUpstream: Send + Sync {
-    /// Keep the document intact until decoding, including duplicate DTO fields.
-    async fn execute(&self, request: reqwest::Request) -> Result<String, JsonTransportError>;
-    async fn execute_status(
-        &self,
-        request: reqwest::Request,
-    ) -> Result<http::StatusCode, JsonTransportError>;
-}
-
-/// Concrete wire normalization and transport, independent of application errors.
-pub(crate) struct JellyfinJsonUpstream {
-    pub(crate) client: reqwest::Client,
-}
-
-#[async_trait::async_trait]
-impl JsonUpstream for JellyfinJsonUpstream {
-    async fn execute_status(
-        &self,
-        request: reqwest::Request,
-    ) -> Result<http::StatusCode, JsonTransportError> {
-        Ok(self
-            .client
-            .execute(request)
-            .await
-            .map_err(|error| JsonTransportError::Transport(error.without_url()))?
-            .status())
-    }
-
-    async fn execute(&self, mut request: reqwest::Request) -> Result<String, JsonTransportError> {
-        sync_posted_guide_body(&mut request)?;
-        execute_document(&self.client, request).await
-    }
+pub(crate) async fn execute_status(
+    client: &reqwest::Client,
+    request: reqwest::Request,
+) -> Result<http::StatusCode, JsonTransportError> {
+    Ok(client
+        .execute(request)
+        .await
+        .map_err(|error| JsonTransportError::Transport(error.without_url()))?
+        .status())
 }
 
 /// Keep the POST guide body aligned with the translated query, including paging.
@@ -143,10 +120,7 @@ mod tests {
                 .unwrap(),
         );
         *request.body_mut() = Some(reqwest::Body::from("{}"));
-        let upstream = JellyfinJsonUpstream {
-            client: reqwest::Client::new(),
-        };
-        let error = upstream.execute(request).await.unwrap_err();
+        let error = execute(&reqwest::Client::new(), request).await.unwrap_err();
         assert!(matches!(
             error,
             JsonTransportError::RequestBody(JsonBodyError::Decode(_))
@@ -169,10 +143,7 @@ mod tests {
             .await;
         let client = reqwest::Client::new();
         let request = client.get(upstream.uri()).build().unwrap();
-        let document = JellyfinJsonUpstream { client }
-            .execute(request)
-            .await
-            .unwrap();
+        let document = execute(&client, request).await.unwrap();
         assert_eq!(document, r#"{"Id":"one","Id":"two"}"#);
     }
 
@@ -186,10 +157,7 @@ mod tests {
                 .parse()
                 .unwrap(),
         );
-        let error = JellyfinJsonUpstream { client }
-            .execute(request)
-            .await
-            .unwrap_err();
+        let error = execute(&client, request).await.unwrap_err();
 
         assert!(matches!(error, JsonTransportError::Transport(_)));
         let cause = error
@@ -211,10 +179,7 @@ mod tests {
                 .await;
             let client = reqwest::Client::new();
             let request = client.get(upstream.uri()).build().unwrap();
-            let error = JellyfinJsonUpstream { client }
-                .execute(request)
-                .await
-                .unwrap_err();
+            let error = execute(&client, request).await.unwrap_err();
 
             assert!(
                 matches!(error, JsonTransportError::Status(actual) if actual.as_u16() == status)
@@ -232,7 +197,7 @@ mod tests {
         let client = reqwest::Client::new();
         let request = client.get(upstream.uri()).build().unwrap();
 
-        let result = JellyfinJsonUpstream { client }.execute(request).await;
+        let result = execute(&client, request).await;
 
         assert!(matches!(
             result.unwrap_err(),
@@ -292,12 +257,6 @@ mod tests {
         let client = reqwest::Client::new();
         let request = client.get(upstream.uri()).build().unwrap();
 
-        assert_eq!(
-            JellyfinJsonUpstream { client }
-                .execute(request)
-                .await
-                .unwrap(),
-            "not JSON"
-        );
+        assert_eq!(execute(&client, request).await.unwrap(), "not JSON");
     }
 }

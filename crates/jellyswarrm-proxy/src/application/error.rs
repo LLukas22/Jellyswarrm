@@ -4,7 +4,7 @@ use std::{error::Error, fmt};
 
 use hyper::StatusCode;
 
-use crate::upstream::jellyfin::{delivery::DeliveryError, hls::HlsError, json::JsonTransportError};
+use crate::upstream::{delivery::DeliveryError, hls::HlsError, json::JsonTransportError};
 
 /// Workflow context, not a response code. Endpoint adapters own its HTTP policy.
 pub(crate) enum FailureStage {
@@ -79,9 +79,9 @@ impl ApplicationError {
     }
 }
 
-impl From<crate::outbound::json::JsonBodyError> for ApplicationError {
-    fn from(error: crate::outbound::json::JsonBodyError) -> Self {
-        use crate::outbound::json::JsonBodyError;
+impl From<crate::processors::JsonBodyError> for ApplicationError {
+    fn from(error: crate::processors::JsonBodyError) -> Self {
+        use crate::processors::JsonBodyError;
         match error {
             JsonBodyError::InvalidInput(reason) => Self::InvalidInput(reason),
             JsonBodyError::Decode(error) => Self::InvalidRequestJson(error),
@@ -254,7 +254,7 @@ mod tests {
 
     #[test]
     fn outgoing_json_conversion_preserves_request_and_encoding_causes() {
-        use crate::outbound::json::JsonBodyError;
+        use crate::processors::JsonBodyError;
         let json_error = || serde_json::from_str::<serde_json::Value>("{").unwrap_err();
         for (body_error, decoding) in [
             (JsonBodyError::Decode(json_error()), true),

@@ -10,7 +10,6 @@ mod http_tests;
 mod libraries;
 mod media;
 mod models;
-mod outbound;
 mod persistence;
 mod playback;
 mod processors;

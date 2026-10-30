@@ -44,14 +44,15 @@ WebSocket frames belong in `http/`.
 
 | Module | Purpose |
 |---|---|
-| `processors/` | Inspects and translates JSON, URLs and identifiers between the virtual server and a selected backend. |
+| `processors/` | Inspects and translates JSON, URLs and identifiers between the virtual server and a selected backend, including JSON body framing. |
 | `upstream/` | Makes backend requests and delivers JSON, streams and HLS playlists. |
-| `outbound/` | Small outgoing-wire helpers shared by translation and transport, such as JSON body framing and playlist URL translation contracts. |
 | `persistence/` | Opens SQLite, runs migrations and converts shared values to database representations. SQL also still lives in feature services. |
 | `config.rs`, `config/` | Loads configuration, provides startup and runtime settings, and serializes save/reload operations. |
 
-Translation and transport are siblings: changing an identifier is not the same
-responsibility as sending a request. Application workflows combine them.
+Changing an identifier is not the same responsibility as sending a request, so
+translation does not depend on transport. Transport uses translation in one place:
+HLS playlist rewriting maps each playlist URL through `UrlProcessor`. Application
+workflows combine the two.
 Handlers read runtime settings through `SettingsView`; configuration changes go
 through `ConfigurationService`, not a writable configuration lock.
 

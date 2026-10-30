@@ -6,7 +6,6 @@ use super::target::MediaTargetResolver;
 use crate::application::error::FailureStage;
 use crate::application::services::MediaServices;
 use crate::media::storage::MediaStorageService;
-use crate::upstream::jellyfin::json::JsonUpstream as _;
 use hyper::StatusCode;
 use serde_json::Value;
 
@@ -19,7 +18,7 @@ use crate::{
         playback::{lifecycle::record_playback_sources, response::track_play_session},
     },
     models::MediaSource,
-    outbound::json::set_json_body,
+    processors::set_json_body,
     processors::{response_processor::ResponseProcessingProfile, url_processor::play_session_id},
 };
 
@@ -212,7 +211,7 @@ pub(crate) async fn post_live_stream_action(
     set_json_body(&mut request, &payload)?;
     let request = state.request_builder().build(&target, &request).await?;
     if close {
-        let status = state.json_upstream().execute_status(request).await?;
+        let status = crate::upstream::json::execute_status(&state.reqwest_client, request).await?;
         if status.is_success() {
             super::lifecycle::PlaybackLifecycle::new(&state.play_sessions)
                 .close_live(&id.as_str().into(), &scope.user_id().into())

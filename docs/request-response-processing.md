@@ -110,9 +110,9 @@ flowchart TD
 ## Component Boundaries
 
 - `http/extractors.rs`: Axum extractors that collect request inputs and optionally require an authenticated user.
-- `http/preprocessing/`: authentication/device identity, session lookup, body analysis, HTTP conversion, and playback-report recognition.
+- `http/preprocessing.rs`: authentication/device identity, session lookup, body analysis, HTTP conversion, and playback-report recognition.
 - `application/routing.rs` and `application/playback/`: authorized backend selection and playback ownership/lifecycle decisions.
-- `upstream/jellyfin/request.rs`: outgoing URL, credential and header translation after backend selection.
+- `application/request.rs`: outgoing URL, credential and header translation after backend selection.
 - `http/proxy.rs` and `http/assets.rs`: fallback forwarding and embedded web-asset serving.
 - `processors/url_processor.rs`: all path/query URL rewriting for client-to-server request URLs, server-to-client delivery URLs, and request server detection.
 - `processors/request_analyzer.rs`: scans incoming JSON bodies for media IDs, user IDs, and session IDs that help pick the upstream server/session.

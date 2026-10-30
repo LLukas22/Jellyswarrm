@@ -18,7 +18,6 @@ use crate::{
     },
     servers::{Server, ServerStorageService},
     sessions::ClientSessionService,
-    upstream::jellyfin::json::JellyfinJsonUpstream,
 };
 use std::sync::Arc;
 
@@ -58,12 +57,6 @@ impl MediaServices {
         UpstreamRequestBuilder::new(&self.processors.url_processor, self.url_prefix())
     }
 
-    pub(crate) fn json_upstream(&self) -> JellyfinJsonUpstream {
-        JellyfinJsonUpstream {
-            client: self.reqwest_client.clone(),
-        }
-    }
-
     pub(crate) async fn deduplicate_media_enabled(&self) -> bool {
         self.config.read().await.deduplicate_media
     }
@@ -98,7 +91,7 @@ impl MediaServices {
         profile: ResponseProcessingProfile,
         token: Option<&str>,
     ) -> Result<serde_json::Value, ApplicationError> {
-        let mut payload = upstream::execute_payload(&self.json_upstream(), request).await?;
+        let mut payload = upstream::execute_json_request(&self.reqwest_client, request).await?;
         self.process_response_json(&mut payload, server, profile, token)
             .await?;
         Ok(payload)

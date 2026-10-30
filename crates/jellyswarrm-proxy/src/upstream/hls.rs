@@ -3,7 +3,10 @@ use futures_util::StreamExt;
 use hyper::StatusCode;
 use std::{sync::LazyLock, time::Duration};
 
-use crate::{outbound::hls::PlaylistUrlTranslator, upstream::headers::remove_hop_by_hop_headers};
+use crate::{
+    processors::url_processor::UrlProcessor, servers::Server,
+    upstream::headers::remove_hop_by_hop_headers,
+};
 
 #[derive(thiserror::Error)]
 pub(crate) enum HlsError {
@@ -28,18 +31,29 @@ impl std::fmt::Debug for HlsError {
 }
 
 /// Already-authorized dependencies for rewriting a selected backend's playlist.
-/// The caller resolves the viewer; transport never looks up authorization or
-/// selects a playback session. URL mapping is a supplied capability, not a
-/// dependency on any concrete processor or application service.
+/// The caller resolves the server, credential and viewer; transport never looks
+/// up authorization or selects a playback session.
 pub(crate) struct HlsContext<'a> {
-    translator: &'a dyn PlaylistUrlTranslator,
+    urls: &'a UrlProcessor,
+    server: &'a Server,
+    proxy_api_key: Option<&'a str>,
+    viewer: Option<&'a str>,
     timeout: Duration,
 }
 
 impl<'a> HlsContext<'a> {
-    pub(crate) fn new(translator: &'a dyn PlaylistUrlTranslator, timeout_seconds: u64) -> Self {
+    pub(crate) fn new(
+        urls: &'a UrlProcessor,
+        server: &'a Server,
+        proxy_api_key: Option<&'a str>,
+        viewer: Option<&'a str>,
+        timeout_seconds: u64,
+    ) -> Self {
         Self {
-            translator,
+            urls,
+            server,
+            proxy_api_key,
+            viewer,
             timeout: Duration::from_secs(timeout_seconds.clamp(1, 300)),
         }
     }
@@ -172,8 +186,14 @@ async fn rewrite(
             output.push_str(&line[end..range.start]);
             output.push_str(
                 &context
-                    .translator
-                    .translate(&line[range.clone()], playlist)
+                    .urls
+                    .server_to_client_hls_url(
+                        &line[range.clone()],
+                        playlist,
+                        context.server,
+                        context.proxy_api_key,
+                        context.viewer,
+                    )
                     .await
                     .map_err(HlsError::Translation)?,
             );
@@ -197,7 +217,6 @@ mod tests {
         media::storage::MediaStorageService,
         persistence::MIGRATOR,
         playback::SessionStorage,
-        processors::{hls::HlsUrlTranslation, url_processor::UrlProcessor},
         servers::storage::ServerStorageService,
         servers::Server,
     };
@@ -234,9 +253,7 @@ mod tests {
         let (processor, server) = dependencies().await;
         // Deliberately not a stored authorization token: transport uses only
         // the already-resolved caller identity and credential supplied here.
-        let translation =
-            HlsUrlTranslation::new(&processor, &server, Some("proxy-token"), Some("viewer"));
-        let context = HlsContext::new(&translation, 5);
+        let context = HlsContext::new(&processor, &server, Some("proxy-token"), Some("viewer"), 5);
         let playlist = "http://backend.example/base/hls/master.m3u8"
             .parse()
             .unwrap();
@@ -260,8 +277,7 @@ mod tests {
     async fn explicit_context_bounds_timeout_and_rejects_non_playlists() {
         let (processor, server) = dependencies().await;
         for (configured, bounded) in [(0, 1), (5, 5), (u64::MAX, 300)] {
-            let translation = HlsUrlTranslation::new(&processor, &server, None, None);
-            let context = HlsContext::new(&translation, configured);
+            let context = HlsContext::new(&processor, &server, None, None, configured);
             assert_eq!(context.timeout, Duration::from_secs(bounded));
             assert!(matches!(
                 rewrite(&context, &server.url, "not a playlist").await,
