@@ -42,7 +42,7 @@ pub(crate) fn router() -> Router<AppState> {
         Router::new()
             .nest("/Users", Router::new()
                 .route("/AuthenticateByName", post(authenticate_by_name))
-                .route("/AuthenticateWithQuickConnect", post(quick_connect::handle_authenticate_with_quick_connect))
+                .route("/AuthenticateWithQuickConnect", post(quick_connect::authenticate))
                 .route("/Public", get(public_users))
                 .route("/Me", get(me))
                 .route("/{user_id}", get(user_by_id))

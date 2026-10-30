@@ -6,9 +6,12 @@ use crate::{
     application::{self, services::MediaServices},
     auth::UserAuthorizationService,
     config::{AppConfig, SettingsView},
+    domain::server_id::ServerId,
     libraries::VirtualLibraryService,
     media::MediaStorageService,
-    playback::sessions::SessionStorage,
+    playback::sessions::{
+        LiveStreamBinding, PreparedLiveStream, RevisionedPlaybackSession, SessionStorage,
+    },
     processors::{
         request_analyzer::RequestAnalyzer, request_processor::RequestProcessor,
         response_processor::ResponseProcessor, url_processor::UrlProcessor, ProxyProcessors,
@@ -103,5 +106,44 @@ impl MediaFixture {
             client_sessions: self.client_sessions.clone(),
             admin_password: self.config.read().await.password.clone(),
         }
+    }
+}
+
+/// Wire-string conveniences for historical fixtures. Production APIs require
+/// distinct ID namespaces, especially for session and viewer arguments.
+impl SessionStorage {
+    pub(crate) async fn register_live_stream(
+        &self,
+        original: &str,
+        viewer: &str,
+        server: ServerId,
+    ) -> String {
+        self.register_live_binding(&original.into(), &viewer.into(), server)
+            .await
+            .as_str()
+            .to_owned()
+    }
+    pub(crate) async fn prepare_live_stream(
+        &self,
+        original: &str,
+        viewer: &str,
+        server: ServerId,
+    ) -> Arc<PreparedLiveStream> {
+        self.prepare_live_binding(&original.into(), &viewer.into(), server)
+            .await
+    }
+    pub(crate) async fn live_stream(&self, id: &str, viewer: &str) -> Option<LiveStreamBinding> {
+        self.live_binding(&id.into(), &viewer.into()).await
+    }
+    pub(crate) async fn remove_live_stream(&self, id: &str, viewer: &str) {
+        self.close_live_binding(&id.into(), &viewer.into()).await;
+    }
+    pub(crate) async fn resolve_report_session(
+        &self,
+        id: &str,
+        viewer: &str,
+    ) -> anyhow::Result<Option<RevisionedPlaybackSession>> {
+        self.resolve_report_binding(&id.into(), &viewer.into())
+            .await
     }
 }

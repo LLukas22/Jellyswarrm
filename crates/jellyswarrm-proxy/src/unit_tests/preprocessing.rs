@@ -2,8 +2,42 @@
 use super::*;
 use crate::auth::service::User;
 use crate::protocol::authorization::Authorization;
+use crate::protocol::device::Device;
 use crate::protocol::routes::{matches_case_insensitive, MEDIA_ID_PATH_TAGS, MEDIA_ID_QUERY_TAGS};
 use crate::protocol::url::contains_id;
+
+async fn apply_to_request(
+    request: &mut reqwest::Request,
+    server: &Server,
+    session: &Option<AuthorizationSession>,
+    auth: &Option<JellyfinAuthorization>,
+    state: &MediaServices,
+    access_scope: Option<&VirtualLibraryAccessScope>,
+) {
+    state
+        .request_builder()
+        .apply(
+            request,
+            server,
+            session.as_ref(),
+            auth.as_ref(),
+            access_scope,
+        )
+        .await
+        .unwrap();
+}
+
+// Reports must not use the generic best-server fallback: a wrong destination can
+// update another copy's playback state. Only top-level item/source fields route them.
+async fn resolve_playback_report_server(
+    sessions: &Option<Vec<(AuthorizationSession, Server)>>,
+    analysis: &RequestBodyAnalysisResult,
+    state: &MediaServices,
+) -> Result<(Server, Option<AuthorizationSession>, bool)> {
+    crate::application::playback::reports::resolve_server(sessions, analysis, &state.media_storage)
+        .await
+        .map(|target| (target.server, Some(target.session), true))
+}
 
 #[test]
 fn media_id_tags_cover_audio_paths_and_item_id_queries() {

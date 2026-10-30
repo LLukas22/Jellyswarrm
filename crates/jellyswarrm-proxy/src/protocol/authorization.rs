@@ -32,6 +32,29 @@ impl Authorization {
         Self::parse_internal(header_value, false, true)
     }
 
+    /// Client metadata from `Authorization`, then `X-Emby-Authorization`, accepting
+    /// legacy Emby formats. The caller need not be logged in.
+    pub(crate) fn from_headers(headers: &http::HeaderMap) -> Option<Self> {
+        ["authorization", "x-emby-authorization"]
+            .into_iter()
+            .find_map(|name| {
+                let header = headers.get(name)?.to_str().ok()?;
+                Self::parse_with_legacy(header, true)
+                    .inspect_err(|error| tracing::warn!("Failed to parse {name} header: {error}"))
+                    .ok()
+            })
+    }
+
+    /// The caller's proxy token: credential headers first, then bare token headers.
+    pub(crate) fn token_from_headers(headers: &http::HeaderMap) -> Option<String> {
+        let header = |name: &str| headers.get(name).and_then(|value| value.to_str().ok());
+        let token = |name: &str, legacy| Self::parse_with_legacy(header(name)?, legacy).ok()?.token;
+        token("authorization", false)
+            .or_else(|| token("x-emby-authorization", true))
+            .or_else(|| header("x-emby-token").map(str::to_owned))
+            .or_else(|| header("x-mediabrowser-token").map(str::to_owned))
+    }
+
     pub(crate) fn has_complete_metadata(&self) -> bool {
         !self.client.is_empty()
             && !self.device.is_empty()
@@ -410,5 +433,37 @@ mod tests {
         let display = format!("{}", auth);
         assert_eq!(display, auth.to_redacted_header_value());
         assert!(!display.contains("abc"));
+    }
+
+    #[test]
+    fn token_from_headers_supports_auth_and_token_headers() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            "authorization",
+            http::HeaderValue::from_static(
+                "MediaBrowser Client=\"Jellyfin Web\", Device=\"Firefox\", DeviceId=\"abc\", Version=\"10.10.7\", Token=\"token-1\"",
+            ),
+        );
+        assert_eq!(
+            Authorization::token_from_headers(&headers).as_deref(),
+            Some("token-1")
+        );
+
+        let mut x_emby_token = http::HeaderMap::new();
+        x_emby_token.insert("x-emby-token", http::HeaderValue::from_static("token-2"));
+        assert_eq!(
+            Authorization::token_from_headers(&x_emby_token).as_deref(),
+            Some("token-2")
+        );
+
+        let mut media_browser_token = http::HeaderMap::new();
+        media_browser_token.insert(
+            "x-mediabrowser-token",
+            http::HeaderValue::from_static("token-3"),
+        );
+        assert_eq!(
+            Authorization::token_from_headers(&media_browser_token).as_deref(),
+            Some("token-3")
+        );
     }
 }

@@ -125,3 +125,16 @@ impl Device {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_android_tv_clients() {
+        assert!(is_android_tv_client("Jellyfin Android TV"));
+        assert!(is_android_tv_client("Jellyfin Android TV (debug)"));
+        assert!(!is_android_tv_client("Jellyfin Android"));
+        assert!(!is_android_tv_client("Jellyfin Web"));
+    }
+}

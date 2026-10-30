@@ -3,7 +3,7 @@
 //! than by an incoming HTTP handler.
 use crate::{
     application::accounts::services::AuthenticationService,
-    auth::quick_connect::Redemption,
+    auth::quick_connect::{QuickConnectSession, Redemption},
     models::{AuthenticateResponse, SyncPlayUserAccessType},
     protocol::authorization::Authorization,
 };
@@ -20,11 +20,14 @@ pub(crate) enum QuickConnectError {
     CoordinatorStopped(#[source] tokio::sync::oneshot::error::RecvError),
 }
 
+/// `request` is the redeeming client's own authorization header, if parseable.
 pub(crate) async fn redeem(
     state: &AuthenticationService,
     redemption: Redemption,
-    authorization: Authorization,
+    request: Option<Authorization>,
 ) -> Result<AuthenticateResponse, QuickConnectError> {
+    let authorization =
+        redemption_authorization(request, redemption.session(), redemption.user_id());
     redeem_with_hooks(
         state,
         redemption,
@@ -32,6 +35,52 @@ pub(crate) async fn redeem(
         RegistrationHooks::default(),
     )
     .await
+}
+
+/// The redeemed session's identity: the redeeming request's client metadata, or
+/// the initiating request's when absent, and never a caller-supplied token.
+fn redemption_authorization(
+    request: Option<Authorization>,
+    session: &QuickConnectSession,
+    user_id: &str,
+) -> Authorization {
+    let mut authorization = request.unwrap_or_else(|| {
+        tracing::warn!(
+            "Quick Connect authenticate request missing parseable authorization header, using initiate metadata"
+        );
+        Authorization {
+            client: session.app_name.clone(),
+            device: session.device_name.clone(),
+            device_id: session.device_id.clone(),
+            version: session.app_version.clone(),
+            token: None,
+        }
+    });
+    authorization.token = None;
+    if crate::protocol::device::is_android_tv_client(&authorization.client)
+        && !authorization.device_id.is_empty()
+    {
+        let original_device_id = std::mem::take(&mut authorization.device_id);
+        authorization.device_id = derive_android_tv_user_device_id(&original_device_id, user_id);
+        tracing::debug!(
+            "Derived Android TV user-scoped device id for Quick Connect: {} -> {}",
+            original_device_id,
+            authorization.device_id
+        );
+    }
+    authorization
+}
+
+fn derive_android_tv_user_device_id(base_device_id: &str, user_id: &str) -> String {
+    use sha1::{Digest, Sha1};
+    let user_id = uuid::Uuid::parse_str(user_id)
+        .map(|id| id.hyphenated().to_string())
+        .unwrap_or_else(|_| user_id.to_string());
+    let mut hasher = Sha1::new();
+    hasher.update(base_device_id.as_bytes());
+    hasher.update(b"+");
+    hasher.update(user_id.as_bytes());
+    hex::encode(hasher.finalize())
 }
 
 // The request owns only the reply receiver, never the worker/reservation
@@ -349,7 +398,7 @@ mod tests {
             .await
             .unwrap();
         let retry = quick_connect.begin_redemption(&secret).unwrap();
-        let response = redeem(&state, retry, client).await.unwrap();
+        let response = redeem(&state, retry, Some(client)).await.unwrap();
         assert_eq!(response.access_token, user.virtual_key);
         assert!(matches!(
             quick_connect.begin_redemption(&secret),
@@ -363,5 +412,53 @@ mod tests {
         assert_eq!(sessions.len(), 1); // completed registration, then sequential upsert
         assert_eq!(sessions[0].0.jellyfin_token, "saved-token");
         backend.verify().await;
+    }
+
+    #[test]
+    fn derives_android_tv_device_id_from_uuid_user_id() {
+        let base_device_id = "androidtv-device-123";
+        let simple_user_id = "550e8400e29b41d4a716446655440000";
+        let derived = derive_android_tv_user_device_id(base_device_id, simple_user_id);
+
+        assert_eq!(derived, "7094964e96c0e66e00671463e263fbdffce6b001");
+    }
+
+    #[test]
+    fn quick_connect_uses_android_tv_user_scoped_device_id() {
+        let session = QuickConnectStorage::new().initiate(
+            "session-device".to_string(),
+            "Android TV".to_string(),
+            "Jellyfin Android TV".to_string(),
+            "1.0.0".to_string(),
+        );
+
+        let request = Authorization::parse(
+            "MediaBrowser Client=\"Jellyfin Android TV\", Device=\"Chromecast\", DeviceId=\"androidtv-device-123\", Version=\"0.18.0\"",
+        )
+        .ok();
+
+        let auth = redemption_authorization(request, &session, "550e8400e29b41d4a716446655440000");
+
+        assert_eq!(auth.client, "Jellyfin Android TV");
+        assert_eq!(auth.device, "Chromecast");
+        assert_eq!(auth.version, "0.18.0");
+        assert_eq!(auth.device_id, "7094964e96c0e66e00671463e263fbdffce6b001");
+        assert!(auth.token.is_none());
+    }
+
+    #[test]
+    fn quick_connect_falls_back_to_session_metadata_without_headers() {
+        let session = QuickConnectStorage::new().initiate(
+            "session-device".to_string(),
+            "Fallback Device".to_string(),
+            "Unknown App".to_string(),
+            "1.0.0".to_string(),
+        );
+
+        let auth = redemption_authorization(None, &session, "user-id");
+
+        assert_eq!(auth.device_id, "session-device");
+        assert_eq!(auth.device, "Fallback Device");
+        assert_eq!(auth.client, "Unknown App");
     }
 }

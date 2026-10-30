@@ -1,8 +1,16 @@
-//! Handle Quick Connect initiation, polling, authorization, and temporary request storage.
-use crate::domain::user_id::UserId;
+//! Quick Connect HTTP adapters: initiation, polling, approval and redemption.
+//! Redeemed-session identity is chosen by `application::quick_connect`.
 use crate::{
-    application::accounts::services::AuthenticationService,
-    auth::{quick_connect::QuickConnectStorage, UserAuthorizationService},
+    application::{
+        accounts::services::AuthenticationService,
+        quick_connect::{self, QuickConnectError},
+    },
+    auth::{
+        quick_connect::{QuickConnectSession, QuickConnectStorage, RedemptionError},
+        UserAuthorizationService,
+    },
+    domain::user_id::UserId,
+    http::sessions::{authentication_response, AuthenticationResponse},
     protocol::authorization::Authorization,
 };
 use axum::{
@@ -13,12 +21,9 @@ use axum::{
 use hyper::StatusCode;
 use jellyswarrm_macros::multi_case_struct;
 use serde::Deserialize;
-use sha1::{Digest, Sha1};
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 use uuid::Uuid;
-
-use crate::auth::quick_connect::QuickConnectSession;
 
 #[multi_case_struct(pascal, camel)]
 #[derive(Debug, Deserialize)]
@@ -39,136 +44,48 @@ pub(crate) struct QuickConnectAuthenticateRequest {
     pub(crate) secret: String,
 }
 
-fn parse_authorization_from_headers(headers: &HeaderMap) -> Option<Authorization> {
-    if let Some(header) = headers
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-    {
-        match Authorization::parse_with_legacy(header, true) {
-            Ok(auth) => return Some(auth),
-            Err(e) => warn!("Failed to parse Authorization header: {}", e),
-        }
-    }
-
-    if let Some(header) = headers
-        .get("x-emby-authorization")
-        .and_then(|value| value.to_str().ok())
-    {
-        match Authorization::parse_with_legacy(header, true) {
-            Ok(auth) => return Some(auth),
-            Err(e) => warn!("Failed to parse X-Emby-Authorization header: {}", e),
-        }
-    }
-
-    None
+pub(crate) async fn enabled() -> Json<bool> {
+    Json(true)
 }
 
-fn parse_client_info(headers: &HeaderMap) -> (String, String, String, String) {
-    if let Some(auth) = parse_authorization_from_headers(headers) {
-        return (auth.device_id, auth.device, auth.client, auth.version);
-    }
-
-    (
-        Uuid::new_v4().to_string(),
-        "Unknown Device".to_string(),
-        "Unknown App".to_string(),
-        "1.0.0".to_string(),
-    )
-}
-
-fn is_android_tv_client(client: &str) -> bool {
-    client.to_ascii_lowercase().contains("android tv")
-}
-
-fn normalize_android_tv_user_id(user_id: &str) -> String {
-    Uuid::parse_str(user_id)
-        .map(|id| id.hyphenated().to_string())
-        .unwrap_or_else(|_| user_id.to_string())
-}
-
-fn derive_android_tv_user_device_id(base_device_id: &str, user_id: &str) -> String {
-    let normalized_user_id = normalize_android_tv_user_id(user_id);
-    let mut hasher = Sha1::new();
-    hasher.update(base_device_id.as_bytes());
-    hasher.update(b"+");
-    hasher.update(normalized_user_id.as_bytes());
-    hex::encode(hasher.finalize())
-}
-
-fn effective_quick_connect_authorization(
-    headers: &HeaderMap,
-    session: &QuickConnectSession,
-    user_id: &str,
-) -> Authorization {
-    let request_authorization = parse_authorization_from_headers(headers);
-
-    let mut authorization = request_authorization.unwrap_or_else(|| {
-        warn!(
-            "Quick Connect authenticate request missing parseable authorization header, using initiate metadata"
-        );
-        Authorization {
-            client: session.app_name.clone(),
-            device: session.device_name.clone(),
-            device_id: session.device_id.clone(),
-            version: session.app_version.clone(),
-            token: None,
-        }
-    });
-
-    authorization.token = None;
-
-    if is_android_tv_client(&authorization.client) && !authorization.device_id.is_empty() {
-        let original_device_id = authorization.device_id.clone();
-        authorization.device_id =
-            derive_android_tv_user_device_id(&authorization.device_id, user_id);
-        debug!(
-            "Derived Android TV user-scoped device id for Quick Connect: {} -> {}",
-            original_device_id, authorization.device_id
-        );
-    }
-
-    authorization
-}
-
-pub(crate) async fn handle_quick_connect_enabled() -> Result<Json<bool>, StatusCode> {
-    Ok(Json(true))
-}
-
-pub(crate) async fn handle_quick_connect_initiate(
+pub(crate) async fn initiate(
     State(storage): State<QuickConnectStorage>,
     headers: HeaderMap,
-) -> Result<Json<QuickConnectSession>, StatusCode> {
-    let (device_id, device_name, app_name, app_version) = parse_client_info(&headers);
-
+) -> Json<QuickConnectSession> {
+    let client = Authorization::from_headers(&headers).unwrap_or_else(|| Authorization {
+        client: "Unknown App".to_string(),
+        device: "Unknown Device".to_string(),
+        device_id: Uuid::new_v4().to_string(),
+        version: "1.0.0".to_string(),
+        token: None,
+    });
     info!(
         "Initiating Quick Connect session for {} / {} ({})",
-        app_name, device_name, device_id
+        client.client, client.device, client.device_id
     );
-
-    let session = storage.initiate(device_id, device_name, app_name, app_version);
-
-    Ok(Json(session))
+    Json(storage.initiate(
+        client.device_id,
+        client.device,
+        client.client,
+        client.version,
+    ))
 }
 
-pub(crate) async fn handle_quick_connect_authorize(
+pub(crate) async fn authorize(
     Query(params): Query<AuthorizeQuery>,
     State(storage): State<QuickConnectStorage>,
     State(authorization): State<Arc<UserAuthorizationService>>,
     headers: HeaderMap,
 ) -> Result<Json<bool>, StatusCode> {
     let user_id = resolve_authorize_user_id(&authorization, &headers, params.user_id).await?;
-
-    let success = storage.approve(&params.code.as_str().into(), user_id.clone());
-
-    if success {
-        info!(
-            "Authorized Quick Connect code {} for user {}",
-            params.code, user_id
-        );
-        Ok(Json(true))
-    } else {
-        Err(StatusCode::NOT_FOUND)
+    if !storage.approve(&params.code.as_str().into(), user_id.clone()) {
+        return Err(StatusCode::NOT_FOUND);
     }
+    info!(
+        "Authorized Quick Connect code {} for user {}",
+        params.code, user_id
+    );
+    Ok(Json(true))
 }
 
 async fn resolve_authorize_user_id(
@@ -176,7 +93,7 @@ async fn resolve_authorize_user_id(
     headers: &HeaderMap,
     user_id: Option<UserId>,
 ) -> Result<UserId, StatusCode> {
-    let token = extract_virtual_token(headers).ok_or_else(|| {
+    let token = Authorization::token_from_headers(headers).ok_or_else(|| {
         warn!("Quick Connect authorize called without a virtual token");
         StatusCode::BAD_REQUEST
     })?;
@@ -202,83 +119,35 @@ async fn resolve_authorize_user_id(
     Ok(user.id)
 }
 
-fn extract_virtual_token(headers: &HeaderMap) -> Option<String> {
-    if let Some(header) = headers
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-    {
-        if let Ok(auth) = Authorization::parse(header) {
-            if let Some(token) = auth.token {
-                return Some(token);
-            }
-        }
-    }
-
-    if let Some(header) = headers
-        .get("x-emby-authorization")
-        .and_then(|value| value.to_str().ok())
-    {
-        if let Ok(auth) = Authorization::parse_with_legacy(header, true) {
-            if let Some(token) = auth.token {
-                return Some(token);
-            }
-        }
-    }
-
-    if let Some(token) = headers
-        .get("x-emby-token")
-        .and_then(|value| value.to_str().ok())
-    {
-        return Some(token.to_string());
-    }
-
-    if let Some(token) = headers
-        .get("x-mediabrowser-token")
-        .and_then(|value| value.to_str().ok())
-    {
-        return Some(token.to_string());
-    }
-
-    None
-}
-
-pub(crate) async fn handle_quick_connect_connect(
+pub(crate) async fn connect(
     Query(params): Query<ConnectQuery>,
     State(storage): State<QuickConnectStorage>,
 ) -> Result<Json<QuickConnectSession>, StatusCode> {
-    if let Some(session) = storage.poll(&params.secret.as_str().into()) {
-        Ok(Json(session))
-    } else {
-        Err(StatusCode::NOT_FOUND)
-    }
+    storage
+        .poll(&params.secret.as_str().into())
+        .map(Json)
+        .ok_or(StatusCode::NOT_FOUND)
 }
 
-pub(crate) async fn handle_authenticate_with_quick_connect(
+pub(crate) async fn authenticate(
     State(storage): State<QuickConnectStorage>,
     State(state): State<AuthenticationService>,
     headers: HeaderMap,
     Json(request): Json<QuickConnectAuthenticateRequest>,
-) -> Result<crate::http::sessions::AuthenticationResponse, StatusCode> {
+) -> Result<AuthenticationResponse, StatusCode> {
     let redemption = storage
         .begin_redemption(&request.secret.as_str().into())
         .map_err(|error| match error {
-            crate::auth::quick_connect::RedemptionError::NotFound => StatusCode::NOT_FOUND,
-            crate::auth::quick_connect::RedemptionError::NotApproved => StatusCode::UNAUTHORIZED,
+            RedemptionError::NotFound => StatusCode::NOT_FOUND,
+            RedemptionError::NotApproved => StatusCode::UNAUTHORIZED,
         })?;
-    let authorization =
-        effective_quick_connect_authorization(&headers, redemption.session(), redemption.user_id());
-    crate::application::quick_connect::redeem(&state, redemption, authorization)
+    quick_connect::redeem(&state, redemption, Authorization::from_headers(&headers))
         .await
-        .map(crate::http::sessions::authentication_response)
+        .map(authentication_response)
         .map_err(|error| match error {
-            crate::application::quick_connect::QuickConnectError::Unauthorized => {
-                StatusCode::UNAUTHORIZED
-            }
-            crate::application::quick_connect::QuickConnectError::NoServers => {
-                StatusCode::NOT_FOUND
-            }
-            crate::application::quick_connect::QuickConnectError::Storage(_)
-            | crate::application::quick_connect::QuickConnectError::CoordinatorStopped(_) => {
+            QuickConnectError::Unauthorized => StatusCode::UNAUTHORIZED,
+            QuickConnectError::NoServers => StatusCode::NOT_FOUND,
+            QuickConnectError::Storage(_) | QuickConnectError::CoordinatorStopped(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
         })
@@ -409,96 +278,6 @@ mod tests {
         assert!(missing.user_id.is_none());
     }
 
-    #[test]
-    fn extract_virtual_token_supports_auth_and_token_headers() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "authorization",
-            HeaderValue::from_static(
-                "MediaBrowser Client=\"Jellyfin Web\", Device=\"Firefox\", DeviceId=\"abc\", Version=\"10.10.7\", Token=\"token-1\"",
-            ),
-        );
-        assert_eq!(extract_virtual_token(&headers).as_deref(), Some("token-1"));
-
-        let mut x_emby_token = HeaderMap::new();
-        x_emby_token.insert("x-emby-token", HeaderValue::from_static("token-2"));
-        assert_eq!(
-            extract_virtual_token(&x_emby_token).as_deref(),
-            Some("token-2")
-        );
-
-        let mut media_browser_token = HeaderMap::new();
-        media_browser_token.insert("x-mediabrowser-token", HeaderValue::from_static("token-3"));
-        assert_eq!(
-            extract_virtual_token(&media_browser_token).as_deref(),
-            Some("token-3")
-        );
-    }
-
-    #[test]
-    fn detects_android_tv_clients() {
-        assert!(is_android_tv_client("Jellyfin Android TV"));
-        assert!(is_android_tv_client("Jellyfin Android TV (debug)"));
-        assert!(!is_android_tv_client("Jellyfin Android"));
-        assert!(!is_android_tv_client("Jellyfin Web"));
-    }
-
-    #[test]
-    fn derives_android_tv_device_id_from_uuid_user_id() {
-        let base_device_id = "androidtv-device-123";
-        let simple_user_id = "550e8400e29b41d4a716446655440000";
-        let derived = derive_android_tv_user_device_id(base_device_id, simple_user_id);
-
-        assert_eq!(derived, "7094964e96c0e66e00671463e263fbdffce6b001");
-    }
-
-    #[test]
-    fn quick_connect_uses_android_tv_user_scoped_device_id() {
-        let session = QuickConnectStorage::new().initiate(
-            "session-device".to_string(),
-            "Android TV".to_string(),
-            "Jellyfin Android TV".to_string(),
-            "1.0.0".to_string(),
-        );
-
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "authorization",
-            HeaderValue::from_static(
-                "MediaBrowser Client=\"Jellyfin Android TV\", Device=\"Chromecast\", DeviceId=\"androidtv-device-123\", Version=\"0.18.0\"",
-            ),
-        );
-
-        let auth = effective_quick_connect_authorization(
-            &headers,
-            &session,
-            "550e8400e29b41d4a716446655440000",
-        );
-
-        assert_eq!(auth.client, "Jellyfin Android TV");
-        assert_eq!(auth.device, "Chromecast");
-        assert_eq!(auth.version, "0.18.0");
-        assert_eq!(auth.device_id, "7094964e96c0e66e00671463e263fbdffce6b001");
-        assert!(auth.token.is_none());
-    }
-
-    #[test]
-    fn quick_connect_falls_back_to_session_metadata_without_headers() {
-        let session = QuickConnectStorage::new().initiate(
-            "session-device".to_string(),
-            "Fallback Device".to_string(),
-            "Unknown App".to_string(),
-            "1.0.0".to_string(),
-        );
-
-        let headers = HeaderMap::new();
-        let auth = effective_quick_connect_authorization(&headers, &session, "user-id");
-
-        assert_eq!(auth.device_id, "session-device");
-        assert_eq!(auth.device, "Fallback Device");
-        assert_eq!(auth.client, "Unknown App");
-    }
-
     #[tokio::test]
     async fn quick_connect_authentication_preserves_existing_web_session() {
         let state = adapter_fixture().await;
@@ -600,7 +379,7 @@ mod tests {
             .unwrap(),
         );
 
-        let authorize_result = handle_quick_connect_authorize(
+        let authorize_result = authorize(
             Query(AuthorizeQuery {
                 code: quick_connect_session.code.clone(),
                 user_id: None,
@@ -620,7 +399,7 @@ mod tests {
             ),
         );
 
-        let auth_response = handle_authenticate_with_quick_connect(
+        let auth_response = authenticate(
             axum::extract::State(state.quick_connect.clone()),
             axum::extract::State(state.authentication_service().await),
             tv_headers,

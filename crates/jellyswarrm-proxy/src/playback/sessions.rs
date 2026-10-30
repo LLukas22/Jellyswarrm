@@ -105,47 +105,6 @@ impl Default for SessionStorage {
 }
 
 impl SessionStorage {
-    // Historical fixtures keep wire-string convenience methods. Production APIs
-    // require distinct ID namespaces, especially for session/viewer arguments.
-    #[cfg(test)]
-    pub(crate) async fn register_live_stream(
-        &self,
-        original: &str,
-        viewer: &str,
-        server: ServerId,
-    ) -> String {
-        self.register_live_binding(&original.into(), &viewer.into(), server)
-            .await
-            .as_str()
-            .to_owned()
-    }
-    #[cfg(test)]
-    pub(crate) async fn prepare_live_stream(
-        &self,
-        original: &str,
-        viewer: &str,
-        server: ServerId,
-    ) -> Arc<PreparedLiveStream> {
-        self.prepare_live_binding(&original.into(), &viewer.into(), server)
-            .await
-    }
-    #[cfg(test)]
-    pub(crate) async fn live_stream(&self, id: &str, viewer: &str) -> Option<LiveStreamBinding> {
-        self.live_binding(&id.into(), &viewer.into()).await
-    }
-    #[cfg(test)]
-    pub(crate) async fn remove_live_stream(&self, id: &str, viewer: &str) {
-        self.close_live_binding(&id.into(), &viewer.into()).await;
-    }
-    #[cfg(test)]
-    pub(crate) async fn resolve_report_session(
-        &self,
-        id: &str,
-        viewer: &str,
-    ) -> anyhow::Result<Option<RevisionedPlaybackSession>> {
-        self.resolve_report_binding(&id.into(), &viewer.into())
-            .await
-    }
     pub(crate) fn new() -> Self {
         Self::with_session_ttl(PLAYBACK_SESSION_TTL)
     }
@@ -347,17 +306,6 @@ impl SessionStorage {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) async fn get_session(&self, session_id: &str) -> Option<PlaybackSession> {
-        let sessions = self.live_sessions().await;
-
-        sessions
-            .iter()
-            .rev()
-            .find(|tracked| tracked.session.session_id == session_id)
-            .map(|tracked| tracked.session.clone())
-    }
-
     pub(crate) async fn get_session_for_user(
         &self,
         session_id: &str,
@@ -433,24 +381,6 @@ impl SessionStorage {
         refreshed
     }
 
-    #[cfg(test)]
-    pub(crate) async fn get_session_by_session_and_item_id(
-        &self,
-        session_id: &str,
-        item_id: &str,
-    ) -> Option<PlaybackSession> {
-        let item_id = crate::media::storage::MediaStorageService::normalize_uuid(item_id);
-        let sessions = self.live_sessions().await;
-
-        sessions
-            .iter()
-            .rev()
-            .find(|tracked| {
-                tracked.session.session_id == session_id && tracked.session.item_id == item_id
-            })
-            .map(|tracked| tracked.session.clone())
-    }
-
     pub(crate) async fn get_sessions_by_item_id(&self, item_id: &str) -> Vec<PlaybackSession> {
         let item_id = crate::media::storage::MediaStorageService::normalize_uuid(item_id);
         let sessions = self.live_sessions().await;
@@ -461,12 +391,6 @@ impl SessionStorage {
             .filter(|tracked| tracked.session.item_id == item_id)
             .map(|tracked| tracked.session.clone())
             .collect()
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn remove_session(&self, session_id: &str) {
-        let mut sessions = self.sessions.write().await;
-        sessions.retain(|tracked| tracked.session.session_id != session_id);
     }
 
     pub(crate) async fn remove_revisioned_session(&self, binding: &RevisionedPlaybackSession) {
@@ -511,6 +435,40 @@ impl SessionStorage {
         now: Instant,
     ) {
         sessions.retain(|tracked| now.duration_since(tracked.updated_at) <= session_ttl);
+    }
+}
+
+// Fixture lookups by wire string; production code addresses bindings by viewer.
+#[cfg(test)]
+impl SessionStorage {
+    pub(crate) async fn get_session(&self, session_id: &str) -> Option<PlaybackSession> {
+        let sessions = self.live_sessions().await;
+
+        sessions
+            .iter()
+            .rev()
+            .find(|tracked| tracked.session.session_id == session_id)
+            .map(|tracked| tracked.session.clone())
+    }
+    pub(crate) async fn get_session_by_session_and_item_id(
+        &self,
+        session_id: &str,
+        item_id: &str,
+    ) -> Option<PlaybackSession> {
+        let item_id = crate::media::storage::MediaStorageService::normalize_uuid(item_id);
+        let sessions = self.live_sessions().await;
+
+        sessions
+            .iter()
+            .rev()
+            .find(|tracked| {
+                tracked.session.session_id == session_id && tracked.session.item_id == item_id
+            })
+            .map(|tracked| tracked.session.clone())
+    }
+    pub(crate) async fn remove_session(&self, session_id: &str) {
+        let mut sessions = self.sessions.write().await;
+        sessions.retain(|tracked| tracked.session.session_id != session_id);
     }
 }
 
