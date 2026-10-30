@@ -6,7 +6,7 @@ use crate::application::error::{ApplicationError, FailureStage};
 
 use super::services::CatalogService;
 use crate::{
-    application::catalog::input::CatalogRequest,
+    application::input::OperationRequest,
     media::catalog::{merge_media_group, TaggedMediaItem},
     media::storage::{MediaMapping, MediaStorageService},
 };
@@ -31,7 +31,7 @@ pub(super) struct RequestedItems(Vec<RequestedItem>);
 impl RequestedItems {
     pub(crate) async fn resolve(
         state: &CatalogService,
-        request: &CatalogRequest,
+        request: &OperationRequest,
     ) -> Result<Option<Self>, ApplicationError> {
         let url = request.original_request.url();
         if !url
@@ -122,7 +122,7 @@ impl RequestedItems {
     pub(crate) async fn fetch(
         self,
         state: &CatalogService,
-        request: CatalogRequest,
+        request: OperationRequest,
     ) -> Result<serde_json::Value, ApplicationError> {
         let mut policy = CatalogRequestPolicy::from_url(request.original_request.url());
         if !request

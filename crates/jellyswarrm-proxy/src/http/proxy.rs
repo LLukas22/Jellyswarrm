@@ -50,31 +50,8 @@ pub(crate) async fn proxy_handler(
     }
 
     let prepared = async {
-        let crate::application::input::CollectedRequest {
-            original_request,
-            auth,
-            user,
-            sessions,
-            body_analysis,
-            access_scope,
-        } = crate::http::preprocessing::extract_request_infos(req, &state, action).await?;
-        let context = application::context::RequestContext::new(
-            &original_request,
-            auth,
-            user,
-            sessions,
-            access_scope,
-        );
-        application::proxy::prepare(
-            &state.proxy_service(),
-            application::input::OperationRequest {
-                original_request,
-                context,
-                body_analysis,
-            },
-            action,
-        )
-        .await
+        let request = super::preprocessing::extract_request_infos(req, &state, action).await?;
+        application::proxy::prepare(&state.proxy_service(), request, action).await
     }
     .await;
     let prepared = match prepared {

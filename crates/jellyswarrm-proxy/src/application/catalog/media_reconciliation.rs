@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 use super::services::CatalogService;
 use crate::{
-    application::catalog::input::CatalogRequest,
+    application::input::OperationRequest,
     media::catalog::{MediaDedupPlan, TaggedMediaItem},
     media::identity::{MediaAlias, MediaKind, MediaObservation},
     media::scope::{MediaCatalogScope, MediaScopeKind},
@@ -84,7 +84,7 @@ impl CatalogContext {
 
 pub(crate) async fn get_virtual_library_items(
     state: &CatalogService,
-    preprocessed: CatalogRequest,
+    preprocessed: OperationRequest,
     catalog_scope_key: String,
     targets: Vec<CatalogFetchTarget>,
     skipped_targets: usize,
@@ -102,7 +102,7 @@ pub(crate) async fn get_virtual_library_items(
 
 async fn get_reconciled_catalog(
     state: &CatalogService,
-    preprocessed: CatalogRequest,
+    preprocessed: OperationRequest,
     catalog_scope_key: String,
     targets: Vec<CatalogFetchTarget>,
     skipped_targets: usize,
@@ -134,7 +134,7 @@ async fn get_reconciled_catalog(
 
 async fn get_reconciled_catalog_uncached(
     state: &CatalogService,
-    preprocessed: CatalogRequest,
+    preprocessed: OperationRequest,
     catalog_scope_key: String,
     targets: Vec<CatalogFetchTarget>,
     skipped_targets: usize,
@@ -416,7 +416,7 @@ pub(super) async fn reconcile_fetched_catalog(
 /// series and season/episode numbers when available.
 pub(crate) async fn get_aggregate_show_items(
     state: &CatalogService,
-    preprocessed: CatalogRequest,
+    preprocessed: OperationRequest,
     aggregate_id: String,
     targets: Vec<CatalogFetchTarget>,
     skipped_targets: usize,

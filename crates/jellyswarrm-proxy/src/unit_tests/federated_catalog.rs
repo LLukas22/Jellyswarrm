@@ -86,7 +86,7 @@ pub(crate) async fn fixture_member_parent_ids(
     ids
 }
 
-pub(crate) fn request(path: &str, sessions: &[(AuthorizationSession, Server)]) -> CatalogRequest {
+pub(crate) fn request(path: &str, sessions: &[(AuthorizationSession, Server)]) -> OperationRequest {
     let original_request = reqwest::Request::new(
         reqwest::Method::GET,
         url::Url::parse(&format!("http://localhost{path}")).unwrap(),
@@ -101,7 +101,11 @@ pub(crate) fn request(path: &str, sessions: &[(AuthorizationSession, Server)]) -
             sessions.iter().map(|(_, server)| server.id),
         )),
     );
-    CatalogRequest::new(original_request, context, None)
+    OperationRequest {
+        original_request,
+        context,
+        body_analysis: None,
+    }
 }
 
 #[tokio::test]
@@ -267,7 +271,10 @@ async fn request_independent_refresh_rejects_foreign_viewer_credentials_before_t
 
 #[tokio::test]
 async fn catalog_service_boundaries_preserve_source_and_storage_causes() {
-    use crate::application::catalog::{filters::get_filters, get_catalog, input::CatalogRequest};
+    use crate::application::{
+        catalog::{filters::get_filters, get_catalog},
+        input::OperationRequest,
+    };
     let (state, pool, sessions, upstreams) = setup().await;
     let mut ids = Vec::new();
     for (_, server) in &sessions {
@@ -291,7 +298,7 @@ async fn catalog_service_boundaries_preserve_source_and_storage_causes() {
         "/Items/Filters".to_string(),
         format!("/Items?Ids={}", ids.join(",")),
     ] {
-        let input: CatalogRequest = request(&path, &sessions);
+        let input: OperationRequest = request(&path, &sessions);
         let result = if path.ends_with("/Filters") {
             get_filters(&state.catalog_service(), input).await
         } else {
@@ -313,7 +320,7 @@ async fn catalog_service_boundaries_preserve_source_and_storage_causes() {
         "/Items/Filters?ParentId=library",
         "/Items?Ids=unknown",
     ] {
-        let input: CatalogRequest = request(path, &sessions);
+        let input: OperationRequest = request(path, &sessions);
         let result = if path.contains("/Filters") {
             get_filters(&state.catalog_service(), input).await
         } else {
@@ -333,18 +340,18 @@ async fn catalog_service_boundaries_preserve_source_and_storage_causes() {
 #[tokio::test]
 async fn catalog_query_is_always_derived_from_the_authoritative_wire_request() {
     let (_state, _pool, sessions, _upstreams) = setup().await;
-    let mut input: crate::application::catalog::input::CatalogRequest =
+    let mut input: crate::application::input::OperationRequest =
         request("/Items?ParentId=before&Limit=10", &sessions);
     *input.original_request.url_mut() = "http://localhost/Items?ParentId=after&Limit=3"
         .parse()
         .unwrap();
     assert_eq!(
-        input.query().identity(),
+        input.catalog_query().identity(),
         crate::application::catalog::query::CatalogQuery::from_url(input.original_request.url())
             .identity()
     );
-    assert!(input.query().identity().contains("ParentId=after"));
-    assert!(!input.query().identity().contains("before"));
+    assert!(input.catalog_query().identity().contains("ParentId=after"));
+    assert!(!input.catalog_query().identity().contains("before"));
 }
 
 fn latest_items() -> Value {

@@ -7,7 +7,7 @@ use tracing::{error, warn};
 
 use super::services::CatalogService;
 use crate::{
-    application::catalog::input::CatalogRequest,
+    application::input::OperationRequest,
     application::upstream::response_json_to_payload,
     domain::server_id::ServerId,
     libraries::service::{
@@ -243,11 +243,11 @@ async fn partition_library_root_inventory(
 
 pub(super) async fn get_automatic_library_root(
     state: &CatalogService,
-    preprocessed: CatalogRequest,
+    preprocessed: OperationRequest,
     targets: Vec<CatalogFetchTarget>,
 ) -> Result<serde_json::Value, ApplicationError> {
-    let policy = preprocessed.query().policy(false);
-    let CatalogRequest {
+    let policy = preprocessed.catalog_query().policy(false);
+    let OperationRequest {
         original_request,
         context,
         ..
@@ -354,10 +354,10 @@ async fn present_configured_library_groups(
 
 pub(super) async fn get_configured_library_root(
     state: &CatalogService,
-    preprocessed: CatalogRequest,
+    preprocessed: OperationRequest,
     targets: Vec<CatalogFetchTarget>,
 ) -> Result<serde_json::Value, ApplicationError> {
-    let policy = preprocessed.query().policy(false);
+    let policy = preprocessed.catalog_query().policy(false);
     let original_request = preprocessed.original_request;
     let FetchedCatalog {
         server_items,

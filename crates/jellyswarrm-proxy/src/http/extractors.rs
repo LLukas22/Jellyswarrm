@@ -5,11 +5,8 @@ use tracing::error;
 
 use crate::{
     application::{
-        catalog::input::CatalogRequest,
-        context::RequestContext,
         error::ApplicationError,
-        input::{routing_error, CollectedRequest, OperationRequest},
-        playback::live::LiveRequest,
+        input::{routing_error, OperationRequest},
     },
     auth::service::User,
     http::{
@@ -51,7 +48,16 @@ where
     }
 }
 
-/// A caller-scoped operation that has not selected or encoded a backend request.
+/// Collect caller identity, body analysis, and backend availability without
+/// selecting or encoding a backend request. The extractors below differ only in
+/// which access validation runs before a workflow sees the request.
+async fn collect(req: Request, state: &MediaState) -> Result<OperationRequest, ApplicationError> {
+    extract_request_infos(req, state, None)
+        .await
+        .map_err(routing_error)
+}
+
+/// A caller-scoped operation; target workflows perform their own access checks.
 pub(crate) struct OperationInput(pub(crate) OperationRequest);
 
 impl<S: Send + Sync> FromRequest<S> for OperationInput
@@ -61,28 +67,12 @@ where
     type Rejection = ApplicationError;
 
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
-        let state = MediaState::from_ref(state);
-        let CollectedRequest {
-            original_request,
-            auth,
-            user,
-            sessions,
-            body_analysis,
-            access_scope,
-        } = extract_request_infos(req, &state, None)
-            .await
-            .map_err(routing_error)?;
-        let context = RequestContext::new(&original_request, auth, user, sessions, access_scope);
-        Ok(Self(OperationRequest {
-            original_request,
-            context,
-            body_analysis,
-        }))
+        Ok(Self(collect(req, &MediaState::from_ref(state)).await?))
     }
 }
 
-/// Catalog authentication and scope collection without selecting or rewriting a backend.
-pub(crate) struct CatalogInput(pub(crate) CatalogRequest);
+/// A catalog operation whose selected media and backend availability were validated.
+pub(crate) struct CatalogInput(pub(crate) OperationRequest);
 
 impl<S: Send + Sync> FromRequest<S> for CatalogInput
 where
@@ -92,25 +82,15 @@ where
 
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
         let state = MediaState::from_ref(state);
-        let CollectedRequest {
-            original_request,
-            auth,
-            user,
-            sessions,
-            body_analysis,
-            access_scope,
-        } = extract_request_infos(req, &state, None)
-            .await
-            .map_err(routing_error)?;
-        let context = RequestContext::new(&original_request, auth, user, sessions, access_scope);
-        tracing::debug!(principal = ?context.principal(), device_present = context.device().is_some(), "Collected catalog context");
-        let request = CatalogRequest::new(original_request, context, body_analysis);
-        request.validate(&state.catalog_service()).await?;
+        let request = collect(req, &state).await?;
+        tracing::debug!(principal = ?request.context.principal(), device_present = request.context.device().is_some(), "Collected catalog context");
+        request.validate_catalog(&state.catalog_service()).await?;
         Ok(Self(request))
     }
 }
 
-pub(crate) struct LiveInput(pub(crate) LiveRequest);
+/// A live-stream operation whose selected media and backend availability were validated.
+pub(crate) struct LiveInput(pub(crate) OperationRequest);
 
 impl<S: Send + Sync> FromRequest<S> for LiveInput
 where
@@ -120,41 +100,10 @@ where
 
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
         let state = MediaState::from_ref(state);
-        let CollectedRequest {
-            original_request,
-            auth,
-            user,
-            sessions,
-            body_analysis,
-            access_scope,
-        } = extract_request_infos(req, &state, None)
-            .await
-            .map_err(routing_error)?;
-        let context = RequestContext::new(&original_request, auth, user, sessions, access_scope);
-        context
-            .validate_media_ids(
-                original_request.url(),
-                body_analysis.as_ref(),
-                &state.url_selection,
-            )
+        let request = collect(req, &state).await?;
+        request
+            .validate_access(request.original_request.url(), &state.url_selection)
             .await?;
-        if let Some(scope) = context.access_scope() {
-            if context
-                .backends()
-                .sessions
-                .as_ref()
-                .is_none_or(Vec::is_empty)
-            {
-                return Err(if scope.server_ids().is_empty() {
-                    ApplicationError::InvalidInput("empty live authorization scope")
-                } else {
-                    ApplicationError::UnavailableOwner
-                });
-            }
-        }
-        Ok(Self(LiveRequest {
-            original_request,
-            context,
-        }))
+        Ok(Self(request))
     }
 }

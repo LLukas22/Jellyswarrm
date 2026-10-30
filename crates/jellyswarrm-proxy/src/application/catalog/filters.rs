@@ -8,8 +8,7 @@ use super::{
     request_policy::replace_aggregate_parent_id,
 };
 use crate::{
-    application::catalog::input::CatalogRequest,
-    processors::response_processor::ResponseProcessingProfile,
+    application::input::OperationRequest, processors::response_processor::ResponseProcessingProfile,
 };
 
 /// Facet IDs remain source-owned. Partition OR lists for each backend instead
@@ -75,7 +74,7 @@ pub(super) async fn restrict_named_ids(
 /// Resolve library members as for browsing, then union their visible options.
 pub(crate) async fn get_filters(
     state: &CatalogService,
-    preprocessed: CatalogRequest,
+    preprocessed: OperationRequest,
 ) -> Result<Value, ApplicationError> {
     let targets = match resolve_catalog_plan(state, &preprocessed).await? {
         CatalogPlan::EmptyVirtual => {

@@ -1,11 +1,13 @@
-//! Unselected operation input shared by migrated detail/playback entry points.
-//! Collecting caller context never constructs a backend request.
+//! Unselected operation input shared by every client entry point (catalog, detail,
+//! playback, live, fallback). Collecting caller context never constructs a backend
+//! request; workflows select and encode one.
 
 use crate::{
     application::request::remap_authorization,
     application::{
         context::{AuthorizedTarget, RequestContext, TargetError},
         error::ApplicationError,
+        url_selection::UrlSelection,
     },
     processors::request_analyzer::RequestBodyAnalysisResult,
 };
@@ -16,28 +18,41 @@ pub(crate) struct OperationRequest {
     pub(crate) body_analysis: Option<RequestBodyAnalysisResult>,
 }
 
-/// Named boundary between incoming extraction and application execution. No
-/// backend is selected or encoded while collecting these caller-owned inputs.
-pub(crate) struct CollectedRequest {
-    pub(crate) original_request: reqwest::Request,
-    pub(crate) auth: Option<crate::protocol::identity::JellyfinAuthorization>,
-    pub(crate) user: Option<crate::auth::service::User>,
-    pub(crate) sessions: Option<
-        Vec<(
-            crate::auth::service::AuthorizationSession,
-            crate::servers::Server,
-        )>,
-    >,
-    pub(crate) body_analysis: Option<RequestBodyAnalysisResult>,
-    pub(crate) access_scope: Option<crate::libraries::service::VirtualLibraryAccessScope>,
-}
-
 pub(crate) struct ResolvedTarget {
     pub(crate) target: AuthorizedTarget,
     pub(crate) server_matched_request: bool,
 }
 
 impl OperationRequest {
+    /// Validate client-selected media in `url` against the full mapped scope, not
+    /// the set of healthy sessions, so an offline selected ID cannot bypass access
+    /// validation. A scoped caller also needs at least one usable backend session.
+    pub(crate) async fn validate_access(
+        &self,
+        url: &url::Url,
+        selection: &UrlSelection,
+    ) -> Result<(), ApplicationError> {
+        self.context
+            .validate_media_ids(url, self.body_analysis.as_ref(), selection)
+            .await?;
+        if let Some(scope) = self.context.access_scope() {
+            if self
+                .context
+                .backends()
+                .sessions
+                .as_ref()
+                .is_none_or(Vec::is_empty)
+            {
+                return Err(if scope.server_ids().is_empty() {
+                    ApplicationError::InvalidInput("empty authorization scope")
+                } else {
+                    ApplicationError::UnavailableOwner
+                });
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) async fn resolve_target_using(
         &self,
         state: &crate::application::routing::RoutingServices<'_>,

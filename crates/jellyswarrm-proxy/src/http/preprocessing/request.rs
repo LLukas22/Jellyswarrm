@@ -1,11 +1,13 @@
 //! Convert and consume incoming HTTP requests, then analyze bodies and resolve authorized backend sessions.
 use super::*;
-use crate::application::accounts::identity::user_for_credential;
+use crate::application::{
+    accounts::identity::user_for_credential, context::RequestContext, input::OperationRequest,
+};
 pub(crate) async fn extract_request_infos(
     req: Request,
     state: &MediaState,
     playback_session_action: Option<PlaybackSessionAction>,
-) -> Result<crate::application::input::CollectedRequest> {
+) -> Result<OperationRequest> {
     let request = axum_to_reqwest(req).await?;
 
     let auth = JellyfinAuthorization::from_headers_url(request.headers(), request.url());
@@ -148,13 +150,11 @@ pub(crate) async fn extract_request_infos(
         None
     };
 
-    Ok(crate::application::input::CollectedRequest {
+    let context = RequestContext::new(&request, auth, user, sessions, access_scope);
+    Ok(OperationRequest {
         original_request: request,
-        auth,
-        user,
-        sessions,
+        context,
         body_analysis: request_body_result,
-        access_scope,
     })
 }
 

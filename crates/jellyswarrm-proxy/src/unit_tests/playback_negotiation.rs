@@ -734,10 +734,7 @@ async fn shared_explicit_source_plan_never_falls_back_from_offline_owner() {
 
 #[tokio::test]
 async fn invalid_live_open_and_failed_refresh_do_not_commit_playback_transitions() {
-    use crate::application::playback::{
-        lifecycle::PlaybackLifecycle,
-        live::{self, LiveRequest},
-    };
+    use crate::application::playback::{lifecycle::PlaybackLifecycle, live};
     use crate::playback::sessions::PlaybackSession;
     let fixture = fixture().await;
     let owner = &fixture.sessions[0].1;
@@ -773,9 +770,10 @@ async fn invalid_live_open_and_failed_refresh_do_not_commit_playback_transitions
     assert!(matches!(
         live::post_livestream_open(
             &fixture.state.playback_service(),
-            LiveRequest {
+            OperationRequest {
                 original_request: request,
                 context: input.context,
+                body_analysis: None,
             }
         )
         .await
@@ -803,9 +801,10 @@ async fn invalid_live_open_and_failed_refresh_do_not_commit_playback_transitions
     assert!(matches!(
         live::post_live_stream_action(
             &fixture.state.playback_service(),
-            LiveRequest {
+            OperationRequest {
                 original_request: request,
                 context: input.context,
+                body_analysis: None,
             }
         )
         .await,
@@ -835,10 +834,7 @@ async fn invalid_live_open_and_failed_refresh_do_not_commit_playback_transitions
     );
 }
 
-async fn live_open_input(
-    fixture: &Fixture,
-    original: &str,
-) -> crate::application::playback::live::LiveRequest {
+async fn live_open_input(fixture: &Fixture, original: &str) -> OperationRequest {
     fixture
         .state
         .play_sessions
@@ -850,11 +846,12 @@ async fn live_open_input(
             original_item_id: Some(original.into()),
         })
         .await;
-    crate::application::playback::live::LiveRequest {
+    OperationRequest {
         original_request: reqwest::Client::new().post("http://proxy/LiveStreams/Open")
             .json(&json!({"ItemId":fixture.aggregate,"PlaySessionId":"live-player","UserId":"viewer","OpenToken":"opaque-token"}))
             .build().unwrap(),
         context: operation(fixture, "", json!({})).context,
+        body_analysis: None,
     }
 }
 
@@ -1187,7 +1184,7 @@ async fn live_open_query_translates_owner_once_even_when_original_is_another_vir
 
 #[tokio::test]
 async fn live_actions_translate_colliding_live_identity_exactly_once() {
-    use crate::application::playback::live::{post_live_stream_action, LiveRequest};
+    use crate::application::playback::live::post_live_stream_action;
     for action in ["Refresh", "Close"] {
         let fixture = fixture().await;
         let server = &fixture.sessions[0].1;
@@ -1216,9 +1213,10 @@ async fn live_actions_translate_colliding_live_identity_exactly_once() {
             .unwrap();
         post_live_stream_action(
             &fixture.state.playback_service(),
-            LiveRequest {
+            OperationRequest {
                 original_request: request,
                 context: operation(&fixture, "", json!({})).context,
+                body_analysis: None,
             },
         )
         .await

@@ -1,5 +1,7 @@
 //! Live open/refresh/close workflows and their identity rewriting helpers.
 //! The existing binding selects the owner; only a successful workflow commits changes.
+//! Live commands have caller context but no arbitrary initial backend: the negotiated
+//! playback/live binding selects the sole target before translation.
 use super::services::PlaybackService;
 use super::target::MediaTargetResolver;
 use crate::application::error::FailureStage;
@@ -12,8 +14,8 @@ use std::sync::Arc;
 use crate::{
     application::request::UpstreamRequestBuilder,
     application::{
-        context::RequestContext,
         error::ApplicationError,
+        input::OperationRequest,
         playback::{response::track_play_session, selection::record_playback_sources},
     },
     models::MediaSource,
@@ -90,13 +92,6 @@ fn rewrite_live_id(value: &mut Value, id: &str) {
     }
 }
 
-/// Live commands have caller context but no arbitrary initial backend. The
-/// negotiated playback/live binding selects the sole target before translation.
-pub(crate) struct LiveRequest {
-    pub(crate) original_request: reqwest::Request,
-    pub(crate) context: RequestContext,
-}
-
 /// Close preserves the upstream status without a body; refresh returns the
 /// translated JSON payload with its existing proxy-owned live identity.
 pub(crate) enum LiveStreamActionResult {
@@ -162,7 +157,7 @@ fn field(
 /// Execute a caller-owned live refresh or close against its bound owner.
 pub(crate) async fn post_live_stream_action(
     state: &PlaybackService<'_>,
-    preprocessed: LiveRequest,
+    preprocessed: OperationRequest,
 ) -> Result<LiveStreamActionResult, ApplicationError> {
     let scope = preprocessed.context.access_scope().ok_or_else(|| {
         ApplicationError::MissingIdentity("live viewer scope")
@@ -247,7 +242,7 @@ pub(crate) async fn post_live_stream_action(
 /// retain its exact member even when an aggregate has several copies per server.
 pub(crate) async fn post_livestream_open(
     state: &PlaybackService<'_>,
-    preprocessed: LiveRequest,
+    preprocessed: OperationRequest,
 ) -> Result<Value, ApplicationError> {
     let scope = preprocessed.context.access_scope().ok_or_else(|| {
         ApplicationError::MissingIdentity("live viewer scope")

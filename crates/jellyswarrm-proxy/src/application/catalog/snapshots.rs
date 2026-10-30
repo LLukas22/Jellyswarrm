@@ -5,9 +5,7 @@ use super::{
     request_policy::is_upstream_limited_catalog_request,
 };
 use crate::application::error::ApplicationError;
-use crate::{
-    application::catalog::input::CatalogRequest, protocol::identity::JellyfinAuthorization,
-};
+use crate::{application::input::OperationRequest, protocol::identity::JellyfinAuthorization};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
@@ -134,14 +132,14 @@ pub(crate) struct SnapshotRequest {
 
 fn hash_request_identity(
     hash: &mut Sha256,
-    request: &CatalogRequest,
+    request: &OperationRequest,
     scope: &str,
     token: Option<&str>,
 ) {
     hash.update(format!(
         "{scope}|{}|{}|{:?}|{:?}|{:?}|{:?}",
         request.original_request.method(),
-        request.query().identity(),
+        request.catalog_query().identity(),
         request.original_request.headers(),
         request.context.access_scope(),
         request.context.user().map(|user| &user.id),
@@ -167,7 +165,7 @@ fn hash_request_identity(
 impl SnapshotRequest {
     pub(crate) async fn prepare(
         state: &CatalogService,
-        request: &CatalogRequest,
+        request: &OperationRequest,
         targets: &[CatalogFetchTarget],
         scope: &str,
     ) -> Self {
@@ -183,7 +181,7 @@ impl SnapshotRequest {
                 )
                 .and_then(|auth| auth.token())
             });
-        let query = request.query();
+        let query = request.catalog_query();
         tracing::debug!(kind = ?query.kind, scope, "Planning catalog materialization");
         let pagination = query.pagination;
         // Bounded endpoints define their own result window. Do not cache across
@@ -241,9 +239,9 @@ impl SnapshotRequest {
 
     pub(crate) fn materialization_policy(
         &self,
-        request: &CatalogRequest,
+        request: &OperationRequest,
     ) -> super::request_policy::CatalogRequestPolicy {
-        request.query().policy(self.key.is_some())
+        request.catalog_query().policy(self.key.is_some())
     }
 
     pub(crate) async fn serve(
@@ -331,7 +329,11 @@ mod materialization_tests {
                 [],
             )),
         );
-        let request = CatalogRequest::new(request, context, None);
+        let request = OperationRequest {
+            original_request: request,
+            context,
+            body_analysis: None,
+        };
         let mut hash = Sha256::new();
         hash_request_identity(&mut hash, &request, "library", Some(token));
         hex::encode(hash.finalize())

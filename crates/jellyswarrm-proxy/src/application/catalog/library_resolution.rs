@@ -11,7 +11,7 @@ use tracing::{debug, error};
 
 use super::services::CatalogService;
 use crate::{
-    application::catalog::input::CatalogRequest,
+    application::input::OperationRequest,
     auth::service::AuthorizationSession,
     libraries::service::{normalize_library_id, LibraryGrouping, VirtualLibraryResolution},
     media::scope::{MediaCatalogScope, MediaScopeKind},
@@ -47,7 +47,7 @@ pub(crate) struct ResolvedCatalogParent {
 }
 
 pub(super) fn unavailable_source_count(
-    preprocessed: &CatalogRequest,
+    preprocessed: &OperationRequest,
     targets: &[CatalogFetchTarget],
 ) -> usize {
     preprocessed.context.access_scope().map_or(0, |scope| {
@@ -61,7 +61,7 @@ pub(super) fn unavailable_source_count(
 
 pub(crate) async fn resolve_catalog_plan(
     state: &CatalogService,
-    preprocessed: &CatalogRequest,
+    preprocessed: &OperationRequest,
 ) -> Result<CatalogPlan, ApplicationError> {
     if let Some(parent_id) = parent_id(preprocessed.original_request.url()) {
         let resolution = state
@@ -224,7 +224,7 @@ pub(crate) async fn resolve_catalog_plan(
 }
 
 fn available_sessions(
-    preprocessed: &CatalogRequest,
+    preprocessed: &OperationRequest,
 ) -> Result<Vec<(AuthorizationSession, Server)>, ApplicationError> {
     let sessions = preprocessed
         .context
@@ -266,7 +266,7 @@ fn series_parent_id(url: &url::Url) -> Option<String> {
 
 async fn resolve_aggregate_plan(
     state: &CatalogService,
-    preprocessed: &CatalogRequest,
+    preprocessed: &OperationRequest,
     parent_id: &str,
 ) -> Result<Option<CatalogPlan>, ApplicationError> {
     // A collapsed series/season (aggregate version group) fans out to its
