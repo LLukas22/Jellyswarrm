@@ -200,6 +200,33 @@ async fn build_request(
         .map_err(|error| crate::application::input::routing_error(error.0))
 }
 
+/// Downloads retain fallback-proxy ownership and credential resolution, but use
+/// streaming transport rather than buffering the entire file as an API response.
+pub(crate) async fn get_download_typed(
+    state: &PlaybackService<'_>,
+    operation: OperationRequest,
+) -> Result<DeliveryResponse, ApplicationError> {
+    let resolved = operation
+        .resolve_target_using(&state.routing_services())
+        .await?;
+    let request = build_request(state, &resolved.target, &operation.original_request).await?;
+    let timeout = state.config.read().await.timeout;
+    let proxy_api_key = proxy_api_key(&operation.context);
+    let translation = HlsUrlTranslation::new(
+        state.processors.url_processor,
+        resolved.target.server(),
+        proxy_api_key.as_deref(),
+        request_user_id(&operation.context),
+    );
+    let context = delivery::DeliveryContext::new(
+        state.streaming_reqwest_client,
+        crate::upstream::jellyfin::hls::HlsContext::new(&translation, timeout),
+    );
+    delivery::proxy(&context, request)
+        .await
+        .map_err(delivery_error)
+}
+
 pub(crate) async fn get_video_resource_typed(
     state: &PlaybackService<'_>,
     mut operation: OperationRequest,
@@ -415,13 +442,15 @@ mod tests {
         use std::error::Error;
 
         assert!(matches!(error, ApplicationError::UpstreamTransport(_)));
-        assert!(error
-            .source()
-            .unwrap()
-            .downcast_ref::<reqwest::Error>()
-            .unwrap()
-            .url()
-            .is_none());
+        assert!(
+            error
+                .source()
+                .unwrap()
+                .downcast_ref::<reqwest::Error>()
+                .unwrap()
+                .url()
+                .is_none()
+        );
         assert!(!format!("{error:?}").contains("private-credential"));
     }
 
@@ -456,12 +485,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(failed.status, StatusCode::SERVICE_UNAVAILABLE);
-        assert!(state
-            .play_sessions
-            .resolve_report_session("direct", "viewer")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            state
+                .play_sessions
+                .resolve_report_session("direct", "viewer")
+                .await
+                .unwrap()
+                .is_none()
+        );
         upstream.reset().await;
         wiremock::Mock::given(wiremock::matchers::path("/Videos/upstream-item/stream"))
             .respond_with(
@@ -503,10 +534,12 @@ mod tests {
         }).await.unwrap();
         assert_eq!(response.status, StatusCode::TEMPORARY_REDIRECT);
         assert!(matches!(response.body, delivery::DeliveryBody::Empty));
-        assert!(response.headers[hyper::header::LOCATION]
-            .to_str()
-            .unwrap()
-            .contains("/Audio/upstream-item/universal?PlaySessionId=redirect&Extension=kept"));
+        assert!(
+            response.headers[hyper::header::LOCATION]
+                .to_str()
+                .unwrap()
+                .contains("/Audio/upstream-item/universal?PlaySessionId=redirect&Extension=kept")
+        );
         let (binding, _) = state
             .play_sessions
             .resolve_report_session("redirect", "viewer")

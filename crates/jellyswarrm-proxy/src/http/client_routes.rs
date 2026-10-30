@@ -32,6 +32,7 @@ pub(crate) fn router() -> Router<AppState> {
                 .route("/Suggestions", get(crate::http::handlers::federated::get_items_from_all_servers_if_not_restricted))
                 .route("/Latest", get(crate::http::handlers::federated::get_items_from_all_servers_if_not_restricted))
                 .route("/{item_id}", item_detail_routes())
+                .route("/{item_id}/Download", get(crate::http::handlers::videos::get_download))
                 .route("/Filters", get(crate::http::handlers::federated::get_filters))
                 .route("/Filters2", get(crate::http::handlers::federated::get_filters))
                 .route("/{item_id}/Similar", get(crate::http::handlers::items::get_items))

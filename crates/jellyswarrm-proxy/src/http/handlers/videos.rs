@@ -9,6 +9,17 @@ use crate::{
 
 mod delivery;
 
+pub(crate) async fn get_download(
+    State(state): State<MediaState>,
+    PlaybackInput(operation): PlaybackInput,
+) -> Result<Response, StatusCode> {
+    delivery::response(
+        resources::get_download_typed(&state.playback_service(), operation)
+            .await
+            .map_err(|error| crate::http::handlers::pipeline_error::detail_status(&error))?,
+    )
+}
+
 pub(crate) async fn get_video_resource(
     State(state): State<MediaState>,
     PlaybackInput(operation): PlaybackInput,

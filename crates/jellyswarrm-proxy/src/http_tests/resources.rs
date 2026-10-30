@@ -2,8 +2,8 @@
 //! headers and bytes must survive, without leaking a proxy key upstream.
 use super::*;
 use wiremock::{
-    matchers::{header, method, path},
     Mock, ResponseTemplate,
+    matchers::{header, method, path},
 };
 
 macro_rules! contracts {
@@ -105,4 +105,74 @@ async fn resource_contract(route: &str) {
     let headers = format!("{:?}", requests[0].headers);
     assert!(headers.contains(&format!("backend-token-{owner}")));
     assert!(!headers.contains(&f.user.virtual_key));
+}
+
+#[tokio::test]
+async fn download_without_range_streams_before_upstream_finishes() {
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let f = Fixture::for_scenario(Scenario::NormalServers).await;
+    f.healthy().await;
+    let original = f.original(1).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (release, wait) = tokio::sync::oneshot::channel::<()>();
+    let upstream = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            request.push(socket.read_u8().await.unwrap());
+        }
+        assert!(
+            !String::from_utf8_lossy(&request)
+                .to_lowercase()
+                .contains("\r\nrange:")
+        );
+        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=movie.mkv\r\nAccept-Ranges: bytes\r\n\r\n\x00\xff\r\n").await.unwrap();
+        // The remaining bytes cannot arrive until the client has received the
+        // headers and first chunk. A buffering proxy deadlocks and times out.
+        let _ = wait.await;
+        socket.write_all(b"done").await.unwrap();
+    });
+    Mock::given(method("GET"))
+        .and(path(format!("/Items/{original}/Download")))
+        .and(header("accept-encoding", "identity"))
+        .respond_with(
+            ResponseTemplate::new(307).insert_header("Location", format!("http://{address}/file")),
+        )
+        .expect(1)
+        .mount(&f.upstreams[1])
+        .await;
+
+    let mut response = tokio::time::timeout(
+        Duration::from_secs(5),
+        f.request(
+            reqwest::Method::GET,
+            &format!("/Items/{}/Download", f.items[1]),
+            &f.user,
+            "tv",
+        )
+        .send(),
+    )
+    .await
+    .expect("download headers must arrive before the upstream body completes")
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["Content-Length"], "8");
+    assert_eq!(response.headers()["Accept-Ranges"], "bytes");
+    assert_eq!(
+        response.headers()["Content-Disposition"],
+        "attachment; filename=movie.mkv"
+    );
+    let first = tokio::time::timeout(Duration::from_secs(5), response.chunk())
+        .await
+        .expect("initial bytes must stream immediately")
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.as_ref(), b"\x00\xff\r\n");
+    release.send(()).unwrap();
+    assert_eq!(response.bytes().await.unwrap().as_ref(), b"done");
+    upstream.await.unwrap();
+    assert!(f.upstreams[0].received_requests().await.unwrap().is_empty());
 }
