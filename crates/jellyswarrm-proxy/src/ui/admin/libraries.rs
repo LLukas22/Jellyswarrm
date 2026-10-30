@@ -177,7 +177,7 @@ pub(crate) async fn update_merge_libraries(
 
 pub(crate) async fn library_groups_list(State(state): State<ManagementState>) -> impl IntoResponse {
     let errors = state
-        .library_administration()
+        .library_administration
         .refresh()
         .await
         .into_iter()

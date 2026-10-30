@@ -184,7 +184,7 @@ async fn authenticate_and_register(
     hooks: &RegistrationHooks,
 ) -> Result<AuthenticateResponse, crate::auth::mapping_authentication::MappingAuthenticationError> {
     let mut response = state
-        .mapping_authenticator()
+        .mapping_authenticator
         .authenticate_for_client(
             user,
             server,
@@ -278,7 +278,10 @@ impl RegistrationPause {
 mod tests {
     use super::*;
     use crate::{
-        auth::quick_connect::{QuickConnectStorage, RedemptionError},
+        auth::{
+            mapping_authentication::MappingAuthenticator,
+            quick_connect::{QuickConnectStorage, RedemptionError},
+        },
         config::{AppConfig, MediaStreamingMode},
         persistence::MIGRATOR,
         servers::ServerStorageService,
@@ -320,17 +323,21 @@ mod tests {
             )
             .await
             .unwrap();
+        let authorization = Arc::new(authorization);
         let state = AuthenticationService {
-            user_authorization: Arc::new(authorization),
+            user_authorization: authorization.clone(),
             server_storage: Arc::new(servers.clone()),
             settings: crate::config::SettingsView::new(Arc::new(tokio::sync::RwLock::new(
                 config.clone(),
             ))),
-            reqwest_client: reqwest::Client::new(),
             client_sessions: Arc::new(crate::sessions::ClientSessionService::new(
                 Default::default(),
             )),
-            admin_password: config.password,
+            mapping_authenticator: MappingAuthenticator::new(
+                authorization.clone(),
+                reqwest::Client::new(),
+                config.password,
+            ),
         };
         let quick_connect = QuickConnectStorage::new();
         Mock::given(method("GET"))

@@ -1,5 +1,7 @@
 //! Request-independent library discovery. Complete administrator inventories may
 //! replace stored inventories; mapped-user sightings are additive, never pruning.
+use std::sync::Arc;
+
 use crate::{
     auth::{mapping_authentication::MappingAuthenticator, service::User, UserAuthorizationService},
     domain::security::{decrypt_password, HashedPassword},
@@ -28,21 +30,22 @@ pub(crate) struct DiscoveryIssue {
     pub(crate) stage: DiscoveryStage,
 }
 
-pub(crate) struct LibraryAdministration<'a> {
-    servers: &'a ServerStorageService,
-    users: &'a UserAuthorizationService,
-    libraries: &'a VirtualLibraryService,
-    authenticator: MappingAuthenticator<'a>,
+#[derive(Clone)]
+pub(crate) struct LibraryAdministration {
+    servers: Arc<ServerStorageService>,
+    users: Arc<UserAuthorizationService>,
+    libraries: Arc<VirtualLibraryService>,
+    authenticator: MappingAuthenticator,
     admin_key: HashedPassword,
     transport: reqwest::Client,
 }
 
-impl<'a> LibraryAdministration<'a> {
+impl LibraryAdministration {
     pub(crate) fn new(
-        servers: &'a ServerStorageService,
-        users: &'a UserAuthorizationService,
-        libraries: &'a VirtualLibraryService,
-        authenticator: MappingAuthenticator<'a>,
+        servers: Arc<ServerStorageService>,
+        users: Arc<UserAuthorizationService>,
+        libraries: Arc<VirtualLibraryService>,
+        authenticator: MappingAuthenticator,
         admin_key: HashedPassword,
         transport: reqwest::Client,
     ) -> Self {
@@ -267,11 +270,13 @@ mod tests {
             .unwrap();
         let password = Password::from("admin-key");
         let key: HashedPassword = (&password).into();
+        // The services share the same SQLite pool, so clones see the same data.
+        let users = Arc::new(users);
         let operation = LibraryAdministration::new(
-            &registry,
-            &users,
-            &libraries,
-            MappingAuthenticator::new(&users, reqwest::Client::new(), password),
+            Arc::new(registry.clone()),
+            users.clone(),
+            Arc::new(libraries.clone()),
+            MappingAuthenticator::new(users.clone(), reqwest::Client::new(), password),
             key.clone(),
             reqwest::Client::new(),
         );

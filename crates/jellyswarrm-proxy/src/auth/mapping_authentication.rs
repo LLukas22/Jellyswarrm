@@ -64,13 +64,15 @@ impl AuthenticatedMapping {
     }
 }
 
-pub(crate) struct MappingAuthenticator<'a> {
-    authorization: &'a crate::auth::UserAuthorizationService,
+/// Owned handles, built once at startup; clones share the same services.
+#[derive(Clone)]
+pub(crate) struct MappingAuthenticator {
+    authorization: Arc<crate::auth::UserAuthorizationService>,
     transport: reqwest::Client,
     admin_password: crate::domain::security::Password,
 }
 
-impl<'a> MappingAuthenticator<'a> {
+impl MappingAuthenticator {
     fn mapped_password(
         &self,
         user: &LocalUser,
@@ -155,7 +157,7 @@ impl<'a> MappingAuthenticator<'a> {
         })
     }
     pub(crate) fn new(
-        authorization: &'a crate::auth::UserAuthorizationService,
+        authorization: Arc<crate::auth::UserAuthorizationService>,
         transport: reqwest::Client,
         admin_password: crate::domain::security::Password,
     ) -> Self {
@@ -420,8 +422,11 @@ mod tests {
                 "User":{"Id":"remote-id", "Name":"Remote", "ServerId":"backend", "Policy":{"IsAdministrator":false,"SyncPlayAccess":"None"}},
                 "AccessToken":"new-client-token", "ServerId":"backend", "SessionInfo":{"UserId":"remote-id","UserName":"Remote","ServerId":"backend"}
             }))).expect(1).mount(&backend).await;
-        let authenticator =
-            MappingAuthenticator::new(&authorization, reqwest::Client::new(), "admin".into());
+        let authenticator = MappingAuthenticator::new(
+            Arc::new(authorization.clone()),
+            reqwest::Client::new(),
+            "admin".into(),
+        );
         let login = authenticator
             .authenticate_login(
                 &user,
@@ -485,8 +490,11 @@ mod tests {
             mapping_key,
             (&config.password).into(),
         );
-        let authenticator =
-            MappingAuthenticator::new(&authorization, reqwest::Client::new(), config.password);
+        let authenticator = MappingAuthenticator::new(
+            Arc::new(authorization.clone()),
+            reqwest::Client::new(),
+            config.password,
+        );
         let server = Server::from_row(
             sqlx::query(
                 "INSERT INTO servers (name, url, priority) VALUES ('Backend', ?, 100) RETURNING *",

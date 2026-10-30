@@ -1,12 +1,18 @@
 //! Explicit startup wiring. Adapter handles own clones, never writable config.
 use crate::{
-    application,
+    application::{
+        self,
+        library_admin::LibraryAdministration,
+        server_admin::{ServerAdministration, ServerCredentials},
+        sessions::{access::MediaAccess, SessionOperations},
+        syncplay::SyncPlayOperations,
+    },
     auth::{
-        federation::FederatedUserService, quick_connect::QuickConnectStorage,
-        UserAuthorizationService,
+        federation::FederatedUserService, mapping_authentication::MappingAuthenticator,
+        quick_connect::QuickConnectStorage, UserAuthorizationService,
     },
     config::{AppConfig, Paths, SettingsView},
-    http::state::{AdapterPaths, AppState, ManagementState, SessionState, SettingsState},
+    http::state::{AdapterPaths, AppState, ManagementState, SettingsState},
     libraries::VirtualLibraryService,
     media::MediaStorageService,
     playback::SessionStorage,
@@ -69,40 +75,66 @@ pub(super) fn adapter_state(
     let syncplay = Arc::new(SyncPlayService::with_transport(transport));
     let quick_connect = QuickConnectStorage::new();
     let catalog_snapshots = Arc::new(application::catalog::snapshots::CatalogSnapshots::default());
-    let session_state = SessionState {
-        user_authorization: user_authorization.clone(),
-        media_storage: media_storage.clone(),
-        url_selection: selection.clone(),
-        settings: settings.clone(),
-        client_sessions: client_sessions.clone(),
-        syncplay,
-    };
+    let media_access = MediaAccess::new(
+        user_authorization.clone(),
+        media_storage.clone(),
+        selection.clone(),
+    );
+    let session_operations = SessionOperations::new(
+        user_authorization.clone(),
+        client_sessions.clone(),
+        syncplay.clone(),
+        settings.clone(),
+        media_access.clone(),
+    );
+    let syncplay_operations = SyncPlayOperations::new(syncplay, media_access);
+    let mapping_authenticator = MappingAuthenticator::new(
+        user_authorization.clone(),
+        clients.api.clone(),
+        credentials.password(),
+    );
     let authentication = application::accounts::AuthenticationService {
         user_authorization: user_authorization.clone(),
         server_storage: server_storage.clone(),
         settings: settings.clone(),
-        reqwest_client: clients.api.clone(),
         client_sessions: client_sessions.clone(),
-        admin_password: credentials.password(),
+        mapping_authenticator: mapping_authenticator.clone(),
     };
     let management = ManagementState {
         reqwest_client: clients.api.clone(),
         user_authorization: user_authorization.clone(),
         server_storage: server_storage.clone(),
         virtual_library_service: virtual_library_service.clone(),
-        play_sessions: play_sessions.clone(),
-        catalog_snapshots: catalog_snapshots.clone(),
         federated_users: Arc::new(FederatedUserService::new(
             server_storage.clone(),
             user_authorization.clone(),
             credentials.clone(),
         )),
         quick_connect: quick_connect.clone(),
-        credentials,
         settings: settings.clone(),
         configuration: configuration.clone(),
         paths: adapter_paths.clone(),
-        sessions: session_state.clone(),
+        sessions: session_operations.clone(),
+        server_credentials: ServerCredentials::new(
+            server_storage.clone(),
+            clients.api.clone(),
+            (&credentials.password()).into(),
+        ),
+        server_administration: ServerAdministration::new(
+            server_storage.clone(),
+            play_sessions.clone(),
+            catalog_snapshots.clone(),
+        ),
+        library_administration: LibraryAdministration::new(
+            server_storage.clone(),
+            user_authorization.clone(),
+            virtual_library_service.clone(),
+            mapping_authenticator.clone(),
+            (&credentials.password()).into(),
+            clients.api.clone(),
+        ),
+        mapping_authenticator,
+        credentials,
     };
     let settings_state = SettingsState {
         settings: settings.clone(),
@@ -126,7 +158,8 @@ pub(super) fn adapter_state(
     };
     AppState::new(
         media,
-        session_state,
+        session_operations,
+        syncplay_operations,
         authentication,
         management,
         settings_state,

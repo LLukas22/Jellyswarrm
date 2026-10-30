@@ -36,19 +36,8 @@ pub(crate) struct AuthenticationService {
     pub(crate) user_authorization: Arc<UserAuthorizationService>,
     pub(crate) server_storage: Arc<ServerStorageService>,
     pub(crate) settings: SettingsView,
-    pub(crate) reqwest_client: reqwest::Client,
     pub(crate) client_sessions: Arc<ClientSessionService>,
-    pub(crate) admin_password: Password,
-}
-
-impl AuthenticationService {
-    pub(crate) fn mapping_authenticator(&self) -> MappingAuthenticator<'_> {
-        MappingAuthenticator::new(
-            &self.user_authorization,
-            self.reqwest_client.clone(),
-            self.admin_password.clone(),
-        )
-    }
+    pub(crate) mapping_authenticator: MappingAuthenticator,
 }
 
 /// A parsed caller credential, resolved without incoming-adapter or startup state.
@@ -672,7 +661,7 @@ async fn authenticate_on_server(
         device_id: authorization.device_id,
         version: authorization.version,
     };
-    let authenticator = state.mapping_authenticator();
+    let authenticator = &state.mapping_authenticator;
     let login = if let Some(mapping) = &server_mapping {
         let user = state
             .user_authorization

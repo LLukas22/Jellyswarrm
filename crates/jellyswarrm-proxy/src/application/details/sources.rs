@@ -20,7 +20,7 @@ use crate::{
     processors::response_processor::ResponseProcessingProfile,
     protocol::identity::JellyfinAuthorization,
     protocol::url::{ensure_query_list_value, replace_path_id},
-    servers::routing::compare_routes,
+    servers::compare_routes,
     servers::storage::Server,
 };
 

@@ -1,6 +1,6 @@
 //! Resolve authorized virtual libraries and select deterministic backend routes.
 use super::*;
-use crate::servers::routing::compare_routes;
+use crate::servers::compare_routes;
 
 impl VirtualLibraryService {
     pub(crate) async fn library_grouping(

@@ -1,15 +1,14 @@
 //! Session routes, caller extraction, login responses and WebSocket frame handling.
 mod routes;
-#[cfg(test)]
-mod tests;
 mod websocket;
 
 pub(crate) use routes::router;
 pub(crate) use websocket::websocket;
 
 use crate::{
-    application::sessions::SessionOperationError, http::state::SessionState,
-    sessions::transport::DeliveryError, sessions::SessionContext,
+    application::sessions::{SessionOperationError, SessionOperations},
+    sessions::transport::DeliveryError,
+    sessions::SessionContext,
     syncplay::service::RemoteCommandError,
 };
 use axum::{
@@ -79,15 +78,13 @@ fn websocket_cookie_device(
 
 impl<S: Send + Sync> FromRequestParts<S> for SessionContext
 where
-    SessionState: FromRef<S>,
+    SessionOperations: FromRef<S>,
 {
     type Rejection = StatusCode;
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, StatusCode> {
-        let state = SessionState::from_ref(state);
         let url = crate::http::preprocessing::request_url(&parts.uri)
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        state
-            .session_operations()
+        SessionOperations::from_ref(state)
             .authenticate(
                 &parts.headers,
                 &url,

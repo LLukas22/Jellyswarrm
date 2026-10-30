@@ -17,7 +17,7 @@ use crate::{
     domain::security::Password,
     http::state::ManagementState,
     servers::storage::Server,
-    ui::{auth::AuthenticatedUser, user::common::authenticate_user_on_server},
+    ui::{auth::AuthenticatedUser, user::authenticate_user_on_server},
 };
 
 #[derive(Template)]

@@ -158,7 +158,7 @@ pub(crate) async fn add_server(
 
     // Try to add the server
     match state
-        .server_administration()
+        .server_administration
         .add(
             form.name.trim(),
             form.url.trim(),
@@ -229,7 +229,7 @@ pub(crate) async fn update_server_media_streaming_mode(
     };
 
     match state
-        .server_administration()
+        .server_administration
         .set_streaming_mode(server_id, media_streaming_mode)
         .await
     {
@@ -261,7 +261,7 @@ pub(crate) async fn delete_server(
     State(state): State<ManagementState>,
     Path(server_id): Path<ServerId>,
 ) -> Response {
-    match state.server_administration().delete(server_id).await {
+    match state.server_administration.delete(server_id).await {
         Ok(true) => {
             info!("Deleted server with ID: {}", server_id);
             // Return updated server list
@@ -298,7 +298,7 @@ pub(crate) async fn update_server_priority(
     }
 
     match state
-        .server_administration()
+        .server_administration
         .set_priority(server_id, form.priority)
         .await
     {
@@ -330,7 +330,7 @@ pub(crate) async fn add_server_admin(
     Form(form): Form<AddServerAdminForm>,
 ) -> Response {
     match state
-        .server_credentials()
+        .server_credentials
         .save(server_id, &form.username, &form.password)
         .await
     {
@@ -375,7 +375,7 @@ pub(crate) async fn delete_server_admin(
     State(state): State<ManagementState>,
     Path(server_id): Path<ServerId>,
 ) -> Response {
-    match state.server_credentials().delete(server_id).await {
+    match state.server_credentials.delete(server_id).await {
         Ok(true) => {
             info!("Deleted admin for server ID: {}", server_id);
             get_server_list(State(state)).await.into_response()

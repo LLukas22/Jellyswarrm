@@ -1,14 +1,22 @@
 //! Opt-in HTTP fixture wiring; core media tests do not construct these handles.
 use super::*;
 use crate::{
-    auth::{federation::FederatedUserService, quick_connect::QuickConnectStorage},
-    http::state::{AdapterPaths, AppState, ManagementState, SessionState, SettingsState},
+    application::{
+        library_admin::LibraryAdministration,
+        server_admin::{ServerAdministration, ServerCredentials},
+    },
+    auth::{
+        federation::FederatedUserService, mapping_authentication::MappingAuthenticator,
+        quick_connect::QuickConnectStorage,
+    },
+    http::state::{AdapterPaths, AppState, ManagementState, SettingsState},
 };
 
 #[derive(Clone)]
 pub(crate) struct AdapterFixture {
     media: MediaFixture,
-    pub(crate) sessions: SessionState,
+    pub(crate) sessions: application::sessions::SessionOperations,
+    syncplay_operations: application::syncplay::SyncPlayOperations,
     pub(crate) management: ManagementState,
     pub(crate) quick_connect: QuickConnectStorage,
     pub(crate) syncplay: Arc<SyncPlayService>,
@@ -33,14 +41,25 @@ impl AdapterFixture {
         let syncplay = Arc::new(SyncPlayService::with_transport(
             media.client_sessions.transport.clone(),
         ));
-        let sessions = SessionState {
-            user_authorization: media.user_authorization.clone(),
-            media_storage: media.media_storage.clone(),
-            url_selection: media.url_selection.clone(),
-            settings: media.services.config.clone(),
-            client_sessions: media.client_sessions.clone(),
-            syncplay: syncplay.clone(),
-        };
+        let access = application::sessions::access::MediaAccess::new(
+            media.user_authorization.clone(),
+            media.media_storage.clone(),
+            media.url_selection.clone(),
+        );
+        let sessions = application::sessions::SessionOperations::new(
+            media.user_authorization.clone(),
+            media.client_sessions.clone(),
+            syncplay.clone(),
+            media.services.config.clone(),
+            access.clone(),
+        );
+        let syncplay_operations =
+            application::syncplay::SyncPlayOperations::new(syncplay.clone(), access);
+        let mapping_authenticator = MappingAuthenticator::new(
+            media.user_authorization.clone(),
+            client.clone(),
+            credentials.password(),
+        );
         let quick_connect = QuickConnectStorage::new();
         let configuration = crate::config::service::ConfigurationService::new(
             media.config.clone(),
@@ -51,23 +70,41 @@ impl AdapterFixture {
             user_authorization: media.user_authorization.clone(),
             server_storage: media.server_storage.clone(),
             virtual_library_service: media.virtual_library_service.clone(),
-            play_sessions: media.play_sessions.clone(),
-            catalog_snapshots: media.catalog_snapshots.clone(),
             federated_users: Arc::new(FederatedUserService::new(
                 media.server_storage.clone(),
                 media.user_authorization.clone(),
                 credentials.clone(),
             )),
             quick_connect: quick_connect.clone(),
-            credentials,
             settings: media.services.config.clone(),
             configuration,
             paths,
             sessions: sessions.clone(),
+            server_credentials: ServerCredentials::new(
+                media.server_storage.clone(),
+                client.clone(),
+                (&credentials.password()).into(),
+            ),
+            server_administration: ServerAdministration::new(
+                media.server_storage.clone(),
+                media.play_sessions.clone(),
+                media.catalog_snapshots.clone(),
+            ),
+            library_administration: LibraryAdministration::new(
+                media.server_storage.clone(),
+                media.user_authorization.clone(),
+                media.virtual_library_service.clone(),
+                mapping_authenticator.clone(),
+                (&credentials.password()).into(),
+                client.clone(),
+            ),
+            mapping_authenticator,
+            credentials,
         };
         Self {
             media,
             sessions,
+            syncplay_operations,
             management,
             quick_connect,
             syncplay,
@@ -83,13 +120,11 @@ impl AdapterFixture {
         AppState::new(
             self.services.clone(),
             self.sessions.clone(),
+            self.syncplay_operations.clone(),
             self.authentication_service().await,
             self.management.clone(),
             settings,
             self.quick_connect.clone(),
         )
-    }
-    pub(crate) fn session_operations(&self) -> application::sessions::SessionOperations<'_> {
-        self.sessions.session_operations()
     }
 }

@@ -12,7 +12,7 @@ use tracing::error;
 use crate::{
     domain::ids::ServerId,
     http::state::ManagementState,
-    ui::{auth::AuthenticatedUser, user::common::authenticate_user_on_server},
+    ui::{auth::AuthenticatedUser, user::authenticate_user_on_server},
 };
 
 pub(crate) struct ServerInfo {

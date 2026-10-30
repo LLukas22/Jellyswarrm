@@ -15,8 +15,8 @@ broaden visibility merely to make tests compile. Playlist contracts live in
 - Keep small unit tests inline with their implementation.
 - Put larger extracted suites here instead of creating a folder for one `tests.rs`.
 - HTTP workflows belong in `../http_tests/`.
-- Model fixtures stay in `../models/tests/files/`; session/WebSocket tests stay in
-  `../sessions/tests.rs`.
+- Model fixtures stay in `../models/tests/files/`; session/WebSocket HTTP tests are
+  in `../http_tests/sessions.rs`.
 
 Run all proxy tests from the repository root:
 

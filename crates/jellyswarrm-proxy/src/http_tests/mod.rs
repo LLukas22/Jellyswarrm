@@ -42,6 +42,7 @@ mod mutations;
 mod pipeline;
 mod preferences;
 mod resources;
+mod sessions;
 pub(crate) mod support;
 
 use crate::{config::MediaStreamingMode, protocol::authorization::Authorization};

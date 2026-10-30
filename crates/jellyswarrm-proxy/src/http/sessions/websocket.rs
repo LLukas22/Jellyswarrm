@@ -1,5 +1,5 @@
 //! Authenticate client WebSockets and manage subscriptions and bounded notification delivery.
-use crate::http::state::SessionState;
+use crate::application::{sessions::SessionOperations, syncplay::SyncPlayOperations};
 use crate::sessions::{models::InboundMessage, transport::OUTBOUND_CAPACITY, SessionContext};
 use axum::{
     extract::{
@@ -16,13 +16,14 @@ use tokio::{
 };
 
 pub(crate) async fn websocket(
-    State(state): State<SessionState>,
+    State(operations): State<SessionOperations>,
+    State(syncplay): State<SyncPlayOperations>,
     session: SessionContext,
     ws: WebSocketUpgrade,
 ) -> Result<Response, StatusCode> {
     Ok(ws
         .max_message_size(64 * 1024)
-        .on_upgrade(move |socket| handle(state, session, socket)))
+        .on_upgrade(move |socket| handle(operations, syncplay, session, socket)))
 }
 
 /// Jellyfin's periodic subscription data is "initialDelayMs,intervalMs".
@@ -40,14 +41,19 @@ fn subscription_interval(data: &serde_json::Value) -> Option<(Duration, Duration
     ))
 }
 
-async fn handle(state: SessionState, session: SessionContext, socket: WebSocket) {
+async fn handle(
+    operations: SessionOperations,
+    syncplay: SyncPlayOperations,
+    session: SessionContext,
+    socket: WebSocket,
+) {
     let (mut sender, mut receiver) = socket.split();
     let (tx, mut rx) = mpsc::channel(OUTBOUND_CAPACITY);
-    let generation = state
-        .syncplay
+    let generation = syncplay
+        .groups
         .register_websocket(session.session_id.clone(), tx)
         .await;
-    let transport = &state.client_sessions.transport;
+    let transport = &operations.sessions.transport;
     let mut interval = tokio::time::interval(Duration::from_millis(250));
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut subscription: Option<(Instant, Duration)> = None;
@@ -64,7 +70,7 @@ async fn handle(state: SessionState, session: SessionContext, socket: WebSocket)
                 let Some(Ok(inbound)) = inbound else { break; };
                 if !transport.is_current(&session.session_id, generation) { break; }
                 last_inbound = Instant::now();
-                state.client_sessions.touch(&session.session_id).await;
+                operations.sessions.touch(&session.session_id).await;
                 match inbound {
                     Message::Text(text) => if let Ok(message) = serde_json::from_str::<InboundMessage>(&text) {
                         match message.message_type.to_ascii_lowercase().as_str() {
@@ -84,13 +90,13 @@ async fn handle(state: SessionState, session: SessionContext, socket: WebSocket)
             _ = interval.tick() => {
                 if !transport.is_current(&session.session_id, generation) || last_inbound.elapsed() > Duration::from_secs(60) { break; }
                 if auth_check.elapsed() >= Duration::from_secs(15) {
-                    let Some(current) = state.client_sessions.get(&session.session_id).await else { break; };
-                    if !matches!(state.session_operations().valid_session(&current).await, Ok(true)) { break; }
+                    let Some(current) = operations.sessions.get(&session.session_id).await else { break; };
+                    if !matches!(operations.valid_session(&current).await, Ok(true)) { break; }
                     auth_check = Instant::now();
                 }
                 if let Some((next, period)) = subscription {
                     if Instant::now() >= next {
-                        match state.session_operations().snapshots(&session.user.id).await {
+                        match operations.snapshots(&session.user.id).await {
                             Ok(sessions) => if transport.send(&session.session_id, "Sessions", &sessions).is_err() { break; },
                             Err(_) => break,
                         }
@@ -100,8 +106,8 @@ async fn handle(state: SessionState, session: SessionContext, socket: WebSocket)
             }
         }
     }
-    state
-        .syncplay
+    syncplay
+        .groups
         .unregister_websocket_with_grace(session.session_id, generation)
         .await;
 }

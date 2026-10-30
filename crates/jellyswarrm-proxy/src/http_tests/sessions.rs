@@ -655,10 +655,7 @@ async fn query_capabilities_filters_browse_and_admin_reset_are_local() {
         .status(),
         StatusCode::CONFLICT
     );
-    f.state
-        .session_operations()
-        .end_user_sessions(&f.user.id)
-        .await;
+    f.state.sessions.end_user_sessions(&f.user.id).await;
     assert!(!f.state.client_sessions.transport.is_connected(id));
     assert!(f.state.client_sessions.get(id).await.is_none());
     f.no_upstream_requests().await;

@@ -16,7 +16,7 @@ use crate::{
     media::presentation::{CatalogItem, ItemNamePolicy},
     models::MediaItem,
     processors::response_processor::ResponseProcessingProfile,
-    servers::routing::compare_routes,
+    servers::compare_routes,
     servers::storage::Server,
 };
 

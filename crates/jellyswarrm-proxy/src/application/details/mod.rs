@@ -34,7 +34,7 @@ impl VirtualLibraryFallbackPolicy {
 
     fn order(members: &mut [crate::libraries::service::VirtualLibraryMember]) {
         members.sort_by(|left, right| {
-            crate::servers::routing::compare_routes(
+            crate::servers::compare_routes(
                 &right.server,
                 &right.mapping.original_media_id,
                 &left.server,

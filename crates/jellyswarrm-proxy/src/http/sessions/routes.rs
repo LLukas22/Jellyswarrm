@@ -5,8 +5,7 @@ use crate::sessions::{
     SessionContext,
 };
 use crate::{
-    domain::user_id::UserId,
-    http::state::{AppState, SessionState},
+    application::sessions::SessionOperations, domain::user_id::UserId, http::state::AppState,
 };
 use axum::{
     body::to_bytes,
@@ -99,7 +98,7 @@ impl Params {
 }
 
 async fn list(
-    State(state): State<SessionState>,
+    State(operations): State<SessionOperations>,
     caller: SessionContext,
     uri: Uri,
 ) -> ApiResult<Json<Vec<Value>>> {
@@ -110,8 +109,7 @@ async fn list(
     }
     let active = p.number::<u32>("ActiveWithinSeconds")?;
     let cutoff = active.map(|s| chrono::Utc::now() - chrono::Duration::seconds(i64::from(s)));
-    let sessions = state
-        .session_operations()
+    let sessions = operations
         .snapshots(&caller.user.id)
         .await
         .map_err(status)?
@@ -131,7 +129,7 @@ async fn list(
 }
 
 async fn dispatch(
-    State(state): State<SessionState>,
+    State(operations): State<SessionOperations>,
     caller: SessionContext,
     Path(path): Path<String>,
     req: Request,
@@ -140,7 +138,6 @@ async fn dispatch(
         return Err(StatusCode::NOT_IMPLEMENTED);
     }
     let p = Params::new(req.uri())?;
-    let operations = state.session_operations();
     let path = path.trim_end_matches('/').to_ascii_lowercase();
     let path = path.as_str();
     if matches!(path, "capabilities" | "capabilities/full") {

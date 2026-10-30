@@ -1,5 +1,7 @@
 //! SyncPlay access-check orchestration. Incoming adapters neither choose whose
 //! library access to check nor commit after an unchecked asynchronous gap.
+use std::sync::Arc;
+
 use crate::{
     application::sessions::access::MediaAccess,
     sessions::SessionContext,
@@ -9,9 +11,11 @@ use crate::{
     },
 };
 
-pub(crate) struct SyncPlayOperations<'a> {
-    groups: &'a SyncPlayService,
-    access: MediaAccess<'a>,
+/// Owned handles, built once at startup; clones share the same services.
+#[derive(Clone)]
+pub(crate) struct SyncPlayOperations {
+    pub(crate) groups: Arc<SyncPlayService>,
+    access: MediaAccess,
 }
 
 pub(crate) enum JoinOutcome {
@@ -19,8 +23,8 @@ pub(crate) enum JoinOutcome {
     AccessDenied,
     Rejected,
 }
-impl<'a> SyncPlayOperations<'a> {
-    pub(crate) fn new(groups: &'a SyncPlayService, access: MediaAccess<'a>) -> Self {
+impl SyncPlayOperations {
+    pub(crate) fn new(groups: Arc<SyncPlayService>, access: MediaAccess) -> Self {
         Self { groups, access }
     }
 

@@ -1,6 +1,7 @@
 //! Client-session authentication, revocation, discovery and remote-control orchestration.
 pub(crate) mod access;
 #[cfg(test)]
+#[path = "../../unit_tests/session_operations.rs"]
 mod tests;
 use crate::{
     auth::{service::User, UserAuthorizationService},
@@ -13,6 +14,7 @@ use crate::{
     syncplay::service::{RemoteCommandError, SyncPlayService},
 };
 use serde_json::{json, Value};
+use std::sync::Arc;
 
 #[derive(thiserror::Error)]
 pub(crate) enum SessionOperationError {
@@ -38,21 +40,23 @@ impl std::fmt::Debug for SessionOperationError {
     }
 }
 
-pub(crate) struct SessionOperations<'a> {
-    authorization: &'a UserAuthorizationService,
-    sessions: &'a ClientSessionService,
-    groups: &'a SyncPlayService,
-    settings: &'a SettingsView,
-    access: access::MediaAccess<'a>,
+/// Owned handles, built once at startup; clones share the same services.
+#[derive(Clone)]
+pub(crate) struct SessionOperations {
+    authorization: Arc<UserAuthorizationService>,
+    pub(crate) sessions: Arc<ClientSessionService>,
+    groups: Arc<SyncPlayService>,
+    settings: SettingsView,
+    access: access::MediaAccess,
 }
 
-impl<'a> SessionOperations<'a> {
+impl SessionOperations {
     pub(crate) fn new(
-        authorization: &'a UserAuthorizationService,
-        sessions: &'a ClientSessionService,
-        groups: &'a SyncPlayService,
-        settings: &'a SettingsView,
-        access: access::MediaAccess<'a>,
+        authorization: Arc<UserAuthorizationService>,
+        sessions: Arc<ClientSessionService>,
+        groups: Arc<SyncPlayService>,
+        settings: SettingsView,
+        access: access::MediaAccess,
     ) -> Self {
         Self {
             authorization,
@@ -70,7 +74,7 @@ impl<'a> SessionOperations<'a> {
         mutating: bool,
         device_hint: Option<Device>,
     ) -> Result<SessionContext, SessionOperationError> {
-        let identity = super::accounts::resolve_identity(headers, url, self.authorization).await?;
+        let identity = super::accounts::resolve_identity(headers, url, &self.authorization).await?;
         let user = identity
             .user
             .ok_or(SessionOperationError::Unauthenticated)?;
@@ -272,7 +276,7 @@ pub(crate) async fn decorate_authentication(
 }
 
 // Remote-command capability, media-access and SyncPlay coexistence policy.
-impl SessionOperations<'_> {
+impl SessionOperations {
     pub(crate) async fn general_command(
         &self,
         caller: &SessionContext,

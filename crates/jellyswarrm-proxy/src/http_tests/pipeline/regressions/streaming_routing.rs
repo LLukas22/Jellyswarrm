@@ -126,7 +126,7 @@ async fn ambiguous_implicit_delivery_preserves_deterministic_mapping_default() {
     let default = members
         .iter()
         .max_by(|left, right| {
-            crate::servers::routing::compare_routes(
+            crate::servers::compare_routes(
                 &left.server,
                 &left.mapping.original_media_id,
                 &right.server,

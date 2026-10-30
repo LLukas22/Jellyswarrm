@@ -1,18 +1,24 @@
 //! Cross-service media authorization for client control and SyncPlay workflows.
-use crate::libraries::service::VirtualLibraryAccessScope;
+use std::sync::Arc;
+
+use crate::{
+    application::url_selection::UrlSelection, auth::UserAuthorizationService,
+    libraries::service::VirtualLibraryAccessScope, media::MediaStorageService,
+};
 
 /// Read-only media authorization capability shared by client control and
 /// SyncPlay application operations, without incoming HTTP status policy.
-pub(crate) struct MediaAccess<'a> {
-    authorization: &'a crate::auth::UserAuthorizationService,
-    media: &'a crate::media::MediaStorageService,
-    selection: &'a crate::application::url_selection::UrlSelection,
+#[derive(Clone)]
+pub(crate) struct MediaAccess {
+    authorization: Arc<UserAuthorizationService>,
+    media: Arc<MediaStorageService>,
+    selection: UrlSelection,
 }
-impl<'a> MediaAccess<'a> {
+impl MediaAccess {
     pub(crate) fn new(
-        authorization: &'a crate::auth::UserAuthorizationService,
-        media: &'a crate::media::MediaStorageService,
-        selection: &'a crate::application::url_selection::UrlSelection,
+        authorization: Arc<UserAuthorizationService>,
+        media: Arc<MediaStorageService>,
+        selection: UrlSelection,
     ) -> Self {
         Self {
             authorization,

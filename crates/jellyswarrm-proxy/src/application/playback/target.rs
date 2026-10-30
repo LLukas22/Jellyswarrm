@@ -153,7 +153,7 @@ impl MediaTargetResolver<'_> {
                     .into_iter()
                     .filter(|member| member.server.id == backend.server().id)
                     .max_by(|left, right| {
-                        crate::servers::routing::compare_routes(
+                        crate::servers::compare_routes(
                             &left.server,
                             &left.mapping.original_media_id,
                             &right.server,

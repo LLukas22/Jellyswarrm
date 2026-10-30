@@ -10,11 +10,11 @@ use tokio::sync::mpsc;
 
 struct Fixture {
     pool: sqlx::SqlitePool,
-    authorization: UserAuthorizationService,
+    authorization: Arc<UserAuthorizationService>,
     media: Arc<MediaStorageService>,
     selection: super::super::url_selection::UrlSelection,
-    sessions: ClientSessionService,
-    groups: SyncPlayService,
+    sessions: Arc<ClientSessionService>,
+    groups: Arc<SyncPlayService>,
     settings: SettingsView,
 }
 
@@ -35,7 +35,7 @@ impl Fixture {
         ));
         let hub = ConnectionHub::default();
         Self {
-            authorization: UserAuthorizationService::new(pool.clone()),
+            authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
             selection: super::super::url_selection::UrlSelection::new(
                 media.clone(),
                 servers,
@@ -43,19 +43,23 @@ impl Fixture {
             ),
             media,
             pool,
-            sessions: ClientSessionService::new(hub.clone()),
-            groups: SyncPlayService::with_transport(hub),
+            sessions: Arc::new(ClientSessionService::new(hub.clone())),
+            groups: Arc::new(SyncPlayService::with_transport(hub)),
             settings: SettingsView::new(Arc::new(tokio::sync::RwLock::new(AppConfig::default()))),
         }
     }
 
-    fn operations(&self) -> SessionOperations<'_> {
+    fn operations(&self) -> SessionOperations {
         SessionOperations::new(
-            &self.authorization,
-            &self.sessions,
-            &self.groups,
-            &self.settings,
-            access::MediaAccess::new(&self.authorization, &self.media, &self.selection),
+            self.authorization.clone(),
+            self.sessions.clone(),
+            self.groups.clone(),
+            self.settings.clone(),
+            access::MediaAccess::new(
+                self.authorization.clone(),
+                self.media.clone(),
+                self.selection.clone(),
+            ),
         )
     }
 

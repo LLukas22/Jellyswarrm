@@ -338,11 +338,7 @@ pub(crate) async fn delete_user(
     // 3. Delete locally
     match state.user_authorization.delete_user(&user_id).await {
         Ok(true) => {
-            state
-                .sessions
-                .session_operations()
-                .end_user_sessions(&user_id)
-                .await;
+            state.sessions.end_user_sessions(&user_id).await;
             get_user_list_impl(&state, report).await.into_response()
         }
         Ok(false) => (
@@ -536,11 +532,7 @@ pub(crate) async fn delete_sessions(
         .await
     {
         Ok(_) => {
-            state
-                .sessions
-                .session_operations()
-                .end_user_sessions(&user_id)
-                .await;
+            state.sessions.end_user_sessions(&user_id).await;
             get_user_item(&state, &user_id).await.into_response()
         }
         Err(e) => {

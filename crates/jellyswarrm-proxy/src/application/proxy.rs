@@ -23,7 +23,7 @@ use crate::{
     processors::request_processor::RequestProcessingContext,
     processors::response_processor::ResponseProcessingProfile,
     protocol::url::{decoded_path_segments, replace_path_id},
-    servers::routing::compare_routes,
+    servers::compare_routes,
     upstream::headers::is_hop_by_hop_header,
 };
 

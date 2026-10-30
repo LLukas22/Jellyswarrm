@@ -10,7 +10,7 @@ use crate::{
     processors::url_processor::selected_media_source,
     protocol::routes::{matches_case_insensitive, MEDIA_ID_PATH_TAGS, MEDIA_ID_QUERY_TAGS},
     protocol::url::contains_id,
-    servers::routing::compare_routes,
+    servers::compare_routes,
     servers::{Server, ServerStorageService},
 };
 type Result<T> = std::result::Result<T, RoutingError>;

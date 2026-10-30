@@ -33,7 +33,7 @@ use crate::application::services::MediaServices;
 use crate::auth::service::AuthorizationSession;
 use crate::libraries::service::VirtualLibraryAccessScope;
 use crate::processors::request_analyzer::RequestBodyAnalysisResult;
-use crate::servers::routing::compare_routes;
+use crate::servers::compare_routes;
 use crate::servers::storage::Server;
 
 pub(crate) async fn resolve_server(

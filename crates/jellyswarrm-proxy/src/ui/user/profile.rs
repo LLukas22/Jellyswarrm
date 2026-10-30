@@ -246,7 +246,7 @@ pub(crate) async fn post_user_password(
         .await
     {
         Ok(true) => {
-            if let Err(error) = super::common::prepare_mappings_for_password_change(
+            if let Err(error) = prepare_mappings_for_password_change(
                 &state, &user, &form.current_password,
             ).await {
                 error!("Failed to validate legacy mappings before password change: {error}");
@@ -327,4 +327,24 @@ pub(crate) async fn post_user_password(
                 .into_response()
         }
     }
+}
+
+/// Validate ambiguous legacy values before the local password transaction.
+/// Do not accept a cached token as proof of the saved password's correctness.
+async fn prepare_mappings_for_password_change(
+    state: &ManagementState,
+    user: &crate::ui::auth::User,
+    verified_password: &Password,
+) -> Result<(), String> {
+    let local_user = state
+        .user_authorization
+        .get_user_by_id(&user.id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or("Local user not found")?;
+    state
+        .mapping_authenticator
+        .prepare_password_change(&local_user, &state.server_storage, verified_password)
+        .await
+        .map_err(|error| error.to_string())
 }

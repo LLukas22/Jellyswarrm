@@ -100,9 +100,12 @@ impl MediaFixture {
             user_authorization: self.user_authorization.clone(),
             server_storage: self.server_storage.clone(),
             settings: self.services.config.clone(),
-            reqwest_client: self.reqwest_client.clone(),
             client_sessions: self.client_sessions.clone(),
-            admin_password: self.config.read().await.password.clone(),
+            mapping_authenticator: crate::auth::mapping_authentication::MappingAuthenticator::new(
+                self.user_authorization.clone(),
+                self.reqwest_client.clone(),
+                self.config.read().await.password.clone(),
+            ),
         }
     }
 }

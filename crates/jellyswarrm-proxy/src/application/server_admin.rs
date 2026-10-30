@@ -1,5 +1,7 @@
 //! Registry mutations and their dependent effects. SQL commits first; later
 //! requests resolve fresh server settings and cannot reuse earlier catalog keys.
+use std::sync::Arc;
+
 use crate::{
     application::catalog::snapshots::CatalogSnapshots,
     config::MediaStreamingMode,
@@ -11,8 +13,9 @@ use crate::{
 
 /// Narrow credential-administration workflow, independent of templates, incoming
 /// HTTP status policy, playback storage, and the global application container.
-pub(crate) struct ServerCredentials<'a> {
-    registry: &'a ServerStorageService,
+#[derive(Clone)]
+pub(crate) struct ServerCredentials {
+    registry: Arc<ServerStorageService>,
     transport: reqwest::Client,
     encryption_key: HashedPassword,
 }
@@ -33,9 +36,9 @@ pub(crate) enum ServerCredentialError {
     Storage(#[from] sqlx::Error),
 }
 
-impl<'a> ServerCredentials<'a> {
+impl ServerCredentials {
     pub(crate) fn new(
-        registry: &'a ServerStorageService,
+        registry: Arc<ServerStorageService>,
         transport: reqwest::Client,
         encryption_key: HashedPassword,
     ) -> Self {
@@ -90,17 +93,18 @@ impl<'a> ServerCredentials<'a> {
     }
 }
 
-pub(crate) struct ServerAdministration<'a> {
-    registry: &'a ServerStorageService,
-    playback: &'a SessionStorage,
-    catalogs: &'a CatalogSnapshots,
+#[derive(Clone)]
+pub(crate) struct ServerAdministration {
+    registry: Arc<ServerStorageService>,
+    playback: Arc<SessionStorage>,
+    catalogs: Arc<CatalogSnapshots>,
 }
 
-impl<'a> ServerAdministration<'a> {
+impl ServerAdministration {
     pub(crate) fn new(
-        registry: &'a ServerStorageService,
-        playback: &'a SessionStorage,
-        catalogs: &'a CatalogSnapshots,
+        registry: Arc<ServerStorageService>,
+        playback: Arc<SessionStorage>,
+        catalogs: Arc<CatalogSnapshots>,
     ) -> Self {
         Self {
             registry,
@@ -174,13 +178,14 @@ mod tests {
         let upstream = MockServer::start().await;
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
         MIGRATOR.run(&pool).await.unwrap();
-        let registry = ServerStorageService::new(pool);
+        let registry = Arc::new(ServerStorageService::new(pool));
         let id = registry
             .add_server("Backend", &upstream.uri(), 100, MediaStreamingMode::Proxy)
             .await
             .unwrap();
         let key: HashedPassword = (&Password::from("master-password")).into();
-        let operation = ServerCredentials::new(&registry, reqwest::Client::new(), key.clone());
+        let operation =
+            ServerCredentials::new(registry.clone(), reqwest::Client::new(), key.clone());
         Mock::given(method("POST")).and(path("/Users/AuthenticateByName"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "AccessToken":"temporary-admin-token", "User":{"Id":"admin", "Name":"Admin", "Policy":{"IsAdministrator":true}}
@@ -260,9 +265,9 @@ mod tests {
     async fn missing_server_is_rejected_before_any_authentication() {
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
         MIGRATOR.run(&pool).await.unwrap();
-        let registry = ServerStorageService::new(pool);
+        let registry = Arc::new(ServerStorageService::new(pool));
         let operation = ServerCredentials::new(
-            &registry,
+            registry,
             reqwest::Client::new(),
             (&Password::from("master")).into(),
         );
@@ -278,10 +283,10 @@ mod tests {
     async fn registry_changes_are_visible_to_mapping_reads_and_deletion_releases_playback() {
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
         MIGRATOR.run(&pool).await.unwrap();
-        let registry = ServerStorageService::new(pool.clone());
+        let registry = Arc::new(ServerStorageService::new(pool.clone()));
         let media = MediaStorageService::new(pool);
-        let playback = SessionStorage::new();
-        let catalogs = CatalogSnapshots::default();
+        let playback = Arc::new(SessionStorage::new());
+        let catalogs = Arc::new(CatalogSnapshots::default());
         let id = registry
             .add_server(
                 "Backend",
@@ -315,7 +320,7 @@ mod tests {
                 original_item_id: Some("item".into()),
             })
             .await;
-        let admin = ServerAdministration::new(&registry, &playback, &catalogs);
+        let admin = ServerAdministration::new(registry.clone(), playback.clone(), catalogs.clone());
         assert!(admin.set_priority(id, 999).await.unwrap());
         assert!(admin
             .set_streaming_mode(id, MediaStreamingMode::Redirect)

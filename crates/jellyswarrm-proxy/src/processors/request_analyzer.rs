@@ -13,7 +13,7 @@ use crate::{
         field_matcher::{ID_FIELDS, MEDIA_ID_LIST_PARENT_FIELDS, SESSION_FIELDS, USER_FIELDS},
         json_processor::{JsonAnalyzer, JsonProcessingContext},
     },
-    servers::routing::compare_routes,
+    servers::compare_routes,
     servers::storage::Server,
     servers::ServerStorageService,
 };

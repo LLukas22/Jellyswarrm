@@ -5,7 +5,7 @@ use crate::{
     media::identity::{MediaAlias, MediaKind, StableMediaGroup},
     media::presentation::{CatalogItem, ItemPresentation},
     models::{enums::BaseItemKind, MediaItem},
-    servers::routing::compare_routes,
+    servers::compare_routes,
     servers::storage::Server,
 };
 
