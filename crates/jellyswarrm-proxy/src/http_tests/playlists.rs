@@ -5,7 +5,7 @@ use crate::processors::response_processor::ResponseProcessingProfile;
 use crate::{
     auth::service::User,
     config::AppConfig,
-    http::{proxy::proxy_handler, router::item_detail_routes},
+    http::{client_routes::item_detail_routes, proxy::proxy_handler},
     persistence::MIGRATOR,
     protocol::authorization::Authorization,
     servers::Server,
@@ -567,7 +567,7 @@ async fn playlist_mapping_database_failures_are_internal_errors() {
     f.pool.close().await;
     let mut permissions = json!([{"UserId":"caller-0", "CanEdit":true}]);
     assert_eq!(
-        crate::http::handlers::pipeline_error::detail_status(
+        crate::http::error::status(
             &(f.state
                 .proxy_service()
                 .process_response_json_typed(

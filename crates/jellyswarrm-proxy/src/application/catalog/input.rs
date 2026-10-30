@@ -13,10 +13,6 @@ pub(crate) struct CatalogRequest {
     pub(crate) body_analysis: Option<RequestBodyAnalysisResult>,
 }
 
-pub(crate) fn input_error_typed(error: anyhow::Error) -> ApplicationError {
-    crate::application::input::routing_error(error)
-}
-
 impl CatalogRequest {
     pub(crate) fn new(
         original_request: reqwest::Request,

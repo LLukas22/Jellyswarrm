@@ -1,4 +1,5 @@
 //! Prepare authorized fallback requests and forward responses through the proxy workflow.
+use crate::application::error::FailureStage;
 #[cfg(test)]
 use hyper::StatusCode;
 use hyper::{
@@ -225,8 +226,7 @@ pub(crate) async fn forward(
     let mut request =
         UpstreamRequestBuilder::new(&state.processors.url_processor, prefix.as_deref())
             .build(&target, &normalized_request)
-            .await
-            .map_err(|error| crate::application::input::routing_error(error.0))?;
+            .await?;
     let request_url = request.url().clone();
     let mutation_viewer = (!matches!(*request.method(), Method::GET | Method::HEAD))
         .then(|| context.user().map(|user| user.id.clone()))
@@ -373,8 +373,7 @@ pub(crate) async fn update_aggregate(
         return Ok(None);
     };
     let scope = request.context.access_scope().ok_or_else(|| {
-        ApplicationError::MissingIdentity("aggregate viewer")
-            .at(crate::application::error::FailureStage::CallerAuthentication)
+        ApplicationError::MissingIdentity("aggregate viewer").at(FailureStage::CallerAuthentication)
     })?;
     let mut members = state
         .media_storage
@@ -385,7 +384,7 @@ pub(crate) async fn update_aggregate(
     if members.is_empty() {
         return Err(
             ApplicationError::InvalidInput("no authorized aggregate members")
-                .at(crate::application::error::FailureStage::ResourceLookup),
+                .at(FailureStage::ResourceLookup),
         );
     }
     members.sort_by(|left, right| {
@@ -416,8 +415,7 @@ pub(crate) async fn update_aggregate(
         let upstream =
             UpstreamRequestBuilder::new(&state.processors.url_processor, prefix.as_deref())
                 .build(&target, &upstream)
-                .await
-                .map_err(|error| crate::application::input::routing_error(error.0))?;
+                .await?;
         targets.push((upstream, member.server));
     }
     let mut result = None;

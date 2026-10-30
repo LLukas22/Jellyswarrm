@@ -3,7 +3,8 @@
 //! Flow: input → library_resolution → snapshots/upstream → media_reconciliation
 //! → postprocessing. Roots, batch lookup, and facets branch to their named modules.
 //! See `../../DATA_FLOW.md`; `services` holds dependencies, not workflow steps.
-use crate::application::error::ApplicationError;
+use crate::application::details::get_item_detail;
+use crate::application::error::{ApplicationError, FailureStage};
 use tracing::debug;
 
 use self::services::CatalogService;
@@ -37,7 +38,7 @@ async fn get_items(
     state: &CatalogService,
     request: CatalogRequest,
 ) -> Result<serde_json::Value, ApplicationError> {
-    crate::application::details::get_item_detail(state, request.into(), false).await
+    get_item_detail(state, request.into(), false).await
 }
 
 /// Series detail and single-channel/genre guides identify one upstream item.
@@ -113,12 +114,10 @@ pub(crate) async fn get_show_children(
 
     let aggregate_id = contains_id(preprocessed.original_request.url(), "Shows");
     let Some(aggregate_id) = aggregate_id else {
-        return crate::application::details::get_item_detail(state, preprocessed.into(), false)
-            .await;
+        return get_item_detail(state, preprocessed.into(), false).await;
     };
     if !state.deduplicate_media_enabled().await {
-        return crate::application::details::get_item_detail(state, preprocessed.into(), false)
-            .await;
+        return get_item_detail(state, preprocessed.into(), false).await;
     }
     let Some(group) = state
         .media_storage
@@ -126,8 +125,7 @@ pub(crate) async fn get_show_children(
         .await
         .map_err(ApplicationError::Storage)?
     else {
-        return crate::application::details::get_item_detail(state, preprocessed.into(), false)
-            .await;
+        return get_item_detail(state, preprocessed.into(), false).await;
     };
     let members = state
         .media_storage
@@ -136,7 +134,7 @@ pub(crate) async fn get_show_children(
         .map_err(ApplicationError::Storage)?;
     let Some(sessions) = preprocessed.context.backends().sessions.clone() else {
         return Err(ApplicationError::MissingIdentity("show catalog sessions")
-            .at(crate::application::error::FailureStage::CallerAuthentication));
+            .at(FailureStage::CallerAuthentication));
     };
     let mut skipped_targets = 0;
     let mut targets = Vec::new();
@@ -167,8 +165,7 @@ pub(crate) async fn get_show_children(
         });
     }
     if targets.is_empty() {
-        return crate::application::details::get_item_detail(state, preprocessed.into(), false)
-            .await;
+        return get_item_detail(state, preprocessed.into(), false).await;
     }
     media_reconciliation::get_aggregate_show_items_typed(
         state,
@@ -190,7 +187,7 @@ pub(crate) async fn get_media_folders(
         .map(|user| user.id.clone())
         .ok_or_else(|| {
             ApplicationError::MissingIdentity("media folder viewer")
-                .at(crate::application::error::FailureStage::CallerAuthentication)
+                .at(FailureStage::CallerAuthentication)
         })?;
     let path = preprocessed.original_request.url().path().to_string();
     let path = path
@@ -246,9 +243,7 @@ pub(crate) async fn get_catalog(
             )
             .await
         }
-        CatalogPlan::SingleServer => {
-            crate::application::details::get_item_detail(state, preprocessed.into(), false).await
-        }
+        CatalogPlan::SingleServer => get_item_detail(state, preprocessed.into(), false).await,
         CatalogPlan::Virtual {
             catalog_scope_key,
             targets,

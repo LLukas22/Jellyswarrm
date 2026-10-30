@@ -9,7 +9,10 @@ pub(crate) use media::MediaState;
 pub(crate) use paths::AdapterPaths;
 pub(crate) use sessions::SessionState;
 
-use crate::application::accounts::services::{AccountService, AuthenticationService};
+use crate::application::{
+    accounts::services::{AccountService, AuthenticationService},
+    catalog::services::CatalogService,
+};
 use axum::extract::FromRef;
 
 #[derive(Clone, FromRef)]
@@ -48,6 +51,11 @@ impl AppState {
 impl FromRef<AppState> for AuthenticationService {
     fn from_ref(state: &AppState) -> Self {
         state.accounts.authentication.clone()
+    }
+}
+impl FromRef<AppState> for CatalogService {
+    fn from_ref(state: &AppState) -> Self {
+        state.media.catalog_service()
     }
 }
 impl FromRef<AppState> for reqwest::Client {

@@ -83,7 +83,7 @@ pub(crate) async fn proxy_handler(
             error!("Failed to preprocess request: {}", error);
             let message = client_request_error(&error);
             let error = application::input::routing_error(error);
-            let status = crate::http::handlers::pipeline_error::detail_status(&error);
+            let status = super::error::status(&error);
             return Ok((status, message).into_response());
         }
     };
@@ -95,7 +95,7 @@ pub(crate) async fn proxy_handler(
             Err(application::error::ApplicationError::RequestBody(cause)) => {
                 return Ok((StatusCode::BAD_REQUEST, client_request_error(&cause)).into_response())
             }
-            Err(error) => return Err(crate::http::handlers::pipeline_error::detail_status(&error)),
+            Err(error) => return Err(super::error::status(&error)),
         };
     Ok(response.map(Body::from))
 }

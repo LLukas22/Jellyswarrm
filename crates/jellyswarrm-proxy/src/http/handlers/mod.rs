@@ -1,12 +1,6 @@
-//! Incoming Jellyfin HTTP adapters that delegate to application workflows and feature services.
+//! Incoming Jellyfin HTTP adapters with their own request/response shapes. Client
+//! library/playback adapters live next to their routes in `http::client_routes`.
 pub(crate) mod auth_keys;
 pub(crate) mod branding;
-pub(crate) mod federated;
-pub(crate) mod items;
-pub(crate) mod livestreams;
-pub(crate) mod pipeline_error;
 pub(crate) mod quick_connect;
 pub(crate) mod syncplay;
-pub(crate) mod system;
-pub(crate) mod users;
-pub(crate) mod videos;

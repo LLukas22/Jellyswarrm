@@ -1,4 +1,5 @@
 //! Catalog grouping, ordering and presentation.
+use crate::application::error::ApplicationError;
 use std::collections::VecDeque;
 use std::str::FromStr;
 
@@ -387,8 +388,7 @@ fn to_i32(value: usize) -> i32 {
 pub(super) fn page_materialized_response(
     snapshot: &serde_json::Value,
     pagination: Pagination,
-) -> Result<serde_json::Value, crate::application::error::ApplicationError> {
-    use crate::application::error::ApplicationError;
+) -> Result<serde_json::Value, ApplicationError> {
     let slice = |items: &[serde_json::Value]| {
         items
             .iter()

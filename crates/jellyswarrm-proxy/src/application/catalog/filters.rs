@@ -1,5 +1,5 @@
 //! Apply access-scoped catalog filters and translate named or requested media IDs.
-use crate::application::error::ApplicationError;
+use crate::application::error::{ApplicationError, FailureStage};
 use serde_json::{json, Value};
 
 use super::services::CatalogService;
@@ -94,7 +94,7 @@ pub(crate) async fn get_filters_typed(
             vec![CatalogFetchTarget {
                 session: session.ok_or_else(|| {
                     ApplicationError::MissingIdentity("facet session")
-                        .at(crate::application::error::FailureStage::CallerAuthentication)
+                        .at(FailureStage::CallerAuthentication)
                 })?,
                 server,
                 parent: None,
@@ -131,8 +131,7 @@ pub(crate) async fn get_filters_typed(
                 prefix.as_deref(),
             )
             .build(&authorized, &request)
-            .await
-            .map_err(|error| crate::application::input::routing_error(error.0))?;
+            .await?;
             tokio::time::timeout(
                 timeout,
                 state.execute_processed_json(
@@ -144,8 +143,7 @@ pub(crate) async fn get_filters_typed(
             )
             .await
             .map_err(|error| {
-                ApplicationError::Internal(error.into())
-                    .at(crate::application::error::FailureStage::CatalogDeadline)
+                ApplicationError::Internal(error.into()).at(FailureStage::CatalogDeadline)
             })?
         }
     });

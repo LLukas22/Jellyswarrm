@@ -110,10 +110,7 @@ pub(crate) async fn get_item_detail(
     }
     let prefix = state.get_url_prefix().await;
     let builder = UpstreamRequestBuilder::new(&state.processors.url_processor, prefix.as_deref());
-    let request = builder
-        .build(&target, &normalized_request)
-        .await
-        .map_err(|error| crate::application::input::routing_error(error.0))?;
+    let request = builder.build(&target, &normalized_request).await?;
     let failed_id = contains_id(request.url(), "Items");
     let result = state
         .execute_processed_json(
@@ -159,10 +156,7 @@ pub(crate) async fn get_item_detail(
                     ApplicationError::Internal(anyhow::anyhow!("detail request is not cloneable"))
                 })?;
                 normalize_detail_member(&mut request, &member.mapping)?;
-                let request = builder
-                    .build(&member_target, &request)
-                    .await
-                    .map_err(|error| crate::application::input::routing_error(error.0))?;
+                let request = builder.build(&member_target, &request).await?;
                 match state
                     .execute_processed_json(
                         request,

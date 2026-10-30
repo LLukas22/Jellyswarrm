@@ -1,5 +1,6 @@
 //! Reconcile fetched media observations and validated inventory evidence before catalog presentation.
 use crate::application::error::ApplicationError;
+use crate::models::enums::BaseItemKind;
 use std::collections::BTreeSet;
 
 use super::services::CatalogService;
@@ -33,15 +34,11 @@ async fn show_catalog_aliases(
     let mut result = Vec::with_capacity(items.len());
     for item in items {
         let mut aliases = MediaAlias::from_item(item);
-        if matches!(
-            item.item_type,
-            crate::models::enums::BaseItemKind::Season
-                | crate::models::enums::BaseItemKind::Episode
-        ) {
+        if matches!(item.item_type, BaseItemKind::Season | BaseItemKind::Episode) {
             let group = if let Some(group) = series_group {
                 Some(group.to_string())
             } else if let Some(parent) = item.series_id.as_ref().or_else(|| {
-                (item.item_type == crate::models::enums::BaseItemKind::Season)
+                (item.item_type == BaseItemKind::Season)
                     .then_some(item.parent_id.as_ref())
                     .flatten()
             }) {
@@ -282,13 +279,12 @@ pub(super) async fn reconcile_fetched_catalog(
     // inventory; the full snapshots below remain authoritative for removals.
     if deduplicate_media
         && server_items.iter().any(|fetch| {
-            fetch.server_items.response.items().iter().any(|item| {
-                matches!(
-                    item.item_type,
-                    crate::models::enums::BaseItemKind::Season
-                        | crate::models::enums::BaseItemKind::Episode
-                )
-            })
+            fetch
+                .server_items
+                .response
+                .items()
+                .iter()
+                .any(|item| matches!(item.item_type, BaseItemKind::Season | BaseItemKind::Episode))
         })
     {
         let parents = server_items
@@ -310,7 +306,7 @@ pub(super) async fn reconcile_fetched_catalog(
                     .response
                     .items()
                     .iter()
-                    .filter(|item| item.item_type == crate::models::enums::BaseItemKind::Series)
+                    .filter(|item| item.item_type == BaseItemKind::Series)
                     .map(|item| MediaObservation {
                         virtual_media_id: item.id.clone(),
                         kind: MediaKind::Series,
@@ -409,11 +405,7 @@ pub(super) async fn reconcile_fetched_catalog(
             .await?;
         }
         if let Some(group) = series_group {
-            if matches!(
-                item.item_type,
-                crate::models::enums::BaseItemKind::Season
-                    | crate::models::enums::BaseItemKind::Episode
-            ) {
+            if matches!(item.item_type, BaseItemKind::Season | BaseItemKind::Episode) {
                 if item.series_id.is_some() && item.parent_id == item.series_id {
                     item.parent_id = Some(group.to_string());
                 }

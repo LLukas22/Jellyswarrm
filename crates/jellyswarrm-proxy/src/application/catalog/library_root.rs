@@ -1,7 +1,7 @@
 //! Build visible virtual-library roots and merge library metadata for catalog responses.
 use std::collections::HashMap;
 
-use crate::application::error::ApplicationError;
+use crate::application::error::{ApplicationError, FailureStage};
 use tokio::task::JoinSet;
 use tracing::{error, warn};
 
@@ -254,7 +254,7 @@ pub(super) async fn get_automatic_library_root(
     } = preprocessed;
     let access_scope = context.access_scope().ok_or_else(|| {
         ApplicationError::MissingIdentity("library viewer scope")
-            .at(crate::application::error::FailureStage::CallerAuthentication)
+            .at(FailureStage::CallerAuthentication)
     })?;
     let refresh_generation = state
         .virtual_library_service

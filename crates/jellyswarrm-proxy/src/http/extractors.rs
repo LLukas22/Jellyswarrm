@@ -4,8 +4,18 @@ use hyper::StatusCode;
 use tracing::error;
 
 use crate::{
+    application::{
+        catalog::input::CatalogRequest,
+        context::RequestContext,
+        error::ApplicationError,
+        input::{routing_error, CollectedRequest, OperationRequest},
+        playback::live::LiveRequest,
+    },
     auth::service::User,
-    http::{preprocessing::resolve_request_identity_from_headers_uri, state::MediaState},
+    http::{
+        preprocessing::{extract_request_infos, resolve_request_identity_from_headers_uri},
+        state::MediaState,
+    },
 };
 
 pub(crate) struct RequirePrimaryUser(pub(crate) User);
@@ -42,28 +52,26 @@ where
 }
 
 /// A caller-scoped operation that has not selected or encoded a backend request.
-pub(crate) struct OperationInput(pub(crate) crate::application::input::OperationRequest);
-pub(crate) use OperationInput as PlaybackInput;
+pub(crate) struct OperationInput(pub(crate) OperationRequest);
 
 impl<S: Send + Sync> FromRequest<S> for OperationInput
 where
     MediaState: FromRef<S>,
 {
-    type Rejection = StatusCode;
+    type Rejection = ApplicationError;
 
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
         let state = MediaState::from_ref(state);
-        use crate::application::{context::RequestContext, input::OperationRequest};
-        let crate::application::input::CollectedRequest {
+        let CollectedRequest {
             original_request,
             auth,
             user,
             sessions,
             body_analysis,
             access_scope,
-        } = crate::http::preprocessing::extract_request_infos(req, &state, None)
+        } = extract_request_infos(req, &state, None)
             .await
-            .map_err(input_status)?;
+            .map_err(routing_error)?;
         let context = RequestContext::new(&original_request, auth, user, sessions, access_scope);
         Ok(Self(OperationRequest {
             original_request,
@@ -73,60 +81,55 @@ where
     }
 }
 
-pub(crate) struct LiveInput(pub(crate) crate::application::playback::live::LiveRequest);
-
 /// Catalog authentication and scope collection without selecting or rewriting a backend.
-pub(crate) struct CatalogInput(pub(crate) crate::application::catalog::input::CatalogRequest);
+pub(crate) struct CatalogInput(pub(crate) CatalogRequest);
 
 impl<S: Send + Sync> FromRequest<S> for CatalogInput
 where
     MediaState: FromRef<S>,
 {
-    type Rejection = StatusCode;
+    type Rejection = ApplicationError;
 
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
         let state = MediaState::from_ref(state);
-        use crate::application::{catalog::input::CatalogRequest, context::RequestContext};
-        let crate::application::input::CollectedRequest {
+        let CollectedRequest {
             original_request,
             auth,
             user,
             sessions,
             body_analysis,
             access_scope,
-        } = crate::http::preprocessing::extract_request_infos(req, &state, None)
+        } = extract_request_infos(req, &state, None)
             .await
-            .map_err(input_error)?;
+            .map_err(routing_error)?;
         let context = RequestContext::new(&original_request, auth, user, sessions, access_scope);
         tracing::debug!(principal = ?context.principal(), device_present = context.device().is_some(), "Collected catalog context");
         let request = CatalogRequest::new(original_request, context, body_analysis);
-        request
-            .validate(&state.catalog_service())
-            .await
-            .map_err(|error| crate::http::handlers::pipeline_error::detail_status(&error))?;
+        request.validate(&state.catalog_service()).await?;
         Ok(Self(request))
     }
 }
+
+pub(crate) struct LiveInput(pub(crate) LiveRequest);
 
 impl<S: Send + Sync> FromRequest<S> for LiveInput
 where
     MediaState: FromRef<S>,
 {
-    type Rejection = StatusCode;
+    type Rejection = ApplicationError;
 
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
         let state = MediaState::from_ref(state);
-        use crate::application::{context::RequestContext, playback::live::LiveRequest};
-        let crate::application::input::CollectedRequest {
+        let CollectedRequest {
             original_request,
             auth,
             user,
             sessions,
             body_analysis,
             access_scope,
-        } = crate::http::preprocessing::extract_request_infos(req, &state, None)
+        } = extract_request_infos(req, &state, None)
             .await
-            .map_err(input_error)?;
+            .map_err(routing_error)?;
         let context = RequestContext::new(&original_request, auth, user, sessions, access_scope);
         context
             .validate_media_ids(
@@ -134,8 +137,7 @@ where
                 body_analysis.as_ref(),
                 &state.url_selection,
             )
-            .await
-            .map_err(|error| crate::http::handlers::pipeline_error::detail_status(&error.into()))?;
+            .await?;
         if let Some(scope) = context.access_scope() {
             if context
                 .backends()
@@ -144,9 +146,9 @@ where
                 .is_none_or(Vec::is_empty)
             {
                 return Err(if scope.server_ids().is_empty() {
-                    StatusCode::BAD_REQUEST
+                    ApplicationError::InvalidInput("empty live authorization scope")
                 } else {
-                    StatusCode::SERVICE_UNAVAILABLE
+                    ApplicationError::UnavailableOwner
                 });
             }
         }
@@ -155,16 +157,4 @@ where
             context,
         }))
     }
-}
-
-fn input_status(error: anyhow::Error) -> StatusCode {
-    crate::http::handlers::pipeline_error::detail_status(&crate::application::input::routing_error(
-        error,
-    ))
-}
-
-fn input_error(error: anyhow::Error) -> StatusCode {
-    crate::http::handlers::pipeline_error::detail_status(
-        &crate::application::catalog::input::input_error_typed(error),
-    )
 }

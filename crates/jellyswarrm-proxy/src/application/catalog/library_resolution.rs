@@ -5,7 +5,7 @@ use crate::models::{
 };
 use std::collections::HashSet;
 
-use crate::application::error::ApplicationError;
+use crate::application::error::{ApplicationError, FailureStage};
 use crate::application::identity::{BackendItemId, VirtualItemId};
 use tracing::{debug, error};
 
@@ -192,7 +192,7 @@ pub(crate) async fn resolve_catalog_plan(
             .or_else(|| preprocessed.context.user().map(|user| user.id.as_str()))
             .ok_or_else(|| {
                 ApplicationError::MissingIdentity("catalog viewer")
-                    .at(crate::application::error::FailureStage::CallerAuthentication)
+                    .at(FailureStage::CallerAuthentication)
             })?;
         // Latest and search are additive feeds, not inventories. Keep their
         // identity scopes stable across windows, terms and missing sessions.
@@ -233,7 +233,7 @@ fn available_sessions(
         .as_ref()
         .ok_or_else(|| {
             ApplicationError::MissingIdentity("catalog sessions")
-                .at(crate::application::error::FailureStage::CallerAuthentication)
+                .at(FailureStage::CallerAuthentication)
         })?;
     let mut seen_servers = HashSet::new();
     let sessions = sessions
@@ -244,7 +244,7 @@ fn available_sessions(
 
     if sessions.is_empty() {
         Err(ApplicationError::MissingIdentity("active catalog session")
-            .at(crate::application::error::FailureStage::CallerAuthentication))
+            .at(FailureStage::CallerAuthentication))
     } else {
         Ok(sessions)
     }

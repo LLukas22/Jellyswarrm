@@ -24,6 +24,12 @@ pub(crate) struct MediaState {
     pub(crate) client_sessions: Arc<ClientSessionService>,
     pub(crate) catalog_snapshots: Arc<application::catalog::snapshots::CatalogSnapshots>,
 }
+impl axum::extract::FromRef<MediaState> for application::catalog::services::CatalogService {
+    fn from_ref(state: &MediaState) -> Self {
+        state.catalog_service()
+    }
+}
+
 impl MediaState {
     pub(crate) fn catalog_service(&self) -> application::catalog::services::CatalogService {
         application::catalog::services::CatalogService {

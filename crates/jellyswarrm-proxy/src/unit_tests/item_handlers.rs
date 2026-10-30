@@ -1,4 +1,4 @@
-//! HTTP item-handler regressions using the owning handler module and shared fixtures.
+//! HTTP item-handler regressions using the owning route module and shared fixtures.
 use crate::test_support::MediaFixture;
 use std::collections::BTreeSet;
 
@@ -192,11 +192,12 @@ async fn check_selected_source_detail(catalog_scopes: &[&str]) {
             Some(sessions.clone()),
             Some(scope.clone()),
         );
-        let Json(response) = get_item(
+        let Json(response) = item(
             State(
                 crate::test_support::adapters::AdapterFixture::from_media(state.clone())
                     .await
-                    .media_state,
+                    .media_state
+                    .catalog_service(),
             ),
             OperationInput(OperationRequest {
                 original_request,

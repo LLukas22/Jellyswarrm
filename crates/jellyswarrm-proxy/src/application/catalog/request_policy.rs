@@ -1,6 +1,7 @@
 //! Existing query policy retained during service extraction.
 use super::postprocessing::Pagination;
 use crate::media::identity::MediaKind;
+use crate::media::storage::MediaStorageService;
 use std::collections::BTreeSet;
 
 /// One interpretation of the client query, shared by fetching and finalization.
@@ -38,9 +39,7 @@ impl CatalogRequestPolicy {
             .then(|| {
                 url.query_pairs()
                     .find(|(key, _)| key.eq_ignore_ascii_case("StartItemId"))
-                    .map(|(_, value)| {
-                        crate::media::storage::MediaStorageService::normalize_uuid(&value)
-                    })
+                    .map(|(_, value)| MediaStorageService::normalize_uuid(&value))
             })
             .flatten();
         let mut playback_filters = Vec::new();

@@ -89,6 +89,13 @@ impl From<crate::outbound::json::JsonBodyError> for ApplicationError {
     }
 }
 
+/// Request construction failures are routing failures; storage causes stay internal.
+impl From<crate::application::request::UpstreamBuildError> for ApplicationError {
+    fn from(error: crate::application::request::UpstreamBuildError) -> Self {
+        super::input::routing_error(error.0)
+    }
+}
+
 impl From<crate::processors::error::ProcessingError> for ApplicationError {
     fn from(error: crate::processors::error::ProcessingError) -> Self {
         use crate::processors::error::ProcessingError;

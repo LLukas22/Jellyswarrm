@@ -2,7 +2,7 @@
 //! In particular, playback queues must not expand an aggregate into its copies.
 use std::collections::{HashMap, HashSet};
 
-use crate::application::error::ApplicationError;
+use crate::application::error::{ApplicationError, FailureStage};
 
 use super::services::CatalogService;
 use crate::{
@@ -140,7 +140,7 @@ impl RequestedItems {
             .as_ref()
             .ok_or_else(|| {
                 ApplicationError::MissingIdentity("batch lookup sessions")
-                    .at(crate::application::error::FailureStage::CallerAuthentication)
+                    .at(FailureStage::CallerAuthentication)
             })?;
         let source_generation = state
             .media_storage

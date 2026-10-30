@@ -3,6 +3,8 @@
 use super::services::PlaybackService;
 #[cfg(test)]
 use super::target::ResolutionError;
+use crate::application::error::FailureStage;
+use crate::media::storage::MediaStorageService;
 #[cfg(test)]
 use hyper::StatusCode;
 use tracing::{debug, error, warn};
@@ -47,16 +49,16 @@ pub(crate) async fn post_playback_info_typed(
             }),
     ) {
         (Some(item), Some(source))
-            if crate::media::storage::MediaStorageService::normalize_uuid(&source)
-                == crate::media::storage::MediaStorageService::normalize_uuid(&item)
+            if MediaStorageService::normalize_uuid(&source)
+                == MediaStorageService::normalize_uuid(&item)
                 && input
                     .original_request
                     .url()
                     .query_pairs()
                     .filter(|(key, _)| key.eq_ignore_ascii_case("MediaSourceId"))
                     .all(|(_, value)| {
-                        crate::media::storage::MediaStorageService::normalize_uuid(&value)
-                            == crate::media::storage::MediaStorageService::normalize_uuid(&item)
+                        MediaStorageService::normalize_uuid(&value)
+                            == MediaStorageService::normalize_uuid(&item)
                     }) =>
         {
             state
@@ -78,7 +80,7 @@ pub(crate) async fn post_playback_info_typed(
         .await?;
     if initial.target.session().is_none() {
         return Err(ApplicationError::MissingIdentity("proxy playback session")
-            .at(crate::application::error::FailureStage::CallerAuthentication));
+            .at(FailureStage::CallerAuthentication));
     }
     let proxy_api_key = input
         .context
@@ -105,8 +107,8 @@ pub(crate) async fn post_playback_info_typed(
     // its own: let the already selected member negotiate its default sources.
     let default_aggregate_source = default_aggregate_query
         || selected_source.as_deref().is_some_and(|source| {
-            crate::media::storage::MediaStorageService::normalize_uuid(source)
-                == crate::media::storage::MediaStorageService::normalize_uuid(&requested_item_id)
+            MediaStorageService::normalize_uuid(source)
+                == MediaStorageService::normalize_uuid(&requested_item_id)
         }) && state
             .media_storage
             .get_media_version_group(&requested_item_id)
@@ -168,8 +170,7 @@ pub(crate) async fn post_playback_info_typed(
     )
     .await
     .map_err(|error| {
-        ApplicationError::PlaybackResolution(error)
-            .at(crate::application::error::FailureStage::NegotiationSelection)
+        ApplicationError::PlaybackResolution(error).at(FailureStage::NegotiationSelection)
     })?;
     let mut request = input.original_request;
     debug!(reason = ?plan.reason, "Playback selection planned");
@@ -184,7 +185,7 @@ pub(crate) async fn post_playback_info_typed(
     let server = target.server();
     let session = target.session().ok_or_else(|| {
         ApplicationError::MissingIdentity("selected playback session")
-            .at(crate::application::error::FailureStage::CallerAuthentication)
+            .at(FailureStage::CallerAuthentication)
     })?;
     remap_playback_request(&mut payload, state, session, server).await?;
     debug!(server_id = %server.id, "Forwarding playback negotiation");
@@ -193,8 +194,7 @@ pub(crate) async fn post_playback_info_typed(
     let prefix = state.get_url_prefix().await;
     let request = UpstreamRequestBuilder::new(state.processors.url_processor, prefix.as_deref())
         .build(&target, &request)
-        .await
-        .map_err(|error| crate::application::input::routing_error(error.0))?;
+        .await?;
 
     let original_item_id = contains_id(request.url(), "Items").ok_or(
         ApplicationError::InvalidInput("missing upstream playback item"),
@@ -213,10 +213,8 @@ pub(crate) async fn post_playback_info_typed(
                     .media_sources
                     .iter()
                     .position(|source| {
-                        crate::media::storage::MediaStorageService::normalize_uuid(&source.id)
-                            == crate::media::storage::MediaStorageService::normalize_uuid(
-                                &original_item_id,
-                            )
+                        MediaStorageService::normalize_uuid(&source.id)
+                            == MediaStorageService::normalize_uuid(&original_item_id)
                     })
                     .unwrap_or(0);
                 let source = response.media_sources.remove(index);
@@ -262,8 +260,7 @@ pub(crate) async fn post_playback_info_typed(
                 .commit_live(&live_plans)
                 .await
                 .map_err(|error| {
-                    ApplicationError::Internal(error.into())
-                        .at(crate::application::error::FailureStage::PlaybackCommit)
+                    ApplicationError::Internal(error.into()).at(FailureStage::PlaybackCommit)
                 })?;
             // Register routable identities before publishing playback bindings.
             // A stale reconciliation may have removed unadvertisable sources.

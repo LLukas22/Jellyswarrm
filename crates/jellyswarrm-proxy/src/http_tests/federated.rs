@@ -1,7 +1,6 @@
 //! Route/admin assertions retained at the HTTP boundary.
 use crate::application::catalog::tests::{library_items, setup};
 use crate::auth::service::UserAuthorizationService;
-use crate::http::handlers::federated::*;
 use axum::extract::State;
 use hyper::StatusCode;
 use serde_json::{json, Value};
@@ -149,7 +148,7 @@ async fn http_catalog_input_validates_offline_ids_without_initial_backend_select
     let app = axum::Router::new()
         .route(
             "/Items",
-            axum::routing::get(get_items_from_all_servers_if_not_restricted),
+            axum::routing::get(crate::http::client_routes::unless_restricted),
         )
         .with_state(
             crate::test_support::adapters::AdapterFixture::from_media(state.clone())
@@ -516,9 +515,7 @@ async fn check_web_album_sorting(sort_by: &str, ascending_names: &[&str]) {
     let app = axum::Router::new()
         .route(
             "/Items",
-            axum::routing::get(
-                crate::http::handlers::federated::get_items_from_all_servers_if_not_restricted,
-            ),
+            axum::routing::get(crate::http::client_routes::unless_restricted),
         )
         .with_state(
             crate::test_support::adapters::AdapterFixture::from_media(state.clone())

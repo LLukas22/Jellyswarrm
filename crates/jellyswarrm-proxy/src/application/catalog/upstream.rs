@@ -1,7 +1,7 @@
 //! Fetch catalog pages from authorized backends with bounded scans and completeness evidence.
 use std::time::Duration;
 
-use crate::application::error::ApplicationError;
+use crate::application::error::{ApplicationError, FailureStage};
 #[cfg(test)]
 use hyper::StatusCode;
 use tokio::task::JoinSet;
@@ -593,8 +593,9 @@ async fn scan_raw_items(
             Ok(Ok(page)) => page.response,
             Ok(Err(status)) if all_items.is_empty() => return Err(status),
             Err(error) if all_items.is_empty() => {
-                return Err(ApplicationError::Internal(error.into())
-                    .at(crate::application::error::FailureStage::CatalogDeadline))
+                return Err(
+                    ApplicationError::Internal(error.into()).at(FailureStage::CatalogDeadline)
+                )
             }
             Ok(Err(error)) => {
                 return Err(ApplicationError::IncompleteCatalog {
@@ -747,10 +748,7 @@ async fn prepare_backend_request(
         Some(auth),
         None,
     )
-    .map_err(|error| {
-        ApplicationError::Internal(error.into())
-            .at(crate::application::error::FailureStage::CatalogEncoding)
-    })?;
+    .map_err(|error| ApplicationError::Internal(error.into()).at(FailureStage::CatalogEncoding))?;
     let prefix = state.get_url_prefix().await;
     crate::application::request::UpstreamRequestBuilder::new(
         &state.processors.url_processor,
@@ -758,7 +756,7 @@ async fn prepare_backend_request(
     )
     .build(&target, &request)
     .await
-    .map_err(|error| crate::application::input::routing_error(error.0))
+    .map_err(Into::into)
 }
 
 async fn execute_raw_items_request(

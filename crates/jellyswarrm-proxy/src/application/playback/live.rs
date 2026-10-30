@@ -2,6 +2,8 @@
 //! The existing binding selects the owner; only a successful workflow commits changes.
 use super::services::PlaybackService;
 use super::target::MediaTargetResolver;
+use crate::application::error::FailureStage;
+use crate::media::storage::MediaStorageService;
 use hyper::StatusCode;
 use serde_json::Value;
 
@@ -164,7 +166,7 @@ pub(crate) async fn post_live_stream_action_typed(
 ) -> Result<LiveStreamActionResult, ApplicationError> {
     let scope = preprocessed.context.access_scope().ok_or_else(|| {
         ApplicationError::MissingIdentity("live viewer scope")
-            .at(crate::application::error::FailureStage::CallerAuthentication)
+            .at(FailureStage::CallerAuthentication)
     })?;
     let mut payload = body(&preprocessed.original_request)?;
     let id = field(&preprocessed.original_request, &payload, "LiveStreamId")?
@@ -177,8 +179,7 @@ pub(crate) async fn post_live_stream_action_typed(
     )
     .await
     .map_err(|error| {
-        ApplicationError::PlaybackResolution(error)
-            .at(crate::application::error::FailureStage::LiveBindingLookup)
+        ApplicationError::PlaybackResolution(error).at(FailureStage::LiveBindingLookup)
     })?;
     let server = target.server();
     let mut request = preprocessed
@@ -217,8 +218,7 @@ pub(crate) async fn post_live_stream_action_typed(
     let prefix = state.get_url_prefix().await;
     let request = UpstreamRequestBuilder::new(state.processors.url_processor, prefix.as_deref())
         .build(&target, &request)
-        .await
-        .map_err(|error| crate::application::input::routing_error(error.0))?;
+        .await?;
     if close {
         let status = state.upstream.execute_status(request).await?;
         if status.is_success() {
@@ -251,7 +251,7 @@ pub(crate) async fn post_livestream_open_typed(
 ) -> Result<Value, ApplicationError> {
     let scope = preprocessed.context.access_scope().ok_or_else(|| {
         ApplicationError::MissingIdentity("live viewer scope")
-            .at(crate::application::error::FailureStage::CallerAuthentication)
+            .at(FailureStage::CallerAuthentication)
     })?;
     let mut payload = body(&preprocessed.original_request)?;
     let session_id = play_session_id(preprocessed.original_request.url())
@@ -266,7 +266,7 @@ pub(crate) async fn post_livestream_open_typed(
         ))?;
     let item_id = field(&preprocessed.original_request, &payload, "ItemId")?
         .ok_or(ApplicationError::InvalidInput("missing live item"))?;
-    let item_id = crate::media::storage::MediaStorageService::normalize_uuid(&item_id);
+    let item_id = MediaStorageService::normalize_uuid(&item_id);
     let item_id = &item_id;
     let binding = (MediaTargetResolver {
         media: state.media_storage,
@@ -280,8 +280,7 @@ pub(crate) async fn post_livestream_open_typed(
     )
     .await
     .map_err(|error| {
-        ApplicationError::PlaybackResolution(error)
-            .at(crate::application::error::FailureStage::LiveSessionLookup)
+        ApplicationError::PlaybackResolution(error).at(FailureStage::LiveSessionLookup)
     })?
     .ok_or(ApplicationError::InvalidInput(
         "unknown live playback session",
@@ -356,8 +355,7 @@ pub(crate) async fn post_livestream_open_typed(
     let prefix = state.get_url_prefix().await;
     let request = UpstreamRequestBuilder::new(state.processors.url_processor, prefix.as_deref())
         .build(&target, &request)
-        .await
-        .map_err(|error| crate::application::input::routing_error(error.0))?;
+        .await?;
     let token = preprocessed
         .context
         .authorization()
@@ -389,8 +387,7 @@ pub(crate) async fn post_livestream_open_typed(
         .commit_live(&live_plan.into_iter().collect::<Vec<_>>())
         .await
         .map_err(|error| {
-            ApplicationError::Internal(error.into())
-                .at(crate::application::error::FailureStage::PlaybackCommit)
+            ApplicationError::Internal(error.into()).at(FailureStage::PlaybackCommit)
         })?;
     track_play_session(source, &session_id, scope.user_id(), server, state).await;
     super::lifecycle::PlaybackLifecycle::new(state.play_sessions)
@@ -436,7 +433,7 @@ mod tests {
                 "LiveStreamId",
             )
             .unwrap_err(),
-            crate::application::error::ApplicationError::InvalidInput(_)
+            ApplicationError::InvalidInput(_)
         ));
     }
 
@@ -459,7 +456,7 @@ mod tests {
                 "LiveStreamId",
             )
             .unwrap_err(),
-            crate::application::error::ApplicationError::InvalidInput(_)
+            ApplicationError::InvalidInput(_)
         ));
     }
 }

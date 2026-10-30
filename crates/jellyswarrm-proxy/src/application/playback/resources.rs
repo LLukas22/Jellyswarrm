@@ -4,7 +4,7 @@ use super::services::PlaybackService;
 #[cfg(test)]
 use super::target::matching_session as matching_play_session;
 use super::target::{MediaTargetResolver, PlaybackIntent, ResolutionError, SelectionPolicy};
-use crate::application::error::ApplicationError;
+use crate::application::error::{ApplicationError, FailureStage};
 #[cfg(test)]
 use hyper::StatusCode;
 use tracing::info;
@@ -70,8 +70,7 @@ async fn selected_play_session(
 }
 
 fn resource_resolution_status(error: ResolutionError) -> ApplicationError {
-    ApplicationError::PlaybackResolution(error)
-        .at(crate::application::error::FailureStage::DeliverySelection)
+    ApplicationError::PlaybackResolution(error).at(FailureStage::DeliverySelection)
 }
 
 async fn delivery_target(
@@ -197,7 +196,7 @@ async fn build_request(
     UpstreamRequestBuilder::new(state.processors.url_processor, prefix.as_deref())
         .build(target, request)
         .await
-        .map_err(|error| crate::application::input::routing_error(error.0))
+        .map_err(Into::into)
 }
 
 /// Downloads retain fallback-proxy ownership and credential resolution, but use
@@ -237,15 +236,15 @@ pub(crate) async fn get_video_resource_typed(
     let proxy_api_key = proxy_api_key(&operation.context);
     let id = extract_stream_item_id(operation.original_request.url().path())
         .ok_or_else(|| {
-            ApplicationError::InvalidInput("missing stream item")
-                .at(crate::application::error::FailureStage::ResourceLookup)
+            ApplicationError::InvalidInput("missing stream item").at(FailureStage::ResourceLookup)
         })?
         .to_string();
     let session_id = extract_play_session_id(operation.original_request.url())?;
     let binding = selected_play_session(state, &operation, &id, session_id.as_deref()).await?;
     if binding.is_none() && !resolved.server_matched_request {
-        return Err(ApplicationError::MissingIdentity("resource owner")
-            .at(crate::application::error::FailureStage::ResourceLookup));
+        return Err(
+            ApplicationError::MissingIdentity("resource owner").at(FailureStage::ResourceLookup)
+        );
     }
     let target = delivery_target(
         state,

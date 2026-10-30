@@ -1,7 +1,11 @@
-//! Production client routes, item-detail methods, URL-prefix wrapping, and root monitoring endpoints.
-use super::sessions;
-use super::{assets::index_handler, proxy::proxy_handler};
-use crate::http::state::AppState;
+//! Production route table, URL-prefix wrapping, and root monitoring endpoints.
+use super::{
+    assets::index_handler,
+    handlers::{auth_keys, branding, quick_connect, syncplay},
+    proxy::proxy_handler,
+    sessions,
+    state::AppState,
+};
 use axum::{
     extract::Request,
     response::IntoResponse,
@@ -16,67 +20,39 @@ pub(crate) fn routes() -> Router<AppState> {
         Router::new()
             .merge(sessions::router())
             .route("/", get(index_handler))
-            .route(
-                "/QuickConnect/Enabled",
-                get(crate::http::handlers::quick_connect::handle_quick_connect_enabled),
-            )
-            .route(
-                "/QuickConnect/Initiate",
-                post(crate::http::handlers::quick_connect::handle_quick_connect_initiate),
-            )
-            .route(
-                "/QuickConnect/Connect",
-                get(crate::http::handlers::quick_connect::handle_quick_connect_connect),
-            )
-            .route(
-                "/QuickConnect/Authorize",
-                post(crate::http::handlers::quick_connect::handle_quick_connect_authorize),
-            )
-            .route(
-                "/Branding/Configuration",
-                get(crate::http::handlers::branding::handle_branding),
-            )
+            .route("/QuickConnect/Enabled", get(quick_connect::handle_quick_connect_enabled))
+            .route("/QuickConnect/Initiate", post(quick_connect::handle_quick_connect_initiate))
+            .route("/QuickConnect/Connect", get(quick_connect::handle_quick_connect_connect))
+            .route("/QuickConnect/Authorize", post(quick_connect::handle_quick_connect_authorize))
+            .route("/Branding/Configuration", get(branding::handle_branding))
             .route("/websocket", get(sessions::websocket))
             .route("/socket", get(sessions::websocket))
-            .route("/GetUtcTime", get(crate::http::handlers::syncplay::get_utc_time))
-            .route(
-                "/Auth/Keys",
-                get(crate::http::handlers::auth_keys::list_api_keys)
-                    .post(crate::http::handlers::auth_keys::create_api_key),
-            )
-            .nest(
-                "/SyncPlay",
-                Router::new()
-                    .route("/New", post(crate::http::handlers::syncplay::create_group))
-                    .route("/Join", post(crate::http::handlers::syncplay::join_group))
-                    .route("/Leave", post(crate::http::handlers::syncplay::leave_group))
-                    .route("/List", get(crate::http::handlers::syncplay::list_groups))
-                    .route("/{id}", get(crate::http::handlers::syncplay::get_group))
-                    .route("/SetNewQueue", post(crate::http::handlers::syncplay::set_new_queue))
-                    .route("/SetPlaylistItem", post(crate::http::handlers::syncplay::set_playlist_item))
-                    .route(
-                        "/RemoveFromPlaylist",
-                        post(crate::http::handlers::syncplay::remove_from_playlist),
-                    )
-                    .route(
-                        "/MovePlaylistItem",
-                        post(crate::http::handlers::syncplay::move_playlist_item),
-                    )
-                    .route("/Queue", post(crate::http::handlers::syncplay::queue_items))
-                    .route("/Unpause", post(crate::http::handlers::syncplay::unpause))
-                    .route("/Pause", post(crate::http::handlers::syncplay::pause))
-                    .route("/Stop", post(crate::http::handlers::syncplay::stop))
-                    .route("/Seek", post(crate::http::handlers::syncplay::seek))
-                    .route("/Buffering", post(crate::http::handlers::syncplay::buffering))
-                    .route("/Ready", post(crate::http::handlers::syncplay::ready))
-                    .route("/SetIgnoreWait", post(crate::http::handlers::syncplay::set_ignore_wait))
-                    .route("/NextItem", post(crate::http::handlers::syncplay::next_item))
-                    .route("/PreviousItem", post(crate::http::handlers::syncplay::previous_item))
-                    .route("/SetRepeatMode", post(crate::http::handlers::syncplay::set_repeat_mode))
-                    .route("/SetShuffleMode", post(crate::http::handlers::syncplay::set_shuffle_mode))
-                    .route("/Ping", post(crate::http::handlers::syncplay::ping)),
-            )
-            .merge(crate::http::client_routes::router())
+            .route("/GetUtcTime", get(syncplay::get_utc_time))
+            .route("/Auth/Keys", get(auth_keys::list_api_keys).post(auth_keys::create_api_key))
+            .nest("/SyncPlay", Router::new()
+                .route("/New", post(syncplay::create_group))
+                .route("/Join", post(syncplay::join_group))
+                .route("/Leave", post(syncplay::leave_group))
+                .route("/List", get(syncplay::list_groups))
+                .route("/{id}", get(syncplay::get_group))
+                .route("/SetNewQueue", post(syncplay::set_new_queue))
+                .route("/SetPlaylistItem", post(syncplay::set_playlist_item))
+                .route("/RemoveFromPlaylist", post(syncplay::remove_from_playlist))
+                .route("/MovePlaylistItem", post(syncplay::move_playlist_item))
+                .route("/Queue", post(syncplay::queue_items))
+                .route("/Unpause", post(syncplay::unpause))
+                .route("/Pause", post(syncplay::pause))
+                .route("/Stop", post(syncplay::stop))
+                .route("/Seek", post(syncplay::seek))
+                .route("/Buffering", post(syncplay::buffering))
+                .route("/Ready", post(syncplay::ready))
+                .route("/SetIgnoreWait", post(syncplay::set_ignore_wait))
+                .route("/NextItem", post(syncplay::next_item))
+                .route("/PreviousItem", post(syncplay::previous_item))
+                .route("/SetRepeatMode", post(syncplay::set_repeat_mode))
+                .route("/SetShuffleMode", post(syncplay::set_shuffle_mode))
+                .route("/Ping", post(syncplay::ping)))
+            .merge(super::client_routes::router())
             .route("/{*path}", any(proxy_handler))
             .fallback(proxy_handler)
     }
@@ -135,11 +111,5 @@ pub(crate) fn wrap(
     };
 
     // Keep monitoring outside the URL prefix and authentication/session middleware.
-    app.merge(crate::http::health::router(pool))
-}
-// Shared with HTTP integration tests so mutations exercise the production route.
-pub(crate) fn item_detail_routes() -> axum::routing::MethodRouter<AppState> {
-    get(crate::http::handlers::items::get_item)
-        .post(proxy_handler)
-        .delete(proxy_handler)
+    app.merge(super::health::router(pool))
 }

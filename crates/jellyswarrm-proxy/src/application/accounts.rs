@@ -115,7 +115,7 @@ async fn build_request(
     UpstreamRequestBuilder::new(&state.urls, prefix.as_deref())
         .build(target, request)
         .await
-        .map_err(|error| crate::application::input::routing_error(error.0))
+        .map_err(Into::into)
 }
 
 fn reported_server_version(ui_version: &str) -> String {

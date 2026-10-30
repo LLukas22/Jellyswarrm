@@ -2,6 +2,7 @@
 //! and playback authority retain their distinct routing policies.
 
 type Result<T> = std::result::Result<T, RoutingError>;
+use crate::application::error::ApplicationError;
 use tracing::debug;
 
 #[derive(Debug, thiserror::Error)]
@@ -16,7 +17,7 @@ pub(crate) enum RoutingError {
     InvalidSelection(#[source] anyhow::Error),
 }
 
-impl From<RoutingError> for crate::application::error::ApplicationError {
+impl From<RoutingError> for ApplicationError {
     fn from(error: RoutingError) -> Self {
         match error {
             RoutingError::Storage(cause) => Self::Storage(cause),

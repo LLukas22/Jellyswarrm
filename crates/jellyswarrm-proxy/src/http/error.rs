@@ -1,11 +1,22 @@
 //! HTTP compatibility policy for typed pipeline failures. Workflow code reports
 //! a cause and stage; only this endpoint adapter chooses response status codes.
-use crate::application::{
-    context::TargetError,
-    error::{ApplicationError, FailureStage},
-    playback::target::ResolutionError,
+use crate::{
+    application::{
+        context::TargetError,
+        error::{ApplicationError, FailureStage},
+        playback::target::ResolutionError,
+    },
+    processors::response_processor::PlaylistResponseError,
 };
+use axum::response::{IntoResponse, Response};
 use hyper::StatusCode;
+
+/// Handlers return `ApplicationError` directly; only the status code reaches the client.
+impl IntoResponse for ApplicationError {
+    fn into_response(self) -> Response {
+        status(&self).into_response()
+    }
+}
 
 fn target_status(error: &TargetError) -> StatusCode {
     match error {
@@ -14,7 +25,7 @@ fn target_status(error: &TargetError) -> StatusCode {
     }
 }
 
-pub(crate) fn detail_status(error: &ApplicationError) -> StatusCode {
+pub(crate) fn status(error: &ApplicationError) -> StatusCode {
     match error {
         ApplicationError::At { stage, cause } => match stage {
             FailureStage::CallerAuthentication => StatusCode::UNAUTHORIZED,
@@ -80,15 +91,9 @@ pub(crate) fn detail_status(error: &ApplicationError) -> StatusCode {
         },
         ApplicationError::TargetSelection(error) => target_status(error),
         ApplicationError::PlaylistResponse(error) => match error {
-            crate::processors::response_processor::PlaylistResponseError::IncompleteSharing => {
-                StatusCode::CONFLICT
-            }
-            crate::processors::response_processor::PlaylistResponseError::InvalidSharing => {
-                StatusCode::BAD_GATEWAY
-            }
-            crate::processors::response_processor::PlaylistResponseError::Database(_) => {
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
+            PlaylistResponseError::IncompleteSharing => StatusCode::CONFLICT,
+            PlaylistResponseError::InvalidSharing => StatusCode::BAD_GATEWAY,
+            PlaylistResponseError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
         },
         ApplicationError::InvalidInput(_)
         | ApplicationError::RequestBody(_)
@@ -100,7 +105,7 @@ pub(crate) fn detail_status(error: &ApplicationError) -> StatusCode {
         ApplicationError::UnavailableOwner
         | ApplicationError::SourcesFailed(_)
         | ApplicationError::IncompleteCatalog { .. } => StatusCode::SERVICE_UNAVAILABLE,
-        ApplicationError::Shared(cause) => detail_status(cause),
+        ApplicationError::Shared(cause) => status(cause),
         ApplicationError::UpstreamTransport(_)
         | ApplicationError::InvalidUpstreamJson(_)
         | ApplicationError::InvalidUpstreamPayload(_) => StatusCode::BAD_GATEWAY,
@@ -129,7 +134,7 @@ mod tests {
                 }
                 let error = classify(ProcessingErrors { causes }.into());
                 assert_eq!(
-                    detail_status(&error),
+                    status(&error),
                     if storage_failed {
                         StatusCode::INTERNAL_SERVER_ERROR
                     } else {
@@ -143,7 +148,7 @@ mod tests {
     #[test]
     fn json_failure_policy_and_upstream_status_preservation_belong_to_the_adapter() {
         let json_error = || serde_json::from_str::<serde_json::Value>("{").unwrap_err();
-        for (error, status) in [
+        for (error, expected) in [
             (
                 ApplicationError::InvalidInput("missing JSON body"),
                 StatusCode::BAD_REQUEST,
@@ -161,9 +166,9 @@ mod tests {
                 StatusCode::INTERNAL_SERVER_ERROR,
             ),
         ] {
-            assert_eq!(detail_status(&error), status);
+            assert_eq!(status(&error), expected);
         }
-        for status in [
+        for expected in [
             StatusCode::BAD_REQUEST,
             StatusCode::UNAUTHORIZED,
             StatusCode::FORBIDDEN,
@@ -171,8 +176,8 @@ mod tests {
             StatusCode::SERVICE_UNAVAILABLE,
         ] {
             assert_eq!(
-                detail_status(&ApplicationError::UpstreamStatus(status)),
-                status
+                status(&ApplicationError::UpstreamStatus(expected)),
+                expected
             );
         }
     }
@@ -195,7 +200,7 @@ mod tests {
                 StatusCode::BAD_REQUEST,
             ),
         ] {
-            assert_eq!(detail_status(&error.into()), expected);
+            assert_eq!(status(&error.into()), expected);
         }
     }
 
@@ -203,12 +208,12 @@ mod tests {
     fn detail_policy_does_not_confuse_upstream_forbidden_with_local_denial() {
         let upstream = ApplicationError::UpstreamStatus(StatusCode::FORBIDDEN);
         let local = ApplicationError::AccessDenied;
-        assert_eq!(detail_status(&upstream), detail_status(&local));
+        assert_eq!(status(&upstream), status(&local));
         assert!(upstream.allows_detail_fallback());
         assert!(!local.allows_detail_fallback());
         let error =
             ApplicationError::Storage(sqlx::Error::RowNotFound).at(FailureStage::HlsTranslation);
-        assert_eq!(detail_status(&error), StatusCode::BAD_GATEWAY);
+        assert_eq!(status(&error), StatusCode::BAD_GATEWAY);
     }
 
     #[test]
@@ -223,10 +228,7 @@ mod tests {
         ] {
             let error =
                 ApplicationError::PlaybackResolution(ResolutionError::OfflineOwner).at(stage);
-            assert_eq!(
-                crate::http::handlers::pipeline_error::detail_status(&error),
-                expected
-            );
+            assert_eq!(status(&error), expected);
             let cause = error
                 .source()
                 .unwrap()
@@ -240,10 +242,7 @@ mod tests {
         }
         let upstream = ApplicationError::UpstreamStatus(StatusCode::FORBIDDEN)
             .at(FailureStage::PlaybackCommit);
-        assert_eq!(
-            crate::http::handlers::pipeline_error::detail_status(&upstream),
-            StatusCode::SERVICE_UNAVAILABLE
-        );
+        assert_eq!(status(&upstream), StatusCode::SERVICE_UNAVAILABLE);
         assert!(upstream.allows_detail_fallback());
         assert!(!ApplicationError::AccessDenied
             .at(FailureStage::PlaybackCommit)

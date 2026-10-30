@@ -1,4 +1,5 @@
 //! Resolve authorized media-source detail routes and project backend item details.
+use crate::models::enums::BaseItemKind;
 use std::collections::HashSet;
 
 use serde_json::Value;
@@ -225,10 +226,7 @@ pub(crate) async fn preserve_media_parent_groups_typed(
     viewer: &str,
     catalog_scope: Option<&str>,
 ) -> Result<(), ApplicationError> {
-    if !matches!(
-        item.item_type,
-        crate::models::enums::BaseItemKind::Season | crate::models::enums::BaseItemKind::Episode
-    ) {
+    if !matches!(item.item_type, BaseItemKind::Season | BaseItemKind::Episode) {
         return Ok(());
     }
     for parent in [&mut item.series_id, &mut item.season_id] {
@@ -380,8 +378,7 @@ async fn fetch_member_source(
     let prefix = state.get_url_prefix().await;
     let request = UpstreamRequestBuilder::new(&state.processors.url_processor, prefix.as_deref())
         .build(&target, &original_request)
-        .await
-        .map_err(|error| crate::application::input::routing_error(error.0))?;
+        .await?;
 
     let response = state
         .execute_processed_json(
