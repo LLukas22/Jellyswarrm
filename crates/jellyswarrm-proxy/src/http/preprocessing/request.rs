@@ -1,5 +1,6 @@
 //! Convert and consume incoming HTTP requests, then analyze bodies and resolve authorized backend sessions.
 use super::*;
+use crate::application::accounts::identity::user_for_credential;
 pub(crate) async fn extract_request_infos(
     req: Request,
     state: &MediaState,
@@ -16,7 +17,7 @@ pub(crate) async fn extract_request_infos(
     }
 
     let device = request_device(request.headers(), request.url(), auth.as_ref());
-    let mut user = get_user_from_request(&auth, state).await?;
+    let mut user = user_for_credential(auth.as_ref(), &state.user_authorization).await?;
     if let (Some(user), Some(token)) = (user.as_ref(), auth.as_ref().and_then(|a| a.token_ref())) {
         state
             .client_sessions

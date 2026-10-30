@@ -6,7 +6,7 @@ use tracing::info;
 #[cfg(test)]
 use crate::test_support::MediaFixture;
 use crate::{
-    application::upstream::response_json_to_payload_typed,
+    application::upstream::response_json_to_payload,
     auth::service::AuthorizationSession,
     models::{MediaSource, PlaybackRequest, PlaybackResponse},
     processors::response_processor::ResponseProcessingProfile,
@@ -92,7 +92,7 @@ pub(crate) async fn process_playback_response(
         serde_json::to_value(&*response).map_err(ApplicationError::Serialization)?;
 
     state
-        .process_response_json_typed(
+        .process_response_json(
             &mut response_json,
             server,
             ResponseProcessingProfile::Media,
@@ -100,7 +100,7 @@ pub(crate) async fn process_playback_response(
         )
         .await?;
 
-    *response = response_json_to_payload_typed(response_json)?;
+    *response = response_json_to_payload(response_json)?;
 
     Ok(plans)
 }
@@ -387,7 +387,7 @@ mod tests {
 
         let was_modified = state
             .proxy_service()
-            .process_response_json_typed(
+            .process_response_json(
                 &mut media_item,
                 &server,
                 ResponseProcessingProfile::Media,
@@ -453,7 +453,7 @@ mod tests {
                 ]});
                 state
                     .proxy_service()
-                    .process_response_json_typed(
+                    .process_response_json(
                         &mut payload,
                         &server,
                         ResponseProcessingProfile::Media,
@@ -512,7 +512,7 @@ mod tests {
 
         let was_modified = state
             .proxy_service()
-            .process_response_json_typed(
+            .process_response_json(
                 &mut media_items,
                 &server,
                 ResponseProcessingProfile::Media,
@@ -539,7 +539,7 @@ mod tests {
 
         let was_modified = state
             .proxy_service()
-            .process_response_json_typed(
+            .process_response_json(
                 &mut payload,
                 &server,
                 ResponseProcessingProfile::BestEffortMedia,
@@ -567,7 +567,7 @@ mod tests {
 
         state
             .proxy_service()
-            .process_response_json_typed(
+            .process_response_json(
                 &mut payload,
                 &server,
                 ResponseProcessingProfile::Media,
@@ -595,7 +595,7 @@ mod tests {
 
         let was_modified = state
             .proxy_service()
-            .process_response_json_typed(
+            .process_response_json(
                 &mut payload,
                 &server,
                 ResponseProcessingProfile::Media,

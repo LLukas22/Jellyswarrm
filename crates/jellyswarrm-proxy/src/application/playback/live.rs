@@ -17,7 +17,7 @@ use crate::{
         playback::{response::track_play_session, selection::record_playback_sources},
     },
     models::MediaSource,
-    outbound::json::set_json_body_typed,
+    outbound::json::set_json_body,
     processors::{response_processor::ResponseProcessingProfile, url_processor::play_session_id},
 };
 
@@ -160,7 +160,7 @@ fn field(
 }
 
 /// Execute a caller-owned live refresh or close against its bound owner.
-pub(crate) async fn post_live_stream_action_typed(
+pub(crate) async fn post_live_stream_action(
     state: &PlaybackService<'_>,
     preprocessed: LiveRequest,
 ) -> Result<LiveStreamActionResult, ApplicationError> {
@@ -214,7 +214,7 @@ pub(crate) async fn post_live_stream_action_typed(
         "LiveStreamId".into(),
         Value::String(binding.original_id.as_str().to_owned()),
     );
-    set_json_body_typed(&mut request, &payload)?;
+    set_json_body(&mut request, &payload)?;
     let prefix = state.get_url_prefix().await;
     let request = UpstreamRequestBuilder::new(state.processors.url_processor, prefix.as_deref())
         .build(&target, &request)
@@ -245,7 +245,7 @@ pub(crate) async fn post_live_stream_action_typed(
 
 /// OpenToken is backend-local. Use the caller-owned negotiation binding, and
 /// retain its exact member even when an aggregate has several copies per server.
-pub(crate) async fn post_livestream_open_typed(
+pub(crate) async fn post_livestream_open(
     state: &PlaybackService<'_>,
     preprocessed: LiveRequest,
 ) -> Result<Value, ApplicationError> {
@@ -351,7 +351,7 @@ pub(crate) async fn post_livestream_open_typed(
         Value::String(session.original_user_id.clone()),
     );
     object.insert("PlaySessionId".into(), Value::String(session_id.clone()));
-    set_json_body_typed(&mut request, &payload)?;
+    set_json_body(&mut request, &payload)?;
     let prefix = state.get_url_prefix().await;
     let request = UpstreamRequestBuilder::new(state.processors.url_processor, prefix.as_deref())
         .build(&target, &request)

@@ -7,7 +7,7 @@ use tracing::{debug, error, info, warn};
 use crate::{
     application::input::OperationRequest,
     application::request::UpstreamRequestBuilder,
-    application::upstream::execute_json_request_typed as execute_json_request,
+    application::upstream::execute_json_request,
     auth::service::LocalCredential,
     domain::security::Password,
     models::{AuthenticateRequest, AuthenticateResponse, SyncPlayUserAccessType},

@@ -1,7 +1,5 @@
 //! Federated handler regressions for incomplete results and backend failure handling.
-use super::media_reconciliation::{
-    get_aggregate_show_items_typed, get_virtual_library_items_typed,
-};
+use super::media_reconciliation::{get_aggregate_show_items, get_virtual_library_items};
 use super::{
     tests::{fixture_member_parent_ids, request, setup},
     *,
@@ -59,10 +57,9 @@ async fn counted_scans_apply_timeout_to_each_page_instead_of_the_whole_catalog()
                 .set_body_json(json!({"Items": [{"Id": format!("item-{start}"), "Type": "Movie"}], "StartIndex": start, "TotalRecordCount": 3}))
         }).mount(upstream).await;
     }
-    let response =
-        get_items_from_all_servers_preprocessed(&service, request("/Items?Limit=1", &sessions))
-            .await
-            .unwrap();
+    let response = get_catalog(&service, request("/Items?Limit=1", &sessions))
+        .await
+        .unwrap();
     assert_eq!(response["TotalRecordCount"], 6);
     assert_eq!(response["Items"].as_array().unwrap().len(), 1);
     assert_eq!(upstreams[0].received_requests().await.unwrap().len(), 3);
@@ -95,12 +92,9 @@ async fn partial_search_membership_does_not_veto_recursive_catalog_parent_identi
         }).mount(upstream).await;
     }
     let service = state.catalog_service();
-    let search = get_items_from_all_servers_preprocessed(
-        &service,
-        request("/Items?SearchTerm=localized", &sessions),
-    )
-    .await
-    .unwrap();
+    let search = get_catalog(&service, request("/Items?SearchTerm=localized", &sessions))
+        .await
+        .unwrap();
     assert_eq!(search["TotalRecordCount"], 1);
     let mut previous = None;
     for _ in 0..2 {
@@ -113,7 +107,7 @@ async fn partial_search_membership_does_not_veto_recursive_catalog_parent_identi
                 parent: None,
             })
             .collect();
-        let response = get_virtual_library_items_typed(
+        let response = get_virtual_library_items(
             &service,
             request("/Items?Recursive=true", &sessions),
             "configured:shows:viewer".into(),
@@ -152,7 +146,7 @@ async fn snapshots_coalesce_builds_and_keep_random_and_tied_pages_stable() {
         mount_catalog(&upstreams, sort).await;
         let query = format!("/Items?SearchTerm=equal&SortBy={sort}");
         let fetch = |start, limit| {
-            get_items_from_all_servers_preprocessed(
+            get_catalog(
                 &service,
                 request(
                     &format!("{query}&StartIndex={start}&Limit={limit}"),
@@ -219,9 +213,8 @@ async fn snapshots_are_scoped_to_viewer_token_targets_and_display_configuration(
         );
         req
     };
-    let fetch = |viewer: &str, token: &str| {
-        get_items_from_all_servers_preprocessed(&service, build_request(viewer, token, &sessions))
-    };
+    let fetch =
+        |viewer: &str, token: &str| get_catalog(&service, build_request(viewer, token, &sessions));
     let first = fetch("viewer", "token-a").await.unwrap();
     assert_eq!(fetch("viewer", "token-a").await.unwrap(), first);
     let _ = fetch("viewer", "token-b").await.unwrap();
@@ -229,12 +222,9 @@ async fn snapshots_are_scoped_to_viewer_token_targets_and_display_configuration(
     assert_ne!(first["Items"][0]["Id"], other["Items"][0]["Id"]);
     state.config.write().await.include_server_name_in_media = false;
     let _ = fetch("viewer", "token-a").await.unwrap();
-    let _ = get_items_from_all_servers_preprocessed(
-        &service,
-        build_request("viewer", "token-a", &sessions[..1]),
-    )
-    .await
-    .unwrap();
+    let _ = get_catalog(&service, build_request("viewer", "token-a", &sessions[..1]))
+        .await
+        .unwrap();
     assert_eq!(upstreams[0].received_requests().await.unwrap().len(), 15);
     assert_eq!(upstreams[1].received_requests().await.unwrap().len(), 12);
 }
@@ -242,8 +232,7 @@ async fn snapshots_are_scoped_to_viewer_token_targets_and_display_configuration(
 #[tokio::test]
 async fn incomplete_sources_are_discarded_without_caching_degraded_results_or_pruning_sightings() {
     use super::{
-        library_resolution::CatalogFetchTarget,
-        media_reconciliation::get_virtual_library_items_typed,
+        library_resolution::CatalogFetchTarget, media_reconciliation::get_virtual_library_items,
     };
     let (state, pool, sessions, upstreams) = setup().await;
     let service = state.catalog_service();
@@ -259,7 +248,7 @@ async fn incomplete_sources_are_discarded_without_caching_degraded_results_or_pr
             .collect()
     };
     let fetch = || {
-        get_virtual_library_items_typed(
+        get_virtual_library_items(
             &service,
             request("/Items?Recursive=true&Limit=1", &sessions),
             "configured:library:viewer".into(),
@@ -442,7 +431,7 @@ async fn numbered_episode_versions_keep_ranges_distinct_and_route_same_server_co
             ),
         })
         .collect();
-    let response = get_aggregate_show_items_typed(
+    let response = get_aggregate_show_items(
         &state.catalog_service(),
         request(&format!("/Shows/{aggregate}/Episodes"), &sessions),
         aggregate.into(),

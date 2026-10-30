@@ -12,10 +12,3 @@ pub(crate) async fn resolve_request_identity_from_headers_uri(
     let url = url::Url::parse(&format!("http://localhost{path_and_query}"))?;
     Ok(identity::resolve(headers, &url, state).await?)
 }
-
-pub(crate) async fn get_user_from_request(
-    auth: &Option<JellyfinAuthorization>,
-    state: &MediaState,
-) -> Result<Option<User>> {
-    Ok(identity::user_for_credential(auth.as_ref(), &state.user_authorization).await?)
-}

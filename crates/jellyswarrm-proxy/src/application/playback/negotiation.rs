@@ -1,5 +1,5 @@
 //! PlaybackInfo workflow: resolve owner → fetch sources → translate/reconcile → commit bindings.
-//! Start with `post_playback_info_typed`; delivery is handled separately in `resources`.
+//! Start with `post_playback_info`; delivery is handled separately in `resources`.
 use super::services::PlaybackService;
 #[cfg(test)]
 use super::target::ResolutionError;
@@ -26,11 +26,11 @@ use crate::{
         },
     },
     models::{PlaybackRequest, PlaybackResponse},
-    outbound::json::{payload_from_request_typed, set_json_body_typed},
+    outbound::json::{payload_from_request, set_json_body},
     protocol::url::{contains_id, replace_path_id},
 };
 
-pub(crate) async fn post_playback_info_typed(
+pub(crate) async fn post_playback_info(
     state: &PlaybackService<'_>,
     mut input: OperationRequest,
 ) -> Result<PlaybackResponse, ApplicationError> {
@@ -87,7 +87,7 @@ pub(crate) async fn post_playback_info_typed(
         .authorization()
         .and_then(|auth| auth.token_ref())
         .map(str::to_string);
-    let payload: PlaybackRequest = payload_from_request_typed(&input.original_request)?;
+    let payload: PlaybackRequest = payload_from_request(&input.original_request)?;
     let requested_item_id = contains_id(input.original_request.url(), "Items")
         .ok_or(ApplicationError::InvalidInput("missing playback item"))?;
     let source_generation = state
@@ -189,7 +189,7 @@ pub(crate) async fn post_playback_info_typed(
     })?;
     remap_playback_request(&mut payload, state, session, server).await?;
     debug!(server_id = %server.id, "Forwarding playback negotiation");
-    set_json_body_typed(&mut request, &payload)?;
+    set_json_body(&mut request, &payload)?;
 
     let prefix = state.get_url_prefix().await;
     let request = UpstreamRequestBuilder::new(state.processors.url_processor, prefix.as_deref())

@@ -1,5 +1,6 @@
 //! Incoming request identity, body translation, authorization, and playback-report regressions.
 use super::*;
+use crate::auth::service::User;
 use crate::protocol::authorization::Authorization;
 use crate::protocol::routes::{matches_case_insensitive, MEDIA_ID_PATH_TAGS, MEDIA_ID_QUERY_TAGS};
 use crate::protocol::url::contains_id;

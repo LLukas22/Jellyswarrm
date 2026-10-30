@@ -11,7 +11,7 @@ use crate::{
     application::context::{RequestContext, TargetError},
     application::error::ApplicationError,
     application::request::UpstreamRequestBuilder,
-    application::upstream::response_json_to_payload_typed,
+    application::upstream::response_json_to_payload,
     auth::service::AuthorizationSession,
     libraries::service::VirtualLibraryAccessScope,
     media::storage::{
@@ -91,8 +91,8 @@ pub(crate) async fn merge_media_detail(
     payload: &mut Value,
 ) -> Result<(), ApplicationError> {
     if let Some(scope) = context.access_scope {
-        let mut item: MediaItem = response_json_to_payload_typed(payload.clone())?;
-        preserve_media_parent_groups_typed(state, &mut item, scope.user_id(), None).await?;
+        let mut item: MediaItem = response_json_to_payload(payload.clone())?;
+        preserve_media_parent_groups(state, &mut item, scope.user_id(), None).await?;
         *payload = serde_json::to_value(item).map_err(ApplicationError::Serialization)?;
     }
     let aggregate_group = state
@@ -105,7 +105,7 @@ pub(crate) async fn merge_media_detail(
         return Ok(());
     };
 
-    let mut item: MediaItem = response_json_to_payload_typed(payload.clone())?;
+    let mut item: MediaItem = response_json_to_payload(payload.clone())?;
     let Some(base_mapping) = state
         .media_storage
         .get_media_mapping_by_virtual(&item.id)
@@ -220,7 +220,7 @@ pub(crate) async fn merge_media_detail(
     Ok(())
 }
 
-pub(crate) async fn preserve_media_parent_groups_typed(
+pub(crate) async fn preserve_media_parent_groups(
     state: &CatalogService,
     item: &mut MediaItem,
     viewer: &str,
@@ -388,7 +388,7 @@ async fn fetch_member_source(
             proxy_api_key.as_deref(),
         )
         .await?;
-    let item: MediaItem = response_json_to_payload_typed(response)?;
+    let item: MediaItem = response_json_to_payload(response)?;
 
     Ok(HostedMediaSources {
         member_mapping: host.member.mapping,

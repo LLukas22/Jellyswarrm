@@ -50,7 +50,7 @@ impl PlaybackService<'_> {
             .map(ToString::to_string)
     }
 
-    pub(crate) async fn process_response_json_typed(
+    pub(crate) async fn process_response_json(
         &self,
         payload: &mut serde_json::Value,
         server: &Server,
@@ -76,7 +76,7 @@ impl PlaybackService<'_> {
         token: Option<&str>,
     ) -> Result<serde_json::Value, ApplicationError> {
         let mut payload = execute_payload(self.upstream.as_ref(), request).await?;
-        self.process_response_json_typed(&mut payload, server, profile, token)
+        self.process_response_json(&mut payload, server, profile, token)
             .await?;
         Ok(payload)
     }

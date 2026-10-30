@@ -93,17 +93,7 @@ impl ScanProgress {
         self.paging.fetched_count()
     }
 
-    #[cfg(test)]
-    pub(crate) fn accept(&mut self, page: &ItemsResponseVariants) -> Result<bool, PartialReason> {
-        self.accept_typed(page)
-            .map(|step| step == ScanStep::Complete)
-            .map_err(|error| match error {
-                ApplicationError::IncompleteCatalog { reason, .. } => reason,
-                _ => unreachable!("scan validation only produces incomplete inventory errors"),
-            })
-    }
-
-    pub(crate) fn accept_typed(
+    pub(crate) fn accept(
         &mut self,
         page: &ItemsResponseVariants,
     ) -> Result<ScanStep, ApplicationError> {
@@ -208,6 +198,19 @@ mod tests {
         );
     }
 
+    fn accepts(
+        progress: &mut ScanProgress,
+        page: &ItemsResponseVariants,
+    ) -> Result<bool, PartialReason> {
+        progress
+            .accept(page)
+            .map(|step| step == ScanStep::Complete)
+            .map_err(|error| match error {
+                ApplicationError::IncompleteCatalog { reason, .. } => reason,
+                _ => unreachable!("scan validation only produces incomplete inventory errors"),
+            })
+    }
+
     fn page(ids: &[&str], total: i32, offset: i32) -> ItemsResponseVariants {
         serde_json::from_value(json!({"Items": ids.iter().map(|id| json!({"Id": id, "Type": "Movie"})).collect::<Vec<_>>(), "TotalRecordCount": total, "StartIndex": offset})).unwrap()
     }
@@ -225,28 +228,26 @@ mod tests {
             ItemsResponseVariants::Bare(Vec::new()),
         ] {
             let mut progress = ScanProgress::default();
-            assert!(!progress.accept(&page(&["a", "b"], 3, 0)).unwrap());
-            assert!(progress.accept(&next).is_err(), "{next:?}");
+            assert!(!accepts(&mut progress, &page(&["a", "b"], 3, 0)).unwrap());
+            assert!(accepts(&mut progress, &next).is_err(), "{next:?}");
         }
     }
 
     #[test]
     fn caps_work_and_accepts_short_pages_only_with_completion_evidence() {
         let mut progress = ScanProgress::default();
-        assert!(!progress.accept(&page(&["a"], 2, 0)).unwrap());
-        assert!(progress.accept(&page(&["b"], 2, 1)).unwrap());
+        assert!(!accepts(&mut progress, &page(&["a"], 2, 0)).unwrap());
+        assert!(accepts(&mut progress, &page(&["b"], 2, 1)).unwrap());
         let mut progress = ScanProgress::default();
-        assert!(!progress
-            .accept(&ItemsResponseVariants::Bare(
-                page(&["a"], 1, 0).into_items()
-            ))
-            .unwrap());
-        assert!(progress
-            .accept(&ItemsResponseVariants::Bare(Vec::new()))
-            .unwrap());
+        assert!(!accepts(
+            &mut progress,
+            &ItemsResponseVariants::Bare(page(&["a"], 1, 0).into_items())
+        )
+        .unwrap());
+        assert!(accepts(&mut progress, &ItemsResponseVariants::Bare(Vec::new())).unwrap());
         progress.pages = MAX_SCAN_PAGES;
         assert_eq!(
-            progress.accept(&ItemsResponseVariants::Bare(Vec::new())),
+            accepts(&mut progress, &ItemsResponseVariants::Bare(Vec::new())),
             Err(PartialReason::Budget)
         );
         let mut progress = ScanProgress::default();
@@ -258,7 +259,10 @@ mod tests {
                 })
                 .collect(),
         );
-        assert_eq!(progress.accept(&oversized), Err(PartialReason::Budget));
+        assert_eq!(
+            accepts(&mut progress, &oversized),
+            Err(PartialReason::Budget)
+        );
         // Large, counted libraries must remain browsable past the defensive
         // limits intended for sources that provide no completion evidence.
         let counted = ItemsResponseVariants::WithCount(crate::models::ItemsResponseWithCount {
@@ -270,6 +274,6 @@ mod tests {
             pages: MAX_SCAN_PAGES,
             ..Default::default()
         };
-        assert!(progress.accept(&counted).unwrap());
+        assert!(accepts(&mut progress, &counted).unwrap());
     }
 }

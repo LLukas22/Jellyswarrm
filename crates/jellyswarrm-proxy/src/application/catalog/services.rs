@@ -59,7 +59,7 @@ impl CatalogService {
     pub(crate) async fn merge_libraries_enabled(&self) -> bool {
         self.config.read().await.merge_libraries
     }
-    pub(crate) async fn process_response_json_typed(
+    pub(crate) async fn process_response_json(
         &self,
         payload: &mut serde_json::Value,
         server: &Server,
@@ -84,7 +84,7 @@ impl CatalogService {
         token: Option<&str>,
     ) -> Result<serde_json::Value, ApplicationError> {
         let mut payload = execute_payload(self.upstream.as_ref(), request).await?;
-        self.process_response_json_typed(&mut payload, server, profile, token)
+        self.process_response_json(&mut payload, server, profile, token)
             .await?;
         Ok(payload)
     }

@@ -73,7 +73,7 @@ pub(super) async fn restrict_named_ids(
 
 /// Filter DTOs contain arrays of options rather than paged BaseItemDto lists.
 /// Resolve library members as for browsing, then union their visible options.
-pub(crate) async fn get_filters_typed(
+pub(crate) async fn get_filters(
     state: &CatalogService,
     preprocessed: CatalogRequest,
 ) -> Result<Value, ApplicationError> {

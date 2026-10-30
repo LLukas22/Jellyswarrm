@@ -1,7 +1,7 @@
 //! Jellyfin JSON wire normalization and execution, without workflow error policy.
 
 use super::transport::JsonTransportError;
-use crate::outbound::json::{payload_from_request_typed, set_json_body_typed, JsonBodyError};
+use crate::outbound::json::{payload_from_request, set_json_body, JsonBodyError};
 #[cfg(test)]
 use hyper::StatusCode;
 use serde_json::Value;
@@ -55,7 +55,7 @@ fn sync_posted_guide_body(request: &mut reqwest::Request) -> Result<(), JsonBody
     {
         return Ok(());
     }
-    let mut payload: Value = payload_from_request_typed(request)?;
+    let mut payload: Value = payload_from_request(request)?;
     let fields = payload
         .as_object_mut()
         .ok_or(JsonBodyError::InvalidInput("guide body must be an object"))?;
@@ -90,7 +90,7 @@ fn sync_posted_guide_body(request: &mut reqwest::Request) -> Result<(), JsonBody
             );
         }
     }
-    set_json_body_typed(request, &payload)
+    set_json_body(request, &payload)
 }
 
 #[cfg(test)]
@@ -218,7 +218,7 @@ mod tests {
             .unwrap();
         let payload = json!({"UnknownField": {"preserved": true}});
 
-        set_json_body_typed(&mut request, &payload).unwrap();
+        set_json_body(&mut request, &payload).unwrap();
 
         let body = request.body().unwrap().as_bytes().unwrap();
         assert_eq!(
@@ -227,7 +227,7 @@ mod tests {
         );
         assert!(!request.headers().contains_key(TRANSFER_ENCODING));
         assert_eq!(
-            payload_from_request_typed::<serde_json::Value>(&request).unwrap(),
+            payload_from_request::<serde_json::Value>(&request).unwrap(),
             payload
         );
     }
@@ -243,7 +243,7 @@ mod tests {
             .unwrap();
         for request in [missing, invalid] {
             assert!(matches!(
-                payload_from_request_typed::<serde_json::Value>(&request).unwrap_err(),
+                payload_from_request::<serde_json::Value>(&request).unwrap_err(),
                 JsonBodyError::InvalidInput(_) | JsonBodyError::Decode(_)
             ));
         }

@@ -8,7 +8,7 @@ use tracing::{error, warn};
 use super::services::CatalogService;
 use crate::{
     application::catalog::input::CatalogRequest,
-    application::upstream::response_json_to_payload_typed,
+    application::upstream::response_json_to_payload,
     domain::server_id::ServerId,
     libraries::service::{
         normalize_library_id, VirtualLibraryAccessScope, VirtualLibraryResolution,
@@ -21,7 +21,7 @@ use crate::{
 };
 
 use super::{
-    finalize_items_response_typed,
+    finalize_items_response,
     library_resolution::CatalogFetchTarget,
     library_resolution::{
         automatic_library_key, is_live_tv_user_view, presentable_library_collection_type,
@@ -306,7 +306,7 @@ pub(super) async fn get_automatic_library_root(
 
     let items =
         FederatedItems::from_merged_items(library_items).merge_interleaved(non_library_per_server);
-    finalize_items_response_typed(state, &original_request, items, &policy, response_shape).await
+    finalize_items_response(state, &original_request, items, &policy, response_shape).await
 }
 
 async fn present_configured_library_groups(
@@ -390,7 +390,7 @@ pub(super) async fn get_configured_library_root(
     let items =
         FederatedItems::from_merged_items(library_items).merge_interleaved(non_library_per_server);
 
-    finalize_items_response_typed(state, &original_request, items, &policy, response_shape).await
+    finalize_items_response(state, &original_request, items, &policy, response_shape).await
 }
 
 async fn process_media_items_for_server(
@@ -577,7 +577,7 @@ async fn process_media_item_for_server(
     let mut item_json = serde_json::to_value(item).map_err(ApplicationError::Serialization)?;
 
     state
-        .process_response_json_typed(
+        .process_response_json(
             &mut item_json,
             server,
             ResponseProcessingProfile::Media,
@@ -585,7 +585,7 @@ async fn process_media_item_for_server(
         )
         .await?;
 
-    let item = response_json_to_payload_typed(item_json)?;
+    let item = response_json_to_payload(item_json)?;
     let policy = if state.config.read().await.include_server_name_in_media {
         item_name_policy
     } else {

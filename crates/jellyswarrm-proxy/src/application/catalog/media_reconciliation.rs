@@ -16,7 +16,7 @@ use crate::{
 };
 
 use super::{
-    finalize_items_response_typed,
+    finalize_items_response,
     library_resolution::CatalogFetchTarget,
     postprocessing::{FederatedItems, ServerItems},
     request_policy::CatalogRequestPolicy,
@@ -82,7 +82,7 @@ impl CatalogContext {
     }
 }
 
-pub(crate) async fn get_virtual_library_items_typed(
+pub(crate) async fn get_virtual_library_items(
     state: &CatalogService,
     preprocessed: CatalogRequest,
     catalog_scope_key: String,
@@ -205,14 +205,8 @@ async fn get_reconciled_catalog_uncached(
         }
     }
     Ok(super::snapshots::SnapshotResponse {
-        response: finalize_items_response_typed(
-            state,
-            &original_request,
-            items,
-            &policy,
-            response_shape,
-        )
-        .await?,
+        response: finalize_items_response(state, &original_request, items, &policy, response_shape)
+            .await?,
         report,
     })
 }
@@ -396,7 +390,7 @@ pub(super) async fn reconcile_fetched_catalog(
     };
     for item in items.items_mut() {
         if deduplicate_media || series_group.is_some() {
-            crate::application::details::sources::preserve_media_parent_groups_typed(
+            crate::application::details::sources::preserve_media_parent_groups(
                 state,
                 item,
                 viewer,
@@ -420,7 +414,7 @@ pub(super) async fn reconcile_fetched_catalog(
 /// series of a collapsed show. Seasons and (Jellyfin v12+) episodes merge
 /// using provider identities, with children identified by their matched parent
 /// series and season/episode numbers when available.
-pub(crate) async fn get_aggregate_show_items_typed(
+pub(crate) async fn get_aggregate_show_items(
     state: &CatalogService,
     preprocessed: CatalogRequest,
     aggregate_id: String,

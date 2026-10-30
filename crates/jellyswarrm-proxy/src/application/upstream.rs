@@ -14,7 +14,7 @@ impl From<JsonTransportError> for ApplicationError {
     }
 }
 
-pub(crate) fn response_json_to_payload_typed<T: serde::de::DeserializeOwned>(
+pub(crate) fn response_json_to_payload<T: serde::de::DeserializeOwned>(
     payload: serde_json::Value,
 ) -> Result<T, ApplicationError> {
     serde_json::from_value(payload).map_err(ApplicationError::InvalidProcessedJson)
@@ -30,7 +30,7 @@ pub(crate) async fn execute_payload<T: serde::de::DeserializeOwned>(
 
 /// Concrete execution for workflows that do not keep a reusable capability.
 /// Decode the original document here, never through a JSON Value intermediary.
-pub(crate) async fn execute_json_request_typed<T: serde::de::DeserializeOwned>(
+pub(crate) async fn execute_json_request<T: serde::de::DeserializeOwned>(
     client: &reqwest::Client,
     request: reqwest::Request,
 ) -> Result<T, ApplicationError> {
@@ -64,7 +64,7 @@ mod tests {
                 .await;
             let client = reqwest::Client::new();
             let request = client.get(upstream.uri()).build().unwrap();
-            let error = execute_json_request_typed::<Item>(&client, request)
+            let error = execute_json_request::<Item>(&client, request)
                 .await
                 .unwrap_err();
             assert!(matches!(error, ApplicationError::InvalidUpstreamJson(_)));
@@ -82,8 +82,7 @@ mod tests {
 
     #[test]
     fn processed_payload_validation_preserves_json_cause() {
-        let error =
-            response_json_to_payload_typed::<Vec<String>>(serde_json::json!({})).unwrap_err();
+        let error = response_json_to_payload::<Vec<String>>(serde_json::json!({})).unwrap_err();
         assert!(matches!(error, ApplicationError::InvalidProcessedJson(_)));
         assert!(error.source().unwrap().is::<serde_json::Error>());
     }

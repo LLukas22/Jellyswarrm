@@ -43,7 +43,7 @@ flowchart TD
 Backend session tokens are encrypted in storage. The login response substitutes
 the local user's virtual IDs and uses the proxy token as its `AccessToken`.
 
-**Code:** [login handler](http/handlers/users.rs) →
+**Code:** [login handler](http/client_routes.rs) →
 [login orchestration](application/accounts.rs) →
 [backend mapping authentication](auth/mapping_authentication.rs).
 
@@ -99,7 +99,7 @@ flowchart TD
     Response --> Client
 ```
 
-**Code:** [HTTP handler](http/handlers/federated.rs) →
+**Code:** [HTTP handler](http/client_routes.rs) →
 [input extraction](http/extractors.rs) →
 [catalog workflow](application/catalog/mod.rs).
 

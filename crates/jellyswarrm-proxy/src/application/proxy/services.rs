@@ -37,7 +37,7 @@ impl ProxyService<'_> {
         }
     }
 
-    pub(crate) async fn process_response_json_typed(
+    pub(crate) async fn process_response_json(
         &self,
         payload: &mut serde_json::Value,
         server: &Server,
@@ -51,7 +51,7 @@ impl ProxyService<'_> {
             profile,
         };
         self.processors
-            .process_response_json_typed(payload, &context)
+            .process_response_json(payload, &context)
             .await
             .map_err(Into::into)
     }

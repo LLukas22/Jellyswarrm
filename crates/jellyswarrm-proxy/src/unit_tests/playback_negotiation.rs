@@ -285,7 +285,7 @@ async fn first_negotiation_selects_exact_member_before_binding() {
             .get_session_for_user("first-play", "viewer")
             .await
             .is_none());
-        let response = post_playback_info_typed(&fixture.state.playback_service(), input)
+        let response = post_playback_info(&fixture.state.playback_service(), input)
             .await
             .unwrap();
         assert_eq!(response.media_sources[0].id, fixture.sources[selected]);
@@ -356,7 +356,7 @@ async fn query_source_selects_owner_instead_of_conflicting_body_source() {
         &format!("?MediaSourceId={}", fixture.sources[2]),
         json!({"MediaSourceId":fixture.sources[0], "AudioStreamIndex":3}),
     );
-    post_playback_info_typed(&fixture.state.playback_service(), input)
+    post_playback_info(&fixture.state.playback_service(), input)
         .await
         .unwrap();
     let requests = fixture.upstreams[1].received_requests().await.unwrap();
@@ -405,7 +405,7 @@ async fn aggregate_default_query_keeps_member_source_and_track_preferences() {
         &format!("?MediaSourceId={}", fixture.aggregate),
         json!({"MediaSourceId":fixture.aggregate, "AudioStreamIndex":3, "SubtitleStreamIndex":5}),
     );
-    let response = post_playback_info_typed(&fixture.state.playback_service(), input)
+    let response = post_playback_info(&fixture.state.playback_service(), input)
         .await
         .unwrap();
     assert_eq!(response.media_sources.len(), 1);
@@ -440,7 +440,7 @@ async fn sessionless_passthrough_is_rejected_without_negotiation() {
         None,
     );
     assert!(matches!(
-        post_playback_info_typed(&fixture.state.playback_service(), input)
+        post_playback_info(&fixture.state.playback_service(), input)
             .await
             .unwrap_err(),
         crate::application::error::ApplicationError::At {
@@ -555,7 +555,7 @@ async fn failed_negotiation_does_not_commit_playback_binding() {
         .await;
     let input = operation(&fixture, "", json!({"MediaSourceId":fixture.sources[2]}));
     assert!(matches!(
-        post_playback_info_typed(&fixture.state.playback_service(), input)
+        post_playback_info(&fixture.state.playback_service(), input)
             .await
             .unwrap_err(),
         crate::application::error::ApplicationError::UpstreamStatus(
@@ -771,7 +771,7 @@ async fn invalid_live_open_and_failed_refresh_do_not_commit_playback_transitions
         .build()
         .unwrap();
     assert!(matches!(
-        live::post_livestream_open_typed(
+        live::post_livestream_open(
             &fixture.state.playback_service(),
             LiveRequest {
                 original_request: request,
@@ -801,7 +801,7 @@ async fn invalid_live_open_and_failed_refresh_do_not_commit_playback_transitions
         .build()
         .unwrap();
     assert!(matches!(
-        live::post_live_stream_action_typed(
+        live::post_live_stream_action(
             &fixture.state.playback_service(),
             LiveRequest {
                 original_request: request,
@@ -942,14 +942,14 @@ async fn valid_live_sources_do_not_publish_when_translation_or_reconciliation_fa
                     .mount(&fixture.upstreams[0])
                     .await;
                 let failure = if let Some(input) = input {
-                    crate::application::playback::live::post_livestream_open_typed(
+                    crate::application::playback::live::post_livestream_open(
                         &fixture.state.playback_service(),
                         input,
                     )
                     .await
                     .unwrap_err()
                 } else {
-                    post_playback_info_typed(
+                    post_playback_info(
                         &fixture.state.playback_service(),
                         operation(&fixture, "", json!({"MediaSourceId":fixture.sources[0]})),
                     )
@@ -1067,7 +1067,7 @@ async fn stale_reconciliation_drops_live_identity_with_its_unroutable_source() {
                 .unwrap()
                 .revision();
             assert!(matches!(
-                crate::application::playback::live::post_livestream_open_typed(
+                crate::application::playback::live::post_livestream_open(
                     &fixture.state.playback_service(),
                     input
                 )
@@ -1088,7 +1088,7 @@ async fn stale_reconciliation_drops_live_identity_with_its_unroutable_source() {
                 before
             );
         } else {
-            let response = post_playback_info_typed(
+            let response = post_playback_info(
                 &fixture.state.playback_service(),
                 operation(&fixture, "", json!({"MediaSourceId":fixture.sources[0]})),
             )
@@ -1131,7 +1131,7 @@ async fn live_open_query_translates_owner_once_even_when_original_is_another_vir
         .expect(1)
         .mount(&fixture.upstreams[0])
         .await;
-    let response = crate::application::playback::live::post_livestream_open_typed(
+    let response = crate::application::playback::live::post_livestream_open(
         &fixture.state.playback_service(),
         input,
     )
@@ -1187,7 +1187,7 @@ async fn live_open_query_translates_owner_once_even_when_original_is_another_vir
 
 #[tokio::test]
 async fn live_actions_translate_colliding_live_identity_exactly_once() {
-    use crate::application::playback::live::{post_live_stream_action_typed, LiveRequest};
+    use crate::application::playback::live::{post_live_stream_action, LiveRequest};
     for action in ["Refresh", "Close"] {
         let fixture = fixture().await;
         let server = &fixture.sessions[0].1;
@@ -1214,7 +1214,7 @@ async fn live_actions_translate_colliding_live_identity_exactly_once() {
             .json(&json!({"LiveStreamId":owner}))
             .build()
             .unwrap();
-        post_live_stream_action_typed(
+        post_live_stream_action(
             &fixture.state.playback_service(),
             LiveRequest {
                 original_request: request,
@@ -1288,7 +1288,7 @@ async fn successful_live_workflows_publish_the_exact_advertised_identity_and_url
             .mount(&fixture.upstreams[0])
             .await;
         let source = if let Some(input) = input {
-            crate::application::playback::live::post_livestream_open_typed(
+            crate::application::playback::live::post_livestream_open(
                 &fixture.state.playback_service(),
                 input,
             )
@@ -1297,7 +1297,7 @@ async fn successful_live_workflows_publish_the_exact_advertised_identity_and_url
                 .clone()
         } else {
             serde_json::to_value(
-                post_playback_info_typed(
+                post_playback_info(
                     &fixture.state.playback_service(),
                     operation(&fixture, "", json!({"MediaSourceId":fixture.sources[0]})),
                 )

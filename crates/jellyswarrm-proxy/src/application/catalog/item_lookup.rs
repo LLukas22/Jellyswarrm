@@ -12,7 +12,7 @@ use crate::{
 };
 
 use super::{
-    finalize_items_response_typed,
+    finalize_items_response,
     library_resolution::CatalogFetchTarget,
     postprocessing::{FederatedItems, ResponseShape, SortPolicy},
     request_policy::CatalogRequestPolicy,
@@ -274,7 +274,7 @@ impl RequestedItems {
         }
         if let Some(scope) = request.context.access_scope() {
             for item in &mut items {
-                crate::application::details::sources::preserve_media_parent_groups_typed(
+                crate::application::details::sources::preserve_media_parent_groups(
                     state,
                     item,
                     scope.user_id(),
@@ -283,7 +283,7 @@ impl RequestedItems {
                 .await?;
             }
         }
-        let response = finalize_items_response_typed(
+        let response = finalize_items_response(
             state,
             &request.original_request,
             FederatedItems::from_merged_items(items),

@@ -9,7 +9,7 @@ use tracing::{debug, error, trace, warn};
 
 use super::services::CatalogService;
 use crate::{
-    application::upstream::response_json_to_payload_typed,
+    application::upstream::response_json_to_payload,
     auth::service::AuthorizationSession,
     domain::server_id::ServerId,
     libraries::service::DiscoveredLibrary,
@@ -615,7 +615,7 @@ async fn scan_raw_items(
         }
         let bare_inventory = matches!(policy, ScanPolicy::LibraryInventory)
             && matches!(page, ItemsResponseVariants::Bare(_));
-        let step = progress.accept_typed(&page)?;
+        let step = progress.accept(&page)?;
         all_items.extend(page.into_items());
         if step == super::scan::ScanStep::Complete || bare_inventory {
             break FetchOutcome::Complete;
@@ -774,7 +774,7 @@ async fn execute_raw_items_request(
         error!("Failed to get items from server '{}': {:?}", server.name, e);
     })?;
 
-    let items_response: ItemsResponseVariants = response_json_to_payload_typed(response)?;
+    let items_response: ItemsResponseVariants = response_json_to_payload(response)?;
     debug!(
         "Fetched {} raw items from server '{}' at index {}",
         items_response.len(),
@@ -839,7 +839,7 @@ async fn process_items_response_json(
         serde_json::to_value(&*response).map_err(ApplicationError::Serialization)?;
 
     state
-        .process_response_json_typed(
+        .process_response_json(
             &mut response_json,
             server,
             ResponseProcessingProfile::Media,
@@ -853,7 +853,7 @@ async fn process_items_response_json(
             );
         })?;
 
-    *response = response_json_to_payload_typed(response_json)?;
+    *response = response_json_to_payload(response_json)?;
     Ok(())
 }
 

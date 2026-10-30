@@ -19,7 +19,7 @@ impl std::fmt::Debug for JsonBodyError {
     }
 }
 
-pub(crate) fn payload_from_request_typed<T: serde::de::DeserializeOwned>(
+pub(crate) fn payload_from_request<T: serde::de::DeserializeOwned>(
     request: &reqwest::Request,
 ) -> Result<T, JsonBodyError> {
     let bytes = request
@@ -30,7 +30,7 @@ pub(crate) fn payload_from_request_typed<T: serde::de::DeserializeOwned>(
     serde_json::from_slice(bytes).map_err(JsonBodyError::Decode)
 }
 
-pub(crate) fn set_json_body_typed<T: serde::Serialize>(
+pub(crate) fn set_json_body<T: serde::Serialize>(
     request: &mut reqwest::Request,
     payload: &T,
 ) -> Result<(), JsonBodyError> {

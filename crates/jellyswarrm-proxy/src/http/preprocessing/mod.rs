@@ -6,7 +6,7 @@ use axum::http;
 use http_body_util::BodyExt;
 use tracing::{debug, error};
 
-use crate::auth::service::{AuthorizationSession, User};
+use crate::auth::service::AuthorizationSession;
 use crate::http::state::MediaState;
 use crate::libraries::service::VirtualLibraryAccessScope;
 use crate::processors::analyze_json;
@@ -22,7 +22,7 @@ mod identity;
 #[cfg(test)]
 mod playback;
 mod request;
-pub(crate) use identity::{get_user_from_request, resolve_request_identity_from_headers_uri};
+pub(crate) use identity::resolve_request_identity_from_headers_uri;
 #[cfg(test)]
 pub(crate) use playback::apply_to_request;
 #[cfg(test)]

@@ -201,7 +201,7 @@ async fn build_request(
 
 /// Downloads retain fallback-proxy ownership and credential resolution, but use
 /// streaming transport rather than buffering the entire file as an API response.
-pub(crate) async fn get_download_typed(
+pub(crate) async fn get_download(
     state: &PlaybackService<'_>,
     operation: OperationRequest,
 ) -> Result<DeliveryResponse, ApplicationError> {
@@ -226,7 +226,7 @@ pub(crate) async fn get_download_typed(
         .map_err(delivery_error)
 }
 
-pub(crate) async fn get_video_resource_typed(
+pub(crate) async fn get_video_resource(
     state: &PlaybackService<'_>,
     mut operation: OperationRequest,
 ) -> Result<DeliveryResponse, ApplicationError> {
@@ -271,7 +271,7 @@ pub(crate) async fn get_video_resource_typed(
     .await
 }
 
-pub(crate) async fn get_stream_typed(
+pub(crate) async fn get_stream(
     state: &PlaybackService<'_>,
     mut operation: OperationRequest,
 ) -> Result<DeliveryResponse, ApplicationError> {
@@ -478,7 +478,7 @@ mod tests {
             .respond_with(wiremock::ResponseTemplate::new(503))
             .mount(&upstream)
             .await;
-        let failed = get_stream_typed(&state.playback_service(), operation("direct"))
+        let failed = get_stream(&state.playback_service(), operation("direct"))
             .await
             .unwrap();
         assert_eq!(failed.status, StatusCode::SERVICE_UNAVAILABLE);
@@ -497,7 +497,7 @@ mod tests {
             )
             .mount(&upstream)
             .await;
-        let delivered = get_stream_typed(&state.playback_service(), operation("direct"))
+        let delivered = get_stream(&state.playback_service(), operation("direct"))
             .await
             .unwrap();
         assert_eq!(delivered.status, StatusCode::PARTIAL_CONTENT);
@@ -522,7 +522,7 @@ mod tests {
     async fn unknown_direct_session_binds_on_redirect() {
         let (state, server, context, item, upstream) =
             direct_fixture(MediaStreamingMode::Redirect).await;
-        let response = get_stream_typed(&state.playback_service(), OperationRequest {
+        let response = get_stream(&state.playback_service(), OperationRequest {
             original_request: reqwest::Request::new(reqwest::Method::HEAD,
                 format!("http://proxy.example/Audio/{item}/universal?PlaySessionId=redirect&Extension=kept").parse().unwrap()),
             context, body_analysis: None,

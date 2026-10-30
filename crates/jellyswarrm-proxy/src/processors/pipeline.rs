@@ -7,7 +7,7 @@ use super::{
     response_processor::{ResponseProcessingContext, ResponseProcessingProfile, ResponseProcessor},
     url_processor::UrlProcessor,
 };
-use crate::outbound::json::set_json_body_typed;
+use crate::outbound::json::set_json_body;
 use crate::processors;
 use tracing::{debug, error};
 pub(crate) struct ProxyProcessors {
@@ -48,13 +48,13 @@ impl ProxyProcessors {
 
         if response.was_modified {
             debug!("Modified JSON body for request to {}", request_url);
-            set_json_body_typed(request, &json_value)?;
+            set_json_body(request, &json_value)?;
         }
 
         Ok(())
     }
 
-    pub(crate) async fn process_response_json_typed(
+    pub(crate) async fn process_response_json(
         &self,
         payload: &mut serde_json::Value,
         context: &ResponseProcessingContext,

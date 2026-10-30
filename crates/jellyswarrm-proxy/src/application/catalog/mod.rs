@@ -34,13 +34,6 @@ use postprocessing::{FederatedItems, ResponseShape};
 use request_policy::{has_query_key, CatalogRequestPolicy};
 use upstream::{fetch_catalog, FetchMode, FetchedCatalog};
 
-async fn get_items(
-    state: &CatalogService,
-    request: CatalogRequest,
-) -> Result<serde_json::Value, ApplicationError> {
-    get_item_detail(state, request.into(), false).await
-}
-
 /// Series detail and single-channel/genre guides identify one upstream item.
 /// Query only its owning server so unrelated programs cannot enter the result.
 pub(crate) async fn get_live_tv_programs(
@@ -53,9 +46,9 @@ pub(crate) async fn get_live_tv_programs(
             && value.split(',').filter(|id| !id.trim().is_empty()).count() == 1
     });
     if has_query_key(url, &["LibrarySeriesId"]) || single_scoped_id {
-        get_items(state, preprocessed).await
+        get_item_detail(state, preprocessed.into(), false).await
     } else {
-        get_items_from_all_servers_preprocessed(state, preprocessed).await
+        get_catalog(state, preprocessed).await
     }
 }
 
@@ -84,28 +77,14 @@ pub(crate) async fn get_items_from_all_servers_if_not_restricted(
     if has_query_key(original_request.url(), &["SeriesId"])
         && !is_aggregate_id(state, original_request.url()).await?
     {
-        return get_items(state, preprocessed).await;
+        return get_item_detail(state, preprocessed.into(), false).await;
     }
 
-    get_items_from_all_servers_preprocessed(state, preprocessed).await
-}
-
-pub(crate) async fn get_items_from_all_servers(
-    state: &CatalogService,
-    preprocessed: CatalogRequest,
-) -> Result<serde_json::Value, ApplicationError> {
-    get_items_from_all_servers_preprocessed(state, preprocessed).await
+    get_catalog(state, preprocessed).await
 }
 
 /// Federates `/Shows/{seriesId}/Seasons|Episodes` when `seriesId` is a
 /// collapsed show aggregate; otherwise falls back to single-server proxying.
-pub(crate) async fn get_show_children_from_all_servers(
-    state: &CatalogService,
-    preprocessed: CatalogRequest,
-) -> Result<serde_json::Value, ApplicationError> {
-    get_show_children(state, preprocessed).await
-}
-
 pub(crate) async fn get_show_children(
     state: &CatalogService,
     preprocessed: CatalogRequest,
@@ -167,7 +146,7 @@ pub(crate) async fn get_show_children(
     if targets.is_empty() {
         return get_item_detail(state, preprocessed.into(), false).await;
     }
-    media_reconciliation::get_aggregate_show_items_typed(
+    media_reconciliation::get_aggregate_show_items(
         state,
         preprocessed,
         group.virtual_media_id,
@@ -199,13 +178,6 @@ pub(crate) async fn get_media_folders(
         .url_mut()
         .set_path(&format!("{path}/Users/{user_id}/Views"));
 
-    get_items_from_all_servers_preprocessed(state, preprocessed).await
-}
-
-pub(crate) async fn get_items_from_all_servers_preprocessed(
-    state: &CatalogService,
-    preprocessed: CatalogRequest,
-) -> Result<serde_json::Value, ApplicationError> {
     get_catalog(state, preprocessed).await
 }
 
@@ -234,7 +206,7 @@ pub(crate) async fn get_catalog(
             } else {
                 ResponseShape::Counted
             };
-            finalize_items_response_typed(
+            finalize_items_response(
                 state,
                 &preprocessed.original_request,
                 FederatedItems::default(),
@@ -249,7 +221,7 @@ pub(crate) async fn get_catalog(
             targets,
             skipped_targets,
         } => {
-            media_reconciliation::get_virtual_library_items_typed(
+            media_reconciliation::get_virtual_library_items(
                 state,
                 preprocessed,
                 catalog_scope_key,
@@ -259,7 +231,7 @@ pub(crate) async fn get_catalog(
             .await
         }
         CatalogPlan::Interleaved(targets) => {
-            get_interleaved_root_typed(state, preprocessed, targets).await
+            get_interleaved_root(state, preprocessed, targets).await
         }
         CatalogPlan::AutomaticRoot(targets) => {
             get_automatic_library_root(state, preprocessed, targets).await
@@ -270,7 +242,7 @@ pub(crate) async fn get_catalog(
     }
 }
 
-async fn get_interleaved_root_typed(
+async fn get_interleaved_root(
     state: &CatalogService,
     preprocessed: CatalogRequest,
     targets: Vec<CatalogFetchTarget>,
@@ -324,19 +296,13 @@ async fn get_interleaved_root_uncached(
     debug!("Combined items from {server_count} servers");
 
     Ok(snapshots::SnapshotResponse {
-        response: finalize_items_response_typed(
-            state,
-            &original_request,
-            items,
-            &policy,
-            response_shape,
-        )
-        .await?,
+        response: finalize_items_response(state, &original_request, items, &policy, response_shape)
+            .await?,
         report,
     })
 }
 
-pub(super) async fn finalize_items_response_typed(
+pub(super) async fn finalize_items_response(
     state: &CatalogService,
     request: &reqwest::Request,
     items: FederatedItems,
@@ -376,4 +342,4 @@ mod snapshot_tests;
 #[path = "../../unit_tests/federated_catalog.rs"]
 pub(crate) mod tests;
 
-pub(crate) use filters::get_filters_typed;
+pub(crate) use filters::get_filters;

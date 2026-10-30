@@ -277,7 +277,7 @@ pub(crate) async fn forward(
         match serde_json::from_slice::<Value>(&body) {
             Ok(mut value) => {
                 let modified = state
-                    .process_response_json_typed(
+                    .process_response_json(
                         &mut value,
                         &server,
                         if status.is_success() {
@@ -420,16 +420,14 @@ pub(crate) async fn update_aggregate(
     }
     let mut result = None;
     for (upstream, server) in targets {
-        let mut data: Value = crate::application::upstream::execute_json_request_typed(
-            state.reqwest_client,
-            upstream,
-        )
-        .await?;
+        let mut data: Value =
+            crate::application::upstream::execute_json_request(state.reqwest_client, upstream)
+                .await?;
         // Also invalidate after a partial write if a later member rejects it.
         state.catalog_snapshots.invalidate_viewer(scope.user_id());
         if result.is_none() {
             state
-                .process_response_json_typed(
+                .process_response_json(
                     &mut data,
                     &server,
                     ResponseProcessingProfile::Media,

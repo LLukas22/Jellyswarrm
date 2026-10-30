@@ -176,9 +176,7 @@ async fn all_servers(
     State(state): State<CatalogService>,
     CatalogInput(request): CatalogInput,
 ) -> JsonResult {
-    catalog::get_items_from_all_servers(&state, request)
-        .await
-        .map(Json)
+    catalog::get_catalog(&state, request).await.map(Json)
 }
 
 pub(crate) async fn unless_restricted(
@@ -194,9 +192,7 @@ async fn show_children(
     State(state): State<CatalogService>,
     CatalogInput(request): CatalogInput,
 ) -> JsonResult {
-    catalog::get_show_children_from_all_servers(&state, request)
-        .await
-        .map(Json)
+    catalog::get_show_children(&state, request).await.map(Json)
 }
 
 async fn media_folders(
@@ -210,7 +206,7 @@ async fn filters(
     State(state): State<CatalogService>,
     CatalogInput(request): CatalogInput,
 ) -> JsonResult {
-    catalog::get_filters_typed(&state, request).await.map(Json)
+    catalog::get_filters(&state, request).await.map(Json)
 }
 
 async fn live_tv_programs(
@@ -304,7 +300,7 @@ async fn playback_info(
     State(state): State<MediaState>,
     OperationInput(input): OperationInput,
 ) -> JsonResult<PlaybackResponse> {
-    negotiation::post_playback_info_typed(&state.playback_service(), input)
+    negotiation::post_playback_info(&state.playback_service(), input)
         .await
         .map(Json)
 }
@@ -313,28 +309,28 @@ async fn download(
     State(state): State<MediaState>,
     OperationInput(input): OperationInput,
 ) -> Result<DeliveryResponse, ApplicationError> {
-    resources::get_download_typed(&state.playback_service(), input).await
+    resources::get_download(&state.playback_service(), input).await
 }
 
 async fn video_resource(
     State(state): State<MediaState>,
     OperationInput(input): OperationInput,
 ) -> Result<DeliveryResponse, ApplicationError> {
-    resources::get_video_resource_typed(&state.playback_service(), input).await
+    resources::get_video_resource(&state.playback_service(), input).await
 }
 
 async fn stream(
     State(state): State<MediaState>,
     OperationInput(input): OperationInput,
 ) -> Result<DeliveryResponse, ApplicationError> {
-    resources::get_stream_typed(&state.playback_service(), input).await
+    resources::get_stream(&state.playback_service(), input).await
 }
 
 async fn live_stream_open(
     State(state): State<MediaState>,
     LiveInput(input): LiveInput,
 ) -> JsonResult {
-    live::post_livestream_open_typed(&state.playback_service(), input)
+    live::post_livestream_open(&state.playback_service(), input)
         .await
         .map(Json)
 }
@@ -343,7 +339,7 @@ async fn live_stream_action(
     State(state): State<MediaState>,
     LiveInput(input): LiveInput,
 ) -> Result<LiveStreamActionResult, ApplicationError> {
-    live::post_live_stream_action_typed(&state.playback_service(), input).await
+    live::post_live_stream_action(&state.playback_service(), input).await
 }
 
 impl IntoResponse for DeliveryResponse {
