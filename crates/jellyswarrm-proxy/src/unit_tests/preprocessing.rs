@@ -229,15 +229,19 @@ async fn abbreviated_seasons_headers_dispatch_with_stored_credentials() {
         .is_empty());
 }
 
-async fn media_fixture() -> MediaState {
+async fn media_fixture() -> MediaServices {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
     MIGRATOR.run(&pool).await.unwrap();
     AdapterFixture::new(pool, AppConfig::default())
         .await
-        .media_state
+        .services
+        .clone()
 }
 
-async fn preprocessed_image_request(state: &MediaState, upstream: &MockServer) -> reqwest::Request {
+async fn preprocessed_image_request(
+    state: &MediaServices,
+    upstream: &MockServer,
+) -> reqwest::Request {
     let server_id = state
         .server_storage
         .add_server(
@@ -376,7 +380,7 @@ async fn image_request_follows_same_origin_redirects_preserving_authorization() 
     }
 }
 
-async fn test_user(state: &MediaState, name: &str) -> User {
+async fn test_user(state: &MediaServices, name: &str) -> User {
     state
         .user_authorization
         .get_or_create_user(name, &"password123".into())
@@ -514,7 +518,7 @@ async fn invalid_token_cannot_adopt_user_from_request_body() {
     assert!(request.context.backends().sessions.is_none());
 }
 
-async fn playback_server(state: &MediaState) -> Server {
+async fn playback_server(state: &MediaServices) -> Server {
     let server_id = state
         .server_storage
         .add_server(

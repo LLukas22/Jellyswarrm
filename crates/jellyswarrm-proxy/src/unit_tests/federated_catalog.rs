@@ -158,9 +158,7 @@ async fn request_independent_refresh_shares_paging_reconciliation_and_interactiv
             .collect(),
     };
     // No reqwest/http request is constructed for either refresh invocation.
-    let first = refresh(&state.catalog_service(), make_input())
-        .await
-        .unwrap();
+    let first = refresh(&state, make_input()).await.unwrap();
     assert!(first.report.is_complete_inventory());
     assert_eq!(first.report.outcomes().len(), sessions.len());
     assert_eq!(first.response["Items"].as_array().unwrap().len(), 2);
@@ -168,7 +166,7 @@ async fn request_independent_refresh_shares_paging_reconciliation_and_interactiv
         assert_eq!(upstream.received_requests().await.unwrap().len(), 2);
     }
     let interactive = get_catalog(
-        &state.catalog_service(),
+        &state,
         request(
             &format!(
                 "/Items?ParentId={}&Recursive=true&IncludeItemTypes=Movie,Series,Season,Episode",
@@ -192,9 +190,7 @@ async fn request_independent_refresh_shares_paging_reconciliation_and_interactiv
         .respond_with(ResponseTemplate::new(503))
         .mount(&upstreams[1])
         .await;
-    let partial = refresh(&state.catalog_service(), make_input())
-        .await
-        .unwrap();
+    let partial = refresh(&state, make_input()).await.unwrap();
     assert!(!partial.report.is_complete_inventory());
     let ids = partial.response["Items"]
         .as_array()
@@ -224,7 +220,7 @@ async fn request_independent_refresh_shares_paging_reconciliation_and_interactiv
     // it so the next interactive request does not silently return stale cache.
     let before = upstreams[0].received_requests().await.unwrap().len();
     let _ = get_catalog(
-        &state.catalog_service(),
+        &state,
         request(
             &format!(
                 "/Items?ParentId={}&Recursive=true&IncludeItemTypes=Movie,Series,Season,Episode",
@@ -249,7 +245,7 @@ async fn request_independent_refresh_rejects_foreign_viewer_credentials_before_t
     };
     let (state, _pool, sessions, upstreams) = setup().await;
     let result = refresh(
-        &state.catalog_service(),
+        &state,
         CatalogRefresh {
             library_id: "unresolved".into(),
             access_scope: VirtualLibraryAccessScope::new(
@@ -300,9 +296,9 @@ async fn catalog_service_boundaries_preserve_source_and_storage_causes() {
     ] {
         let input: OperationRequest = request(&path, &sessions);
         let result = if path.ends_with("/Filters") {
-            get_filters(&state.catalog_service(), input).await
+            get_filters(&state, input).await
         } else {
-            get_catalog(&state.catalog_service(), input).await
+            get_catalog(&state, input).await
         };
         let error = result.unwrap_err();
 
@@ -322,9 +318,9 @@ async fn catalog_service_boundaries_preserve_source_and_storage_causes() {
     ] {
         let input: OperationRequest = request(path, &sessions);
         let result = if path.contains("/Filters") {
-            get_filters(&state.catalog_service(), input).await
+            get_filters(&state, input).await
         } else {
-            get_catalog(&state.catalog_service(), input).await
+            get_catalog(&state, input).await
         };
         let error = result.unwrap_err();
 
@@ -396,7 +392,7 @@ async fn library_inventory_fetches_capped_pages_before_client_pagination() {
             .mount(&upstreams[0])
             .await;
         let response = get_catalog(
-            &state.catalog_service(),
+            &state,
             request("/Users/viewer/Views?StartIndex=20&Limit=1", &sessions[..1]),
         )
         .await
@@ -442,11 +438,7 @@ async fn incomplete_library_inventory_is_not_cached() {
             .expect(2)
             .mount(&upstreams[0])
             .await;
-        let result = get_catalog(
-            &state.catalog_service(),
-            request("/Users/viewer/Views", &sessions[..1]),
-        )
-        .await;
+        let result = get_catalog(&state, request("/Users/viewer/Views", &sessions[..1])).await;
         assert!(result.is_err(), "{failure}");
         assert!(state
             .virtual_library_service
@@ -496,9 +488,7 @@ async fn series_tv_schedule_only_queries_the_series_server() {
         &format!("{}?{}", url.path(), url.query().unwrap()),
         &sessions,
     );
-    let response = get_live_tv_programs(&state.catalog_service(), preprocessed)
-        .await
-        .unwrap();
+    let response = get_live_tv_programs(&state, preprocessed).await.unwrap();
     assert_eq!(response["Items"].as_array().unwrap().len(), 1);
     assert!(upstreams[0].received_requests().await.unwrap().is_empty());
 }
@@ -542,9 +532,7 @@ async fn channel_tv_schedule_only_queries_the_channel_server() {
         &format!("{}?{}", url.path(), url.query().unwrap()),
         &sessions,
     );
-    let response = get_live_tv_programs(&state.catalog_service(), preprocessed)
-        .await
-        .unwrap();
+    let response = get_live_tv_programs(&state, preprocessed).await.unwrap();
     assert_eq!(response["Items"].as_array().unwrap().len(), 1);
     assert!(upstreams[0].received_requests().await.unwrap().is_empty());
 }
@@ -594,7 +582,7 @@ async fn guide_programs_remap_channel_ids_on_each_server() {
             .await;
     }
     let path = format!("/LiveTv/Programs?ChannelIds={}", channel_ids.join(","));
-    let response = get_live_tv_programs(&state.catalog_service(), request(&path, &sessions))
+    let response = get_live_tv_programs(&state, request(&path, &sessions))
         .await
         .unwrap();
     assert_eq!(response["Items"].as_array().unwrap().len(), 2);
@@ -716,7 +704,7 @@ async fn merged_library_show_routes_merge_localized_seasons_and_keep_navigation(
             .await;
     }
     let shows = get_catalog(
-        &state.catalog_service(),
+        &state,
         request(
             &format!(
                 "/Items?ParentId={}&IncludeItemTypes=Series",
@@ -732,7 +720,7 @@ async fn merged_library_show_routes_merge_localized_seasons_and_keep_navigation(
     let path = format!("/Shows/{series_id}/Seasons?UserId=viewer&Fields=ItemCounts,PrimaryImageAspectRatio,CanDelete,MediaSourceCount");
     let mut season_id = String::new();
     for _ in 0..2 {
-        let seasons = get_show_children(&state.catalog_service(), request(&path, &sessions))
+        let seasons = get_show_children(&state, request(&path, &sessions))
             .await
             .unwrap();
         assert_eq!(seasons["TotalRecordCount"], 1);
@@ -761,7 +749,7 @@ async fn merged_library_show_routes_merge_localized_seasons_and_keep_navigation(
         );
     }
     let items_seasons = get_catalog(
-        &state.catalog_service(),
+        &state,
         request(
             &format!("/Items?ParentId={series_id}&IncludeItemTypes=Season"),
             &sessions,
@@ -774,7 +762,7 @@ async fn merged_library_show_routes_merge_localized_seasons_and_keep_navigation(
     assert_eq!(items_seasons["Items"][0]["SeriesId"], series_id);
     assert_eq!(items_seasons["Items"][0]["ParentId"], series_id);
     let episodes = get_show_children(
-        &state.catalog_service(),
+        &state,
         request(
             &format!("/Shows/{series_id}/Episodes?SeasonId={season_id}"),
             &sessions,
@@ -858,7 +846,7 @@ async fn episode_playback_queue_spans_servers_and_applies_start_before_paginatio
             .await;
     }
     let shows = get_catalog(
-        &state.catalog_service(),
+        &state,
         request(
             &format!(
                 "/Items?ParentId={}&IncludeItemTypes=Series",
@@ -871,7 +859,7 @@ async fn episode_playback_queue_spans_servers_and_applies_start_before_paginatio
     .unwrap();
     let series_id = shows["Items"][0]["Id"].as_str().unwrap();
     let endpoint = format!("/Shows/{series_id}/Episodes");
-    let listing = get_show_children(&state.catalog_service(), request(&endpoint, &sessions))
+    let listing = get_show_children(&state, request(&endpoint, &sessions))
         .await
         .unwrap();
     let ids = listing["Items"]
@@ -911,7 +899,7 @@ async fn episode_playback_queue_spans_servers_and_applies_start_before_paginatio
         (ids[3].as_str(), "StartItemId", 0, 100, &ids[3..], 1),
     ] {
         let queue = get_show_children(
-            &state.catalog_service(),
+            &state,
             request(&format!("{endpoint}?{key}={anchor}&StartIndex={offset}&Limit={limit}&IsMissing=false&IsVirtualUnaired=false&Fields=MediaSources"), &sessions),
         ).await.unwrap();
         let actual = queue["Items"]
@@ -1003,18 +991,11 @@ async fn client_pages_are_applied_after_scanning_capped_catalogs() {
             };
             let result = match kind {
                 "browse" => {
-                    get_virtual_library_items(
-                        &state.catalog_service(),
-                        req,
-                        "test:viewer".into(),
-                        targets(),
-                        0,
-                    )
-                    .await
+                    get_virtual_library_items(&state, req, "test:viewer".into(), targets(), 0).await
                 }
                 "episodes" | "seasons" => {
                     get_aggregate_show_items(
-                        &state.catalog_service(),
+                        &state,
                         req,
                         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
                         targets(),
@@ -1022,7 +1003,7 @@ async fn client_pages_are_applied_after_scanning_capped_catalogs() {
                     )
                     .await
                 }
-                _ => get_catalog(&state.catalog_service(), req).await,
+                _ => get_catalog(&state, req).await,
             }
             .unwrap_or_else(|status| panic!("{kind}: {status}"));
             assert_eq!(
@@ -1082,7 +1063,7 @@ async fn catalog_pagination_follows_backend_caps_and_detects_stalled_pages() {
             })
             .collect();
         let catalog = fetch_catalog(
-            &state.catalog_service(),
+            &state,
             &req.original_request,
             &policy,
             targets,
@@ -1146,7 +1127,7 @@ async fn catalog_cache_contains_only_final_visible_items_and_titles() {
     req.original_request
         .headers_mut()
         .insert("X-Emby-Token", token.parse().unwrap());
-    let result = get_catalog(&state.catalog_service(), req).await.unwrap();
+    let result = get_catalog(&state, req).await.unwrap();
     assert_eq!(result["Items"].as_array().unwrap().len(), 1);
     let visible = &result["Items"][0];
     let cached = state
@@ -1176,7 +1157,7 @@ async fn catalog_cache_contains_only_final_visible_items_and_titles() {
     req.original_request
         .headers_mut()
         .insert("X-Emby-Token", token.parse().unwrap());
-    let result = get_catalog(&state.catalog_service(), req).await.unwrap();
+    let result = get_catalog(&state, req).await.unwrap();
     let visible = &result["Items"][0];
     assert!(visible["Name"]
         .as_str()
@@ -1210,7 +1191,7 @@ async fn search_first_show_children_merge_and_keep_viewer_scoped_parent_links() 
     }
     // No browse/latest requests have established identities beforehand.
     let result = get_catalog(
-        &state.catalog_service(),
+        &state,
         request("/Items?SearchTerm=show&Recursive=true", &sessions),
     )
     .await
@@ -1269,14 +1250,14 @@ async fn search_merges_movies_and_series_without_server_tags() {
     let mut ids = None;
     for term_key in ["SearchTerm", "searchterm"] {
         let query = format!("/Items?{term_key}=Death&Recursive=true&Limit=10");
-        let plan = resolve_catalog_plan(&state.catalog_service(), &request(&query, &sessions))
+        let plan = resolve_catalog_plan(&state, &request(&query, &sessions))
             .await
             .unwrap();
         assert!(matches!(plan, CatalogPlan::Virtual { .. }));
     }
     for _ in 0..2 {
         let result = get_catalog(
-            &state.catalog_service(),
+            &state,
             request("/Items?SearchTerm=Death&Recursive=true&Limit=10", &sessions),
         )
         .await
@@ -1323,7 +1304,7 @@ async fn item_catalog_seasons_use_their_provider_matched_series_parent() {
             .await;
     }
     let series = get_virtual_library_items(
-        &state.catalog_service(),
+        &state,
         request("/Items?IncludeItemTypes=Series", &sessions),
         "configured:shows:viewer".into(),
         targets(),
@@ -1350,7 +1331,7 @@ async fn item_catalog_seasons_use_their_provider_matched_series_parent() {
             .await;
     }
     let seasons = get_virtual_library_items(
-        &state.catalog_service(),
+        &state,
         request("/Items?IncludeItemTypes=Season", &sessions),
         "configured:shows:viewer".into(),
         targets(),
@@ -1398,7 +1379,7 @@ async fn first_recursive_catalog_merges_series_and_numbered_seasons_together() {
             })
             .collect();
         let response = get_virtual_library_items(
-            &state.catalog_service(),
+            &state,
             request("/Items?Recursive=true", &sessions),
             "configured:shows:viewer".into(),
             targets,
@@ -1445,7 +1426,7 @@ async fn first_recursive_catalog_merges_series_and_numbered_seasons_together() {
         })
         .collect();
     let response = get_virtual_library_items(
-        &state.catalog_service(),
+        &state,
         request("/Items?Recursive=true", &sessions),
         "configured:shows:viewer".into(),
         targets,
@@ -1498,7 +1479,7 @@ async fn numbered_seasons_with_same_server_duplicates_are_not_hidden() {
         })
         .collect();
     let response = get_aggregate_show_items(
-        &state.catalog_service(),
+        &state,
         request(&format!("/Shows/{aggregate}/Seasons"), &sessions),
         aggregate.into(),
         targets,
@@ -1589,7 +1570,7 @@ async fn check_show_season_navigation(with_provider_ids: bool) {
             })
             .collect()
     };
-    let seasons = get_aggregate_show_items(&state.catalog_service(),
+    let seasons = get_aggregate_show_items(&state,
         request(&format!("/Shows/{aggregate}/Seasons?userId=viewer&Fields=ItemCounts,PrimaryImageAspectRatio,CanDelete,MediaSourceCount"), &sessions),
         aggregate.into(), targets(), 0).await.unwrap();
     let seasons = seasons["Items"].as_array().unwrap();
@@ -1598,7 +1579,7 @@ async fn check_show_season_navigation(with_provider_ids: bool) {
         assert_eq!(season["SeriesId"], aggregate);
         assert_eq!(season["IndexNumber"], index + 1);
         let episodes = get_aggregate_show_items(
-            &state.catalog_service(),
+            &state,
             request(
                 &format!(
                     "/Shows/{}/Episodes?seasonId={}",
@@ -1639,7 +1620,7 @@ async fn check_show_season_navigation(with_provider_ids: bool) {
     });
     let preprocessed = request("/Items/selected-episode", &sessions);
     crate::application::details::sources::merge_media_detail(
-        &state.catalog_service(),
+        &state,
         crate::application::details::sources::DetailMergeContext {
             requested_item_id: "selected-episode",
             selected_group: None,
@@ -1679,12 +1660,10 @@ async fn latest_routes_collapse_before_sort_and_limit_and_retain_partial_identit
         "/Users/viewer/Items/Latest?Limit=2&Fields=Path",
         "/Items/Latest?UserId=viewer&Limit=2&Fields=Path",
     ] {
-        let response = get_items_from_all_servers_if_not_restricted(
-            &state.catalog_service(),
-            request(path, &sessions),
-        )
-        .await
-        .unwrap();
+        let response =
+            get_items_from_all_servers_if_not_restricted(&state, request(path, &sessions))
+                .await
+                .unwrap();
         let items = response
             .as_array()
             .expect("latest must remain a bare array");
@@ -1720,7 +1699,7 @@ async fn latest_routes_collapse_before_sort_and_limit_and_retain_partial_identit
         }
     }
     let response = get_catalog(
-        &state.catalog_service(),
+        &state,
         request("/Items/Latest?StartIndex=1&Limit=1", &sessions),
     )
     .await
@@ -1738,20 +1717,14 @@ async fn latest_routes_collapse_before_sort_and_limit_and_retain_partial_identit
         .respond_with(ResponseTemplate::new(503))
         .mount(&upstreams[1])
         .await;
-    let degraded = get_catalog(
-        &state.catalog_service(),
-        request("/Items/Latest?Limit=1", &sessions),
-    )
-    .await
-    .unwrap();
-    assert_eq!(degraded[0]["Id"], stable_ids[0]);
-    for active_sessions in [&sessions[..1]] {
-        let response = get_catalog(
-            &state.catalog_service(),
-            request("/Items/Latest?Limit=1", active_sessions),
-        )
+    let degraded = get_catalog(&state, request("/Items/Latest?Limit=1", &sessions))
         .await
         .unwrap();
+    assert_eq!(degraded[0]["Id"], stable_ids[0]);
+    for active_sessions in [&sessions[..1]] {
+        let response = get_catalog(&state, request("/Items/Latest?Limit=1", active_sessions))
+            .await
+            .unwrap();
         assert_eq!(response[0]["Id"], stable_ids[0]);
     }
     let (sightings,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM movie_catalog_sightings")
@@ -1854,9 +1827,7 @@ async fn latest_virtual_parent_reuses_browse_scope_and_member_routes() {
             catalog_scope_key,
             targets,
             ..
-        } = resolve_catalog_plan(&state.catalog_service(), &preprocessed)
-            .await
-            .unwrap()
+        } = resolve_catalog_plan(&state, &preprocessed).await.unwrap()
         else {
             panic!("virtual parent must fan out");
         };
@@ -1866,7 +1837,7 @@ async fn latest_virtual_parent_reuses_browse_scope_and_member_routes() {
         } else {
             scope_key = Some(catalog_scope_key);
         }
-        let response = get_catalog(&state.catalog_service(), preprocessed)
+        let response = get_catalog(&state, preprocessed)
             .await
             .unwrap_or_else(|status| panic!("{path}: {status}"));
         let mut current_ids = response
@@ -1896,7 +1867,7 @@ async fn latest_virtual_parent_reuses_browse_scope_and_member_routes() {
         .unwrap();
     assert!(matches!(
         resolve_catalog_plan(
-            &state.catalog_service(),
+            &state,
             &request(
                 &format!("/Items/Latest?ParentId={}", mapping.virtual_media_id),
                 &sessions,
@@ -1923,12 +1894,9 @@ async fn latest_does_not_collapse_same_server_ambiguity() {
             .mount(upstream)
             .await;
     }
-    let response = get_catalog(
-        &state.catalog_service(),
-        request("/Items/Latest?Limit=10", &sessions),
-    )
-    .await
-    .unwrap();
+    let response = get_catalog(&state, request("/Items/Latest?Limit=10", &sessions))
+        .await
+        .unwrap();
     assert_eq!(response.as_array().unwrap().len(), 3);
 }
 
@@ -1943,49 +1911,37 @@ async fn latest_preserves_unknown_identity_and_disabled_behavior() {
     }
     for (enabled, expected) in [(true, 4), (false, 6)] {
         state.config.write().await.deduplicate_media = enabled;
-        let response = get_catalog(
-            &state.catalog_service(),
-            request("/Items/Latest?Limit=10", &sessions),
-        )
-        .await
-        .unwrap();
+        let response = get_catalog(&state, request("/Items/Latest?Limit=10", &sessions))
+            .await
+            .unwrap();
         assert_eq!(response.as_array().unwrap().len(), expected);
     }
     assert!(matches!(
-        resolve_catalog_plan(
-            &state.catalog_service(),
-            &request("/Items/Latest", &sessions)
-        )
-        .await
-        .unwrap(),
+        resolve_catalog_plan(&state, &request("/Items/Latest", &sessions))
+            .await
+            .unwrap(),
         CatalogPlan::Interleaved(_)
     ));
     state.config.write().await.deduplicate_media = true;
     for path in ["/Items", "/Items/Suggestions"] {
         assert!(matches!(
-            resolve_catalog_plan(&state.catalog_service(), &request(path, &sessions))
+            resolve_catalog_plan(&state, &request(path, &sessions))
                 .await
                 .unwrap(),
             CatalogPlan::Interleaved(_)
         ));
     }
     assert!(matches!(
-        resolve_catalog_plan(
-            &state.catalog_service(),
-            &request("/UserItems/Resume", &sessions)
-        )
-        .await
-        .unwrap(),
+        resolve_catalog_plan(&state, &request("/UserItems/Resume", &sessions))
+            .await
+            .unwrap(),
         CatalogPlan::Virtual { .. }
     ));
     state.config.write().await.deduplicate_media = false;
     assert!(matches!(
-        resolve_catalog_plan(
-            &state.catalog_service(),
-            &request("/UserItems/Resume", &sessions)
-        )
-        .await
-        .unwrap(),
+        resolve_catalog_plan(&state, &request("/UserItems/Resume", &sessions))
+            .await
+            .unwrap(),
         CatalogPlan::Interleaved(_)
     ));
 }

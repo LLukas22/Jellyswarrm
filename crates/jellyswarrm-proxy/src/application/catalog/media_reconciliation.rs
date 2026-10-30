@@ -3,7 +3,7 @@ use crate::application::error::ApplicationError;
 use crate::models::enums::BaseItemKind;
 use std::collections::BTreeSet;
 
-use super::services::CatalogService;
+use crate::application::services::MediaServices;
 use crate::{
     application::input::OperationRequest,
     media::catalog::{MediaDedupPlan, TaggedMediaItem},
@@ -24,7 +24,7 @@ use super::{
 };
 
 async fn show_catalog_aliases(
-    state: &CatalogService,
+    state: &MediaServices,
     items: &[crate::models::MediaItem],
     viewer: &str,
     series_group: Option<&str>,
@@ -83,7 +83,7 @@ impl CatalogContext {
 }
 
 pub(crate) async fn get_virtual_library_items(
-    state: &CatalogService,
+    state: &MediaServices,
     preprocessed: OperationRequest,
     catalog_scope_key: String,
     targets: Vec<CatalogFetchTarget>,
@@ -101,7 +101,7 @@ pub(crate) async fn get_virtual_library_items(
 }
 
 async fn get_reconciled_catalog(
-    state: &CatalogService,
+    state: &MediaServices,
     preprocessed: OperationRequest,
     catalog_scope_key: String,
     targets: Vec<CatalogFetchTarget>,
@@ -133,7 +133,7 @@ async fn get_reconciled_catalog(
 }
 
 async fn get_reconciled_catalog_uncached(
-    state: &CatalogService,
+    state: &MediaServices,
     preprocessed: OperationRequest,
     catalog_scope_key: String,
     targets: Vec<CatalogFetchTarget>,
@@ -221,7 +221,7 @@ pub(super) struct ReconciliationContext<'a> {
 /// Shared refresh/interactive reconciliation. No incoming request, observation,
 /// cache materialization or client pagination belongs in this stage.
 pub(super) async fn reconcile_fetched_catalog(
-    state: &CatalogService,
+    state: &MediaServices,
     context: ReconciliationContext<'_>,
     policy: &CatalogRequestPolicy,
     fetched: FetchedCatalog,
@@ -415,7 +415,7 @@ pub(super) async fn reconcile_fetched_catalog(
 /// using provider identities, with children identified by their matched parent
 /// series and season/episode numbers when available.
 pub(crate) async fn get_aggregate_show_items(
-    state: &CatalogService,
+    state: &MediaServices,
     preprocessed: OperationRequest,
     aggregate_id: String,
     targets: Vec<CatalogFetchTarget>,

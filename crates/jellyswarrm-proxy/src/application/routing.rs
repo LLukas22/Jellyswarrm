@@ -29,43 +29,24 @@ impl From<RoutingError> for ApplicationError {
 }
 
 use crate::application::playback::reports;
+use crate::application::services::MediaServices;
 use crate::auth::service::AuthorizationSession;
 use crate::libraries::service::VirtualLibraryAccessScope;
 use crate::processors::request_analyzer::RequestBodyAnalysisResult;
 use crate::servers::routing::compare_routes;
 use crate::servers::storage::Server;
-use crate::{
-    config::SettingsView, media::storage::MediaStorageService, playback::sessions::SessionStorage,
-    processors::url_processor::UrlProcessor, servers::storage::ServerStorageService,
-};
-
-pub(crate) struct RoutingServices<'a> {
-    pub(crate) media_storage: &'a MediaStorageService,
-    pub(crate) server_storage: &'a ServerStorageService,
-    pub(crate) play_sessions: &'a SessionStorage,
-    pub(crate) urls: &'a UrlProcessor,
-    pub(crate) config: &'a SettingsView,
-    pub(crate) selection: &'a crate::application::url_selection::UrlSelection,
-}
 
 pub(crate) async fn resolve_server(
     sessions: &Option<Vec<(AuthorizationSession, Server)>>,
     request_body_result: &Option<RequestBodyAnalysisResult>,
-    state: &RoutingServices<'_>,
+    state: &MediaServices,
     request: &reqwest::Request,
     access_scope: Option<&VirtualLibraryAccessScope>,
 ) -> Result<(Server, Option<AuthorizationSession>, bool)> {
-    let config = state.config.read().await;
-    let path = crate::protocol::url::decoded_path_segments(match &config.url_prefix {
-        Some(prefix) => request
-            .url()
-            .path()
-            .trim_start_matches(&format!("/{prefix}")),
-        None => request.url().path(),
-    });
-    drop(config);
+    let path =
+        crate::protocol::url::decoded_path_segments(state.remove_prefix(request.url().path()));
     if let Some(target) =
-        reports::resolve_cancellation(sessions, state.play_sessions, request, &path, access_scope)
+        reports::resolve_cancellation(sessions, &state.play_sessions, request, &path, access_scope)
             .await?
     {
         return Ok((target.server, Some(target.session), true));
@@ -111,7 +92,7 @@ pub(crate) async fn resolve_server(
     // fall back to an allowed server when their IDs belong to a forbidden one.
     if let (Some(scope), Some(analysis)) = (access_scope, request_body_result) {
         for id in &analysis.found_ids {
-            state.selection.validate_media_access(id, scope).await?;
+            state.url_selection.validate_media_access(id, scope).await?;
         }
     }
 
@@ -169,7 +150,7 @@ pub(crate) async fn resolve_server(
 }
 
 pub(crate) async fn server_from_body_media_aggregate_ids(
-    state: &RoutingServices<'_>,
+    state: &MediaServices,
     analysis: Option<&RequestBodyAnalysisResult>,
     access_scope: Option<&VirtualLibraryAccessScope>,
 ) -> Result<Option<Server>> {
@@ -208,12 +189,12 @@ pub(crate) async fn server_from_body_media_aggregate_ids(
 }
 
 pub(crate) async fn server_from_request_media_ids(
-    state: &RoutingServices<'_>,
+    state: &MediaServices,
     request: &reqwest::Request,
     access_scope: Option<&VirtualLibraryAccessScope>,
 ) -> Result<Option<Server>> {
     state
-        .selection
+        .url_selection
         .server_from_client_url(request.url(), access_scope)
         .await
 }
@@ -249,7 +230,7 @@ mod tests {
                 .parse()
                 .unwrap(),
         );
-        let error = resolve_server(&None, &None, &state.routing_services(), &request, None)
+        let error = resolve_server(&None, &None, &state.services, &request, None)
             .await
             .unwrap_err();
         assert!(matches!(
@@ -270,7 +251,7 @@ mod tests {
                 .parse()
                 .unwrap(),
         );
-        let error = resolve_server(&None, &None, &state.routing_services(), &request, None)
+        let error = resolve_server(&None, &None, &state.services, &request, None)
             .await
             .unwrap_err();
         assert!(matches!(error, RoutingError::InvalidSelection(_)));

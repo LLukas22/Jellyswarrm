@@ -1,9 +1,9 @@
 //! PlaybackInfo workflow: resolve owner → fetch sources → translate/reconcile → commit bindings.
 //! Start with `post_playback_info`; delivery is handled separately in `resources`.
-use super::services::PlaybackService;
 #[cfg(test)]
 use super::target::ResolutionError;
 use crate::application::error::FailureStage;
+use crate::application::services::MediaServices;
 use crate::media::storage::MediaStorageService;
 #[cfg(test)]
 use hyper::StatusCode;
@@ -12,7 +12,6 @@ use tracing::{debug, error, warn};
 #[cfg(test)]
 use crate::test_support::MediaFixture;
 use crate::{
-    application::request::UpstreamRequestBuilder,
     application::{
         error::ApplicationError,
         input::OperationRequest,
@@ -31,7 +30,7 @@ use crate::{
 };
 
 pub(crate) async fn post_playback_info(
-    state: &PlaybackService<'_>,
+    state: &MediaServices,
     mut input: OperationRequest,
 ) -> Result<PlaybackResponse, ApplicationError> {
     // An aggregate ID means "use the member's default source", not a recorded
@@ -75,9 +74,7 @@ pub(crate) async fn post_playback_info(
     }
     // Keep the old early routing errors and RequireSession boundary, including
     // rejection of backend-token passthrough without a proxy device session.
-    let initial = input
-        .resolve_target_using(&state.routing_services())
-        .await?;
+    let initial = input.resolve_target(state).await?;
     if initial.target.session().is_none() {
         return Err(ApplicationError::MissingIdentity("proxy playback session")
             .at(FailureStage::CallerAuthentication));
@@ -120,8 +117,8 @@ pub(crate) async fn post_playback_info(
     }
 
     let continuity = super::continuity::EpisodeContinuity::prepare(
-        state.media_storage,
-        state.client_sessions,
+        &state.media_storage,
+        &state.client_sessions,
         &input.context,
         &requested_item_id,
     )
@@ -153,7 +150,7 @@ pub(crate) async fn post_playback_info(
         == Some(true);
 
     let plan = (MediaTargetResolver {
-        media: state.media_storage,
+        media: &state.media_storage,
     })
     .plan(
         &input.context,
@@ -165,7 +162,7 @@ pub(crate) async fn post_playback_info(
                 .filter(|_| !default_aggregate_source),
             binding: None,
         },
-        state.server_storage,
+        &state.server_storage,
         SelectionPolicy::Negotiation,
     )
     .await
@@ -191,16 +188,13 @@ pub(crate) async fn post_playback_info(
     debug!(server_id = %server.id, "Forwarding playback negotiation");
     set_json_body(&mut request, &payload)?;
 
-    let prefix = state.get_url_prefix().await;
-    let request = UpstreamRequestBuilder::new(state.processors.url_processor, prefix.as_deref())
-        .build(&target, &request)
-        .await?;
+    let request = state.request_builder().build(&target, &request).await?;
 
     let original_item_id = contains_id(request.url(), "Items").ok_or(
         ApplicationError::InvalidInput("missing upstream playback item"),
     )?;
     match crate::application::upstream::execute_payload::<PlaybackResponse>(
-        state.upstream.as_ref(),
+        &state.json_upstream(),
         request,
     )
     .await
@@ -229,7 +223,7 @@ pub(crate) async fn post_playback_info(
             )
             .await?;
             record_playback_sources(
-                state.media_storage,
+                &state.media_storage,
                 &requested_item_id,
                 server,
                 &original_item_id,
@@ -256,7 +250,7 @@ pub(crate) async fn post_playback_info(
                         })
                     })
             });
-            super::lifecycle::PlaybackLifecycle::new(state.play_sessions)
+            super::lifecycle::PlaybackLifecycle::new(&state.play_sessions)
                 .commit_live(&live_plans)
                 .await
                 .map_err(|error| {
@@ -282,7 +276,7 @@ pub(crate) async fn post_playback_info(
                 state,
             )
             .await;
-            super::lifecycle::PlaybackLifecycle::new(state.play_sessions)
+            super::lifecycle::PlaybackLifecycle::new(&state.play_sessions)
                 .bind_original(
                     &response.play_session_id,
                     &session.user_id,
@@ -292,13 +286,13 @@ pub(crate) async fn post_playback_info(
                 .await;
             if is_playback && !response.media_sources.is_empty() {
                 if let Some(continuity) = &continuity {
-                    continuity.remember(state.client_sessions, server.id).await;
+                    continuity.remember(&state.client_sessions, server.id).await;
                 }
             }
             debug!(server_id = %server.id, source_count = response.media_sources.len(), "Playback negotiation completed");
             if let Some(token) = proxy_api_key.as_deref() {
                 crate::application::response::media_response(
-                    state.client_sessions,
+                    &state.client_sessions,
                     Some(token),
                     &final_payload,
                 )

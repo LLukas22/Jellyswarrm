@@ -6,8 +6,8 @@ use axum::http;
 use http_body_util::BodyExt;
 use tracing::{debug, error};
 
+use crate::application::services::MediaServices;
 use crate::auth::service::AuthorizationSession;
-use crate::http::state::MediaState;
 use crate::libraries::service::VirtualLibraryAccessScope;
 use crate::processors::analyze_json;
 use crate::processors::request_analyzer::{

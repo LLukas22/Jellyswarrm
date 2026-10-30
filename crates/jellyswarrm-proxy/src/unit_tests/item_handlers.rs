@@ -193,12 +193,7 @@ async fn check_selected_source_detail(catalog_scopes: &[&str]) {
             Some(scope.clone()),
         );
         let Json(response) = item(
-            State(
-                crate::test_support::adapters::AdapterFixture::from_media(state.clone())
-                    .await
-                    .media_state
-                    .catalog_service(),
-            ),
+            State(state.services.clone().clone()),
             OperationInput(OperationRequest {
                 original_request,
                 context,

@@ -2,15 +2,12 @@
 use super::*;
 use crate::{
     auth::{federation::FederatedUserService, quick_connect::QuickConnectStorage},
-    http::state::{
-        AdapterPaths, AppState, ManagementState, MediaState, SessionState, SettingsState,
-    },
+    http::state::{AdapterPaths, AppState, ManagementState, SessionState, SettingsState},
 };
 
 #[derive(Clone)]
 pub(crate) struct AdapterFixture {
     media: MediaFixture,
-    pub(crate) media_state: MediaState,
     pub(crate) sessions: SessionState,
     pub(crate) management: ManagementState,
     pub(crate) quick_connect: QuickConnectStorage,
@@ -40,7 +37,7 @@ impl AdapterFixture {
             user_authorization: media.user_authorization.clone(),
             media_storage: media.media_storage.clone(),
             url_selection: media.url_selection.clone(),
-            settings: media.settings.clone(),
+            settings: media.services.config.clone(),
             client_sessions: media.client_sessions.clone(),
             syncplay: syncplay.clone(),
         };
@@ -63,29 +60,13 @@ impl AdapterFixture {
             )),
             quick_connect: quick_connect.clone(),
             credentials,
-            settings: media.settings.clone(),
+            settings: media.services.config.clone(),
             configuration,
-            paths: paths.clone(),
-            sessions: sessions.clone(),
-        };
-        let media_state = MediaState {
-            reqwest_client: client.clone(),
-            streaming_reqwest_client: client.clone(),
-            user_authorization: media.user_authorization.clone(),
-            server_storage: media.server_storage.clone(),
-            media_storage: media.media_storage.clone(),
-            virtual_library_service: media.virtual_library_service.clone(),
-            play_sessions: media.play_sessions.clone(),
-            settings: media.settings.clone(),
             paths,
-            url_selection: media.url_selection.clone(),
-            processors: media.processors.clone(),
-            client_sessions: media.client_sessions.clone(),
-            catalog_snapshots: media.catalog_snapshots.clone(),
+            sessions: sessions.clone(),
         };
         Self {
             media,
-            media_state,
             sessions,
             management,
             quick_connect,
@@ -94,22 +75,15 @@ impl AdapterFixture {
         }
     }
     pub(crate) async fn app_state(&self) -> AppState {
-        let accounts = application::accounts::services::AccountService {
-            authentication: self.authentication_service().await,
-            media_storage: self.media_storage.clone(),
-            play_sessions: self.play_sessions.clone(),
-            urls: self.processors.url_processor.clone(),
-            selection: self.url_selection.clone(),
-        };
         let settings = SettingsState {
-            settings: self.settings.clone(),
+            settings: self.services.config.clone(),
             configuration: self.management.configuration.clone(),
             paths: self.management.paths.clone(),
         };
         AppState::new(
-            self.media_state.clone(),
+            self.services.clone(),
             self.sessions.clone(),
-            accounts,
+            self.authentication_service().await,
             self.management.clone(),
             settings,
             self.quick_connect.clone(),

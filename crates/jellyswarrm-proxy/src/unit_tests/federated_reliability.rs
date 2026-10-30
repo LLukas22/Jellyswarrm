@@ -48,7 +48,7 @@ async fn mount_catalog(upstreams: &[wiremock::MockServer], sort: &str) {
 #[tokio::test]
 async fn counted_scans_apply_timeout_to_each_page_instead_of_the_whole_catalog() {
     let (state, _, sessions, upstreams) = setup().await;
-    let service = state.catalog_service();
+    let service = &state.services;
     state.config.write().await.timeout = 1;
     for upstream in &upstreams {
         Mock::given(method("GET")).respond_with(|request: &wiremock::Request| {
@@ -57,7 +57,7 @@ async fn counted_scans_apply_timeout_to_each_page_instead_of_the_whole_catalog()
                 .set_body_json(json!({"Items": [{"Id": format!("item-{start}"), "Type": "Movie"}], "StartIndex": start, "TotalRecordCount": 3}))
         }).mount(upstream).await;
     }
-    let response = get_catalog(&service, request("/Items?Limit=1", &sessions))
+    let response = get_catalog(service, request("/Items?Limit=1", &sessions))
         .await
         .unwrap();
     assert_eq!(response["TotalRecordCount"], 6);
@@ -91,8 +91,8 @@ async fn partial_search_membership_does_not_veto_recursive_catalog_parent_identi
             ResponseTemplate::new(200).set_body_json(json!({"TotalRecordCount": items.len(), "StartIndex": 0, "Items": items}))
         }).mount(upstream).await;
     }
-    let service = state.catalog_service();
-    let search = get_catalog(&service, request("/Items?SearchTerm=localized", &sessions))
+    let service = &state.services;
+    let search = get_catalog(service, request("/Items?SearchTerm=localized", &sessions))
         .await
         .unwrap();
     assert_eq!(search["TotalRecordCount"], 1);
@@ -108,7 +108,7 @@ async fn partial_search_membership_does_not_veto_recursive_catalog_parent_identi
             })
             .collect();
         let response = get_virtual_library_items(
-            &service,
+            service,
             request("/Items?Recursive=true", &sessions),
             "configured:shows:viewer".into(),
             targets,
@@ -142,12 +142,12 @@ async fn partial_search_membership_does_not_veto_recursive_catalog_parent_identi
 async fn snapshots_coalesce_builds_and_keep_random_and_tied_pages_stable() {
     for sort in ["SortName", "Random"] {
         let (state, _, sessions, upstreams) = setup().await;
-        let service = state.catalog_service();
+        let service = &state.services;
         mount_catalog(&upstreams, sort).await;
         let query = format!("/Items?SearchTerm=equal&SortBy={sort}");
         let fetch = |start, limit| {
             get_catalog(
-                &service,
+                service,
                 request(
                     &format!("{query}&StartIndex={start}&Limit={limit}"),
                     &sessions,
@@ -192,7 +192,7 @@ async fn snapshots_are_scoped_to_viewer_token_targets_and_display_configuration(
         libraries::service::VirtualLibraryAccessScope, protocol::identity::JellyfinAuthorization,
     };
     let (state, _, sessions, upstreams) = setup().await;
-    let service = state.catalog_service();
+    let service = &state.services;
     mount_catalog(&upstreams, "SortName").await;
     let build_request = |viewer: &str,
                          token: &str,
@@ -214,7 +214,7 @@ async fn snapshots_are_scoped_to_viewer_token_targets_and_display_configuration(
         req
     };
     let fetch =
-        |viewer: &str, token: &str| get_catalog(&service, build_request(viewer, token, &sessions));
+        |viewer: &str, token: &str| get_catalog(service, build_request(viewer, token, &sessions));
     let first = fetch("viewer", "token-a").await.unwrap();
     assert_eq!(fetch("viewer", "token-a").await.unwrap(), first);
     let _ = fetch("viewer", "token-b").await.unwrap();
@@ -222,7 +222,7 @@ async fn snapshots_are_scoped_to_viewer_token_targets_and_display_configuration(
     assert_ne!(first["Items"][0]["Id"], other["Items"][0]["Id"]);
     state.config.write().await.include_server_name_in_media = false;
     let _ = fetch("viewer", "token-a").await.unwrap();
-    let _ = get_catalog(&service, build_request("viewer", "token-a", &sessions[..1]))
+    let _ = get_catalog(service, build_request("viewer", "token-a", &sessions[..1]))
         .await
         .unwrap();
     assert_eq!(upstreams[0].received_requests().await.unwrap().len(), 15);
@@ -235,7 +235,7 @@ async fn incomplete_sources_are_discarded_without_caching_degraded_results_or_pr
         library_resolution::CatalogFetchTarget, media_reconciliation::get_virtual_library_items,
     };
     let (state, pool, sessions, upstreams) = setup().await;
-    let service = state.catalog_service();
+    let service = &state.services;
     mount_catalog(&upstreams, "SortName").await;
     let targets = || {
         sessions
@@ -249,7 +249,7 @@ async fn incomplete_sources_are_discarded_without_caching_degraded_results_or_pr
     };
     let fetch = || {
         get_virtual_library_items(
-            &service,
+            service,
             request("/Items?Recursive=true&Limit=1", &sessions),
             "configured:library:viewer".into(),
             targets(),
@@ -432,7 +432,7 @@ async fn numbered_episode_versions_keep_ranges_distinct_and_route_same_server_co
         })
         .collect();
     let response = get_aggregate_show_items(
-        &state.catalog_service(),
+        &state,
         request(&format!("/Shows/{aggregate}/Episodes"), &sessions),
         aggregate.into(),
         targets,
@@ -490,7 +490,7 @@ async fn numbered_episode_versions_keep_ranges_distinct_and_route_same_server_co
         .await
         .unwrap();
     merge_media_detail(
-        &state.catalog_service(),
+        &state,
         DetailMergeContext {
             requested_item_id: single_id,
             selected_group: None,
@@ -556,20 +556,11 @@ async fn numbered_episode_versions_keep_ranges_distinct_and_route_same_server_co
     *normalized.url_mut() =
         crate::protocol::url::replace_path_id(normalized.url(), "Items", member_virtual_id)
             .unwrap();
-    let prefix = state
-        .settings
-        .read()
+    let built = state
+        .request_builder()
+        .build(&route.target.backend, &normalized)
         .await
-        .url_prefix
-        .as_ref()
-        .map(ToString::to_string);
-    let built = crate::application::request::UpstreamRequestBuilder::new(
-        &state.processors.url_processor,
-        prefix.as_deref(),
-    )
-    .build(&route.target.backend, &normalized)
-    .await
-    .unwrap();
+        .unwrap();
     assert_eq!(
         built.url().path(),
         format!("/Items/{}/PlaybackInfo", owner(101))

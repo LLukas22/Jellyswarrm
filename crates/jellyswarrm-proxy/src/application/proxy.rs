@@ -10,13 +10,14 @@ use serde_json::Value;
 use tracing::{debug, warn};
 
 use crate::{
-    application::request::{remap_authorization, UpstreamRequestBuilder},
+    application::request::remap_authorization,
     application::{
         context::AuthorizedTarget,
         error::ApplicationError,
         input::OperationRequest,
         playback::{lifecycle::PendingPlaybackSessionUpdate, reports},
         response, routing,
+        services::MediaServices,
     },
     processors::request_analyzer::PlaybackSessionAction,
     processors::request_processor::RequestProcessingContext,
@@ -26,13 +27,10 @@ use crate::{
     upstream::headers::is_hop_by_hop_header,
 };
 
-pub(crate) mod services;
-use services::ProxyService;
-
 /// Preserve the upstream-success observation point. Playback-binding commits
 /// remain separate and revision-fenced after the required response validation.
 async fn forwarded_success(
-    state: &ProxyService<'_>,
+    state: &MediaServices,
     input: &OperationRequest,
     mutation_viewer: Option<&str>,
     server_id: crate::domain::server_id::ServerId,
@@ -47,9 +45,7 @@ async fn forwarded_success(
     ) else {
         return;
     };
-    let path = state
-        .remove_prefix_from_path(input.original_request.url().path())
-        .await;
+    let path = state.remove_prefix(input.original_request.url().path());
     let action = crate::processors::request_analyzer::playback_session_action(
         input.original_request.method(),
         path,
@@ -77,15 +73,15 @@ async fn forwarded_success(
                         .and_then(|(_, value)| value.as_str())
                 }) {
                     match crate::application::playback::continuity::EpisodeContinuity::prepare(
-                        state.media_storage,
-                        state.client_sessions,
+                        &state.media_storage,
+                        &state.client_sessions,
                         context,
                         item,
                     )
                     .await
                     {
                         Ok(Some(continuity)) => {
-                            continuity.remember(state.client_sessions, server_id).await
+                            continuity.remember(&state.client_sessions, server_id).await
                         }
                         Ok(None) => {}
                         Err(_) => warn!(
@@ -108,7 +104,7 @@ pub(crate) struct PreparedProxyOperation {
 }
 
 pub(crate) async fn prepare(
-    state: &ProxyService<'_>,
+    state: &MediaServices,
     input: OperationRequest,
     action: Option<PlaybackSessionAction>,
 ) -> anyhow::Result<PreparedProxyOperation> {
@@ -124,7 +120,7 @@ pub(crate) async fn prepare(
                 .body_analysis
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("missing playback report"))?,
-            state.media_storage,
+            &state.media_storage,
         )
         .await?;
         (target.server, Some(target.session), true)
@@ -132,7 +128,7 @@ pub(crate) async fn prepare(
         routing::resolve_server(
             &context.backends().sessions,
             &input.body_analysis,
-            &state.routing,
+            state,
             &input.original_request,
             context.access_scope(),
         )
@@ -144,7 +140,7 @@ pub(crate) async fn prepare(
                 .body_analysis
                 .as_ref()
                 .expect("validated playback report"),
-            state.media_storage,
+            &state.media_storage,
             &server,
         )
         .await?;
@@ -204,7 +200,7 @@ pub(crate) async fn prepare(
 /// This preserves the legacy buffered fallback; media delivery remains streamed
 /// through the dedicated delivery adapter.
 pub(crate) async fn forward(
-    state: &ProxyService<'_>,
+    state: &MediaServices,
     prepared: PreparedProxyOperation,
     response_profile: ResponseProcessingProfile,
 ) -> Result<Response<hyper::body::Bytes>, ApplicationError> {
@@ -222,11 +218,10 @@ pub(crate) async fn forward(
         pending_update,
     } = prepared;
     let context = &input.context;
-    let prefix = state.get_url_prefix().await;
-    let mut request =
-        UpstreamRequestBuilder::new(&state.processors.url_processor, prefix.as_deref())
-            .build(&target, &normalized_request)
-            .await?;
+    let mut request = state
+        .request_builder()
+        .build(&target, &normalized_request)
+        .await?;
     let request_url = request.url().clone();
     let mutation_viewer = (!matches!(*request.method(), Method::GET | Method::HEAD))
         .then(|| context.user().map(|user| user.id.clone()))
@@ -290,7 +285,7 @@ pub(crate) async fn forward(
                     .await?;
                 if status.is_success() && response_profile != ResponseProcessingProfile::Disabled {
                     response::media_response(
-                        state.client_sessions,
+                        &state.client_sessions,
                         proxy_api_key.as_deref(),
                         &value,
                     )
@@ -331,7 +326,7 @@ pub(crate) async fn forward(
         .map_err(|error| ApplicationError::Internal(error.into()))?;
     if status.is_success() {
         if let Some(update) = pending_update {
-            update.commit(state.play_sessions).await;
+            update.commit(&state.play_sessions).await;
         }
     }
     Ok(response)
@@ -341,7 +336,7 @@ pub(crate) async fn forward(
 /// Preflight availability before writing; never acknowledge a partial update
 /// as success. Explicit member IDs continue through the ordinary proxy.
 pub(crate) async fn update_aggregate(
-    state: &ProxyService<'_>,
+    state: &MediaServices,
     request: &OperationRequest,
 ) -> Result<Option<Value>, ApplicationError> {
     if !matches!(
@@ -350,11 +345,8 @@ pub(crate) async fn update_aggregate(
     ) {
         return Ok(None);
     }
-    let segments = decoded_path_segments(
-        state
-            .remove_prefix_from_path(request.original_request.url().path())
-            .await,
-    );
+    let segments =
+        decoded_path_segments(state.remove_prefix(request.original_request.url().path()));
     let (tag, id) = match segments.as_slice() {
         [users, _, tag, id]
             if users.eq_ignore_ascii_case("Users") && tag.eq_ignore_ascii_case("PlayedItems") =>
@@ -411,17 +403,13 @@ pub(crate) async fn update_aggregate(
         *upstream.url_mut() =
             replace_path_id(upstream.url(), tag, &member.mapping.virtual_media_id)
                 .ok_or(ApplicationError::InvalidInput("aggregate path identity"))?;
-        let prefix = state.get_url_prefix().await;
-        let upstream =
-            UpstreamRequestBuilder::new(&state.processors.url_processor, prefix.as_deref())
-                .build(&target, &upstream)
-                .await?;
+        let upstream = state.request_builder().build(&target, &upstream).await?;
         targets.push((upstream, member.server));
     }
     let mut result = None;
     for (upstream, server) in targets {
         let mut data: Value =
-            crate::application::upstream::execute_json_request(state.reqwest_client, upstream)
+            crate::application::upstream::execute_json_request(&state.reqwest_client, upstream)
                 .await?;
         // Also invalidate after a partial write if a later member rejects it.
         state.catalog_snapshots.invalidate_viewer(scope.user_id());
@@ -553,13 +541,9 @@ mod tests {
     #[tokio::test]
     async fn report_prepare_does_not_send_or_commit_and_failure_does_not_commit() {
         let (state, input, upstream) = report_fixture().await;
-        let prepared = prepare(
-            &state.proxy_service(),
-            input,
-            Some(PlaybackSessionAction::Start),
-        )
-        .await
-        .unwrap();
+        let prepared = prepare(&state, input, Some(PlaybackSessionAction::Start))
+            .await
+            .unwrap();
         assert_eq!(
             prepared.normalized_request.url().host_str(),
             Some("proxy.example")
@@ -575,13 +559,9 @@ mod tests {
             .respond_with(wiremock::ResponseTemplate::new(503))
             .mount(&upstream)
             .await;
-        let response = forward(
-            &state.proxy_service(),
-            prepared,
-            ResponseProcessingProfile::Disabled,
-        )
-        .await
-        .unwrap();
+        let response = forward(&state, prepared, ResponseProcessingProfile::Disabled)
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert!(state
             .play_sessions
@@ -601,15 +581,11 @@ mod tests {
             )
             .mount(&upstream)
             .await;
-        let prepared = prepare(
-            &state.proxy_service(),
-            input,
-            Some(PlaybackSessionAction::Start),
-        )
-        .await
-        .unwrap();
+        let prepared = prepare(&state, input, Some(PlaybackSessionAction::Start))
+            .await
+            .unwrap();
         let error = forward(
-            &state.proxy_service(),
+            &state,
             prepared,
             ResponseProcessingProfile::PlaylistPermissions,
         )
@@ -641,20 +617,12 @@ mod tests {
             .respond_with(wiremock::ResponseTemplate::new(204))
             .mount(&upstream)
             .await;
-        let prepared = prepare(
-            &state.proxy_service(),
-            input,
-            Some(PlaybackSessionAction::Start),
-        )
-        .await
-        .unwrap();
-        let response = forward(
-            &state.proxy_service(),
-            prepared,
-            ResponseProcessingProfile::Disabled,
-        )
-        .await
-        .unwrap();
+        let prepared = prepare(&state, input, Some(PlaybackSessionAction::Start))
+            .await
+            .unwrap();
+        let response = forward(&state, prepared, ResponseProcessingProfile::Disabled)
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
         let (binding, _) = state
             .play_sessions

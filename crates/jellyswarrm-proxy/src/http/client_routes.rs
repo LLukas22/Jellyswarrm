@@ -5,21 +5,18 @@ use super::{
     extractors::{CatalogInput, LiveInput, OperationInput},
     handlers::quick_connect,
     proxy::proxy_handler,
-    state::{AppState, MediaState},
+    state::AppState,
 };
 use crate::{
     application::{
-        accounts::{
-            self,
-            services::{AccountService, AuthenticationService},
-        },
-        catalog::{self, services::CatalogService},
-        details,
+        accounts::{self, services::AuthenticationService},
+        catalog, details,
         error::ApplicationError,
         playback::{
             live::{self, LiveStreamActionResult},
             negotiation, resources,
         },
+        services::MediaServices,
     },
     http::assets::version::JELLYFIN_UI_VERSION,
     models::{AuthenticateRequest, PlaybackResponse, PublicServerInfo, ServerInfo, User},
@@ -139,14 +136,14 @@ async fn public_users() -> Json<Vec<User>> {
 }
 
 async fn me(
-    State(state): State<AccountService>,
+    State(state): State<MediaServices>,
     OperationInput(input): OperationInput,
 ) -> JsonResult<User> {
     accounts::get_me(&state, input).await.map(Json)
 }
 
 async fn user_by_id(
-    State(state): State<AccountService>,
+    State(state): State<MediaServices>,
     Path(_user_id): Path<String>,
     OperationInput(input): OperationInput,
 ) -> JsonResult<User> {
@@ -162,7 +159,7 @@ async fn public_server_info(State(state): State<AuthenticationService>) -> Json<
 }
 
 async fn server_info(
-    State(state): State<AccountService>,
+    State(state): State<MediaServices>,
     OperationInput(input): OperationInput,
 ) -> JsonResult<ServerInfo> {
     accounts::server_info(&state, input, &ui_version())
@@ -173,14 +170,14 @@ async fn server_info(
 // --- Federated catalog ------------------------------------------------------
 
 async fn all_servers(
-    State(state): State<CatalogService>,
+    State(state): State<MediaServices>,
     CatalogInput(request): CatalogInput,
 ) -> JsonResult {
     catalog::get_catalog(&state, request).await.map(Json)
 }
 
 pub(crate) async fn unless_restricted(
-    State(state): State<CatalogService>,
+    State(state): State<MediaServices>,
     CatalogInput(request): CatalogInput,
 ) -> JsonResult {
     catalog::get_items_from_all_servers_if_not_restricted(&state, request)
@@ -189,28 +186,28 @@ pub(crate) async fn unless_restricted(
 }
 
 async fn show_children(
-    State(state): State<CatalogService>,
+    State(state): State<MediaServices>,
     CatalogInput(request): CatalogInput,
 ) -> JsonResult {
     catalog::get_show_children(&state, request).await.map(Json)
 }
 
 async fn media_folders(
-    State(state): State<CatalogService>,
+    State(state): State<MediaServices>,
     CatalogInput(request): CatalogInput,
 ) -> JsonResult {
     catalog::get_media_folders(&state, request).await.map(Json)
 }
 
 async fn filters(
-    State(state): State<CatalogService>,
+    State(state): State<MediaServices>,
     CatalogInput(request): CatalogInput,
 ) -> JsonResult {
     catalog::get_filters(&state, request).await.map(Json)
 }
 
 async fn live_tv_programs(
-    State(state): State<CatalogService>,
+    State(state): State<MediaServices>,
     CatalogInput(request): CatalogInput,
 ) -> JsonResult {
     catalog::get_live_tv_programs(&state, request)
@@ -220,7 +217,7 @@ async fn live_tv_programs(
 
 /// Treat the legacy guide DTO and modern query form as the same catalog policy,
 /// while preserving POST and its typed body on the upstream wire.
-async fn post_live_tv_programs(State(state): State<MediaState>, request: Request) -> Response {
+async fn post_live_tv_programs(State(state): State<MediaServices>, request: Request) -> Response {
     match live_tv_body_as_query(request).await {
         Ok(request) => Handler::call(live_tv_programs, request, state).await,
         Err(status) => status.into_response(),
@@ -278,7 +275,7 @@ async fn live_tv_body_as_query(request: Request) -> Result<Request, StatusCode> 
 
 /// Item detail with media versions merged into one item.
 async fn item(
-    State(state): State<CatalogService>,
+    State(state): State<MediaServices>,
     OperationInput(input): OperationInput,
 ) -> JsonResult {
     details::get_item_detail(&state, input, true)
@@ -288,7 +285,7 @@ async fn item(
 
 /// Item-scoped lists (similar, trailers, special features, …) without version merging.
 async fn item_list(
-    State(state): State<CatalogService>,
+    State(state): State<MediaServices>,
     OperationInput(input): OperationInput,
 ) -> JsonResult {
     details::get_item_detail(&state, input, false)
@@ -297,49 +294,47 @@ async fn item_list(
 }
 
 async fn playback_info(
-    State(state): State<MediaState>,
+    State(state): State<MediaServices>,
     OperationInput(input): OperationInput,
 ) -> JsonResult<PlaybackResponse> {
-    negotiation::post_playback_info(&state.playback_service(), input)
+    negotiation::post_playback_info(&state, input)
         .await
         .map(Json)
 }
 
 async fn download(
-    State(state): State<MediaState>,
+    State(state): State<MediaServices>,
     OperationInput(input): OperationInput,
 ) -> Result<DeliveryResponse, ApplicationError> {
-    resources::get_download(&state.playback_service(), input).await
+    resources::get_download(&state, input).await
 }
 
 async fn video_resource(
-    State(state): State<MediaState>,
+    State(state): State<MediaServices>,
     OperationInput(input): OperationInput,
 ) -> Result<DeliveryResponse, ApplicationError> {
-    resources::get_video_resource(&state.playback_service(), input).await
+    resources::get_video_resource(&state, input).await
 }
 
 async fn stream(
-    State(state): State<MediaState>,
+    State(state): State<MediaServices>,
     OperationInput(input): OperationInput,
 ) -> Result<DeliveryResponse, ApplicationError> {
-    resources::get_stream(&state.playback_service(), input).await
+    resources::get_stream(&state, input).await
 }
 
 async fn live_stream_open(
-    State(state): State<MediaState>,
+    State(state): State<MediaServices>,
     LiveInput(input): LiveInput,
 ) -> JsonResult {
-    live::post_livestream_open(&state.playback_service(), input)
-        .await
-        .map(Json)
+    live::post_livestream_open(&state, input).await.map(Json)
 }
 
 async fn live_stream_action(
-    State(state): State<MediaState>,
+    State(state): State<MediaServices>,
     LiveInput(input): LiveInput,
 ) -> Result<LiveStreamActionResult, ApplicationError> {
-    live::post_live_stream_action(&state.playback_service(), input).await
+    live::post_live_stream_action(&state, input).await
 }
 
 impl IntoResponse for DeliveryResponse {

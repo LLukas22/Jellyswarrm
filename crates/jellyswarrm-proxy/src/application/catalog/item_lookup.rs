@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::application::error::{ApplicationError, FailureStage};
 
-use super::services::CatalogService;
+use crate::application::services::MediaServices;
 use crate::{
     application::input::OperationRequest,
     media::catalog::{merge_media_group, TaggedMediaItem},
@@ -30,7 +30,7 @@ pub(super) struct RequestedItems(Vec<RequestedItem>);
 
 impl RequestedItems {
     pub(crate) async fn resolve(
-        state: &CatalogService,
+        state: &MediaServices,
         request: &OperationRequest,
     ) -> Result<Option<Self>, ApplicationError> {
         let url = request.original_request.url();
@@ -121,7 +121,7 @@ impl RequestedItems {
 
     pub(crate) async fn fetch(
         self,
-        state: &CatalogService,
+        state: &MediaServices,
         request: OperationRequest,
     ) -> Result<serde_json::Value, ApplicationError> {
         let mut policy = CatalogRequestPolicy::from_url(request.original_request.url());

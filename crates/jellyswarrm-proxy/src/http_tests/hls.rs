@@ -98,8 +98,7 @@ async fn playlist_uri_attributes_and_reference_styles() {
             .any(|(key, value)| key == "Tag" && value == "a&b"));
         let upstream_path = f
             .state
-            .media_state
-            .paths
+            .services
             .remove_prefix(url.path())
             .replace(&f.items[0], &original);
         let body = if url.path().ends_with(".m3u8") {

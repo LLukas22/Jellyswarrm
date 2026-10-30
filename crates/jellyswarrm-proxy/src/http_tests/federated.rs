@@ -150,11 +150,7 @@ async fn http_catalog_input_validates_offline_ids_without_initial_backend_select
             "/Items",
             axum::routing::get(crate::http::client_routes::unless_restricted),
         )
-        .with_state(
-            crate::test_support::adapters::AdapterFixture::from_media(state.clone())
-                .await
-                .media_state,
-        );
+        .with_state(state.services.clone());
     let send = |uri: String| {
         let app = app.clone();
         let auth = format!("MediaBrowser Client=\"test\", Device=\"test\", DeviceId=\"test\", Version=\"1\", Token=\"{}\"", user.virtual_key);
@@ -246,7 +242,7 @@ async fn http_catalog_input_validates_offline_ids_without_initial_backend_select
 async fn admin_library_page_discovers_mapped_users_without_prior_catalog_requests() {
     use axum::response::IntoResponse;
     let (mut state, pool, sessions, upstreams) = setup().await;
-    state.user_authorization = Arc::new(UserAuthorizationService::with_mapping_key(
+    state.services.user_authorization = Arc::new(UserAuthorizationService::with_mapping_key(
         pool,
         crate::domain::security::MappingEncryptionKey::from_session_key(&[7; 64]).unwrap(),
         (&state.config.read().await.password).into(),
@@ -517,11 +513,7 @@ async fn check_web_album_sorting(sort_by: &str, ascending_names: &[&str]) {
             "/Items",
             axum::routing::get(crate::http::client_routes::unless_restricted),
         )
-        .with_state(
-            crate::test_support::adapters::AdapterFixture::from_media(state.clone())
-                .await
-                .media_state,
-        );
+        .with_state(state.services.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base_url = format!("http://{}", listener.local_addr().unwrap());
     let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });

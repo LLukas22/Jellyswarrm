@@ -1,6 +1,7 @@
 //! Handle fallback forwarding, translating preprocessing failures into safe HTTP responses.
 use crate::{
-    application, http::state::MediaState, processors::response_processor::ResponseProcessingProfile,
+    application, application::services::MediaServices,
+    processors::response_processor::ResponseProcessingProfile,
 };
 use axum::{
     body::Body,
@@ -26,11 +27,11 @@ pub(crate) fn client_request_error(error: &anyhow::Error) -> &'static str {
 
 #[axum::debug_handler]
 pub(crate) async fn proxy_handler(
-    State(state): State<MediaState>,
+    State(state): State<MediaServices>,
     req: Request,
 ) -> Result<Response<Body>, StatusCode> {
     // Session/control routes never fall through, including encoded or mixed-case paths.
-    let path_without_prefix = state.paths.remove_prefix(req.uri().path());
+    let path_without_prefix = state.remove_prefix(req.uri().path());
     let decoded = percent_decode_str(path_without_prefix).decode_utf8_lossy();
     let response_profile =
         ResponseProcessingProfile::for_proxy_request(req.method(), path_without_prefix);
@@ -51,7 +52,7 @@ pub(crate) async fn proxy_handler(
 
     let prepared = async {
         let request = super::preprocessing::extract_request_infos(req, &state, action).await?;
-        application::proxy::prepare(&state.proxy_service(), request, action).await
+        application::proxy::prepare(&state, request, action).await
     }
     .await;
     let prepared = match prepared {
@@ -65,14 +66,12 @@ pub(crate) async fn proxy_handler(
         }
     };
 
-    let response =
-        match application::proxy::forward(&state.proxy_service(), prepared, response_profile).await
-        {
-            Ok(response) => response,
-            Err(application::error::ApplicationError::RequestBody(cause)) => {
-                return Ok((StatusCode::BAD_REQUEST, client_request_error(&cause)).into_response())
-            }
-            Err(error) => return Err(super::error::status(&error)),
-        };
+    let response = match application::proxy::forward(&state, prepared, response_profile).await {
+        Ok(response) => response,
+        Err(application::error::ApplicationError::RequestBody(cause)) => {
+            return Ok((StatusCode::BAD_REQUEST, client_request_error(&cause)).into_response())
+        }
+        Err(error) => return Err(super::error::status(&error)),
+    };
     Ok(response.map(Body::from))
 }

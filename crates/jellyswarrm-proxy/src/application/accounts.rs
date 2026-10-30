@@ -6,7 +6,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     application::input::OperationRequest,
-    application::request::UpstreamRequestBuilder,
+    application::services::MediaServices,
     application::upstream::execute_json_request,
     auth::service::LocalCredential,
     domain::security::Password,
@@ -17,22 +17,18 @@ use crate::{
 use anyhow::Result;
 pub(crate) mod identity;
 pub(crate) mod services;
-use services::{AccountService, AuthenticationService};
+use services::AuthenticationService;
 
 async fn process_user(
-    server_user: crate::models::User,
+    mut server_user: crate::models::User,
     user: &crate::auth::service::User,
-    state: &AuthenticationService,
-) -> Result<crate::models::User> {
-    let mut server_user = server_user;
-
+    state: &MediaServices,
+) -> crate::models::User {
     server_user.id = user.id.to_string();
     server_user.name = user.original_username.clone();
     server_user.policy.is_administrator = false;
-
-    server_user.server_id = state.settings.read().await.server_id.clone();
-
-    Ok(server_user)
+    server_user.server_id = state.config.read().await.server_id.clone();
+    server_user
 }
 
 // http://foo:3000/users/public?)
@@ -42,36 +38,25 @@ pub(crate) fn public_users() -> Vec<crate::models::User> {
 }
 
 pub(crate) async fn get_me(
-    state: &AccountService,
+    state: &MediaServices,
     input: OperationRequest,
 ) -> Result<crate::models::User, ApplicationError> {
     // Preserve routing failures before the legacy RequireUser rejection.
-    let resolved = input
-        .resolve_target_using(&state.routing_services())
-        .await?;
+    let resolved = input.resolve_target(state).await?;
     let user = input.context.user().ok_or_else(unauthenticated)?;
     let request = build_request(state, &resolved.target, &input.original_request).await?;
     // Execute request and parse JSON response
     let server_user: crate::models::User =
-        execute_json_request(&state.authentication.reqwest_client, request).await?;
+        execute_json_request(&state.reqwest_client, request).await?;
 
-    let server_user = process_user(server_user, user, &state.authentication)
-        .await
-        .map_err(|e| {
-            error!("Failed to process user: {}", e);
-            ApplicationError::Internal(e)
-        })?;
-
-    Ok(server_user)
+    Ok(process_user(server_user, user, state).await)
 }
 
 pub(crate) async fn get_user_by_id(
-    state: &AccountService,
+    state: &MediaServices,
     mut input: OperationRequest,
 ) -> Result<crate::models::User, ApplicationError> {
-    let resolved = input
-        .resolve_target_using(&state.routing_services())
-        .await?;
+    let resolved = input.resolve_target(state).await?;
     let user = input.context.user().ok_or_else(unauthenticated)?;
     resolved.target.session().ok_or_else(unauthenticated)?;
     // This endpoint always addresses the caller, not the requested path ID.
@@ -82,16 +67,9 @@ pub(crate) async fn get_user_by_id(
 
     // Execute request and parse JSON response
     let server_user: crate::models::User =
-        execute_json_request(&state.authentication.reqwest_client, request).await?;
+        execute_json_request(&state.reqwest_client, request).await?;
 
-    let server_user = process_user(server_user, user, &state.authentication)
-        .await
-        .map_err(|e| {
-            error!("Failed to process user: {}", e);
-            ApplicationError::Internal(e)
-        })?;
-
-    Ok(server_user)
+    Ok(process_user(server_user, user, state).await)
 }
 
 fn normalize_user_path(request: &mut reqwest::Request, user_id: &str) {
@@ -100,19 +78,12 @@ fn normalize_user_path(request: &mut reqwest::Request, user_id: &str) {
 }
 
 async fn build_request(
-    state: &AccountService,
+    state: &MediaServices,
     target: &crate::application::context::AuthorizedTarget,
     request: &reqwest::Request,
 ) -> Result<reqwest::Request, ApplicationError> {
-    let prefix = state
-        .authentication
-        .settings
-        .read()
-        .await
-        .url_prefix
-        .as_ref()
-        .map(ToString::to_string);
-    UpstreamRequestBuilder::new(&state.urls, prefix.as_deref())
+    state
+        .request_builder()
         .build(target, request)
         .await
         .map_err(Into::into)
@@ -145,13 +116,11 @@ pub(crate) async fn public_server_info(
 }
 
 pub(crate) async fn server_info(
-    state: &AccountService,
+    state: &MediaServices,
     input: OperationRequest,
     ui_version: &str,
 ) -> Result<crate::models::ServerInfo, ApplicationError> {
-    let resolved = input
-        .resolve_target_using(&state.routing_services())
-        .await?;
+    let resolved = input.resolve_target(state).await?;
     input.context.user().ok_or_else(unauthenticated)?;
     // Match the legacy original authorization: only the Authorization variant
     // enabled this response, not X-Emby-Authorization after remapping.
@@ -162,15 +131,13 @@ pub(crate) async fn server_info(
     );
     if !is_seerr {
         let request = build_request(state, &resolved.target, &input.original_request).await?;
-        let mut server_info = execute_json_request::<crate::models::ServerInfo>(
-            &state.authentication.reqwest_client,
-            request,
-        )
-        .await
-        .inspect_err(|status| {
-            error!("Failed to get upstream server info: {status}");
-        })?;
-        let cfg = state.authentication.settings.read().await;
+        let mut server_info =
+            execute_json_request::<crate::models::ServerInfo>(&state.reqwest_client, request)
+                .await
+                .inspect_err(|status| {
+                    error!("Failed to get upstream server info: {status}");
+                })?;
+        let cfg = state.config.read().await;
         server_info.id = cfg.server_id.clone();
         server_info.server_name = cfg.server_name.clone();
         server_info.local_address = cfg.public_address.clone();
@@ -178,7 +145,7 @@ pub(crate) async fn server_info(
         return Ok(server_info);
     }
 
-    let cfg = state.authentication.settings.read().await;
+    let cfg = state.config.read().await;
     Ok(crate::models::ServerInfo {
         operating_system_display_name: Some(std::env::consts::OS.to_string()),
         has_pending_restart: Some(false),

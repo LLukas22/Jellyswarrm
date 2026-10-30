@@ -1,6 +1,6 @@
 //! Translate and validate PlaybackInfo media sources before publishing retained bindings.
-use super::services::PlaybackService;
 use crate::application::error::ApplicationError;
+use crate::application::services::MediaServices;
 use tracing::info;
 
 #[cfg(test)]
@@ -29,7 +29,7 @@ fn parse_delivery_url(value: &str) -> Option<url::Url> {
 
 pub(crate) async fn remap_playback_request(
     payload: &mut PlaybackRequest,
-    state: &PlaybackService<'_>,
+    state: &MediaServices,
     session: &AuthorizationSession,
     server: &Server,
 ) -> Result<(), ApplicationError> {
@@ -70,7 +70,7 @@ pub(crate) async fn remap_playback_request(
 
 pub(crate) async fn process_playback_response(
     response: &mut PlaybackResponse,
-    state: &PlaybackService<'_>,
+    state: &MediaServices,
     server: &Server,
     session: &AuthorizationSession,
     proxy_api_key: Option<&str>,
@@ -78,7 +78,7 @@ pub(crate) async fn process_playback_response(
     let mut plans = Vec::new();
     for source in &mut response.media_sources {
         if let Some(plan) = crate::application::playback::live::prepare_live_source(
-            state.play_sessions,
+            &state.play_sessions,
             source,
             &session.user_id,
             server,
@@ -110,7 +110,7 @@ pub(crate) async fn track_play_session(
     session_id: &str,
     user_id: &str,
     server: &Server,
-    state: &PlaybackService<'_>,
+    state: &MediaServices,
 ) {
     let mut session_ids = vec![session_id.to_string()];
     let mut item_ids = vec![item.id.clone()];
@@ -184,13 +184,13 @@ async fn add_tracked_play_session(
     session_id: &str,
     user_id: &str,
     server: &Server,
-    state: &PlaybackService<'_>,
+    state: &MediaServices,
 ) {
     info!(
         "Tracking play session for item: {}, server: {}",
         item_id, server.name
     );
-    super::lifecycle::PlaybackLifecycle::new(state.play_sessions)
+    super::lifecycle::PlaybackLifecycle::new(&state.play_sessions)
         .alias(item_id, session_id, user_id, server.id)
         .await;
 }
@@ -204,7 +204,7 @@ pub(crate) async fn track_playback_alias(
     session_id: &str,
     user_id: &str,
     server: &Server,
-    state: &PlaybackService<'_>,
+    state: &MediaServices,
 ) {
     add_tracked_play_session(item_id, session_id, user_id, server, state).await;
 }
@@ -386,7 +386,6 @@ mod tests {
         });
 
         let was_modified = state
-            .proxy_service()
             .process_response_json(
                 &mut media_item,
                 &server,
@@ -452,7 +451,6 @@ mod tests {
                     {"Id": "live", "Type": "CollectionFolder", "CollectionType": "livetv", "Name": "Live TV"}
                 ]});
                 state
-                    .proxy_service()
                     .process_response_json(
                         &mut payload,
                         &server,
@@ -511,7 +509,6 @@ mod tests {
         ]);
 
         let was_modified = state
-            .proxy_service()
             .process_response_json(
                 &mut media_items,
                 &server,
@@ -538,7 +535,6 @@ mod tests {
         });
 
         let was_modified = state
-            .proxy_service()
             .process_response_json(
                 &mut payload,
                 &server,
@@ -566,7 +562,6 @@ mod tests {
         });
 
         state
-            .proxy_service()
             .process_response_json(
                 &mut payload,
                 &server,
@@ -594,7 +589,6 @@ mod tests {
         });
 
         let was_modified = state
-            .proxy_service()
             .process_response_json(
                 &mut payload,
                 &server,
@@ -648,14 +642,7 @@ mod tests {
         }))
         .unwrap();
 
-        track_play_session(
-            &source,
-            "session-1",
-            "user-1",
-            &server,
-            &state.playback_service(),
-        )
-        .await;
+        track_play_session(&source, "session-1", "user-1", &server, &state).await;
 
         let source_session = state
             .play_sessions
@@ -693,14 +680,7 @@ mod tests {
         }))
         .unwrap();
 
-        track_play_session(
-            &source,
-            "response-session",
-            "user-1",
-            &server,
-            &state.playback_service(),
-        )
-        .await;
+        track_play_session(&source, "response-session", "user-1", &server, &state).await;
 
         for session_id in [
             "response-session",

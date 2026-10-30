@@ -3,7 +3,7 @@
 use std::sync::Arc;
 pub(crate) mod adapters;
 use crate::{
-    application,
+    application::{self, services::MediaServices},
     auth::UserAuthorizationService,
     config::{AppConfig, SettingsView},
     libraries::VirtualLibraryService,
@@ -18,21 +18,17 @@ use crate::{
     syncplay::SyncPlayService,
 };
 
+/// Media services plus the writable configuration behind `services.config`.
 #[derive(Clone)]
 pub(crate) struct MediaFixture {
-    reqwest_client: reqwest::Client,
-    streaming_reqwest_client: reqwest::Client,
-    pub(crate) user_authorization: Arc<UserAuthorizationService>,
-    pub(crate) server_storage: Arc<ServerStorageService>,
-    pub(crate) media_storage: Arc<MediaStorageService>,
-    pub(crate) virtual_library_service: Arc<VirtualLibraryService>,
-    pub(crate) play_sessions: Arc<SessionStorage>,
+    pub(crate) services: MediaServices,
     pub(crate) config: Arc<tokio::sync::RwLock<AppConfig>>,
-    pub(crate) settings: SettingsView,
-    pub(crate) url_selection: application::url_selection::UrlSelection,
-    pub(crate) processors: Arc<ProxyProcessors>,
-    pub(crate) client_sessions: Arc<ClientSessionService>,
-    pub(crate) catalog_snapshots: Arc<application::catalog::snapshots::CatalogSnapshots>,
+}
+impl std::ops::Deref for MediaFixture {
+    type Target = MediaServices;
+    fn deref(&self) -> &MediaServices {
+        &self.services
+    }
 }
 impl MediaFixture {
     pub(crate) fn new(pool: sqlx::SqlitePool, config: AppConfig) -> Self {
@@ -52,6 +48,7 @@ impl MediaFixture {
         ));
         let user_authorization = Arc::new(authorization);
         let play_sessions = Arc::new(SessionStorage::new());
+        let url_prefix = config.url_prefix.as_ref().map(ToString::to_string);
         let config = Arc::new(tokio::sync::RwLock::new(config));
         let settings = SettingsView::new(config.clone());
         let processors = Arc::new(ProxyProcessors::new(
@@ -76,7 +73,7 @@ impl MediaFixture {
             server_storage.clone(),
             virtual_library_service.clone(),
         );
-        Self {
+        let services = MediaServices {
             reqwest_client: reqwest::Client::new(),
             streaming_reqwest_client: reqwest::Client::new(),
             user_authorization,
@@ -84,74 +81,16 @@ impl MediaFixture {
             media_storage,
             virtual_library_service,
             play_sessions,
-            config,
-            settings,
+            config: settings,
             url_selection,
             processors,
             client_sessions: Arc::new(ClientSessionService::new(ConnectionHub::default())),
             catalog_snapshots: Arc::new(
                 application::catalog::snapshots::CatalogSnapshots::default(),
             ),
-        }
-    }
-    pub(crate) fn catalog_service(&self) -> application::catalog::services::CatalogService {
-        application::catalog::services::CatalogService {
-            media_storage: self.media_storage.clone(),
-            server_storage: self.server_storage.clone(),
-            virtual_library_service: self.virtual_library_service.clone(),
-            play_sessions: self.play_sessions.clone(),
-            config: self.settings.clone(),
-            selection: self.url_selection.clone(),
-            processors: application::catalog::services::CatalogProcessors {
-                url_processor: self.processors.url_processor.clone(),
-                response_processor: self.processors.response_processor.clone(),
-            },
-            upstream: Arc::new(crate::upstream::jellyfin::json::JellyfinJsonUpstream {
-                client: self.reqwest_client.clone(),
-            }),
-            client_sessions: self.client_sessions.clone(),
-            catalog_snapshots: self.catalog_snapshots.clone(),
-        }
-    }
-    pub(crate) fn routing_services(&self) -> application::routing::RoutingServices<'_> {
-        application::routing::RoutingServices {
-            media_storage: &self.media_storage,
-            server_storage: &self.server_storage,
-            play_sessions: &self.play_sessions,
-            urls: &self.processors.url_processor,
-            config: &self.settings,
-            selection: &self.url_selection,
-        }
-    }
-    pub(crate) fn playback_service(&self) -> application::playback::services::PlaybackService<'_> {
-        application::playback::services::PlaybackService {
-            media_storage: &self.media_storage,
-            server_storage: &self.server_storage,
-            play_sessions: &self.play_sessions,
-            config: &self.settings,
-            selection: &self.url_selection,
-            processors: application::playback::services::PlaybackProcessors {
-                url_processor: &self.processors.url_processor,
-                response_processor: &self.processors.response_processor,
-            },
-            upstream: Box::new(crate::upstream::jellyfin::json::JellyfinJsonUpstream {
-                client: self.reqwest_client.clone(),
-            }),
-            streaming_reqwest_client: &self.streaming_reqwest_client,
-            client_sessions: &self.client_sessions,
-        }
-    }
-    pub(crate) fn proxy_service(&self) -> application::proxy::services::ProxyService<'_> {
-        application::proxy::services::ProxyService {
-            routing: self.routing_services(),
-            media_storage: &self.media_storage,
-            play_sessions: &self.play_sessions,
-            settings: &self.settings,
-            processors: &self.processors,
-            reqwest_client: &self.reqwest_client,
-            client_sessions: &self.client_sessions,
-            catalog_snapshots: &self.catalog_snapshots,
-        }
+            url_prefix,
+        };
+        Self { services, config }
     }
     pub(crate) async fn authentication_service(
         &self,
@@ -159,7 +98,7 @@ impl MediaFixture {
         application::accounts::services::AuthenticationService {
             user_authorization: self.user_authorization.clone(),
             server_storage: self.server_storage.clone(),
-            settings: self.settings.clone(),
+            settings: self.services.config.clone(),
             reqwest_client: self.reqwest_client.clone(),
             client_sessions: self.client_sessions.clone(),
             admin_password: self.config.read().await.password.clone(),

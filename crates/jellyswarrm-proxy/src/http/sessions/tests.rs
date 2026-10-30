@@ -448,7 +448,7 @@ async fn identity_reconnect_revocation_and_authentication_dto_are_consistent() {
     })).unwrap();
     decorate_authentication(
         &f.state.client_sessions,
-        &f.state.settings.read().await.server_id,
+        &f.state.config.read().await.server_id,
         &f.user,
         &authorization,
         &mut response,

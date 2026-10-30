@@ -569,7 +569,6 @@ async fn playlist_mapping_database_failures_are_internal_errors() {
     assert_eq!(
         crate::http::error::status(
             &(f.state
-                .proxy_service()
                 .process_response_json(
                     &mut permissions,
                     &f.servers[0],

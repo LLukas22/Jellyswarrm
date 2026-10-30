@@ -2,17 +2,17 @@
 //! The existing binding selects the owner; only a successful workflow commits changes.
 //! Live commands have caller context but no arbitrary initial backend: the negotiated
 //! playback/live binding selects the sole target before translation.
-use super::services::PlaybackService;
 use super::target::MediaTargetResolver;
 use crate::application::error::FailureStage;
+use crate::application::services::MediaServices;
 use crate::media::storage::MediaStorageService;
+use crate::upstream::jellyfin::json::JsonUpstream as _;
 use hyper::StatusCode;
 use serde_json::Value;
 
 use std::sync::Arc;
 
 use crate::{
-    application::request::UpstreamRequestBuilder,
     application::{
         error::ApplicationError,
         input::OperationRequest,
@@ -156,7 +156,7 @@ fn field(
 
 /// Execute a caller-owned live refresh or close against its bound owner.
 pub(crate) async fn post_live_stream_action(
-    state: &PlaybackService<'_>,
+    state: &MediaServices,
     preprocessed: OperationRequest,
 ) -> Result<LiveStreamActionResult, ApplicationError> {
     let scope = preprocessed.context.access_scope().ok_or_else(|| {
@@ -168,7 +168,7 @@ pub(crate) async fn post_live_stream_action(
         .ok_or(ApplicationError::InvalidInput("missing live identity"))?;
     let (target, binding) = super::target::live_target(
         &preprocessed.context,
-        state.play_sessions,
+        &state.play_sessions,
         &id.as_str().into(),
         &scope.user_id().into(),
     )
@@ -210,14 +210,11 @@ pub(crate) async fn post_live_stream_action(
         Value::String(binding.original_id.as_str().to_owned()),
     );
     set_json_body(&mut request, &payload)?;
-    let prefix = state.get_url_prefix().await;
-    let request = UpstreamRequestBuilder::new(state.processors.url_processor, prefix.as_deref())
-        .build(&target, &request)
-        .await?;
+    let request = state.request_builder().build(&target, &request).await?;
     if close {
-        let status = state.upstream.execute_status(request).await?;
+        let status = state.json_upstream().execute_status(request).await?;
         if status.is_success() {
-            super::lifecycle::PlaybackLifecycle::new(state.play_sessions)
+            super::lifecycle::PlaybackLifecycle::new(&state.play_sessions)
                 .close_live(&id.as_str().into(), &scope.user_id().into())
                 .await;
         }
@@ -241,7 +238,7 @@ pub(crate) async fn post_live_stream_action(
 /// OpenToken is backend-local. Use the caller-owned negotiation binding, and
 /// retain its exact member even when an aggregate has several copies per server.
 pub(crate) async fn post_livestream_open(
-    state: &PlaybackService<'_>,
+    state: &MediaServices,
     preprocessed: OperationRequest,
 ) -> Result<Value, ApplicationError> {
     let scope = preprocessed.context.access_scope().ok_or_else(|| {
@@ -264,10 +261,10 @@ pub(crate) async fn post_livestream_open(
     let item_id = MediaStorageService::normalize_uuid(&item_id);
     let item_id = &item_id;
     let binding = (MediaTargetResolver {
-        media: state.media_storage,
+        media: &state.media_storage,
     })
     .session(
-        state.play_sessions,
+        &state.play_sessions,
         item_id,
         Some(&session_id),
         scope.user_id(),
@@ -347,10 +344,7 @@ pub(crate) async fn post_livestream_open(
     );
     object.insert("PlaySessionId".into(), Value::String(session_id.clone()));
     set_json_body(&mut request, &payload)?;
-    let prefix = state.get_url_prefix().await;
-    let request = UpstreamRequestBuilder::new(state.processors.url_processor, prefix.as_deref())
-        .build(&target, &request)
-        .await?;
+    let request = state.request_builder().build(&target, &request).await?;
     let token = preprocessed
         .context
         .authorization()
@@ -362,10 +356,10 @@ pub(crate) async fn post_livestream_open(
     let mut source: MediaSource = serde_json::from_value(response["MediaSource"].clone())
         .map_err(ApplicationError::InvalidUpstreamJson)?;
     let live_plan =
-        prepare_live_source(state.play_sessions, &mut source, scope.user_id(), server).await?;
+        prepare_live_source(&state.play_sessions, &mut source, scope.user_id(), server).await?;
     let mut sources = vec![source];
     record_playback_sources(
-        state.media_storage,
+        &state.media_storage,
         item_id,
         server,
         original_item_id,
@@ -378,14 +372,14 @@ pub(crate) async fn post_livestream_open(
         serde_json::to_value(source).map_err(ApplicationError::Serialization)?;
     // Finish all fallible work before publishing either live or ordinary bindings.
     serde_json::to_vec(&response).map_err(ApplicationError::Serialization)?;
-    super::lifecycle::PlaybackLifecycle::new(state.play_sessions)
+    super::lifecycle::PlaybackLifecycle::new(&state.play_sessions)
         .commit_live(&live_plan.into_iter().collect::<Vec<_>>())
         .await
         .map_err(|error| {
             ApplicationError::Internal(error.into()).at(FailureStage::PlaybackCommit)
         })?;
     track_play_session(source, &session_id, scope.user_id(), server, state).await;
-    super::lifecycle::PlaybackLifecycle::new(state.play_sessions)
+    super::lifecycle::PlaybackLifecycle::new(&state.play_sessions)
         .bind_original(&session_id, scope.user_id(), server.id, original_item_id)
         .await;
     Ok(response)

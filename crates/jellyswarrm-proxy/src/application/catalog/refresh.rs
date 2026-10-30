@@ -1,5 +1,5 @@
 //! Explicit background inventory refresh. No scheduler or incoming HTTP request.
-use super::services::CatalogService;
+use crate::application::services::MediaServices;
 use crate::{
     application::error::ApplicationError,
     auth::service::AuthorizationSession,
@@ -35,7 +35,7 @@ pub(crate) struct RefreshResult {
 /// Scheduling is intentionally not enabled by this API.
 #[allow(dead_code)]
 pub(crate) async fn refresh(
-    state: &CatalogService,
+    state: &MediaServices,
     input: CatalogRefresh,
 ) -> Result<RefreshResult, ApplicationError> {
     if input

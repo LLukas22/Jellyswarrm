@@ -9,7 +9,7 @@ use hyper::StatusCode;
 #[path = "../../unit_tests/item_details.rs"]
 mod tests;
 
-use crate::application::catalog::services::CatalogService;
+use crate::application::services::MediaServices;
 #[cfg(test)]
 use crate::test_support::MediaFixture;
 use crate::{
@@ -17,7 +17,6 @@ use crate::{
         merge_media_detail, normalize_detail_member, DetailMergeContext,
     },
     application::error::ApplicationError,
-    application::request::UpstreamRequestBuilder,
     application::{context::TargetError, input::OperationRequest},
     libraries::service::VirtualLibraryResolution,
     processors::response_processor::ResponseProcessingProfile,
@@ -47,14 +46,11 @@ impl VirtualLibraryFallbackPolicy {
 
 /// Fetch item JSON, applying the established fallback and optional source merge.
 pub(crate) async fn get_item_detail(
-    state: &CatalogService,
+    state: &MediaServices,
     input: OperationRequest,
     merge_media_versions: bool,
 ) -> Result<serde_json::Value, ApplicationError> {
-    let mut target = input
-        .resolve_target_using(&state.routing_services())
-        .await?
-        .target;
+    let mut target = input.resolve_target(state).await?.target;
     let virtual_library = input
         .original_request
         .url()
@@ -108,8 +104,7 @@ pub(crate) async fn get_item_detail(
     if merge_media_versions {
         ensure_query_list_value(normalized_request.url_mut(), "Fields", "MediaSources");
     }
-    let prefix = state.get_url_prefix().await;
-    let builder = UpstreamRequestBuilder::new(&state.processors.url_processor, prefix.as_deref());
+    let builder = state.request_builder();
     let request = builder.build(&target, &normalized_request).await?;
     let failed_id = contains_id(request.url(), "Items");
     let result = state

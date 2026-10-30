@@ -16,6 +16,7 @@ pub(crate) mod request;
 pub(crate) mod response;
 pub(crate) mod routing;
 pub(crate) mod server_admin;
+pub(crate) mod services;
 pub(crate) mod sessions;
 pub(crate) mod syncplay;
 pub(crate) mod upstream;

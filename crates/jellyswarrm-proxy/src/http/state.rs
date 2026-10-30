@@ -1,25 +1,20 @@
 //! Adapter-owned handles, wired by startup without I/O or configuration reads.
 mod management;
-mod media;
 mod paths;
 mod sessions;
 
 pub(crate) use management::{ManagementState, SettingsState};
-pub(crate) use media::MediaState;
 pub(crate) use paths::AdapterPaths;
 pub(crate) use sessions::SessionState;
 
-use crate::application::{
-    accounts::services::{AccountService, AuthenticationService},
-    catalog::services::CatalogService,
-};
+use crate::application::{accounts::services::AuthenticationService, services::MediaServices};
 use axum::extract::FromRef;
 
 #[derive(Clone, FromRef)]
 pub(crate) struct AppState {
-    media: MediaState,
+    media: MediaServices,
     sessions: SessionState,
-    accounts: AccountService,
+    authentication: AuthenticationService,
     management: ManagementState,
     settings: SettingsState,
     quick_connect: crate::auth::quick_connect::QuickConnectStorage,
@@ -28,9 +23,9 @@ pub(crate) struct AppState {
 
 impl AppState {
     pub(crate) fn new(
-        media: MediaState,
+        media: MediaServices,
         sessions: SessionState,
-        accounts: AccountService,
+        authentication: AuthenticationService,
         management: ManagementState,
         settings: SettingsState,
         quick_connect: crate::auth::quick_connect::QuickConnectStorage,
@@ -39,7 +34,7 @@ impl AppState {
         Self {
             media,
             sessions,
-            accounts,
+            authentication,
             management,
             settings,
             quick_connect,
@@ -48,16 +43,6 @@ impl AppState {
     }
 }
 
-impl FromRef<AppState> for AuthenticationService {
-    fn from_ref(state: &AppState) -> Self {
-        state.accounts.authentication.clone()
-    }
-}
-impl FromRef<AppState> for CatalogService {
-    fn from_ref(state: &AppState) -> Self {
-        state.media.catalog_service()
-    }
-}
 impl FromRef<AppState> for reqwest::Client {
     fn from_ref(state: &AppState) -> Self {
         state.media.reqwest_client.clone()

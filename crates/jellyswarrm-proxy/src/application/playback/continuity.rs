@@ -46,7 +46,7 @@ impl EpisodeContinuity {
 
     pub(super) async fn preferred_target(
         &self,
-        state: &super::services::PlaybackService<'_>,
+        state: &crate::application::services::MediaServices,
         context: &RequestContext,
         item: &str,
     ) -> Result<Option<AuthorizedTarget>, ApplicationError> {

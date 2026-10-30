@@ -9,7 +9,7 @@ use crate::application::error::{ApplicationError, FailureStage};
 use crate::application::identity::{BackendItemId, VirtualItemId};
 use tracing::{debug, error};
 
-use super::services::CatalogService;
+use crate::application::services::MediaServices;
 use crate::{
     application::input::OperationRequest,
     auth::service::AuthorizationSession,
@@ -60,7 +60,7 @@ pub(super) fn unavailable_source_count(
 }
 
 pub(crate) async fn resolve_catalog_plan(
-    state: &CatalogService,
+    state: &MediaServices,
     preprocessed: &OperationRequest,
 ) -> Result<CatalogPlan, ApplicationError> {
     if let Some(parent_id) = parent_id(preprocessed.original_request.url()) {
@@ -141,18 +141,16 @@ pub(crate) async fn resolve_catalog_plan(
         }
     }
 
-    let grouping = if is_library_root_request(
-        preprocessed.original_request.url(),
-        state.get_url_prefix().await.as_deref(),
-    ) {
-        state
-            .virtual_library_service
-            .library_grouping(state.merge_libraries_enabled().await)
-            .await
-            .map_err(ApplicationError::Storage)?
-    } else {
-        LibraryGrouping::None
-    };
+    let grouping =
+        if is_library_root_request(preprocessed.original_request.url(), state.url_prefix()) {
+            state
+                .virtual_library_service
+                .library_grouping(state.merge_libraries_enabled().await)
+                .await
+                .map_err(ApplicationError::Storage)?
+        } else {
+            LibraryGrouping::None
+        };
 
     let targets: Vec<_> = available_sessions(preprocessed)?
         .into_iter()
@@ -265,7 +263,7 @@ fn series_parent_id(url: &url::Url) -> Option<String> {
 }
 
 async fn resolve_aggregate_plan(
-    state: &CatalogService,
+    state: &MediaServices,
     preprocessed: &OperationRequest,
     parent_id: &str,
 ) -> Result<Option<CatalogPlan>, ApplicationError> {
@@ -344,7 +342,7 @@ async fn resolve_aggregate_plan(
 }
 
 async fn is_single_server_parent(
-    state: &CatalogService,
+    state: &MediaServices,
     parent_id: &str,
 ) -> Result<bool, ApplicationError> {
     let parent_id = normalize_library_id(parent_id);

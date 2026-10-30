@@ -5,7 +5,7 @@ use crate::application::error::{ApplicationError, FailureStage};
 use tokio::task::JoinSet;
 use tracing::{error, warn};
 
-use super::services::CatalogService;
+use crate::application::services::MediaServices;
 use crate::{
     application::input::OperationRequest,
     application::upstream::response_json_to_payload,
@@ -55,7 +55,7 @@ struct LibraryRootInventory {
 type ServerMediaItem = crate::media::catalog::TaggedMediaItem;
 
 async fn process_library_group_individually(
-    state: &CatalogService,
+    state: &MediaServices,
     group: Vec<ServerMediaItem>,
 ) -> Result<Vec<CatalogItem>, ApplicationError> {
     let mut items = Vec::with_capacity(group.len());
@@ -69,7 +69,7 @@ async fn process_library_group_individually(
 }
 
 async fn present_automatic_library_group(
-    state: &CatalogService,
+    state: &MediaServices,
     key: String,
     group: Vec<ServerMediaItem>,
     access_scope: &VirtualLibraryAccessScope,
@@ -151,7 +151,7 @@ async fn present_automatic_library_group(
 }
 
 async fn partition_library_root_inventory(
-    state: &CatalogService,
+    state: &MediaServices,
     server_items: Vec<FetchedServerItems<RawServerItems>>,
 ) -> Result<LibraryRootInventory, ApplicationError> {
     let assignments = state
@@ -242,7 +242,7 @@ async fn partition_library_root_inventory(
 }
 
 pub(super) async fn get_automatic_library_root(
-    state: &CatalogService,
+    state: &MediaServices,
     preprocessed: OperationRequest,
     targets: Vec<CatalogFetchTarget>,
 ) -> Result<serde_json::Value, ApplicationError> {
@@ -310,7 +310,7 @@ pub(super) async fn get_automatic_library_root(
 }
 
 async fn present_configured_library_groups(
-    state: &CatalogService,
+    state: &MediaServices,
     configured_library_groups: HashMap<String, NamedMediaItemGroup>,
 ) -> Result<Vec<CatalogItem>, ApplicationError> {
     let mut group_entries = configured_library_groups.into_iter().collect::<Vec<_>>();
@@ -353,7 +353,7 @@ async fn present_configured_library_groups(
 }
 
 pub(super) async fn get_configured_library_root(
-    state: &CatalogService,
+    state: &MediaServices,
     preprocessed: OperationRequest,
     targets: Vec<CatalogFetchTarget>,
 ) -> Result<serde_json::Value, ApplicationError> {
@@ -395,7 +395,7 @@ pub(super) async fn get_configured_library_root(
 
 async fn process_media_items_for_server(
     items: Vec<MediaItem>,
-    state: &CatalogService,
+    state: &MediaServices,
     server: &Server,
     item_name_policy: ItemNamePolicy,
 ) -> Result<Vec<CatalogItem>, ApplicationError> {
@@ -407,7 +407,7 @@ async fn process_media_items_for_server(
 }
 
 async fn build_virtual_library_item(
-    state: &CatalogService,
+    state: &MediaServices,
     group: Vec<ServerMediaItem>,
     display_name: String,
     virtual_id: String,
@@ -511,7 +511,7 @@ fn preferred_library_image_source_index(group: &[ServerMediaItem]) -> Option<usi
 }
 
 async fn process_library_folder(
-    state: &CatalogService,
+    state: &MediaServices,
     item: MediaItem,
     server: &Server,
     item_name_policy: ItemNamePolicy,
@@ -570,7 +570,7 @@ fn attach_library_folder_image_source(
 
 async fn process_media_item_for_server(
     item: MediaItem,
-    state: &CatalogService,
+    state: &MediaServices,
     server: &Server,
     item_name_policy: ItemNamePolicy,
 ) -> Result<CatalogItem, ApplicationError> {

@@ -6,9 +6,7 @@ use crate::{
         UserAuthorizationService,
     },
     config::{AppConfig, Paths, SettingsView},
-    http::state::{
-        AdapterPaths, AppState, ManagementState, MediaState, SessionState, SettingsState,
-    },
+    http::state::{AdapterPaths, AppState, ManagementState, SessionState, SettingsState},
     libraries::VirtualLibraryService,
     media::MediaStorageService,
     playback::sessions::SessionStorage,
@@ -38,6 +36,7 @@ pub(super) fn adapter_state(
 ) -> AppState {
     let credentials = config.admin_credentials();
     let adapter_paths = AdapterPaths::new(&config.startup_config());
+    let url_prefix = adapter_paths.url_prefix();
     let config = Arc::new(tokio::sync::RwLock::new(config));
     let settings = SettingsView::new(config.clone());
     let configuration = crate::config::service::ConfigurationService::new(config, paths);
@@ -58,7 +57,7 @@ pub(super) fn adapter_state(
             user_authorization.clone(),
         ),
         ResponseProcessor::new(media_storage.clone(), user_authorization.clone()),
-        urls.clone(),
+        urls,
     ));
     let selection = application::url_selection::UrlSelection::new(
         media_storage.clone(),
@@ -78,19 +77,13 @@ pub(super) fn adapter_state(
         client_sessions: client_sessions.clone(),
         syncplay,
     };
-    let accounts = application::accounts::services::AccountService {
-        authentication: application::accounts::services::AuthenticationService {
-            user_authorization: user_authorization.clone(),
-            server_storage: server_storage.clone(),
-            settings: settings.clone(),
-            reqwest_client: clients.api.clone(),
-            client_sessions: client_sessions.clone(),
-            admin_password: credentials.password(),
-        },
-        media_storage: media_storage.clone(),
-        play_sessions: play_sessions.clone(),
-        urls,
-        selection: selection.clone(),
+    let authentication = application::accounts::services::AuthenticationService {
+        user_authorization: user_authorization.clone(),
+        server_storage: server_storage.clone(),
+        settings: settings.clone(),
+        reqwest_client: clients.api.clone(),
+        client_sessions: client_sessions.clone(),
+        admin_password: credentials.password(),
     };
     let management = ManagementState {
         reqwest_client: clients.api.clone(),
@@ -114,9 +107,9 @@ pub(super) fn adapter_state(
     let settings_state = SettingsState {
         settings: settings.clone(),
         configuration,
-        paths: adapter_paths.clone(),
+        paths: adapter_paths,
     };
-    let media = MediaState {
+    let media = application::services::MediaServices {
         reqwest_client: clients.api,
         streaming_reqwest_client: clients.streaming,
         user_authorization,
@@ -124,17 +117,17 @@ pub(super) fn adapter_state(
         media_storage,
         virtual_library_service,
         play_sessions,
-        settings,
-        paths: adapter_paths,
+        config: settings,
         url_selection: selection,
         processors,
         client_sessions,
         catalog_snapshots,
+        url_prefix,
     };
     AppState::new(
         media,
         session_state,
-        accounts,
+        authentication,
         management,
         settings_state,
         quick_connect,

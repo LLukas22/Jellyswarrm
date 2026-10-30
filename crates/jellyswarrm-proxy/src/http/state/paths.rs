@@ -20,12 +20,6 @@ impl AdapterPaths {
     pub(crate) fn url_prefix(&self) -> Option<String> {
         self.url_prefix.clone()
     }
-    pub(crate) fn remove_prefix<'a>(&self, path: &'a str) -> &'a str {
-        match &self.url_prefix {
-            Some(prefix) => path.trim_start_matches(&format!("/{prefix}")),
-            None => path,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -43,10 +37,7 @@ mod tests {
         config.ui_route = "changed".into();
         assert_eq!(paths.ui_route(), "proxy/manage");
         assert_eq!(paths.url_prefix().as_deref(), Some("proxy"));
-        assert_eq!(paths.remove_prefix("/proxy/Items"), "/Items");
-        assert_eq!(paths.remove_prefix("/Items"), "/Items");
         let unprefixed = AdapterPaths::new(&config.startup_config());
         assert_eq!(unprefixed.ui_route(), "changed");
-        assert_eq!(unprefixed.remove_prefix("/Items"), "/Items");
     }
 }

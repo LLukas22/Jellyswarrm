@@ -1,10 +1,10 @@
 //! Delivery/resource selection before target-bound request construction.
 
-use super::services::PlaybackService;
 #[cfg(test)]
 use super::target::matching_session as matching_play_session;
 use super::target::{MediaTargetResolver, PlaybackIntent, ResolutionError, SelectionPolicy};
 use crate::application::error::{ApplicationError, FailureStage};
+use crate::application::services::MediaServices;
 #[cfg(test)]
 use hyper::StatusCode;
 use tracing::info;
@@ -13,7 +13,6 @@ use tracing::info;
 use crate::test_support::MediaFixture;
 use crate::{
     application::delivery::delivery_error,
-    application::request::UpstreamRequestBuilder,
     application::{
         context::{AuthorizedTarget, RequestContext},
         input::OperationRequest,
@@ -43,7 +42,7 @@ fn extract_play_session_id(url: &url::Url) -> Result<Option<String>, Application
 }
 
 async fn selected_play_session(
-    state: &PlaybackService<'_>,
+    state: &MediaServices,
     operation: &OperationRequest,
     item_id: &str,
     session_id: Option<&str>,
@@ -56,10 +55,10 @@ async fn selected_play_session(
             .map_err(ApplicationError::InvalidRouting)?
             .is_some();
     (MediaTargetResolver {
-        media: state.media_storage,
+        media: &state.media_storage,
     })
     .session(
-        state.play_sessions,
+        &state.play_sessions,
         item_id,
         session_id,
         user_id,
@@ -74,7 +73,7 @@ fn resource_resolution_status(error: ResolutionError) -> ApplicationError {
 }
 
 async fn delivery_target(
-    state: &PlaybackService<'_>,
+    state: &MediaServices,
     operation: &mut OperationRequest,
     initial: AuthorizedTarget,
     item: &str,
@@ -85,7 +84,7 @@ async fn delivery_target(
         crate::processors::url_processor::selected_media_source(operation.original_request.url())
             .map_err(ApplicationError::InvalidRouting)?;
     let plan = (MediaTargetResolver {
-        media: state.media_storage,
+        media: &state.media_storage,
     })
     .plan(
         &operation.context,
@@ -95,13 +94,13 @@ async fn delivery_target(
             source: source.as_deref(),
             binding,
         },
-        state.server_storage,
+        &state.server_storage,
         policy,
     )
     .await;
     if matches!(plan, Err(ResolutionError::MissingOwner)) {
         if let Some(binding) = binding {
-            super::lifecycle::PlaybackLifecycle::new(state.play_sessions)
+            super::lifecycle::PlaybackLifecycle::new(&state.play_sessions)
                 .remove_server(binding.server_id)
                 .await;
         }
@@ -124,7 +123,7 @@ async fn delivery_target(
 }
 
 async fn forward_media_request(
-    state: &PlaybackService<'_>,
+    state: &MediaServices,
     server: &Server,
     request: reqwest::Request,
     log_label: &str,
@@ -154,13 +153,13 @@ async fn forward_media_request(
             );
             let timeout = state.config.read().await.timeout;
             let translation = HlsUrlTranslation::new(
-                state.processors.url_processor,
+                &state.processors.url_processor,
                 server,
                 proxy_api_key,
                 viewer,
             );
             let context = delivery::DeliveryContext::new(
-                state.streaming_reqwest_client,
+                &state.streaming_reqwest_client,
                 crate::upstream::jellyfin::hls::HlsContext::new(&translation, timeout),
             );
             delivery::proxy(&context, request)
@@ -188,12 +187,12 @@ fn request_user_id(context: &RequestContext) -> Option<&str> {
 }
 
 async fn build_request(
-    state: &PlaybackService<'_>,
+    state: &MediaServices,
     target: &AuthorizedTarget,
     request: &reqwest::Request,
 ) -> Result<reqwest::Request, ApplicationError> {
-    let prefix = state.get_url_prefix().await;
-    UpstreamRequestBuilder::new(state.processors.url_processor, prefix.as_deref())
+    state
+        .request_builder()
         .build(target, request)
         .await
         .map_err(Into::into)
@@ -202,23 +201,21 @@ async fn build_request(
 /// Downloads retain fallback-proxy ownership and credential resolution, but use
 /// streaming transport rather than buffering the entire file as an API response.
 pub(crate) async fn get_download(
-    state: &PlaybackService<'_>,
+    state: &MediaServices,
     operation: OperationRequest,
 ) -> Result<DeliveryResponse, ApplicationError> {
-    let resolved = operation
-        .resolve_target_using(&state.routing_services())
-        .await?;
+    let resolved = operation.resolve_target(state).await?;
     let request = build_request(state, &resolved.target, &operation.original_request).await?;
     let timeout = state.config.read().await.timeout;
     let proxy_api_key = proxy_api_key(&operation.context);
     let translation = HlsUrlTranslation::new(
-        state.processors.url_processor,
+        &state.processors.url_processor,
         resolved.target.server(),
         proxy_api_key.as_deref(),
         request_user_id(&operation.context),
     );
     let context = delivery::DeliveryContext::new(
-        state.streaming_reqwest_client,
+        &state.streaming_reqwest_client,
         crate::upstream::jellyfin::hls::HlsContext::new(&translation, timeout),
     );
     delivery::proxy(&context, request)
@@ -227,12 +224,10 @@ pub(crate) async fn get_download(
 }
 
 pub(crate) async fn get_video_resource(
-    state: &PlaybackService<'_>,
+    state: &MediaServices,
     mut operation: OperationRequest,
 ) -> Result<DeliveryResponse, ApplicationError> {
-    let resolved = operation
-        .resolve_target_using(&state.routing_services())
-        .await?;
+    let resolved = operation.resolve_target(state).await?;
     let proxy_api_key = proxy_api_key(&operation.context);
     let id = extract_stream_item_id(operation.original_request.url().path())
         .ok_or_else(|| {
@@ -272,12 +267,10 @@ pub(crate) async fn get_video_resource(
 }
 
 pub(crate) async fn get_stream(
-    state: &PlaybackService<'_>,
+    state: &MediaServices,
     mut operation: OperationRequest,
 ) -> Result<DeliveryResponse, ApplicationError> {
-    let resolved = operation
-        .resolve_target_using(&state.routing_services())
-        .await?;
+    let resolved = operation.resolve_target(state).await?;
     let proxy_api_key = proxy_api_key(&operation.context);
     let item_id =
         extract_stream_item_id(operation.original_request.url().path()).map(str::to_string);
@@ -315,7 +308,7 @@ pub(crate) async fn get_stream(
                 .map(|user| user.id.as_str()),
         )
         .await?;
-        super::lifecycle::PlaybackLifecycle::new(state.play_sessions)
+        super::lifecycle::PlaybackLifecycle::new(&state.play_sessions)
             .direct_stream(
                 response.status,
                 session_id.as_deref(),
@@ -478,9 +471,7 @@ mod tests {
             .respond_with(wiremock::ResponseTemplate::new(503))
             .mount(&upstream)
             .await;
-        let failed = get_stream(&state.playback_service(), operation("direct"))
-            .await
-            .unwrap();
+        let failed = get_stream(&state, operation("direct")).await.unwrap();
         assert_eq!(failed.status, StatusCode::SERVICE_UNAVAILABLE);
         assert!(state
             .play_sessions
@@ -497,9 +488,7 @@ mod tests {
             )
             .mount(&upstream)
             .await;
-        let delivered = get_stream(&state.playback_service(), operation("direct"))
-            .await
-            .unwrap();
+        let delivered = get_stream(&state, operation("direct")).await.unwrap();
         assert_eq!(delivered.status, StatusCode::PARTIAL_CONTENT);
         assert_eq!(
             delivered.headers[hyper::header::CONTENT_RANGE],
@@ -522,7 +511,7 @@ mod tests {
     async fn unknown_direct_session_binds_on_redirect() {
         let (state, server, context, item, upstream) =
             direct_fixture(MediaStreamingMode::Redirect).await;
-        let response = get_stream(&state.playback_service(), OperationRequest {
+        let response = get_stream(&state, OperationRequest {
             original_request: reqwest::Request::new(reqwest::Method::HEAD,
                 format!("http://proxy.example/Audio/{item}/universal?PlaySessionId=redirect&Extension=kept").parse().unwrap()),
             context, body_analysis: None,

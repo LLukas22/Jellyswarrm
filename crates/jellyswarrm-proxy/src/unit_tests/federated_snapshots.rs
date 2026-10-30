@@ -5,7 +5,7 @@ use crate::application::catalog::snapshots::{SnapshotRequest, SnapshotResponse};
 #[tokio::test]
 async fn a_mutation_fences_inflight_builds_without_invalidating_another_viewer() {
     let (state, _, sessions, _) = setup().await;
-    let state = state.catalog_service();
+    let state = state.services.clone();
     let prepare = |viewer: &str| {
         let mut request = request("/Items?Limit=1", &sessions);
         request.context = crate::application::context::RequestContext::new(

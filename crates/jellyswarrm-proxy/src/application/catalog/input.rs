@@ -1,6 +1,8 @@
 //! Catalog view of an unselected operation. Authentication and authorization do not pick a backend.
-use super::{query::CatalogQuery, services::CatalogService};
-use crate::application::{error::ApplicationError, input::OperationRequest};
+use super::query::CatalogQuery;
+use crate::application::{
+    error::ApplicationError, input::OperationRequest, services::MediaServices,
+};
 
 impl OperationRequest {
     /// The preserved wire request is authoritative. Do not retain a second,
@@ -11,7 +13,7 @@ impl OperationRequest {
 
     pub(crate) async fn validate_catalog(
         &self,
-        state: &CatalogService,
+        state: &MediaServices,
     ) -> Result<(), ApplicationError> {
         let mut access_url = self.original_request.url().clone();
         if access_url
@@ -30,6 +32,7 @@ impl OperationRequest {
                 .collect::<Vec<_>>();
             access_url.query_pairs_mut().clear().extend_pairs(pairs);
         }
-        self.validate_access(&access_url, &state.selection).await
+        self.validate_access(&access_url, &state.url_selection)
+            .await
     }
 }

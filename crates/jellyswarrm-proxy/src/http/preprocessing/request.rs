@@ -5,7 +5,7 @@ use crate::application::{
 };
 pub(crate) async fn extract_request_infos(
     req: Request,
-    state: &MediaState,
+    state: &MediaServices,
     playback_session_action: Option<PlaybackSessionAction>,
 ) -> Result<OperationRequest> {
     let request = axum_to_reqwest(req).await?;

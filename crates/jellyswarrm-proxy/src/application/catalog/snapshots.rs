@@ -1,10 +1,10 @@
 //! Cache and materialize catalog snapshots with query-aware pagination and refresh policy.
-use super::services::CatalogService;
 use super::{
     library_resolution::CatalogFetchTarget, postprocessing::Pagination,
     request_policy::is_upstream_limited_catalog_request,
 };
 use crate::application::error::ApplicationError;
+use crate::application::services::MediaServices;
 use crate::{application::input::OperationRequest, protocol::identity::JellyfinAuthorization};
 use sha2::{Digest, Sha256};
 use std::{
@@ -164,7 +164,7 @@ fn hash_request_identity(
 
 impl SnapshotRequest {
     pub(crate) async fn prepare(
-        state: &CatalogService,
+        state: &MediaServices,
         request: &OperationRequest,
         targets: &[CatalogFetchTarget],
         scope: &str,
@@ -190,7 +190,7 @@ impl SnapshotRequest {
             || matches!(query.kind, super::query::CatalogQueryKind::Feed)
             || super::library_resolution::is_library_root_request(
                 request.original_request.url(),
-                state.get_url_prefix().await.as_deref(),
+                state.url_prefix(),
             )
         {
             return Self {
@@ -246,7 +246,7 @@ impl SnapshotRequest {
 
     pub(crate) async fn serve(
         self,
-        state: &CatalogService,
+        state: &MediaServices,
         build: impl std::future::Future<Output = Result<SnapshotResponse, ApplicationError>>,
     ) -> Result<serde_json::Value, ApplicationError> {
         let response = if let Some(key) = self.key {

@@ -6,11 +6,10 @@ use serde_json::Value;
 use tokio::task::JoinSet;
 use tracing::{error, warn};
 
-use crate::application::catalog::services::CatalogService;
+use crate::application::services::MediaServices;
 use crate::{
     application::context::{RequestContext, TargetError},
     application::error::ApplicationError,
-    application::request::UpstreamRequestBuilder,
     application::upstream::response_json_to_payload,
     auth::service::AuthorizationSession,
     libraries::service::VirtualLibraryAccessScope,
@@ -85,7 +84,7 @@ struct HostedMediaSources {
 /// Merges all reachable members of a stable media group into one typed item
 /// response. Unknown Jellyfin fields survive through the flattened DTO fields.
 pub(crate) async fn merge_media_detail(
-    state: &CatalogService,
+    state: &MediaServices,
     context: DetailMergeContext<'_>,
     proxy_api_key: Option<&str>,
     payload: &mut Value,
@@ -221,7 +220,7 @@ pub(crate) async fn merge_media_detail(
 }
 
 pub(crate) async fn preserve_media_parent_groups(
-    state: &CatalogService,
+    state: &MediaServices,
     item: &mut MediaItem,
     viewer: &str,
     catalog_scope: Option<&str>,
@@ -304,7 +303,7 @@ fn compare_hosted_sources(
 }
 
 async fn fetch_member_sources(
-    state: &CatalogService,
+    state: &MediaServices,
     context: &DetailMergeContext<'_>,
     proxy_api_key: Option<&str>,
     hosts: Vec<VersionHost>,
@@ -341,7 +340,7 @@ async fn fetch_member_sources(
 }
 
 async fn fetch_member_source(
-    state: CatalogService,
+    state: MediaServices,
     mut original_request: reqwest::Request,
     auth: Option<JellyfinAuthorization>,
     access_scope: Option<VirtualLibraryAccessScope>,
@@ -375,8 +374,8 @@ async fn fetch_member_source(
             }
             TargetError::UnavailableOwner => ApplicationError::UnavailableOwner,
         })?;
-    let prefix = state.get_url_prefix().await;
-    let request = UpstreamRequestBuilder::new(&state.processors.url_processor, prefix.as_deref())
+    let request = state
+        .request_builder()
         .build(&target, &original_request)
         .await?;
 

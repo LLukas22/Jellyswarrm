@@ -166,7 +166,7 @@ impl Fixture {
 async fn configured_library_detail_continues_past_rate_limited_candidate() {
     let fixture = Fixture::new([404, 429, 200]).await;
 
-    let detail = get_item_detail(&fixture.state.catalog_service(), fixture.operation(), false)
+    let detail = get_item_detail(&fixture.state, fixture.operation(), false)
         .await
         .unwrap();
 
@@ -183,7 +183,7 @@ async fn configured_library_detail_continues_past_rate_limited_candidate() {
 async fn configured_library_detail_preserves_initial_not_found_when_all_candidates_fail() {
     let fixture = Fixture::new([404, 429, 503]).await;
 
-    let error = get_item_detail(&fixture.state.catalog_service(), fixture.operation(), false)
+    let error = get_item_detail(&fixture.state, fixture.operation(), false)
         .await
         .unwrap_err();
 

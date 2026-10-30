@@ -171,7 +171,7 @@ mod tests {
     use sqlx::SqlitePool;
 
     use super::*;
-    use crate::test_support::MediaFixture;
+    use crate::{application::services::MediaServices, test_support::MediaFixture};
     use crate::{
         auth::service::UserAuthorizationService,
         config::{AppConfig, MediaStreamingMode},
@@ -185,10 +185,10 @@ mod tests {
         servers::url::ServerUrl,
     };
 
-    async fn processor_fixture() -> (MediaFixture, SqlitePool) {
+    async fn processor_fixture() -> (MediaServices, SqlitePool) {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         MIGRATOR.run(&pool).await.unwrap();
-        let media = MediaFixture::new(pool.clone(), AppConfig::default());
+        let media = MediaFixture::new(pool.clone(), AppConfig::default()).services;
         (media, pool)
     }
 

@@ -2,14 +2,12 @@
 //!
 //! Flow: input → library_resolution → snapshots/upstream → media_reconciliation
 //! → postprocessing. Roots, batch lookup, and facets branch to their named modules.
-//! See `../../DATA_FLOW.md`; `services` holds dependencies, not workflow steps.
+//! See `../../DATA_FLOW.md`; dependencies come from `application::services`.
 use crate::application::details::get_item_detail;
 use crate::application::error::{ApplicationError, FailureStage};
 use tracing::debug;
 
-use self::services::CatalogService;
-pub(crate) mod services;
-use crate::application::input::OperationRequest;
+use crate::application::{input::OperationRequest, services::MediaServices};
 
 pub(crate) mod input;
 mod query;
@@ -37,7 +35,7 @@ use upstream::{fetch_catalog, FetchMode, FetchedCatalog};
 /// Series detail and single-channel/genre guides identify one upstream item.
 /// Query only its owning server so unrelated programs cannot enter the result.
 pub(crate) async fn get_live_tv_programs(
-    state: &CatalogService,
+    state: &MediaServices,
     preprocessed: OperationRequest,
 ) -> Result<serde_json::Value, ApplicationError> {
     let url = preprocessed.original_request.url();
@@ -52,7 +50,7 @@ pub(crate) async fn get_live_tv_programs(
     }
 }
 
-async fn is_aggregate_id(state: &CatalogService, url: &url::Url) -> Result<bool, ApplicationError> {
+async fn is_aggregate_id(state: &MediaServices, url: &url::Url) -> Result<bool, ApplicationError> {
     let series_id = url.query_pairs().find_map(|(key, value)| {
         (key.eq_ignore_ascii_case("SeriesId") || key.eq_ignore_ascii_case("SeasonId"))
             .then(|| value.into_owned())
@@ -69,7 +67,7 @@ async fn is_aggregate_id(state: &CatalogService, url: &url::Url) -> Result<bool,
 }
 
 pub(crate) async fn get_items_from_all_servers_if_not_restricted(
-    state: &CatalogService,
+    state: &MediaServices,
     preprocessed: OperationRequest,
 ) -> Result<serde_json::Value, ApplicationError> {
     let original_request = &preprocessed.original_request;
@@ -86,7 +84,7 @@ pub(crate) async fn get_items_from_all_servers_if_not_restricted(
 /// Federates `/Shows/{seriesId}/Seasons|Episodes` when `seriesId` is a
 /// collapsed show aggregate; otherwise falls back to single-server proxying.
 pub(crate) async fn get_show_children(
-    state: &CatalogService,
+    state: &MediaServices,
     preprocessed: OperationRequest,
 ) -> Result<serde_json::Value, ApplicationError> {
     use crate::protocol::url::contains_id;
@@ -157,7 +155,7 @@ pub(crate) async fn get_show_children(
 }
 
 pub(crate) async fn get_media_folders(
-    state: &CatalogService,
+    state: &MediaServices,
     mut preprocessed: OperationRequest,
 ) -> Result<serde_json::Value, ApplicationError> {
     let user_id = preprocessed
@@ -184,7 +182,7 @@ pub(crate) async fn get_media_folders(
 /// Cause-preserving catalog service boundary. Only HTTP adapters reduce errors
 /// to the endpoint's established status contract.
 pub(crate) async fn get_catalog(
-    state: &CatalogService,
+    state: &MediaServices,
     preprocessed: OperationRequest,
 ) -> Result<serde_json::Value, ApplicationError> {
     if preprocessed.catalog_query().kind == query::CatalogQueryKind::Batch {
@@ -243,7 +241,7 @@ pub(crate) async fn get_catalog(
 }
 
 async fn get_interleaved_root(
-    state: &CatalogService,
+    state: &MediaServices,
     preprocessed: OperationRequest,
     targets: Vec<CatalogFetchTarget>,
 ) -> Result<serde_json::Value, ApplicationError> {
@@ -259,7 +257,7 @@ async fn get_interleaved_root(
 }
 
 async fn get_interleaved_root_uncached(
-    state: &CatalogService,
+    state: &MediaServices,
     preprocessed: OperationRequest,
     targets: Vec<CatalogFetchTarget>,
     policy: CatalogRequestPolicy,
@@ -303,7 +301,7 @@ async fn get_interleaved_root_uncached(
 }
 
 pub(super) async fn finalize_items_response(
-    state: &CatalogService,
+    state: &MediaServices,
     request: &reqwest::Request,
     items: FederatedItems,
     policy: &CatalogRequestPolicy,
@@ -311,10 +309,7 @@ pub(super) async fn finalize_items_response(
 ) -> Result<serde_json::Value, ApplicationError> {
     let response = serde_json::to_value(items.into_response_with_policy(policy, response_shape))
         .map_err(ApplicationError::Serialization)?;
-    if library_resolution::is_library_root_request(
-        request.url(),
-        state.get_url_prefix().await.as_deref(),
-    ) {
+    if library_resolution::is_library_root_request(request.url(), state.url_prefix()) {
         if let Some(auth) = crate::protocol::identity::JellyfinAuthorization::from_headers_url(
             request.headers(),
             request.url(),

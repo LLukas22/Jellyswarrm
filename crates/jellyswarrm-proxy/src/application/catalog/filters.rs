@@ -2,11 +2,11 @@
 use crate::application::error::{ApplicationError, FailureStage};
 use serde_json::{json, Value};
 
-use super::services::CatalogService;
 use super::{
     library_resolution::{resolve_catalog_plan, CatalogFetchTarget, CatalogPlan},
     request_policy::replace_aggregate_parent_id,
 };
+use crate::application::services::MediaServices;
 use crate::{
     application::input::OperationRequest, processors::response_processor::ResponseProcessingProfile,
 };
@@ -14,7 +14,7 @@ use crate::{
 /// Facet IDs remain source-owned. Partition OR lists for each backend instead
 /// of sending another server's virtual IDs (or accidentally dropping a filter).
 pub(super) async fn restrict_named_ids(
-    state: &CatalogService,
+    state: &MediaServices,
     url: &mut url::Url,
     server_id: crate::domain::server_id::ServerId,
 ) -> Result<bool, ApplicationError> {
@@ -73,7 +73,7 @@ pub(super) async fn restrict_named_ids(
 /// Filter DTOs contain arrays of options rather than paged BaseItemDto lists.
 /// Resolve library members as for browsing, then union their visible options.
 pub(crate) async fn get_filters(
-    state: &CatalogService,
+    state: &MediaServices,
     preprocessed: OperationRequest,
 ) -> Result<Value, ApplicationError> {
     let targets = match resolve_catalog_plan(state, &preprocessed).await? {
@@ -84,7 +84,7 @@ pub(crate) async fn get_filters(
             let (server, session, _) = crate::application::routing::resolve_server(
                 &preprocessed.context.backends().sessions,
                 &preprocessed.body_analysis,
-                &state.routing_services(),
+                state,
                 &preprocessed.original_request,
                 preprocessed.context.access_scope(),
             )
@@ -124,13 +124,7 @@ pub(crate) async fn get_filters(
                 .context
                 .target(target.server.id)
                 .map_err(ApplicationError::TargetSelection)?;
-            let prefix = state.get_url_prefix().await;
-            let request = crate::application::request::UpstreamRequestBuilder::new(
-                &state.processors.url_processor,
-                prefix.as_deref(),
-            )
-            .build(&authorized, &request)
-            .await?;
+            let request = state.request_builder().build(&authorized, &request).await?;
             tokio::time::timeout(
                 timeout,
                 state.execute_processed_json(

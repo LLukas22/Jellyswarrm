@@ -7,12 +7,10 @@ use crate::{
     application::{
         error::ApplicationError,
         input::{routing_error, OperationRequest},
+        services::MediaServices,
     },
     auth::service::User,
-    http::{
-        preprocessing::{extract_request_infos, resolve_request_identity_from_headers_uri},
-        state::MediaState,
-    },
+    http::preprocessing::{extract_request_infos, resolve_request_identity_from_headers_uri},
 };
 
 pub(crate) struct RequirePrimaryUser(pub(crate) User);
@@ -51,7 +49,10 @@ where
 /// Collect caller identity, body analysis, and backend availability without
 /// selecting or encoding a backend request. The extractors below differ only in
 /// which access validation runs before a workflow sees the request.
-async fn collect(req: Request, state: &MediaState) -> Result<OperationRequest, ApplicationError> {
+async fn collect(
+    req: Request,
+    state: &MediaServices,
+) -> Result<OperationRequest, ApplicationError> {
     extract_request_infos(req, state, None)
         .await
         .map_err(routing_error)
@@ -62,12 +63,12 @@ pub(crate) struct OperationInput(pub(crate) OperationRequest);
 
 impl<S: Send + Sync> FromRequest<S> for OperationInput
 where
-    MediaState: FromRef<S>,
+    MediaServices: FromRef<S>,
 {
     type Rejection = ApplicationError;
 
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
-        Ok(Self(collect(req, &MediaState::from_ref(state)).await?))
+        Ok(Self(collect(req, &MediaServices::from_ref(state)).await?))
     }
 }
 
@@ -76,15 +77,15 @@ pub(crate) struct CatalogInput(pub(crate) OperationRequest);
 
 impl<S: Send + Sync> FromRequest<S> for CatalogInput
 where
-    MediaState: FromRef<S>,
+    MediaServices: FromRef<S>,
 {
     type Rejection = ApplicationError;
 
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
-        let state = MediaState::from_ref(state);
+        let state = MediaServices::from_ref(state);
         let request = collect(req, &state).await?;
         tracing::debug!(principal = ?request.context.principal(), device_present = request.context.device().is_some(), "Collected catalog context");
-        request.validate_catalog(&state.catalog_service()).await?;
+        request.validate_catalog(&state).await?;
         Ok(Self(request))
     }
 }
@@ -94,12 +95,12 @@ pub(crate) struct LiveInput(pub(crate) OperationRequest);
 
 impl<S: Send + Sync> FromRequest<S> for LiveInput
 where
-    MediaState: FromRef<S>,
+    MediaServices: FromRef<S>,
 {
     type Rejection = ApplicationError;
 
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
-        let state = MediaState::from_ref(state);
+        let state = MediaServices::from_ref(state);
         let request = collect(req, &state).await?;
         request
             .validate_access(request.original_request.url(), &state.url_selection)

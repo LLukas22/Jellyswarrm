@@ -53,9 +53,9 @@ impl OperationRequest {
         Ok(())
     }
 
-    pub(crate) async fn resolve_target_using(
+    pub(crate) async fn resolve_target(
         &self,
-        state: &crate::application::routing::RoutingServices<'_>,
+        state: &crate::application::services::MediaServices,
     ) -> Result<ResolvedTarget, ApplicationError> {
         let (server, session, server_matched_request) =
             crate::application::routing::resolve_server(
@@ -68,7 +68,8 @@ impl OperationRequest {
             .await
             .map_err(ApplicationError::from)?;
         state
-            .urls
+            .processors
+            .url_processor
             .validate_container_request(
                 self.original_request.url(),
                 session.as_ref(),

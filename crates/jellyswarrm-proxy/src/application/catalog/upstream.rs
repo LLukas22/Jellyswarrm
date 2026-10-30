@@ -7,7 +7,7 @@ use hyper::StatusCode;
 use tokio::task::JoinSet;
 use tracing::{debug, error, trace, warn};
 
-use super::services::CatalogService;
+use crate::application::services::MediaServices;
 use crate::{
     application::upstream::response_json_to_payload,
     auth::service::AuthorizationSession,
@@ -71,7 +71,7 @@ pub(crate) struct FetchedServerItems<T = ServerItems> {
 /// show by fanning out the path ID to each member's virtual series ID, which
 /// the upstream builder translates once into that member's backend identity.
 pub(super) async fn fetch_show_catalog(
-    state: &CatalogService,
+    state: &MediaServices,
     original_request: &reqwest::Request,
     policy: &CatalogRequestPolicy,
     targets: Vec<CatalogFetchTarget>,
@@ -238,7 +238,7 @@ enum ScanPolicy {
 }
 
 pub(crate) async fn fetch_catalog(
-    state: &CatalogService,
+    state: &MediaServices,
     original_request: &reqwest::Request,
     policy: &CatalogRequestPolicy,
     targets: Vec<CatalogFetchTarget>,
@@ -259,7 +259,7 @@ pub(crate) async fn fetch_catalog(
 /// Background callers supply catalog intent, not a synthetic incoming request.
 /// Actual outgoing requests are constructed for each selected target here.
 pub(super) async fn fetch_refresh_catalog(
-    state: &CatalogService,
+    state: &MediaServices,
     query: &super::query::CatalogQuery,
     policy: &CatalogRequestPolicy,
     targets: Vec<CatalogFetchTarget>,
@@ -294,7 +294,7 @@ impl CatalogFetchInput<'_> {
 }
 
 async fn fetch_catalog_operation(
-    state: &CatalogService,
+    state: &MediaServices,
     input: CatalogFetchInput<'_>,
     policy: &CatalogRequestPolicy,
     targets: Vec<CatalogFetchTarget>,
@@ -324,8 +324,7 @@ async fn fetch_catalog_operation(
                 replace_aggregate_parent_id(request.url(), &parent.requested, &parent.member);
         }
         let upstream_limited = policy.upstream_limited;
-        let library_inventory =
-            is_library_root_request(request.url(), state.get_url_prefix().await.as_deref());
+        let library_inventory = is_library_root_request(request.url(), state.url_prefix());
         let pagination = policy.pagination;
         let state = state.clone();
         join_set.spawn(async move {
@@ -442,7 +441,7 @@ async fn collect_federated_results<T: Send + 'static>(
 }
 
 pub(super) async fn fetch_inventory(
-    state: &CatalogService,
+    state: &MediaServices,
     request: &reqwest::Request,
     targets: Vec<CatalogFetchTarget>,
 ) -> Result<FetchedCatalog<RawServerItems>, ApplicationError> {
@@ -485,7 +484,7 @@ pub(super) async fn fetch_inventory(
 
 async fn fetch_items_from_server(
     index: usize,
-    state: CatalogService,
+    state: MediaServices,
     request: reqwest::Request,
     session: AuthorizationSession,
     server: Server,
@@ -518,7 +517,7 @@ async fn fetch_items_from_server(
 
 async fn fetch_paged_items_from_server(
     index: usize,
-    state: CatalogService,
+    state: MediaServices,
     request: reqwest::Request,
     session: AuthorizationSession,
     server: Server,
@@ -552,7 +551,7 @@ async fn fetch_paged_items_from_server(
 
 async fn fetch_paged_raw_items_from_server(
     index: usize,
-    state: CatalogService,
+    state: MediaServices,
     request: reqwest::Request,
     session: AuthorizationSession,
     server: Server,
@@ -563,7 +562,7 @@ async fn fetch_paged_raw_items_from_server(
 
 async fn scan_raw_items(
     index: usize,
-    state: CatalogService,
+    state: MediaServices,
     request: reqwest::Request,
     server: Server,
     policy: ScanPolicy,
@@ -640,7 +639,7 @@ async fn scan_raw_items(
 
 async fn fetch_raw_items_from_server(
     index: usize,
-    state: CatalogService,
+    state: MediaServices,
     mut request: reqwest::Request,
     session: AuthorizationSession,
     server: Server,
@@ -648,7 +647,7 @@ async fn fetch_raw_items_from_server(
 ) -> Result<RawServerItems, ApplicationError> {
     // Library discovery must cover the whole inventory, independently of the
     // client's display page. Some upstreams cap even an unbounded request.
-    if is_library_root_request(request.url(), state.get_url_prefix().await.as_deref()) {
+    if is_library_root_request(request.url(), state.url_prefix()) {
         return fetch_library_inventory(index, state, request, session, server).await;
     }
     normalize_upstream_pagination(request.url_mut(), pagination);
@@ -660,7 +659,7 @@ async fn fetch_raw_items_from_server(
 
 async fn fetch_library_inventory(
     index: usize,
-    state: CatalogService,
+    state: MediaServices,
     mut request: reqwest::Request,
     session: AuthorizationSession,
     server: Server,
@@ -735,7 +734,7 @@ async fn fetch_library_inventory(
 
 async fn prepare_backend_request(
     request: reqwest::Request,
-    state: &CatalogService,
+    state: &MediaServices,
     session: &AuthorizationSession,
     server: &Server,
 ) -> Result<reqwest::Request, ApplicationError> {
@@ -749,24 +748,21 @@ async fn prepare_backend_request(
         None,
     )
     .map_err(|error| ApplicationError::Internal(error.into()).at(FailureStage::CatalogEncoding))?;
-    let prefix = state.get_url_prefix().await;
-    crate::application::request::UpstreamRequestBuilder::new(
-        &state.processors.url_processor,
-        prefix.as_deref(),
-    )
-    .build(&target, &request)
-    .await
-    .map_err(Into::into)
+    state
+        .request_builder()
+        .build(&target, &request)
+        .await
+        .map_err(Into::into)
 }
 
 async fn execute_raw_items_request(
     index: usize,
-    state: CatalogService,
+    state: MediaServices,
     request: reqwest::Request,
     server: Server,
 ) -> Result<RawServerItems, ApplicationError> {
     let response = crate::application::upstream::execute_payload::<serde_json::Value>(
-        state.upstream.as_ref(),
+        &state.json_upstream(),
         request,
     )
     .await
@@ -789,7 +785,7 @@ async fn execute_raw_items_request(
 }
 
 async fn track_discovered_libraries(
-    state: &CatalogService,
+    state: &MediaServices,
     server: &Server,
     response: &ItemsResponseVariants,
 ) {
@@ -831,7 +827,7 @@ fn discovered_libraries_from_response(
 
 async fn process_items_response_json(
     response: &mut ItemsResponseVariants,
-    state: &CatalogService,
+    state: &MediaServices,
     server: &Server,
     proxy_api_key: Option<&str>,
 ) -> Result<(), ApplicationError> {
@@ -965,7 +961,7 @@ mod tests {
             );
             let policy = CatalogRequestPolicy::from_url(request.url());
             let error = match fetch_catalog(
-                &state.catalog_service(),
+                &state,
                 &request,
                 &policy,
                 vec![target],
@@ -1030,7 +1026,7 @@ mod tests {
                 format!("http://proxy/Items?{key}=aggregate&Extension=opaque%2Fvalue&StartIndex=7&Limit=2").parse().unwrap());
             let policy = CatalogRequestPolicy::from_url(original.url());
             let fetched = fetch_catalog(
-                &state.catalog_service(),
+                &state,
                 &original,
                 &policy,
                 vec![target],
@@ -1090,15 +1086,9 @@ mod tests {
                 .unwrap(),
             );
             let policy = CatalogRequestPolicy::from_url(original.url());
-            let fetched = fetch_show_catalog(
-                &state.catalog_service(),
-                &original,
-                &policy,
-                vec![target],
-                0,
-            )
-            .await
-            .unwrap();
+            let fetched = fetch_show_catalog(&state, &original, &policy, vec![target], 0)
+                .await
+                .unwrap();
             assert_eq!(
                 fetched.report.outcomes()[0]
                     .parent_id
