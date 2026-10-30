@@ -9,7 +9,6 @@ use tracing::debug;
 
 use crate::application::{input::OperationRequest, services::MediaServices};
 
-pub(crate) mod input;
 mod query;
 pub(crate) mod refresh;
 
@@ -315,12 +314,10 @@ pub(super) async fn finalize_items_response(
             request.url(),
         ) {
             if let Some(token) = auth.token_ref() {
-                crate::application::response::media_response(
-                    &state.client_sessions,
-                    Some(token),
-                    &response,
-                )
-                .await;
+                state
+                    .client_sessions
+                    .cache_media_response(token, &response)
+                    .await;
             }
         }
     }

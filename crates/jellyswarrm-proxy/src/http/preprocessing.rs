@@ -1,8 +1,45 @@
-//! Convert and consume incoming HTTP requests, then analyze bodies and resolve authorized backend sessions.
-use super::*;
+//! Incoming request extraction: convert Axum requests, resolve the caller identity,
+//! analyze bodies, and collect authorized backend sessions. Workflows own backend selection.
+use axum::extract::{OriginalUri, Request};
+
+use anyhow::{anyhow, Result};
+use axum::http;
+use http_body_util::BodyExt;
+use tracing::{debug, error};
+
+use crate::application::accounts::{self, user_for_credential, RequestIdentity};
 use crate::application::{
-    accounts::identity::user_for_credential, context::RequestContext, input::OperationRequest,
+    context::RequestContext, input::OperationRequest, services::MediaServices,
 };
+use crate::auth::service::AuthorizationSession;
+use crate::libraries::service::VirtualLibraryAccessScope;
+use crate::processors::analyze_json;
+use crate::processors::request_analyzer::{
+    PlaybackSessionAction, RequestAnalysisContext, RequestBodyAnalysisResult,
+};
+use crate::protocol::identity::{request_device, JellyfinAuthorization};
+use crate::servers::storage::Server;
+
+#[cfg(test)]
+#[path = "../unit_tests/preprocessing.rs"]
+mod tests;
+
+/// Credential parsing reads the query, so give the request URI an absolute form.
+pub(crate) fn request_url(uri: &http::Uri) -> Result<url::Url> {
+    let path_and_query = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
+    Ok(url::Url::parse(&format!(
+        "http://localhost{path_and_query}"
+    ))?)
+}
+
+pub(crate) async fn resolve_request_identity(
+    headers: &http::HeaderMap,
+    uri: &http::Uri,
+    state: &crate::auth::UserAuthorizationService,
+) -> Result<RequestIdentity> {
+    Ok(accounts::resolve_identity(headers, &request_url(uri)?, state).await?)
+}
+
 pub(crate) async fn extract_request_infos(
     req: Request,
     state: &MediaServices,
@@ -158,7 +195,7 @@ pub(crate) async fn extract_request_infos(
     })
 }
 
-pub(crate) async fn axum_to_reqwest(req: Request) -> Result<reqwest::Request> {
+async fn axum_to_reqwest(req: Request) -> Result<reqwest::Request> {
     let original_uri = req
         .extensions()
         .get::<OriginalUri>()
@@ -186,7 +223,7 @@ pub(crate) async fn axum_to_reqwest(req: Request) -> Result<reqwest::Request> {
 }
 
 /// Try to parse the body of a reqwest::Request into serde_json::Value
-pub(crate) fn body_to_json(request: &reqwest::Request) -> Option<serde_json::Value> {
+fn body_to_json(request: &reqwest::Request) -> Option<serde_json::Value> {
     if let Some(content_type) = request
         .headers()
         .get(reqwest::header::CONTENT_TYPE)

@@ -1,16 +1,18 @@
 //! Client-session authentication, revocation, discovery and remote-control orchestration.
 pub(crate) mod access;
-mod control;
 #[cfg(test)]
 mod tests;
 use crate::{
     auth::{service::User, UserAuthorizationService},
     config::SettingsView,
     protocol::{authorization::Authorization, device::Device},
-    sessions::{models::Capabilities, ClientSession, ClientSessionService, SessionContext},
+    sessions::{
+        models::{Capabilities, GeneralCommand},
+        ClientSession, ClientSessionService, SessionContext,
+    },
     syncplay::service::{RemoteCommandError, SyncPlayService},
 };
-use serde_json::Value;
+use serde_json::{json, Value};
 
 #[derive(thiserror::Error)]
 pub(crate) enum SessionOperationError {
@@ -68,7 +70,7 @@ impl<'a> SessionOperations<'a> {
         mutating: bool,
         device_hint: Option<Device>,
     ) -> Result<SessionContext, SessionOperationError> {
-        let identity = super::accounts::identity::resolve(headers, url, self.authorization).await?;
+        let identity = super::accounts::resolve_identity(headers, url, self.authorization).await?;
         let user = identity
             .user
             .ok_or(SessionOperationError::Unauthenticated)?;
@@ -230,7 +232,7 @@ impl<'a> SessionOperations<'a> {
         {
             return Err(SessionOperationError::NotControllable);
         }
-        let playback_mutation = control::mutates_playback(message_type, data);
+        let playback_mutation = mutates_playback(message_type, data);
         self.groups
             .send_remote_command(id, message_type, data, playback_mutation)
             .await?;
@@ -267,4 +269,130 @@ pub(crate) async fn decorate_authentication(
         response.session_info = serde_json::from_value(session.dto(server_id, &sessions.transport))
             .expect("local SessionInfo DTO");
     }
+}
+
+// Remote-command capability, media-access and SyncPlay coexistence policy.
+impl SessionOperations<'_> {
+    pub(crate) async fn general_command(
+        &self,
+        caller: &SessionContext,
+        target: &ClientSession,
+        command: GeneralCommand,
+    ) -> Result<(&'static str, Value), SessionOperationError> {
+        let choices = [
+            "MoveUp",
+            "MoveDown",
+            "MoveLeft",
+            "MoveRight",
+            "PageUp",
+            "PageDown",
+            "PreviousLetter",
+            "NextLetter",
+            "ToggleOsd",
+            "ToggleContextMenu",
+            "Select",
+            "Back",
+            "TakeScreenshot",
+            "SendKey",
+            "SendString",
+            "GoHome",
+            "GoToSettings",
+            "VolumeUp",
+            "VolumeDown",
+            "Mute",
+            "Unmute",
+            "ToggleMute",
+            "SetVolume",
+            "SetAudioStreamIndex",
+            "SetSubtitleStreamIndex",
+            "ToggleFullscreen",
+            "DisplayContent",
+            "GoToSearch",
+            "DisplayMessage",
+            "SetRepeatMode",
+            "ChannelUp",
+            "ChannelDown",
+            "Guide",
+            "ToggleStats",
+            "SetShuffleQueue",
+            "ToggleOsdMenu",
+            "SetMaxStreamingBitrate",
+            "SetPlaybackOrder",
+            "PlayMediaSource",
+            "PlayTrailers",
+            "PlayState",
+            "PlayNext",
+            "Play",
+        ];
+        let name = choices
+            .into_iter()
+            .find(|c| c.eq_ignore_ascii_case(&command.name))
+            .ok_or(SessionOperationError::InvalidInput)?;
+        if !target
+            .capabilities
+            .supported_commands
+            .iter()
+            .any(|c| c.eq_ignore_ascii_case(name))
+        {
+            return Err(SessionOperationError::NotControllable);
+        }
+        let arg = |key: &str| {
+            command
+                .arguments
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(key))
+                .map(|(_, v)| v.as_str())
+        };
+        let item_id = |value: &str| {
+            uuid::Uuid::parse_str(value)
+                .map(|id| id.simple().to_string())
+                .map_err(|_| SessionOperationError::InvalidInput)
+        };
+        let mut items = Vec::new();
+        if let Some(id) = arg("ItemId") {
+            items.push(item_id(id)?);
+        }
+        if let Some(ids) = arg("ItemIds") {
+            for id in ids.split(',') {
+                items.push(item_id(id.trim())?);
+            }
+        }
+        if matches!(name, "DisplayContent" | "PlayMediaSource" | "PlayTrailers") && items.is_empty()
+        {
+            return Err(SessionOperationError::InvalidInput);
+        }
+        if let Some(source) = arg("MediaSourceId") {
+            if items.is_empty() {
+                return Err(SessionOperationError::InvalidInput);
+            }
+            self.require_target_media(target, &items, Some(&item_id(source)?))
+                .await?;
+        } else if !items.is_empty() {
+            self.require_target_media(target, &items, None).await?;
+        }
+        Ok((
+            "GeneralCommand",
+            json!({"Name": name, "Arguments": command.arguments,
+            "ControllingUserId": caller.user.id}),
+        ))
+    }
+}
+
+/// Navigation and keyboard commands can trigger playback. Only presentation and
+/// volume commands may coexist with SyncPlay; adapters do not choose this gate.
+fn mutates_playback(message_type: &str, data: &Value) -> bool {
+    message_type != "GeneralCommand"
+        || !matches!(
+            data["Name"].as_str().unwrap_or(""),
+            "VolumeUp"
+                | "VolumeDown"
+                | "Mute"
+                | "Unmute"
+                | "ToggleMute"
+                | "SetVolume"
+                | "DisplayMessage"
+                | "ToggleFullscreen"
+                | "ToggleStats"
+                | "TakeScreenshot"
+        )
 }

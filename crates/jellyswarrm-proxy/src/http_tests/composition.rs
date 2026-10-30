@@ -100,7 +100,7 @@ async fn production_authentication_wiring_logs_in_with_encrypted_mappings_and_re
     }
     // Reconstructing through the production seam also reads/decrypts the
     // persisted session rows, rather than relying on transient login objects.
-    let rebuilt = crate::app::authorization::build_authorization(f.pool.clone(), &config)
+    let rebuilt = crate::auth::UserAuthorizationService::from_config(f.pool.clone(), &config)
         .await
         .unwrap();
     let sessions = rebuilt

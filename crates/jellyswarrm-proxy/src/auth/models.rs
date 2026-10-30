@@ -1,8 +1,8 @@
 //! Local users, API keys, backend mappings, authorization sessions, and normalized device records.
 use sqlx::{sqlite::SqliteRow, FromRow, Row};
 
+use crate::domain::ids::ServerId;
 use crate::domain::security::EncryptedPassword;
-use crate::domain::server_id::ServerId;
 use crate::domain::user_id::UserId;
 use crate::protocol::authorization::Authorization;
 

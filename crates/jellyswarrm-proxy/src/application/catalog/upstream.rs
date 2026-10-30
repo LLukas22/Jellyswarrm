@@ -11,7 +11,7 @@ use crate::application::services::MediaServices;
 use crate::{
     application::upstream::response_json_to_payload,
     auth::service::AuthorizationSession,
-    domain::server_id::ServerId,
+    domain::ids::ServerId,
     libraries::service::DiscoveredLibrary,
     models::{ItemsResponseVariants, ItemsResponseWithCount},
     processors::response_processor::ResponseProcessingProfile,
@@ -64,7 +64,7 @@ pub(super) struct RawServerItems {
 pub(crate) struct FetchedServerItems<T = ServerItems> {
     pub(crate) server_items: T,
     pub(crate) outcome: FetchOutcome,
-    pub(crate) source_parent_id: Option<crate::application::identity::BackendItemId>,
+    pub(crate) source_parent_id: Option<crate::domain::ids::BackendItemId>,
 }
 
 /// Federates `/Shows/{seriesId}/Seasons|Episodes` for a collapsed (aggregate)

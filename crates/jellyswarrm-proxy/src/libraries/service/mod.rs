@@ -7,7 +7,7 @@ use tracing::debug;
 use uuid::Uuid;
 
 use crate::{
-    domain::server_id::ServerId, media::storage::MediaStorageService,
+    domain::ids::ServerId, media::storage::MediaStorageService,
     servers::storage::ServerStorageService,
 };
 

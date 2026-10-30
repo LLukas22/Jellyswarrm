@@ -1,16 +1,16 @@
 //! Compose concrete services, session/authentication layers, background tasks, and the HTTP listener.
 #[cfg(debug_assertions)]
 use super::debug_initialization;
-use super::shutdown::shutdown_signal;
 use crate::{
     libraries::VirtualLibraryService, media::MediaStorageService, servers::ServerStorageService,
 };
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tower_sessions_sqlx_store::SqliteStore;
 use tracing::{error, info, warn};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let paths = crate::config::Paths::resolve()?;
-    let _logging_guard = super::logging::initialize(&paths);
+    let _logging_guard = initialize_logging(&paths);
 
     let loaded_config = crate::config::load_config(&paths)?;
     let startup = loaded_config.startup_config();
@@ -52,7 +52,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize user authorization service
     let user_authorization =
-        super::authorization::build_authorization(pool.clone(), &loaded_config).await?;
+        crate::auth::UserAuthorizationService::from_config(pool.clone(), &loaded_config).await?;
 
     // Initialize server storage service
     let server_storage = ServerStorageService::new(pool.clone());
@@ -168,7 +168,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let app = super::router::build_router(app_state, &startup, pool, session_store, addr);
+    let app = crate::http::router::build_router(app_state, &startup, pool, session_store, addr);
 
     // Start the server
     let listener = match tokio::net::TcpListener::bind(addr).await {
@@ -185,4 +185,64 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     runtime.shutdown().await;
     Ok(())
+}
+
+/// Initialize console and rotating-file tracing; callers retain the worker guard until shutdown.
+fn initialize_logging(paths: &crate::config::Paths) -> tracing_appender::non_blocking::WorkerGuard {
+    // Initialize file logging
+
+    let file_appender = tracing_appender::rolling::daily(&paths.logs, "jellyswarm.log");
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+
+    // Create an environment filter with configurable log level
+    // Defaults to "jellyswarrm_proxy=info" but can be overridden with RUST_LOG env var
+    // Examples:
+    //   RUST_LOG=debug                           - Enable debug for all modules
+    //   RUST_LOG=jellyswarrm_proxy=debug         - Enable debug for this app only
+    //   RUST_LOG=jellyswarrm_proxy=trace,tower=info - Debug this app, info for tower
+    let default_filter = "jellyswarrm_proxy=info,jellyfin_api=info";
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(non_blocking)
+                .with_ansi(false),
+        )
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stdout))
+        .init();
+
+    _guard
+}
+
+/// Wait for termination signals. Runtime resources stop after HTTP requests drain.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            error!("Failed to install Ctrl+C handler: {}", e);
+            std::future::pending::<()>().await;
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        let Ok(mut signal) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        else {
+            error!("Failed to install terminate signal handler");
+            std::future::pending::<()>().await;
+            return;
+        };
+        signal.recv().await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
 }

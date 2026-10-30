@@ -9,7 +9,7 @@ use tracing::{error, info};
 
 use crate::{
     http::{
-        assets::version::{JellyfinUiVersion, JELLYFIN_UI_VERSION},
+        assets::{JellyfinUiVersion, JELLYFIN_UI_VERSION},
         state::AdapterPaths,
     },
     ui::auth::{AuthenticatedUser, UserRole},

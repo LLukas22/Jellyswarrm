@@ -2,11 +2,11 @@
 use sqlx::{Row, SqlitePool};
 use tracing::{debug, info, warn};
 
+use crate::domain::ids::ServerId;
 use crate::domain::security::{
     decrypt_password, decrypt_password_with_key_material, encrypt_password, is_legacy_plaintext,
     EncryptedPassword, HashedPassword, MappingEncryptionKey, Password,
 };
-use crate::domain::server_id::ServerId;
 use crate::servers::storage::Server;
 #[cfg(test)]
 use crate::servers::url::ServerUrl;
@@ -61,6 +61,21 @@ mod sessions;
 mod users;
 
 impl UserAuthorizationService {
+    /// Production construction, shared with full HTTP fixtures: mapping and
+    /// session encryption are both keyed from the configured session secret.
+    pub(crate) async fn from_config(
+        pool: SqlitePool,
+        config: &crate::config::AppConfig,
+    ) -> anyhow::Result<Self> {
+        let mapping_key = MappingEncryptionKey::from_session_key(&config.session_key)?;
+        let mut authorization =
+            Self::with_mapping_key(pool, mapping_key, (&config.password).into());
+        authorization
+            .enable_session_encryption(&config.session_key)
+            .await?;
+        Ok(authorization)
+    }
+
     /// Use the persisted session secret in production. `new` remains available
     /// for legacy-format test fixtures that exercise old database rows.
     pub(crate) fn with_mapping_key(

@@ -1,6 +1,6 @@
 //! Maintain proxy-owned client presence, device metadata, playback state, and remote control.
 use super::{models::Capabilities, transport::ConnectionHub};
-use crate::domain::server_id::ServerId;
+use crate::domain::ids::ServerId;
 use crate::domain::user_id::UserId;
 use crate::{auth::service::User, protocol::device::Device};
 use chrono::{DateTime, Duration, Utc};
@@ -404,7 +404,7 @@ mod tests {
             version: "1".into(),
         };
         let id = service.ensure(&user(), "secret", Some(&device)).await;
-        let server = crate::domain::server_id::ServerId::new(2);
+        let server = crate::domain::ids::ServerId::new(2);
         service.remember_episode_server(&id, "show", server).await;
         assert_eq!(
             service.preferred_episode_server(&id, "show").await,

@@ -1,6 +1,6 @@
 //! Virtual library records, assignment errors, grouping modes, and access-scoped resolution results.
 
-use crate::{domain::server_id::ServerId, media::storage::MediaMapping, servers::storage::Server};
+use crate::{domain::ids::ServerId, media::storage::MediaMapping, servers::storage::Server};
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub(crate) struct AutomaticVirtualLibrary {

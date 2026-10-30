@@ -6,7 +6,7 @@ use crate::models::{
 use std::collections::HashSet;
 
 use crate::application::error::{ApplicationError, FailureStage};
-use crate::application::identity::{BackendItemId, VirtualItemId};
+use crate::domain::ids::{BackendItemId, VirtualItemId};
 use tracing::{debug, error};
 
 use crate::application::services::MediaServices;

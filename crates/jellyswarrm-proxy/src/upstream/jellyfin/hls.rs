@@ -192,11 +192,11 @@ mod tests {
     use crate::{
         auth::service::UserAuthorizationService,
         config::{AppConfig, MediaStreamingMode},
-        domain::server_id::ServerId,
+        domain::ids::ServerId,
         libraries::service::VirtualLibraryService,
         media::storage::MediaStorageService,
         persistence::MIGRATOR,
-        playback::sessions::SessionStorage,
+        playback::SessionStorage,
         processors::{hls::HlsUrlTranslation, url_processor::UrlProcessor},
         servers::storage::ServerStorageService,
         servers::Server,

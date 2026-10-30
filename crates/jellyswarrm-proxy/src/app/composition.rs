@@ -9,7 +9,7 @@ use crate::{
     http::state::{AdapterPaths, AppState, ManagementState, SessionState, SettingsState},
     libraries::VirtualLibraryService,
     media::MediaStorageService,
-    playback::sessions::SessionStorage,
+    playback::SessionStorage,
     processors::{
         request_analyzer::RequestAnalyzer, request_processor::RequestProcessor,
         response_processor::ResponseProcessor, url_processor::UrlProcessor, ProxyProcessors,
@@ -77,7 +77,7 @@ pub(super) fn adapter_state(
         client_sessions: client_sessions.clone(),
         syncplay,
     };
-    let authentication = application::accounts::services::AuthenticationService {
+    let authentication = application::accounts::AuthenticationService {
         user_authorization: user_authorization.clone(),
         server_storage: server_storage.clone(),
         settings: settings.clone(),

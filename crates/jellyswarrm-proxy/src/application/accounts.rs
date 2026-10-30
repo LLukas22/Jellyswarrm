@@ -4,20 +4,80 @@ use crate::application::error::{ApplicationError, FailureStage};
 use hyper::HeaderMap;
 use tracing::{debug, error, info, warn};
 
+use std::sync::Arc;
+
 use crate::{
     application::input::OperationRequest,
     application::services::MediaServices,
     application::upstream::execute_json_request,
-    auth::service::LocalCredential,
+    auth::{
+        mapping_authentication::MappingAuthenticator,
+        service::{LocalCredential, User},
+        UserAuthorizationService,
+    },
+    config::SettingsView,
     domain::security::Password,
     models::{AuthenticateRequest, AuthenticateResponse, SyncPlayUserAccessType},
-    protocol::authorization::Authorization,
+    protocol::{
+        authorization::Authorization,
+        device::Device,
+        identity::{request_device, JellyfinAuthorization},
+    },
+    servers::ServerStorageService,
+    sessions::ClientSessionService,
 };
 
 use anyhow::Result;
-pub(crate) mod identity;
-pub(crate) mod services;
-use services::AuthenticationService;
+
+/// Owned account capabilities allow login workers to outlive an individual poll,
+/// without granting access to writable configuration or unrelated workflows.
+#[derive(Clone)]
+pub(crate) struct AuthenticationService {
+    pub(crate) user_authorization: Arc<UserAuthorizationService>,
+    pub(crate) server_storage: Arc<ServerStorageService>,
+    pub(crate) settings: SettingsView,
+    pub(crate) reqwest_client: reqwest::Client,
+    pub(crate) client_sessions: Arc<ClientSessionService>,
+    pub(crate) admin_password: Password,
+}
+
+impl AuthenticationService {
+    pub(crate) fn mapping_authenticator(&self) -> MappingAuthenticator<'_> {
+        MappingAuthenticator::new(
+            &self.user_authorization,
+            self.reqwest_client.clone(),
+            self.admin_password.clone(),
+        )
+    }
+}
+
+/// A parsed caller credential, resolved without incoming-adapter or startup state.
+pub(crate) struct RequestIdentity {
+    pub(crate) auth: Option<JellyfinAuthorization>,
+    pub(crate) user: Option<User>,
+    pub(crate) device: Option<Device>,
+}
+
+pub(crate) async fn resolve_identity(
+    headers: &http::HeaderMap,
+    url: &url::Url,
+    authorization: &UserAuthorizationService,
+) -> Result<RequestIdentity, sqlx::Error> {
+    let auth = JellyfinAuthorization::from_headers_url(headers, url);
+    let device = request_device(headers, url, auth.as_ref());
+    let user = user_for_credential(auth.as_ref(), authorization).await?;
+    Ok(RequestIdentity { auth, user, device })
+}
+
+pub(crate) async fn user_for_credential(
+    auth: Option<&JellyfinAuthorization>,
+    authorization: &UserAuthorizationService,
+) -> Result<Option<User>, sqlx::Error> {
+    let Some(token) = auth.and_then(JellyfinAuthorization::token_ref) else {
+        return Ok(None);
+    };
+    authorization.get_user_by_token(token).await
+}
 
 async fn process_user(
     mut server_user: crate::models::User,

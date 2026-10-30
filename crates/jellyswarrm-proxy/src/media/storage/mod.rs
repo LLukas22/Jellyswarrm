@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 #[cfg(test)]
 use crate::config::MediaStreamingMode;
-use crate::domain::server_id::ServerId;
+use crate::domain::ids::ServerId;
 use crate::servers::storage::Server;
 #[cfg(test)]
 use crate::servers::url::ServerUrl;

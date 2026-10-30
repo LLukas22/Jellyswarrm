@@ -11,7 +11,7 @@ use crate::{
     config::SettingsView,
     libraries::VirtualLibraryService,
     media::MediaStorageService,
-    playback::sessions::SessionStorage,
+    playback::SessionStorage,
     processors::{
         response_processor::{ResponseProcessingContext, ResponseProcessingProfile},
         ProxyProcessors,

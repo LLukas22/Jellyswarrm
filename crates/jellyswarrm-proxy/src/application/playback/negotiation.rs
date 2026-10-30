@@ -16,11 +16,11 @@ use crate::{
         error::ApplicationError,
         input::OperationRequest,
         playback::{
+            lifecycle::record_playback_sources,
             response::{
                 process_playback_response, remap_playback_request, track_play_session,
                 track_playback_alias,
             },
-            selection::record_playback_sources,
             target::{MediaTargetResolver, PlaybackIntent, SelectionPolicy},
         },
     },
@@ -291,12 +291,10 @@ pub(crate) async fn post_playback_info(
             }
             debug!(server_id = %server.id, source_count = response.media_sources.len(), "Playback negotiation completed");
             if let Some(token) = proxy_api_key.as_deref() {
-                crate::application::response::media_response(
-                    &state.client_sessions,
-                    Some(token),
-                    &final_payload,
-                )
-                .await;
+                state
+                    .client_sessions
+                    .cache_media_response(token, &final_payload)
+                    .await;
             }
             Ok(response)
         }

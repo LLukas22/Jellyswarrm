@@ -16,7 +16,7 @@ use crate::{
 pub(super) async fn restrict_named_ids(
     state: &MediaServices,
     url: &mut url::Url,
-    server_id: crate::domain::server_id::ServerId,
+    server_id: crate::domain::ids::ServerId,
 ) -> Result<bool, ApplicationError> {
     let guide = url
         .path()

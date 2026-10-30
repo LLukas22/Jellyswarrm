@@ -1,11 +1,13 @@
 //! Local playback report transitions. Planning never mutates session storage;
 //! callers commit only after upstream success and response construction.
 use crate::{
-    domain::server_id::ServerId,
-    playback::sessions::{
-        PlaybackSession, PreparedLiveStream, RevisionedPlaybackSession, SessionStorage,
-    },
+    application::{details::sources::version_name, error::ApplicationError},
+    domain::ids::ServerId,
+    media::storage::{MediaStorageService, MediaVersionSourceObservation},
+    models::MediaSource,
+    playback::{PlaybackSession, PreparedLiveStream, RevisionedPlaybackSession, SessionStorage},
     processors::request_analyzer::{PlaybackSessionAction, RequestBodyAnalysisResult},
+    servers::storage::Server,
 };
 
 /// The sole application owner of local binding writes. Call only at the
@@ -100,8 +102,8 @@ impl<'a> PlaybackLifecycle<'a> {
 
     pub(crate) async fn close_live(
         &self,
-        id: &crate::domain::playback::VirtualLiveStreamId,
-        viewer: &crate::domain::playback::ViewerId,
+        id: &crate::domain::ids::VirtualLiveStreamId,
+        viewer: &crate::domain::ids::ViewerId,
     ) {
         self.sessions.close_live_binding(id, viewer).await;
     }
@@ -196,6 +198,71 @@ impl PendingPlaybackSessionUpdate {
             }
         }
     }
+}
+
+/// Record negotiated playback sources and retain revision-fenced routability.
+pub(crate) async fn record_playback_sources(
+    media: &MediaStorageService,
+    aggregate_id: &str,
+    server: &Server,
+    original_item_id: &str,
+    source_generation: crate::media::storage::ReconciliationGeneration,
+    sources: &mut Vec<MediaSource>,
+) -> Result<(), ApplicationError> {
+    let Some(group) = media
+        .get_media_version_group(aggregate_id)
+        .await
+        .map_err(ApplicationError::Storage)?
+    else {
+        return Ok(());
+    };
+    let Some(member) = media
+        .get_media_version_members(group.id)
+        .await
+        .map_err(ApplicationError::Storage)?
+        .into_iter()
+        .find(|member| {
+            member.mapping.server_id == server.id
+                && member.mapping.original_media_id == original_item_id
+        })
+    else {
+        return Ok(());
+    };
+    let observations = sources
+        .iter()
+        .map(|source| MediaVersionSourceObservation {
+            member_mapping_id: member.mapping.id,
+            source_virtual_id: source.id.clone(),
+        })
+        .collect::<Vec<_>>();
+    // Keep negotiated names identical to the versions advertised by details.
+    for source in sources.iter_mut() {
+        source.name = Some(version_name(source, server));
+    }
+    let sources_recorded = media
+        .observe_media_version_sources(
+            group.id,
+            source_generation,
+            &[member.mapping.id],
+            &observations,
+        )
+        .await
+        .map_err(ApplicationError::Storage)?;
+    if !sources_recorded {
+        let mut routable_sources = Vec::new();
+        for source in sources.drain(..) {
+            if media
+                .get_media_version_source_route(group.id, &source.id)
+                .await
+                .map_err(ApplicationError::Storage)?
+                .is_some()
+            {
+                routable_sources.push(source);
+            }
+        }
+        *sources = routable_sources;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

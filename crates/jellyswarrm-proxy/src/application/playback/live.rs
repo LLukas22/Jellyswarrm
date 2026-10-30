@@ -16,7 +16,7 @@ use crate::{
     application::{
         error::ApplicationError,
         input::OperationRequest,
-        playback::{response::track_play_session, selection::record_playback_sources},
+        playback::{lifecycle::record_playback_sources, response::track_play_session},
     },
     models::MediaSource,
     outbound::json::set_json_body,
@@ -25,11 +25,11 @@ use crate::{
 
 /// Virtualize opaque live IDs and their delivery URL references together.
 pub(crate) async fn prepare_live_source(
-    state: &crate::playback::sessions::SessionStorage,
+    state: &crate::playback::SessionStorage,
     source: &mut MediaSource,
     user: &str,
     server: &crate::servers::storage::Server,
-) -> Result<Option<Arc<crate::playback::sessions::PreparedLiveStream>>, ApplicationError> {
+) -> Result<Option<Arc<crate::playback::PreparedLiveStream>>, ApplicationError> {
     let mut value = serde_json::to_value(&*source).map_err(ApplicationError::Serialization)?;
     let Some(original) = value
         .as_object()

@@ -2,7 +2,7 @@
 //! registration and response decoration are explicit stages, owned here rather
 //! than by an incoming HTTP handler.
 use crate::{
-    application::accounts::services::AuthenticationService,
+    application::accounts::AuthenticationService,
     auth::quick_connect::{QuickConnectSession, Redemption},
     models::{AuthenticateResponse, SyncPlayUserAccessType},
     protocol::authorization::Authorization,
@@ -295,9 +295,10 @@ mod tests {
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
         MIGRATOR.run(&pool).await.unwrap();
         let config = AppConfig::default();
-        let authorization = crate::app::authorization::build_authorization(pool.clone(), &config)
-            .await
-            .unwrap();
+        let authorization =
+            crate::auth::UserAuthorizationService::from_config(pool.clone(), &config)
+                .await
+                .unwrap();
         let user = authorization
             .create_user("local", &"password".into())
             .await

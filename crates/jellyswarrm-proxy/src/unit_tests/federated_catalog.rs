@@ -73,7 +73,7 @@ pub(crate) async fn fixture_member_parent_ids(
     state: &MediaFixture,
     sessions: &[(AuthorizationSession, Server)],
     original_parent_id: &str,
-) -> std::collections::HashMap<crate::domain::server_id::ServerId, String> {
+) -> std::collections::HashMap<crate::domain::ids::ServerId, String> {
     let mut ids = std::collections::HashMap::new();
     for (_, server) in sessions {
         let mapping = state

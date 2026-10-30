@@ -10,7 +10,7 @@ use serde::Deserialize;
 use tracing::{error, info};
 
 use crate::{
-    config::MediaStreamingMode, domain::security::Password, domain::server_id::ServerId,
+    config::MediaStreamingMode, domain::ids::ServerId, domain::security::Password,
     http::state::ManagementState, servers::storage::Server,
 };
 

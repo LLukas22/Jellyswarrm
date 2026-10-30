@@ -6,12 +6,10 @@ use crate::{
     application::{self, services::MediaServices},
     auth::UserAuthorizationService,
     config::{AppConfig, SettingsView},
-    domain::server_id::ServerId,
+    domain::ids::ServerId,
     libraries::VirtualLibraryService,
     media::MediaStorageService,
-    playback::sessions::{
-        LiveStreamBinding, PreparedLiveStream, RevisionedPlaybackSession, SessionStorage,
-    },
+    playback::{LiveStreamBinding, PreparedLiveStream, RevisionedPlaybackSession, SessionStorage},
     processors::{
         request_analyzer::RequestAnalyzer, request_processor::RequestProcessor,
         response_processor::ResponseProcessor, url_processor::UrlProcessor, ProxyProcessors,
@@ -97,8 +95,8 @@ impl MediaFixture {
     }
     pub(crate) async fn authentication_service(
         &self,
-    ) -> application::accounts::services::AuthenticationService {
-        application::accounts::services::AuthenticationService {
+    ) -> application::accounts::AuthenticationService {
+        application::accounts::AuthenticationService {
             user_authorization: self.user_authorization.clone(),
             server_storage: self.server_storage.clone(),
             settings: self.services.config.clone(),

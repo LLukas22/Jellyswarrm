@@ -12,13 +12,12 @@ use tracing::info;
 #[cfg(test)]
 use crate::test_support::MediaFixture;
 use crate::{
-    application::delivery::delivery_error,
     application::{
         context::{AuthorizedTarget, RequestContext},
         input::OperationRequest,
     },
     config::MediaStreamingMode,
-    playback::sessions::PlaybackSession,
+    playback::PlaybackSession,
     processors::hls::HlsUrlTranslation,
     protocol::identity::JellyfinAuthorization,
     servers::storage::Server,
@@ -142,7 +141,7 @@ async fn forward_media_request(
             );
             let token = JellyfinAuthorization::from_headers_url(request.headers(), request.url())
                 .and_then(|auth| auth.token());
-            delivery::redirect(&request, token.as_deref()).map_err(delivery_error)
+            delivery::redirect(&request, token.as_deref()).map_err(ApplicationError::from)
         }
         MediaStreamingMode::Proxy => {
             info!(
@@ -164,7 +163,7 @@ async fn forward_media_request(
             );
             delivery::proxy(&context, request)
                 .await
-                .map_err(delivery_error)
+                .map_err(ApplicationError::from)
         }
     }
 }
@@ -220,7 +219,7 @@ pub(crate) async fn get_download(
     );
     delivery::proxy(&context, request)
         .await
-        .map_err(delivery_error)
+        .map_err(ApplicationError::from)
 }
 
 pub(crate) async fn get_video_resource(
@@ -348,7 +347,7 @@ pub(crate) async fn get_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::server_id::ServerId;
+    use crate::domain::ids::ServerId;
 
     async fn direct_fixture(
         mode: MediaStreamingMode,
@@ -429,7 +428,7 @@ mod tests {
         );
         let error = match delivery::proxy(&context, request).await {
             Ok(_) => panic!("unsupported scheme must fail transport"),
-            Err(error) => delivery_error(error),
+            Err(error) => ApplicationError::from(error),
         };
         use std::error::Error;
 

@@ -668,7 +668,7 @@ async fn cancellation_rejects_unknown_foreign_and_unavailable_sessions() {
         .unwrap();
     f.state
         .play_sessions
-        .add_session(crate::playback::sessions::PlaybackSession {
+        .add_session(crate::playback::PlaybackSession {
             session_id: "foreign".into(),
             item_id: aggregate.clone(),
             user_id: f.other.id.clone(),

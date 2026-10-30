@@ -3,13 +3,13 @@
 //! workflow, and renders the result; status policy lives in `http::error`.
 use super::{
     extractors::{CatalogInput, LiveInput, OperationInput},
-    handlers::quick_connect,
     proxy::proxy_handler,
+    quick_connect,
     state::AppState,
 };
 use crate::{
     application::{
-        accounts::{self, services::AuthenticationService},
+        accounts::{self, AuthenticationService},
         catalog, details,
         error::ApplicationError,
         playback::{
@@ -18,7 +18,7 @@ use crate::{
         },
         services::MediaServices,
     },
-    http::assets::version::JELLYFIN_UI_VERSION,
+    http::assets::JELLYFIN_UI_VERSION,
     models::{AuthenticateRequest, PlaybackResponse, PublicServerInfo, ServerInfo, User},
     upstream::jellyfin::delivery::{DeliveryBody, DeliveryResponse},
 };

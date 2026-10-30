@@ -1,10 +1,43 @@
 //! Jellyfin JSON wire normalization and execution, without workflow error policy.
 
-use super::transport::JsonTransportError;
 use crate::outbound::json::{payload_from_request, set_json_body, JsonBodyError};
 #[cfg(test)]
 use hyper::StatusCode;
 use serde_json::Value;
+
+#[derive(thiserror::Error)]
+pub(crate) enum JsonTransportError {
+    #[error("upstream transport failure")]
+    Transport(#[source] reqwest::Error),
+    #[error("upstream response failure")]
+    Status(hyper::StatusCode),
+    #[error("outgoing JSON body preparation failed")]
+    RequestBody(#[from] crate::outbound::json::JsonBodyError),
+}
+
+// Never render authenticated URLs, body excerpts, or underlying diagnostics.
+impl std::fmt::Debug for JsonTransportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+
+async fn execute_document(
+    client: &reqwest::Client,
+    request: reqwest::Request,
+) -> Result<String, JsonTransportError> {
+    let response = client
+        .execute(request)
+        .await
+        .map_err(|error| JsonTransportError::Transport(error.without_url()))?;
+    if !response.status().is_success() {
+        return Err(JsonTransportError::Status(response.status()));
+    }
+    response
+        .text()
+        .await
+        .map_err(|error| JsonTransportError::Transport(error.without_url()))
+}
 
 /// Transport-owned execution capability. Typed application decoding and workflow
 /// failure policy are deliberately not part of this contract.
@@ -39,7 +72,7 @@ impl JsonUpstream for JellyfinJsonUpstream {
 
     async fn execute(&self, mut request: reqwest::Request) -> Result<String, JsonTransportError> {
         sync_posted_guide_body(&mut request)?;
-        super::transport::execute_document(&self.client, request).await
+        execute_document(&self.client, request).await
     }
 }
 

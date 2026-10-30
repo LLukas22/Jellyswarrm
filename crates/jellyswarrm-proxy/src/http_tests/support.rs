@@ -82,9 +82,10 @@ impl Fixture {
             .await
             .unwrap();
         MIGRATOR.run(&pool).await.unwrap();
-        let authorization = crate::app::authorization::build_authorization(pool.clone(), &config)
-            .await
-            .unwrap();
+        let authorization =
+            crate::auth::UserAuthorizationService::from_config(pool.clone(), &config)
+                .await
+                .unwrap();
         let state = AdapterFixture::from_media(MediaFixture::with_authorization(
             pool.clone(),
             AppConfig {
@@ -162,7 +163,7 @@ impl Fixture {
         let session_store = tower_sessions_sqlx_store::SqliteStore::new(pool.clone());
         session_store.migrate().await.unwrap();
         let startup = state.config.read().await.startup_config();
-        let app = crate::app::router::build_router(
+        let app = crate::http::router::build_router(
             state.app_state().await,
             &startup,
             pool.clone(),

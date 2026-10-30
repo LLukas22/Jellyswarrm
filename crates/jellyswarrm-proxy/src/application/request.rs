@@ -144,7 +144,7 @@ mod tests {
         libraries::service::VirtualLibraryService,
         media::storage::MediaStorageService,
         persistence::MIGRATOR,
-        playback::sessions::SessionStorage,
+        playback::SessionStorage,
         servers::storage::ServerStorageService,
     };
 

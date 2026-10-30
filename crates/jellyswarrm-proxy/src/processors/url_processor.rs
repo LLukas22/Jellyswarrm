@@ -7,12 +7,12 @@ use crate::{
     auth::service::AuthorizationSession,
     auth::UserAuthorizationService,
     config::SettingsView,
-    domain::server_id::ServerId,
+    domain::ids::ServerId,
     libraries::service::VirtualLibraryAccessScope,
     libraries::VirtualLibraryService,
     media::storage::{MediaMapping, MediaVersionMember},
     media::MediaStorageService,
-    playback::sessions::SessionStorage,
+    playback::SessionStorage,
     protocol::url::{contains_id, decoded_path_segments, is_id_like, replace_id},
     servers::storage::Server,
 };
@@ -818,7 +818,7 @@ mod tests {
         libraries::service::VirtualLibraryService,
         media::storage::MediaStorageService,
         persistence::MIGRATOR,
-        playback::sessions::SessionStorage,
+        playback::SessionStorage,
         servers::storage::ServerStorageService,
     };
 

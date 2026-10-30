@@ -8,7 +8,7 @@ use axum::{
 use tracing::error;
 
 use crate::{
-    domain::server_id::ServerId,
+    domain::ids::ServerId,
     servers::storage::{ServerHealthStatus, ServerStorageService},
 };
 use std::sync::Arc;

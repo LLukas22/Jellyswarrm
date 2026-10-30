@@ -1,6 +1,6 @@
 //! Shared request/response processing with cause-preserving failures. Incoming
 //! adapters, not processors, choose client-facing messages and status codes.
-use super::error::ProcessingError;
+use super::ProcessingError;
 use super::{
     request_analyzer::RequestAnalyzer,
     request_processor::{RequestProcessingContext, RequestProcessor},

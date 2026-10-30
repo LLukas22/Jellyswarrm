@@ -7,7 +7,7 @@ The arrows show runtime handoffs, not module dependency declarations.
 ## Before requests arrive
 
 Startup constructs services in [app/composition.rs](app/composition.rs) and
-assembles the client API and management UI in [app/router.rs](app/router.rs).
+assembles the client API and management UI in [http/router.rs](http/router.rs).
 Handlers receive focused service handles from `http/state.rs`; they do not call
 back into startup to find dependencies.
 
@@ -67,8 +67,8 @@ do not repeat password authentication on every request. A mapping defines access
 scope but does not by itself provide a usable backend session.
 Application API keys are read-only proxy credentials, not new Jellyfin tokens.
 
-**Code:** [token resolution](application/accounts/identity.rs),
-[media request collection](http/preprocessing/request.rs),
+**Code:** [token resolution](application/accounts.rs),
+[media request collection](http/preprocessing.rs),
 [stored sessions](auth/service/sessions.rs),
 [outgoing credential replacement](application/request.rs).
 
@@ -152,7 +152,7 @@ mode, the backend token is placed in the URL because redirects cannot forward an
 authorization header.
 
 **Code:** [delivery selection](application/playback/resources.rs),
-[bindings](playback/sessions.rs),
+[bindings](playback.rs),
 [streaming and redirects](upstream/jellyfin/delivery.rs).
 
 ## Sending a remote-control command

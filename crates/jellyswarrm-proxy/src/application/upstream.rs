@@ -1,18 +1,7 @@
-//! Typed workflow decoding and transport-error conversion. The execution contract
+//! Typed workflow decoding of upstream JSON documents. The execution contract
 //! belongs to upstream; it must never depend on this module.
 use super::error::ApplicationError;
 use crate::upstream::jellyfin::json::{JellyfinJsonUpstream, JsonUpstream};
-use crate::upstream::jellyfin::transport::JsonTransportError;
-
-impl From<JsonTransportError> for ApplicationError {
-    fn from(error: JsonTransportError) -> Self {
-        match error {
-            JsonTransportError::Transport(error) => Self::UpstreamTransport(error),
-            JsonTransportError::Status(status) => Self::UpstreamStatus(status),
-            JsonTransportError::RequestBody(error) => error.into(),
-        }
-    }
-}
 
 pub(crate) fn response_json_to_payload<T: serde::de::DeserializeOwned>(
     payload: serde_json::Value,
@@ -46,6 +35,7 @@ pub(crate) async fn execute_json_request<T: serde::de::DeserializeOwned>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::upstream::jellyfin::json::JsonTransportError;
     use std::error::Error;
     use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
 

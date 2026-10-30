@@ -161,8 +161,8 @@ pub(super) const UPSTREAM_PAGE_SIZE: usize = 100;
 /// Leave other parent references for the per-server request processor.
 pub(super) fn replace_aggregate_parent_id(
     url: &url::Url,
-    resolved_id: &crate::application::identity::VirtualItemId,
-    new_id: &crate::application::identity::VirtualItemId,
+    resolved_id: &crate::domain::ids::VirtualItemId,
+    new_id: &crate::domain::ids::VirtualItemId,
 ) -> url::Url {
     let pairs = url
         .query_pairs()

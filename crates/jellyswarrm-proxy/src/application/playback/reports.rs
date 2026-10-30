@@ -8,7 +8,7 @@ use crate::{
     auth::service::AuthorizationSession,
     libraries::service::VirtualLibraryAccessScope,
     media::storage::{MediaMapping, MediaStorageService},
-    playback::sessions::SessionStorage,
+    playback::SessionStorage,
     processors::request_analyzer::RequestBodyAnalysisResult,
     servers::storage::Server,
 };
@@ -158,8 +158,8 @@ pub(crate) async fn resolve_cancellation(
 mod tests {
     use super::*;
     use crate::{
-        config::MediaStreamingMode, domain::server_id::ServerId, persistence::MIGRATOR,
-        playback::sessions::PlaybackSession, protocol::device::Device,
+        config::MediaStreamingMode, domain::ids::ServerId, persistence::MIGRATOR,
+        playback::PlaybackSession, protocol::device::Device,
         servers::storage::ServerStorageService,
     };
 

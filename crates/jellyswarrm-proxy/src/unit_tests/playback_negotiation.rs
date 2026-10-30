@@ -563,7 +563,7 @@ async fn failed_negotiation_does_not_commit_playback_binding() {
 #[tokio::test]
 async fn shared_resolution_keeps_implicit_ambiguity_and_explicit_binding_conflicts_distinct() {
     use crate::application::playback::target::SelectionReason;
-    use crate::playback::sessions::PlaybackSession;
+    use crate::playback::PlaybackSession;
     let fixture = fixture().await;
     let input = operation(&fixture, "", json!({}));
     let resolver = MediaTargetResolver {
@@ -725,7 +725,7 @@ async fn shared_explicit_source_plan_never_falls_back_from_offline_owner() {
 #[tokio::test]
 async fn invalid_live_open_and_failed_refresh_do_not_commit_playback_transitions() {
     use crate::application::playback::{lifecycle::PlaybackLifecycle, live};
-    use crate::playback::sessions::PlaybackSession;
+    use crate::playback::PlaybackSession;
     let fixture = fixture().await;
     let owner = &fixture.sessions[0].1;
     PlaybackLifecycle::new(&fixture.state.play_sessions)
@@ -828,7 +828,7 @@ async fn live_open_input(fixture: &Fixture, original: &str) -> OperationRequest 
     fixture
         .state
         .play_sessions
-        .add_session(crate::playback::sessions::PlaybackSession {
+        .add_session(crate::playback::PlaybackSession {
             session_id: "live-player".into(),
             item_id: fixture.aggregate.clone(),
             user_id: "viewer".into(),

@@ -1,5 +1,5 @@
 //! Expose client-session discovery, capabilities, playback reports, and remote-control HTTP routes.
-use super::error::status;
+use super::status;
 use crate::sessions::{
     models::{Capabilities, GeneralCommand, MessageCommand},
     SessionContext,

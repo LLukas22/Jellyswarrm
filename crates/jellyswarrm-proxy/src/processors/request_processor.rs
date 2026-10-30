@@ -175,7 +175,7 @@ mod tests {
     use crate::{
         auth::service::UserAuthorizationService,
         config::{AppConfig, MediaStreamingMode},
-        domain::server_id::ServerId,
+        domain::ids::ServerId,
         media::identity::{MediaAlias, MediaKind, MediaObservation, MediaProvider},
         media::storage::{MediaCatalogSnapshot, MediaStorageService},
         persistence::MIGRATOR,
@@ -279,7 +279,7 @@ mod tests {
                 .process_request_body(&mut request, &context, &url)
                 .await
                 .unwrap_err();
-            let crate::processors::error::ProcessingError::RequestBody(cause) = error else {
+            let crate::processors::ProcessingError::RequestBody(cause) = error else {
                 panic!("expected retained processing failure, got {error:?}");
             };
             assert!(crate::processors::ProcessingErrors::contains_cause::<

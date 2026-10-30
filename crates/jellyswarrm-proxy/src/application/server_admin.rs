@@ -3,9 +3,9 @@
 use crate::{
     application::catalog::snapshots::CatalogSnapshots,
     config::MediaStreamingMode,
+    domain::ids::ServerId,
     domain::security::{encrypt_password, EncryptionError, HashedPassword, Password},
-    domain::server_id::ServerId,
-    playback::sessions::SessionStorage,
+    playback::SessionStorage,
     servers::ServerStorageService,
 };
 
@@ -162,9 +162,7 @@ impl<'a> ServerAdministration<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        media::MediaStorageService, persistence::MIGRATOR, playback::sessions::PlaybackSession,
-    };
+    use crate::{media::MediaStorageService, persistence::MIGRATOR, playback::PlaybackSession};
 
     #[tokio::test]
     async fn administrator_credentials_are_verified_encrypted_and_failure_atomic() {

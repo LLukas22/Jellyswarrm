@@ -19,7 +19,7 @@ pub(crate) fn compare_routes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{config::MediaStreamingMode, domain::server_id::ServerId, servers::url::ServerUrl};
+    use crate::{config::MediaStreamingMode, domain::ids::ServerId, servers::url::ServerUrl};
 
     fn server(priority: i32, name: &str, id: i64) -> Server {
         Server {

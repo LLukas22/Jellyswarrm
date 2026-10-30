@@ -212,12 +212,12 @@ pub(crate) async fn get_item_detail(
         }
     }
 
-    crate::application::response::media_response(
-        &state.client_sessions,
-        proxy_api_key.as_deref(),
-        &response,
-    )
-    .await;
+    if let Some(token) = proxy_api_key.as_deref() {
+        state
+            .client_sessions
+            .cache_media_response(token, &response)
+            .await;
+    }
     Ok(response)
 }
 

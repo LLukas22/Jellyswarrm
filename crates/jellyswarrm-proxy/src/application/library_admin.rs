@@ -210,7 +210,7 @@ fn issue(
 }
 
 fn discovered(
-    server_id: crate::domain::server_id::ServerId,
+    server_id: crate::domain::ids::ServerId,
     folder: jellyfin_api::models::MediaFolder,
 ) -> Option<DiscoveredLibrary> {
     if folder

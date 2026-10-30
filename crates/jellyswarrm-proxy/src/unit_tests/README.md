@@ -6,7 +6,7 @@ This preserves private access, `super::` imports, and existing test filters.
 The owning modules are declared by `src/lib.rs`, so use the library test target.
 
 Owners now include `auth/service/mod.rs`, `libraries/service/mod.rs`,
-`media/storage/mod.rs`, `http/preprocessing/mod.rs`, and `http/handlers/`.
+`media/storage/mod.rs`, `http/preprocessing.rs`, and `http/client_routes.rs`.
 Paths are relative to the owning source file, not this directory. Keep these
 suites attached to their owners when splitting implementation modules; do not
 broaden visibility merely to make tests compile. Playlist contracts live in
@@ -15,7 +15,7 @@ broaden visibility merely to make tests compile. Playlist contracts live in
 - Keep small unit tests inline with their implementation.
 - Put larger extracted suites here instead of creating a folder for one `tests.rs`.
 - HTTP workflows belong in `../http_tests/`.
-- Model fixtures stay in `../models/tests/`; session/WebSocket tests stay in
+- Model fixtures stay in `../models/tests/files/`; session/WebSocket tests stay in
   `../sessions/tests.rs`.
 
 Run all proxy tests from the repository root:

@@ -8,7 +8,7 @@ use crate::{
     auth::service::User,
     auth::UserAuthorizationService,
     media::MediaStorageService,
-    playback::sessions::{RevisionedPlaybackSession, SessionStorage},
+    playback::{RevisionedPlaybackSession, SessionStorage},
     processors::{
         field_matcher::{ID_FIELDS, MEDIA_ID_LIST_PARENT_FIELDS, SESSION_FIELDS, USER_FIELDS},
         json_processor::{JsonAnalyzer, JsonProcessingContext},

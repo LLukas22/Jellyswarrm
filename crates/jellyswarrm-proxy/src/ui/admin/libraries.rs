@@ -12,7 +12,7 @@ use serde::Deserialize;
 use tracing::{error, info};
 
 use crate::{
-    domain::server_id::ServerId,
+    domain::ids::ServerId,
     http::state::ManagementState,
     libraries::service::{normalize_library_id, AssignLibraryError, LibraryGroupMemberRecord},
 };

@@ -1,5 +1,5 @@
 //! Enforce read-only API-key permissions before incoming requests reach handlers.
-use crate::auth::UserAuthorizationService;
+use crate::{auth::UserAuthorizationService, protocol::identity::JellyfinAuthorization};
 use axum::{
     extract::{Request, State},
     http::{Method, StatusCode},
@@ -17,20 +17,16 @@ pub(crate) async fn enforce_read_only_api_keys(
         return next.run(request).await;
     }
 
-    let identity = match crate::http::preprocessing::resolve_request_identity_from_headers_uri(
-        request.headers(),
-        request.uri(),
-        &state,
-    )
-    .await
-    {
-        Ok(identity) => identity,
+    // Only the credential matters here; resolving the caller's user would cost a lookup.
+    let url = match crate::http::preprocessing::request_url(request.uri()) {
+        Ok(url) => url,
         Err(error) => {
             error!("Failed to enforce API key access: {error}");
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
-    let Some(token) = identity.auth.as_ref().and_then(|auth| auth.token_ref()) else {
+    let auth = JellyfinAuthorization::from_headers_url(request.headers(), &url);
+    let Some(token) = auth.as_ref().and_then(JellyfinAuthorization::token_ref) else {
         return next.run(request).await;
     };
 

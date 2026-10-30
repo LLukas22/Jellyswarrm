@@ -16,7 +16,7 @@ use crate::{
         error::ApplicationError,
         input::OperationRequest,
         playback::{lifecycle::PendingPlaybackSessionUpdate, reports},
-        response, routing,
+        routing,
         services::MediaServices,
     },
     processors::request_analyzer::PlaybackSessionAction,
@@ -33,7 +33,7 @@ async fn forwarded_success(
     state: &MediaServices,
     input: &OperationRequest,
     mutation_viewer: Option<&str>,
-    server_id: crate::domain::server_id::ServerId,
+    server_id: crate::domain::ids::ServerId,
 ) {
     if let Some(viewer) = mutation_viewer {
         state.catalog_snapshots.invalidate_viewer(viewer);
@@ -284,12 +284,12 @@ pub(crate) async fn forward(
                     )
                     .await?;
                 if status.is_success() && response_profile != ResponseProcessingProfile::Disabled {
-                    response::media_response(
-                        &state.client_sessions,
-                        proxy_api_key.as_deref(),
-                        &value,
-                    )
-                    .await;
+                    if let Some(token) = proxy_api_key.as_deref() {
+                        state
+                            .client_sessions
+                            .cache_media_response(token, &value)
+                            .await;
+                    }
                 }
                 if modified {
                     let processed =

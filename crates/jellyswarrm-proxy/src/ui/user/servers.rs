@@ -13,8 +13,8 @@ use tracing::{error, info};
 use uuid::Uuid;
 
 use crate::{
+    domain::ids::ServerId,
     domain::security::Password,
-    domain::server_id::ServerId,
     http::state::ManagementState,
     servers::storage::Server,
     ui::{auth::AuthenticatedUser, user::common::authenticate_user_on_server},

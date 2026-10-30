@@ -363,7 +363,7 @@ async fn numbered_episode_versions_keep_ranges_distinct_and_route_same_server_co
         application::{
             details::sources::{merge_media_detail, DetailMergeContext},
             playback::{
-                selection::record_playback_sources,
+                lifecycle::record_playback_sources,
                 target::{MediaTargetResolver, PlaybackIntent, SelectionPolicy, SelectionReason},
             },
         },

@@ -14,8 +14,8 @@ use tracing::{error, info};
 use crate::{
     auth::federation::ServerSyncResult,
     auth::service::{ServerMapping, User},
+    domain::ids::ServerId,
     domain::security::Password,
-    domain::server_id::ServerId,
     http::state::ManagementState,
     servers::storage::Server,
 };

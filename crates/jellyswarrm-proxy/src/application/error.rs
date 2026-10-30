@@ -4,6 +4,8 @@ use std::{error::Error, fmt};
 
 use hyper::StatusCode;
 
+use crate::upstream::jellyfin::{delivery::DeliveryError, hls::HlsError, json::JsonTransportError};
+
 /// Workflow context, not a response code. Endpoint adapters own its HTTP policy.
 pub(crate) enum FailureStage {
     CallerAuthentication,
@@ -96,9 +98,45 @@ impl From<crate::application::request::UpstreamBuildError> for ApplicationError 
     }
 }
 
-impl From<crate::processors::error::ProcessingError> for ApplicationError {
-    fn from(error: crate::processors::error::ProcessingError) -> Self {
-        use crate::processors::error::ProcessingError;
+impl From<JsonTransportError> for ApplicationError {
+    fn from(error: JsonTransportError) -> Self {
+        match error {
+            JsonTransportError::Transport(error) => Self::UpstreamTransport(error),
+            JsonTransportError::Status(status) => Self::UpstreamStatus(status),
+            JsonTransportError::RequestBody(error) => error.into(),
+        }
+    }
+}
+
+/// Playlist and delivery failures gain workflow stage context.
+impl From<HlsError> for ApplicationError {
+    fn from(error: HlsError) -> Self {
+        match error {
+            HlsError::Status(status) => Self::UpstreamStatus(status).at(FailureStage::HlsStatus),
+            HlsError::InvalidPayload(reason) => Self::InvalidUpstreamPayload(reason),
+            HlsError::Transport(error) => Self::UpstreamTransport(error),
+            HlsError::Encoding(error) => {
+                Self::Internal(error.into()).at(FailureStage::HlsTranslation)
+            }
+            HlsError::Translation(error) => Self::Internal(error).at(FailureStage::HlsTranslation),
+            HlsError::Deadline(error) => Self::Internal(error.into()).at(FailureStage::HlsDeadline),
+        }
+    }
+}
+
+impl From<DeliveryError> for ApplicationError {
+    fn from(error: DeliveryError) -> Self {
+        match error {
+            DeliveryError::Transport(error) => Self::UpstreamTransport(error),
+            DeliveryError::Header(error) => Self::Internal(error.into()),
+            DeliveryError::Playlist(error) => error.into(),
+        }
+    }
+}
+
+impl From<crate::processors::ProcessingError> for ApplicationError {
+    fn from(error: crate::processors::ProcessingError) -> Self {
+        use crate::processors::ProcessingError;
         match error {
             ProcessingError::RequestBody(error) => super::input::request_body_error(error),
             ProcessingError::Response(error) => Self::Internal(error),
@@ -185,7 +223,7 @@ mod tests {
 
     #[test]
     fn processor_conversion_classifies_body_failures_without_losing_storage_causes() {
-        use crate::processors::{error::ProcessingError, ProcessingErrors};
+        use crate::processors::{ProcessingError, ProcessingErrors};
         for storage_failed in [false, true] {
             let mut causes = vec![anyhow::anyhow!("invalid selection")];
             if storage_failed {
@@ -294,5 +332,56 @@ mod tests {
         assert!(!error.allows_detail_fallback());
         assert!(error.source().unwrap().is::<std::io::Error>());
         assert!(!format!("{error:?}").contains("private"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn playlist_conversion_retains_stage_and_original_causes() {
+        let encoding = String::from_utf8(vec![0xff]).unwrap_err();
+        let elapsed = tokio::time::timeout(std::time::Duration::ZERO, std::future::pending::<()>())
+            .await
+            .unwrap_err();
+        for (error, deadline) in [
+            (HlsError::Encoding(encoding), false),
+            (HlsError::Deadline(elapsed), true),
+        ] {
+            let error = ApplicationError::from(DeliveryError::Playlist(error));
+            assert!(
+                matches!(
+                    &error,
+                    ApplicationError::At {
+                        stage: FailureStage::HlsDeadline,
+                        ..
+                    }
+                ) == deadline
+            );
+            assert!(
+                matches!(
+                    &error,
+                    ApplicationError::At {
+                        stage: FailureStage::HlsTranslation,
+                        ..
+                    }
+                ) != deadline
+            );
+            let cause = error.source().unwrap().source().unwrap();
+            assert_eq!(cause.is::<tokio::time::error::Elapsed>(), deadline);
+            assert_eq!(cause.is::<std::string::FromUtf8Error>(), !deadline);
+        }
+        let error = ApplicationError::from(DeliveryError::Playlist(HlsError::Translation(
+            anyhow::Error::new(sqlx::Error::PoolClosed),
+        )));
+        assert!(matches!(
+            &error,
+            ApplicationError::At {
+                stage: FailureStage::HlsTranslation,
+                ..
+            }
+        ));
+        assert!(error
+            .source()
+            .unwrap()
+            .source()
+            .unwrap()
+            .is::<sqlx::Error>());
     }
 }

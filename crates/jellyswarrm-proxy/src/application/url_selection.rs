@@ -2,7 +2,7 @@
 //! selected server; only this application capability chooses among candidates.
 use super::routing::RoutingError;
 use crate::{
-    domain::server_id::ServerId,
+    domain::ids::ServerId,
     libraries::service::{
         VirtualLibraryAccessScope, VirtualLibraryResolution, VirtualLibraryService,
     },

@@ -2,7 +2,7 @@
 //! Redeemed-session identity is chosen by `application::quick_connect`.
 use crate::{
     application::{
-        accounts::services::AuthenticationService,
+        accounts::AuthenticationService,
         quick_connect::{self, QuickConnectError},
     },
     auth::{

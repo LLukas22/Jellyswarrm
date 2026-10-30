@@ -10,5 +10,4 @@ pub(crate) mod negotiation;
 pub(crate) mod reports;
 pub(crate) mod resources;
 pub(crate) mod response;
-pub(crate) mod selection;
 pub(crate) mod target;

@@ -2,11 +2,9 @@
 //! availability/status policy; this module never falls back from an explicit owner.
 use crate::{
     application::context::{AuthorizedTarget, RequestContext, TargetError},
-    domain::server_id::ServerId,
+    domain::ids::ServerId,
     media::storage::{MediaMapping, MediaStorageService},
-    playback::sessions::{
-        LiveStreamBinding, PlaybackSession, RevisionedPlaybackSession, SessionStorage,
-    },
+    playback::{LiveStreamBinding, PlaybackSession, RevisionedPlaybackSession, SessionStorage},
     servers::storage::ServerStorageService,
 };
 
@@ -316,8 +314,8 @@ impl MediaTargetResolver<'_> {
 /// Shared viewer authority for delivery, live-open and transcoder cancellation.
 pub(crate) async fn owned_session(
     sessions: &SessionStorage,
-    id: &crate::domain::playback::PlaybackSessionId,
-    viewer: &crate::domain::playback::ViewerId,
+    id: &crate::domain::ids::PlaybackSessionId,
+    viewer: &crate::domain::ids::ViewerId,
 ) -> Result<Option<RevisionedPlaybackSession>, ResolutionError> {
     sessions
         .resolve_report_binding(id, viewer)
@@ -330,8 +328,8 @@ pub(crate) async fn owned_session(
 pub(crate) async fn live_target(
     context: &RequestContext,
     sessions: &SessionStorage,
-    id: &crate::domain::playback::VirtualLiveStreamId,
-    viewer: &crate::domain::playback::ViewerId,
+    id: &crate::domain::ids::VirtualLiveStreamId,
+    viewer: &crate::domain::ids::ViewerId,
 ) -> Result<(AuthorizedTarget, LiveStreamBinding), ResolutionError> {
     let binding = sessions
         .live_binding(id, viewer)

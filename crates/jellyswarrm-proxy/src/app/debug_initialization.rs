@@ -1,6 +1,6 @@
 //! Initialize configured debug users and backend mappings in debug builds only.
 use crate::{
-    auth::service::UserAuthorizationService, config::DebugUser, domain::server_id::ServerId,
+    auth::service::UserAuthorizationService, config::DebugUser, domain::ids::ServerId,
     servers::storage::ServerStorageService,
 };
 
@@ -50,7 +50,7 @@ mod tests {
     async fn setup() -> (
         UserAuthorizationService,
         ServerStorageService,
-        Vec<crate::domain::server_id::ServerId>,
+        Vec<crate::domain::ids::ServerId>,
     ) {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         MIGRATOR.run(&pool).await.unwrap();

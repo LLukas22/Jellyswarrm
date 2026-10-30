@@ -10,7 +10,7 @@ use crate::{
         services::MediaServices,
     },
     auth::service::User,
-    http::preprocessing::{extract_request_infos, resolve_request_identity_from_headers_uri},
+    http::preprocessing::{extract_request_infos, resolve_request_identity},
 };
 
 pub(crate) struct RequirePrimaryUser(pub(crate) User);
@@ -24,13 +24,12 @@ where
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
         let authorization =
             std::sync::Arc::<crate::auth::UserAuthorizationService>::from_ref(state);
-        let identity =
-            resolve_request_identity_from_headers_uri(req.headers(), req.uri(), &authorization)
-                .await
-                .map_err(|error| {
-                    error!("Failed to resolve API key caller: {error}");
-                    StatusCode::INTERNAL_SERVER_ERROR
-                })?;
+        let identity = resolve_request_identity(req.headers(), req.uri(), &authorization)
+            .await
+            .map_err(|error| {
+                error!("Failed to resolve API key caller: {error}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
         let user = identity.user.ok_or(StatusCode::UNAUTHORIZED)?;
         let token = identity
             .auth

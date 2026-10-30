@@ -74,7 +74,7 @@ pub(crate) async fn process_playback_response(
     server: &Server,
     session: &AuthorizationSession,
     proxy_api_key: Option<&str>,
-) -> Result<Vec<std::sync::Arc<crate::playback::sessions::PreparedLiveStream>>, ApplicationError> {
+) -> Result<Vec<std::sync::Arc<crate::playback::PreparedLiveStream>>, ApplicationError> {
     let mut plans = Vec::new();
     for source in &mut response.media_sources {
         if let Some(plan) = crate::application::playback::live::prepare_live_source(
@@ -243,7 +243,7 @@ mod tests {
     use super::*;
     use crate::{
         config::{AppConfig, MediaStreamingMode},
-        domain::server_id::ServerId,
+        domain::ids::ServerId,
         persistence::MIGRATOR,
         servers::url::ServerUrl,
     };

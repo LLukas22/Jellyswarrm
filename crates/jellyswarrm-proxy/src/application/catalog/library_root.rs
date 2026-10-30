@@ -9,7 +9,7 @@ use crate::application::services::MediaServices;
 use crate::{
     application::input::OperationRequest,
     application::upstream::response_json_to_payload,
-    domain::server_id::ServerId,
+    domain::ids::ServerId,
     libraries::service::{
         normalize_library_id, VirtualLibraryAccessScope, VirtualLibraryResolution,
     },

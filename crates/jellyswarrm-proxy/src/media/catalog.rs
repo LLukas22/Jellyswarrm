@@ -400,7 +400,7 @@ mod tests {
 
     use crate::{
         config::MediaStreamingMode,
-        domain::server_id::ServerId,
+        domain::ids::ServerId,
         media::identity::{MediaKind, MediaProvider},
         servers::url::ServerUrl,
     };

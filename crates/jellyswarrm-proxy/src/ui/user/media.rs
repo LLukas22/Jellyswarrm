@@ -10,7 +10,7 @@ use jellyfin_api::models::{BaseItem, IncludeItemTypes};
 use tracing::error;
 
 use crate::{
-    domain::server_id::ServerId,
+    domain::ids::ServerId,
     http::state::ManagementState,
     ui::{auth::AuthenticatedUser, user::common::authenticate_user_on_server},
 };

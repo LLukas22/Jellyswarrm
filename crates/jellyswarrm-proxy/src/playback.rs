@@ -1,4 +1,4 @@
-//! Store playback sessions and revision-fenced live-stream bindings, not client presence.
+//! Shared playback authority: playback sessions and revision-fenced live-stream bindings, not client presence.
 use std::{
     sync::{Arc, Weak},
     time::{Duration, Instant},
@@ -6,10 +6,9 @@ use std::{
 
 use tokio::sync::{RwLock, RwLockWriteGuard};
 
-use crate::domain::playback::{
-    BackendLiveStreamId, PlaybackSessionId, ViewerId, VirtualLiveStreamId,
+use crate::domain::ids::{
+    BackendLiveStreamId, PlaybackSessionId, ServerId, ViewerId, VirtualLiveStreamId,
 };
-use crate::domain::server_id::ServerId;
 use crate::domain::user_id::UserId;
 
 const PLAYBACK_SESSION_TTL: Duration = Duration::from_secs(12 * 60 * 60);

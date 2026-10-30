@@ -255,12 +255,12 @@ impl SnapshotRequest {
         } else {
             build.await?.response
         };
-        crate::application::response::media_response(
-            &state.client_sessions,
-            self.token.as_deref(),
-            &response,
-        )
-        .await;
+        if let Some(token) = self.token.as_deref() {
+            state
+                .client_sessions
+                .cache_media_response(token, &response)
+                .await;
+        }
         Ok(response)
     }
 }
@@ -302,7 +302,7 @@ mod materialization_tests {
             response: serde_json::json!({"Items": [{"Id": "a", "Future": {"kept": true}}, {"Id": "b"}], "TotalRecordCount": 2, "FutureEnvelope": 42}),
             report: crate::application::catalog::scan::CatalogReport::new(
                 vec![SourceOutcome {
-                    server_id: crate::domain::server_id::ServerId::new(1),
+                    server_id: crate::domain::ids::ServerId::new(1),
                     parent_id: Some("library".into()),
                     outcome,
                 }],

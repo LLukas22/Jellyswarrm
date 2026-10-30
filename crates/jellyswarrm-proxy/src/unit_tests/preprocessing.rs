@@ -70,8 +70,8 @@ fn media_id_tags_cover_audio_paths_and_item_id_queries() {
     ));
 }
 
-use crate::domain::server_id::ServerId;
-use crate::playback::sessions::PlaybackSession;
+use crate::domain::ids::ServerId;
+use crate::playback::PlaybackSession;
 use crate::test_support::adapters::AdapterFixture;
 use crate::{config::AppConfig, persistence::MIGRATOR};
 use sqlx::SqlitePool;
@@ -442,10 +442,9 @@ async fn resolve_identity_ignores_valid_userid_path_segment_without_auth() {
     let headers = http::HeaderMap::new();
     let uri: http::Uri = format!("/Users/{}", victim.id).parse().unwrap();
 
-    let identity =
-        resolve_request_identity_from_headers_uri(&headers, &uri, &state.user_authorization)
-            .await
-            .unwrap();
+    let identity = resolve_request_identity(&headers, &uri, &state.user_authorization)
+        .await
+        .unwrap();
 
     assert!(identity.user.is_none());
 }
@@ -458,10 +457,9 @@ async fn resolve_identity_ignores_valid_userid_query_on_user_views_without_auth(
     let headers = http::HeaderMap::new();
     let uri: http::Uri = format!("/UserViews?userId={}", victim.id).parse().unwrap();
 
-    let identity =
-        resolve_request_identity_from_headers_uri(&headers, &uri, &state.user_authorization)
-            .await
-            .unwrap();
+    let identity = resolve_request_identity(&headers, &uri, &state.user_authorization)
+        .await
+        .unwrap();
 
     assert!(identity.user.is_none());
 }
@@ -476,10 +474,9 @@ async fn resolve_identity_ignores_valid_userid_query_on_user_items_resume_withou
         .parse()
         .unwrap();
 
-    let identity =
-        resolve_request_identity_from_headers_uri(&headers, &uri, &state.user_authorization)
-            .await
-            .unwrap();
+    let identity = resolve_request_identity(&headers, &uri, &state.user_authorization)
+        .await
+        .unwrap();
 
     assert!(identity.user.is_none());
 }
@@ -496,10 +493,9 @@ async fn resolve_identity_treats_malformed_authorization_header_as_unauthenticat
     );
     let uri: http::Uri = format!("/UserViews?userId={}", victim.id).parse().unwrap();
 
-    let identity =
-        resolve_request_identity_from_headers_uri(&headers, &uri, &state.user_authorization)
-            .await
-            .unwrap();
+    let identity = resolve_request_identity(&headers, &uri, &state.user_authorization)
+        .await
+        .unwrap();
 
     assert!(identity.auth.is_none());
     assert!(identity.user.is_none());
@@ -527,10 +523,9 @@ async fn resolve_identity_resolves_authenticated_user_ignoring_different_userid_
     );
     let uri: http::Uri = format!("/UserViews?userId={}", other.id).parse().unwrap();
 
-    let identity =
-        resolve_request_identity_from_headers_uri(&headers, &uri, &state.user_authorization)
-            .await
-            .unwrap();
+    let identity = resolve_request_identity(&headers, &uri, &state.user_authorization)
+        .await
+        .unwrap();
 
     assert_eq!(identity.user.unwrap().id, caller.id);
 }

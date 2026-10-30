@@ -1,21 +1,75 @@
-//! Production route table, URL-prefix wrapping, and root monitoring endpoints.
+//! Production adapter composition: route table, session/auth layers, URL-prefix
+//! wrapping, and root monitoring endpoints. No listeners or background tasks.
 use super::{
-    assets::index_handler,
-    handlers::{auth_keys, branding, quick_connect, syncplay},
-    proxy::proxy_handler,
-    sessions,
-    state::AppState,
+    assets::index_handler, auth_keys, branding, proxy::proxy_handler, quick_connect, sessions,
+    state::AppState, syncplay,
 };
 use axum::{
-    extract::Request,
+    extract::{FromRef, Request},
+    middleware,
     response::IntoResponse,
     routing::{any, get, post},
     Router,
 };
+use axum_login::{
+    tower_sessions::{Expiry, SessionManagerLayer},
+    AuthManagerLayerBuilder,
+};
+use axum_messages::MessagesManagerLayer;
 use jellyswarrm_macros::lowercase_routes;
 use std::net::SocketAddr;
+use tower::ServiceBuilder;
+use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_sessions::cookie::Key;
+use tower_sessions_sqlx_store::SqliteStore;
 use tracing::info;
-pub(crate) fn routes() -> Router<AppState> {
+
+use crate::{config::StartupConfig, ui::Backend};
+
+/// Callers prepare/migrate storage and own task lifetimes. Tests and startup use
+/// the same routes, middleware order, session policy, prefix and health wiring.
+pub(crate) fn build_router(
+    state: AppState,
+    startup: &StartupConfig,
+    pool: sqlx::SqlitePool,
+    session_store: SqliteStore,
+    addr: SocketAddr,
+) -> Router {
+    let session_layer = SessionManagerLayer::new(session_store)
+        .with_secure(false)
+        .with_same_site(tower_sessions::cookie::SameSite::Lax)
+        .with_expiry(Expiry::OnInactivity(time::Duration::days(1)))
+        .with_signed(Key::from(startup.session_key.as_slice()));
+    let management = super::state::ManagementState::from_ref(&state);
+    let backend = Backend::new(management.credentials, management.user_authorization);
+    let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
+
+    let app = routes()
+        .nest(&format!("/{}", startup.ui_route), crate::ui::ui_routes())
+        .layer(
+            ServiceBuilder::new()
+                .layer(TraceLayer::new_for_http())
+                .layer(CorsLayer::permissive()),
+        )
+        .layer(MessagesManagerLayer)
+        .layer(middleware::from_fn_with_state(
+            std::sync::Arc::<crate::auth::UserAuthorizationService>::from_ref(&state),
+            super::middleware::enforce_read_only_api_keys,
+        ))
+        .layer(auth_layer)
+        .with_state(state)
+        .route("/GetUTCTime", get(syncplay::get_utc_time));
+
+    wrap(
+        app,
+        startup.url_prefix.as_ref().map(ToString::to_string),
+        addr,
+        &startup.ui_route,
+        pool,
+    )
+}
+
+fn routes() -> Router<AppState> {
     lowercase_routes! {
         Router::new()
             .merge(sessions::router())
@@ -58,7 +112,7 @@ pub(crate) fn routes() -> Router<AppState> {
     }
 }
 
-pub(crate) fn wrap(
+fn wrap(
     app: Router,
     url_prefix: Option<String>,
     addr: SocketAddr,

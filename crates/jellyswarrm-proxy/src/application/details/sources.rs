@@ -33,7 +33,7 @@ struct PreserveActiveNegotiatedSources;
 
 impl PreserveActiveNegotiatedSources {
     fn retain(
-        session: &crate::playback::sessions::PlaybackSession,
+        session: &crate::playback::PlaybackSession,
         route: &crate::media::storage::MediaVersionSourceRoute,
         refreshed_members: &[i64],
     ) -> bool {
@@ -474,7 +474,7 @@ fn storage_error(error: sqlx::Error) -> ApplicationError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{config::MediaStreamingMode, domain::server_id::ServerId, servers::url::ServerUrl};
+    use crate::{config::MediaStreamingMode, domain::ids::ServerId, servers::url::ServerUrl};
     use serde_json::json;
 
     fn server(server_id: i64, name: &str) -> Server {
@@ -494,7 +494,7 @@ mod tests {
             id,
             virtual_media_id: format!("virtual-{id}"),
             original_media_id: format!("original-{id}"),
-            server_id: crate::domain::server_id::ServerId::new(server_id),
+            server_id: crate::domain::ids::ServerId::new(server_id),
             server_url: "http://example:8096".to_string(),
             created_at: chrono::Utc::now(),
         }
@@ -613,7 +613,7 @@ mod tests {
             source_mapping: mapping(2, 1),
             member_mapping: member.clone(),
         };
-        let mut session = crate::playback::sessions::PlaybackSession {
+        let mut session = crate::playback::PlaybackSession {
             session_id: "player".into(),
             item_id: route.source_mapping.virtual_media_id.clone(),
             user_id: "viewer".into(),
@@ -637,7 +637,7 @@ mod tests {
             &[member.id]
         ));
         session.original_item_id = Some(member.original_media_id.clone());
-        session.server_id = crate::domain::server_id::ServerId::new(99);
+        session.server_id = crate::domain::ids::ServerId::new(99);
         assert!(!PreserveActiveNegotiatedSources::retain(
             &session,
             &route,

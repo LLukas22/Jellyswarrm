@@ -3,7 +3,7 @@
 //! Credentials deliberately have no derived Debug/Serialize implementation.
 use crate::{
     auth::service::{AuthorizationSession, User},
-    domain::server_id::ServerId,
+    domain::ids::ServerId,
     libraries::service::VirtualLibraryAccessScope,
     protocol::device::Device,
     protocol::identity::{request_device, JellyfinAuthorization},

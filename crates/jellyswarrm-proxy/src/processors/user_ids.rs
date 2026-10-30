@@ -2,7 +2,7 @@
 use crate::domain::user_id::UserId;
 use crate::{
     auth::{service::AuthorizationSession, UserAuthorizationService},
-    domain::server_id::ServerId,
+    domain::ids::ServerId,
 };
 use std::sync::Arc;
 

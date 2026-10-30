@@ -256,7 +256,7 @@ impl RequestedItems {
                             .iter()
                             .find(|mapping| mapping.virtual_media_id == member.item.id)
                             .expect("fetched member belongs to requested item");
-                        crate::application::playback::selection::record_playback_sources(
+                        crate::application::playback::lifecycle::record_playback_sources(
                             &state.media_storage,
                             &entry.id,
                             &member.server,
