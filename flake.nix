@@ -54,10 +54,6 @@
             sqlite
           ];
 
-          env = {
-            JELLYSWARRM_SKIP_UI = "1";
-          };
-
           preBuild = ''
             mkdir -p crates/jellyswarrm-proxy/static
             cp -r ${jellyfinWeb}/share/jellyfin-web/* crates/jellyswarrm-proxy/static/

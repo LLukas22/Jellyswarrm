@@ -1,29 +1,33 @@
+//! Translate backend IDs, permissions, and embedded delivery URLs in JSON responses.
 use async_trait::async_trait;
-use serde_json::{Map, Value};
+use serde_json::Value;
+use std::sync::Arc;
 use tracing::debug;
 
 use crate::{
+    auth::UserAuthorizationService,
+    media::MediaStorageService,
     processors::{
+        delivery_urls::DeliveryUrlTranslator,
         field_matcher::{
             DELIVERY_URL_FIELDS, DISABLED_BOOL_FIELDS, MEDIA_ID_ARRAY_FIELDS,
             MEDIA_ID_LIST_PARENT_FIELDS, MEDIA_ID_MAP_KEY_FIELDS, MEDIA_ID_MAP_VALUE_FIELDS,
-            MEDIA_ID_NESTED_MAP_KEY_FIELDS, NAME_FIELDS, RESPONSE_MEDIA_ID_FIELDS,
-            SERVER_ID_FIELDS,
+            MEDIA_ID_NESTED_MAP_KEY_FIELDS, RESPONSE_MEDIA_ID_FIELDS, SERVER_ID_FIELDS,
         },
         json_processor::{JsonProcessingContext, JsonProcessingResult, JsonProcessor},
-        url_processor::UrlProcessor,
     },
-    server_storage::Server,
-    DataContext,
+    servers::storage::Server,
 };
 
-pub struct ResponseProcessor {
-    pub data_context: DataContext,
-    url_processor: UrlProcessor,
+#[derive(Clone)]
+pub(crate) struct ResponseProcessor {
+    media_storage: Arc<MediaStorageService>,
+    user_authorization: Arc<UserAuthorizationService>,
+    delivery: DeliveryUrlTranslator,
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum PlaylistResponseError {
+pub(crate) enum PlaylistResponseError {
     #[error("Playlist sharing cannot be represented completely by local users")]
     IncompleteSharing,
     #[error("Invalid playlist sharing response")]
@@ -33,20 +37,23 @@ pub enum PlaylistResponseError {
 }
 
 impl ResponseProcessor {
-    pub fn new(data_context: DataContext) -> Self {
+    pub(crate) fn new(
+        media_storage: Arc<MediaStorageService>,
+        user_authorization: Arc<UserAuthorizationService>,
+    ) -> Self {
         Self {
-            url_processor: UrlProcessor::new(data_context.clone()),
-            data_context,
+            delivery: DeliveryUrlTranslator::new(media_storage.clone()),
+            media_storage,
+            user_authorization,
         }
     }
 
-    async fn virtual_media_id(&self, id: &str, server: &Server) -> Result<String, String> {
-        self.data_context
-            .media_storage
+    async fn virtual_media_id(&self, id: &str, server: &Server) -> anyhow::Result<String> {
+        self.media_storage
             .get_or_create_media_mapping(id, server)
             .await
             .map(|mapping| mapping.virtual_media_id)
-            .map_err(|e| format!("failed to create media mapping for {id}: {e}"))
+            .map_err(anyhow::Error::from)
     }
 
     // Never return a partial permission list that a client could save back as
@@ -117,7 +124,6 @@ impl ResponseProcessor {
             .as_str()
             .ok_or(PlaylistResponseError::InvalidSharing)?;
         let virtual_id = self
-            .data_context
             .user_authorization
             .virtual_user_id_for_backend(server.id, original_id)
             .await?
@@ -130,25 +136,22 @@ impl ResponseProcessor {
         &self,
         value: &str,
         context: &ResponseProcessingContext,
-    ) -> Result<Option<String>, String> {
-        self.url_processor
-            .server_to_client_delivery_url(value, &context.server, context.proxy_api_key.as_deref())
+    ) -> anyhow::Result<Option<String>> {
+        self.delivery
+            .translate(value, &context.server, context.proxy_api_key.as_deref())
             .await
-            .map_err(|e| e.to_string())
     }
 }
 
-pub struct ResponseProcessingContext {
-    pub server: Server,
-    pub proxy_server_id: String,
-    pub proxy_api_key: Option<String>,
-    pub profile: ResponseProcessingProfile,
-    pub should_change_name: bool,
-    pub can_change_item_names: bool,
+pub(crate) struct ResponseProcessingContext {
+    pub(crate) server: Server,
+    pub(crate) proxy_server_id: String,
+    pub(crate) proxy_api_key: Option<String>,
+    pub(crate) profile: ResponseProcessingProfile,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResponseProcessingProfile {
+pub(crate) enum ResponseProcessingProfile {
     Media,
     BestEffortMedia,
     PlaylistPermissions,
@@ -156,8 +159,8 @@ pub enum ResponseProcessingProfile {
 }
 
 impl ResponseProcessingProfile {
-    pub fn for_proxy_request(method: &hyper::Method, path: &str) -> Self {
-        let segments = crate::url_helper::decoded_path_segments(path.trim_end_matches('/'));
+    pub(crate) fn for_proxy_request(method: &hyper::Method, path: &str) -> Self {
+        let segments = crate::protocol::url::decoded_path_segments(path.trim_end_matches('/'));
         let permission_read = match segments.as_slice() {
             [tag, _] => tag.eq_ignore_ascii_case("Playlists"),
             [tag, _, users] | [tag, _, users, _] => {
@@ -172,7 +175,7 @@ impl ResponseProcessingProfile {
         }
     }
 
-    pub fn requires_json(self) -> bool {
+    pub(crate) fn requires_json(self) -> bool {
         matches!(self, Self::PlaylistPermissions)
     }
 }
@@ -214,7 +217,7 @@ impl JsonProcessor<ResponseProcessingContext> for ResponseProcessor {
                         *value = Value::String(virtual_id);
                         result = result.mark_modified();
                     }
-                    Err(e) => result = result.add_error(e),
+                    Err(e) => result = result.add_cause(e),
                 }
             }
             return result;
@@ -228,7 +231,7 @@ impl JsonProcessor<ResponseProcessingContext> for ResponseProcessor {
                         *value = Value::String(virtual_id);
                         result = result.mark_modified();
                     }
-                    Err(e) => result = result.add_error(e),
+                    Err(e) => result = result.add_cause(e),
                 }
             }
             return result;
@@ -246,7 +249,7 @@ impl JsonProcessor<ResponseProcessingContext> for ResponseProcessor {
                     );
                     result = result.rename_key(virtual_id);
                 }
-                Err(e) => result = result.add_error(e),
+                Err(e) => result = result.add_cause(e),
             }
             return result;
         }
@@ -265,7 +268,7 @@ impl JsonProcessor<ResponseProcessingContext> for ResponseProcessor {
                         *value = Value::String(virtual_id);
                         result = result.mark_modified();
                     }
-                    Err(e) => result = result.add_error(e),
+                    Err(e) => result = result.add_cause(e),
                 }
             }
         } else if DELIVERY_URL_FIELDS.contains(&json_context.key) {
@@ -276,7 +279,7 @@ impl JsonProcessor<ResponseProcessingContext> for ResponseProcessor {
                         result = result.mark_modified();
                     }
                     Ok(None) => {}
-                    Err(e) => result = result.add_error(e),
+                    Err(e) => result = result.add_cause(e),
                 }
             }
         } else if context.rewrites_media_fields()
@@ -294,16 +297,12 @@ impl JsonProcessor<ResponseProcessingContext> for ResponseProcessor {
                 *value = Value::Bool(false);
                 result = result.mark_modified();
             }
-        } else if context.rewrites_media_fields() && SERVER_ID_FIELDS.contains(&json_context.key) {
-            if value.is_string() {
-                *value = Value::String(context.proxy_server_id.clone());
-                result = result.mark_modified();
-            }
-        } else if context.rewrites_media_fields() && should_change_name(json_context, context) {
-            if let Value::String(name) = value {
-                *name = format!("{} [{}]", name, context.server.name);
-                result = result.mark_modified();
-            }
+        } else if context.rewrites_media_fields()
+            && SERVER_ID_FIELDS.contains(&json_context.key)
+            && value.is_string()
+        {
+            *value = Value::String(context.proxy_server_id.clone());
+            result = result.mark_modified();
         }
 
         result
@@ -344,35 +343,6 @@ fn is_legacy_unmapped_media_id_field(json_context: &JsonProcessingContext) -> bo
             .any(|segment| segment.eq_ignore_ascii_case("MediaSources"));
 
     is_user_data_item_id || is_media_source_etag
-}
-
-fn should_change_name(
-    json_context: &JsonProcessingContext,
-    context: &ResponseProcessingContext,
-) -> bool {
-    context.should_change_name
-        && context.can_change_item_names
-        && NAME_FIELDS.contains(&json_context.key)
-        && is_media_item_root_path(&json_context.parent_path)
-        && !is_live_tv_item(json_context.parent_object.as_ref())
-}
-
-fn is_media_item_root_path(parent_path: &str) -> bool {
-    parent_path.is_empty()
-        || (parent_path.starts_with('[') && !parent_path.contains('.'))
-        || last_segment(parent_path).eq_ignore_ascii_case("Items")
-}
-
-fn is_live_tv_item(parent_object: Option<&Map<String, Value>>) -> bool {
-    let Some(parent_object) = parent_object else {
-        return false;
-    };
-
-    parent_object
-        .iter()
-        .find(|(key, _)| key.eq_ignore_ascii_case("CollectionType"))
-        .and_then(|(_, value)| value.as_str())
-        .is_some_and(|collection_type| collection_type.eq_ignore_ascii_case("LiveTv"))
 }
 
 fn last_segment(path: &str) -> &str {

@@ -1,0 +1,250 @@
+//! HTTP item-handler regressions using the owning route module and shared fixtures.
+use crate::test_support::MediaFixture;
+use std::collections::BTreeSet;
+
+use super::*;
+use crate::{
+    application::request::{context::RequestContext, input::OperationRequest},
+    auth::service::AuthorizationSession,
+    config::{AppConfig, MediaStreamingMode},
+    libraries::service::VirtualLibraryAccessScope,
+    media::identity::{MediaAlias, MediaKind, MediaObservation, MediaProvider},
+    media::storage::MediaCatalogSnapshot,
+    persistence::MIGRATOR,
+    protocol::device::Device,
+};
+use serde_json::json;
+use wiremock::{
+    matchers::{method, path},
+    Mock, MockServer, ResponseTemplate,
+};
+
+#[tokio::test]
+async fn selected_source_detail_fetches_owner_and_keeps_versions_across_equivalent_scopes() {
+    check_selected_source_detail(&["automatic:library:viewer", "latest:viewer:"]).await;
+}
+
+#[tokio::test]
+async fn search_only_selected_source_detail_keeps_all_versions() {
+    check_selected_source_detail(&["search:viewer:"]).await;
+}
+
+async fn check_selected_source_detail(catalog_scopes: &[&str]) {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    MIGRATOR.run(&pool).await.unwrap();
+    let state = MediaFixture::new(
+        pool,
+        AppConfig {
+            include_server_name_in_media: true,
+            ..AppConfig::default()
+        },
+    );
+    let mut upstreams = Vec::new();
+    let mut sessions = Vec::new();
+    let mut owners = Vec::new();
+    let mut sources = Vec::new();
+    let mut snapshots = Vec::new();
+    for index in 0..2 {
+        let owner_id = format!("{:032x}", 100 + index);
+        let source_id = format!("{:032x}", 200 + index);
+        let upstream = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/System/Info/Public"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"ServerName": "Upstream"})),
+            )
+            .mount(&upstream)
+            .await;
+        // Only the owner endpoint exists. Fetching the source ID fails.
+        Mock::given(method("GET"))
+            .and(path(format!("/Items/{owner_id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Id": owner_id, "Name": format!("Owner {index} [Server {index}]"),
+                "Type": "Movie", "Overview": format!("Selected metadata {index}"),
+                "MediaSources": [{"Id": source_id, "Name": "Movie (2026) - theatrical", "Type": "Default",
+                    "Path": format!("/media/{index}/Movie (2026)/Movie (2026) - theatrical.mkv"), "SupportsDirectPlay": true,
+                    "DefaultAudioStreamIndex": index,
+                    "MediaStreams": [{"Type": "Audio", "Index": index, "Language": "deu"}]}]
+            })))
+            .expect(catalog_scopes.len() as u64 + 2)
+            .mount(&upstream)
+            .await;
+        let server_id = state
+            .server_storage
+            .add_server(
+                &format!("Server {index}"),
+                &upstream.uri(),
+                100,
+                MediaStreamingMode::Redirect,
+            )
+            .await
+            .unwrap();
+        let server = state
+            .server_storage
+            .get_server_by_id(server_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let owner = state
+            .media_storage
+            .get_or_create_media_mapping(&owner_id, &server)
+            .await
+            .unwrap();
+        let source = state
+            .media_storage
+            .get_or_create_media_mapping(&source_id, &server)
+            .await
+            .unwrap();
+        snapshots.push(MediaCatalogSnapshot {
+            source_key: upstream.uri(),
+            server_id: server.id,
+            complete: true,
+            observations: vec![MediaObservation {
+                virtual_media_id: owner.virtual_media_id.clone(),
+                kind: MediaKind::Movie,
+                aliases: BTreeSet::from([MediaAlias {
+                    provider: MediaProvider::Tmdb,
+                    kind: MediaKind::Movie,
+                    provider_id: "42".into(),
+                }]),
+            }],
+        });
+        let now = chrono::Utc::now();
+        sessions.push((
+            AuthorizationSession {
+                id: index,
+                user_id: "viewer".into(),
+                mapping_id: index,
+                server_url: upstream.uri(),
+                device: Device {
+                    client: "test".into(),
+                    device: "test".into(),
+                    device_id: "test".into(),
+                    version: "1".into(),
+                },
+                jellyfin_token: "upstream-token".into(),
+                original_user_id: "backend-user".into(),
+                expires_at: None,
+                created_at: now,
+                updated_at: now,
+            },
+            server,
+        ));
+        owners.push(owner);
+        sources.push(source);
+        upstreams.push(upstream);
+    }
+    state.server_storage.check_servers_health().await;
+    let mut groups = Vec::new();
+    for scope in catalog_scopes {
+        let generation = state
+            .media_storage
+            .begin_media_reconciliation()
+            .await
+            .unwrap();
+        let assignments = state
+            .media_storage
+            .reconcile_media_catalog(scope, generation, &snapshots, true)
+            .await
+            .unwrap();
+        groups.push(
+            assignments[&owners[0].virtual_media_id]
+                .virtual_media_id
+                .clone(),
+        );
+    }
+    let scope =
+        VirtualLibraryAccessScope::new("viewer", sessions.iter().map(|(_, server)| server.id));
+    // Expose each scope, select the second source, then switch back to the first.
+    let mut cases = groups
+        .iter()
+        .map(|group| ("aggregate", group, 0, group))
+        .collect::<Vec<_>>();
+    cases.extend([
+        (
+            "select second version",
+            &sources[1].virtual_media_id,
+            1,
+            &owners[1].virtual_media_id,
+        ),
+        (
+            "switch back to first",
+            &sources[0].virtual_media_id,
+            0,
+            &owners[0].virtual_media_id,
+        ),
+    ]);
+    for (case, requested_id, selected, expected_id) in cases {
+        let original_request = reqwest::Request::new(
+            reqwest::Method::GET,
+            format!("http://localhost/Items/{requested_id}?userId=viewer")
+                .parse()
+                .unwrap(),
+        );
+        let context = RequestContext::new(
+            &original_request,
+            None,
+            None,
+            Some(sessions.clone()),
+            Some(scope.clone()),
+        );
+        let Json(response) = item(
+            State(state.services.clone().clone()),
+            OperationInput(OperationRequest {
+                original_request,
+                context,
+                body_analysis: None,
+            }),
+        )
+        .await
+        .unwrap_or_else(|status| panic!("{case}: detail returned {status}"));
+        assert_eq!(response["Id"], *expected_id, "{case}");
+        // This suffix is part of the upstream title, not proxy decoration.
+        assert_eq!(
+            response["Name"],
+            format!("Owner {selected} [Server {selected}]"),
+            "{case}"
+        );
+        assert_eq!(
+            response["Overview"],
+            format!("Selected metadata {selected}"),
+            "{case}"
+        );
+        assert_eq!(response["MediaSourceCount"], 2, "{case}");
+        let merged = response["MediaSources"].as_array().unwrap();
+        assert_eq!(merged.len(), 2, "{case}");
+        assert_eq!(
+            merged[0]["Id"], sources[selected].virtual_media_id,
+            "{case}"
+        );
+        assert_eq!(merged[0]["Type"], "Default");
+        assert_eq!(
+            merged[0]["Name"],
+            format!("[Server {selected}][theatrical]")
+        );
+        assert_eq!(
+            merged[0]["Path"],
+            format!("/media/{selected}/Movie (2026)/Movie (2026) - theatrical.mkv")
+        );
+        assert_eq!(merged[0]["DefaultAudioStreamIndex"], selected);
+        assert_eq!(merged[0]["MediaStreams"][0]["Language"], "deu");
+        assert_eq!(merged[0]["SupportsDirectPlay"], true);
+        assert_eq!(
+            merged[1]["Id"],
+            sources[1 - selected].virtual_media_id,
+            "{case}"
+        );
+        assert_eq!(merged[1]["Type"], "Grouping");
+        assert_eq!(
+            merged[1]["Name"],
+            format!("[Server {}][theatrical]", 1 - selected)
+        );
+    }
+    for upstream in upstreams {
+        upstream.verify().await;
+    }
+}

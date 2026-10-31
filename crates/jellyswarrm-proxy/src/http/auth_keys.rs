@@ -1,0 +1,71 @@
+//! Extract and render virtual-user API-key creation and listing requests.
+use axum::{extract::Query, extract::State, http::StatusCode, Json};
+use serde::{Deserialize, Serialize};
+use tracing::error;
+
+use crate::{auth::UserAuthorizationService, http::extractors::RequirePrimaryUser};
+use std::sync::Arc;
+
+#[derive(Deserialize)]
+pub(crate) struct CreateApiKeyQuery {
+    #[serde(rename = "App")]
+    app: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct ApiKeyItem {
+    app_name: String,
+    access_token: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct ApiKeyList {
+    items: Vec<ApiKeyItem>,
+    total_record_count: usize,
+    start_index: usize,
+}
+
+pub(crate) async fn create_api_key(
+    State(state): State<Arc<UserAuthorizationService>>,
+    Query(query): Query<CreateApiKeyQuery>,
+    RequirePrimaryUser(user): RequirePrimaryUser,
+) -> Result<StatusCode, StatusCode> {
+    if query.app.trim().is_empty() || query.app.trim().len() > 128 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    state
+        .create_api_key(&user.id, &query.app)
+        .await
+        .map_err(|error| {
+            error!("Failed to create virtual API key: {error}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn list_api_keys(
+    State(state): State<Arc<UserAuthorizationService>>,
+    RequirePrimaryUser(user): RequirePrimaryUser,
+) -> Result<Json<ApiKeyList>, StatusCode> {
+    let keys = state.list_api_keys(&user.id).await.map_err(|error| {
+        error!("Failed to list virtual API keys: {error}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let items = keys
+        .into_iter()
+        .map(|key| ApiKeyItem {
+            app_name: key.app_name,
+            access_token: key.access_token,
+        })
+        .collect::<Vec<_>>();
+
+    Ok(Json(ApiKeyList {
+        total_record_count: items.len(),
+        items,
+        start_index: 0,
+    }))
+}

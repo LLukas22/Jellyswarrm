@@ -1,3 +1,4 @@
+//! Render and mutate configured backend servers from the administrative UI.
 use askama::Template;
 use axum::{
     extract::{Path, State},
@@ -9,58 +10,55 @@ use serde::Deserialize;
 use tracing::{error, info};
 
 use crate::{
-    config::MediaStreamingMode,
-    encryption::{encrypt_password, Password},
-    server_id::ServerId,
-    server_storage::Server,
-    AppState,
+    config::MediaStreamingMode, domain::ids::ServerId, domain::security::Password,
+    http::state::ManagementState, servers::storage::Server,
 };
 
 #[derive(Template)]
 #[template(path = "admin/servers.html")]
-pub struct ServersPageTemplate {
-    pub ui_route: String,
+pub(crate) struct ServersPageTemplate {
+    pub(crate) ui_route: String,
 }
 
-pub struct ServerWithAdmin {
-    pub server: Server,
-    pub has_admin: bool,
-    pub is_redirect: bool,
-    pub is_proxy: bool,
+pub(crate) struct ServerWithAdmin {
+    pub(crate) server: Server,
+    pub(crate) has_admin: bool,
+    pub(crate) is_redirect: bool,
+    pub(crate) is_proxy: bool,
 }
 
 #[derive(Template)]
 #[template(path = "admin/server_list.html")]
-pub struct ServerListTemplate {
-    pub servers: Vec<ServerWithAdmin>,
-    pub ui_route: String,
+pub(crate) struct ServerListTemplate {
+    pub(crate) servers: Vec<ServerWithAdmin>,
+    pub(crate) ui_route: String,
 }
 
 #[derive(Deserialize)]
-pub struct AddServerForm {
-    pub name: String,
-    pub url: String,
-    pub priority: i32,
-    pub media_streaming_mode: String,
+pub(crate) struct AddServerForm {
+    pub(crate) name: String,
+    pub(crate) url: String,
+    pub(crate) priority: i32,
+    pub(crate) media_streaming_mode: String,
 }
 
 #[derive(Deserialize)]
-pub struct UpdatePriorityForm {
-    pub priority: i32,
+pub(crate) struct UpdatePriorityForm {
+    pub(crate) priority: i32,
 }
 
 #[derive(Deserialize)]
-pub struct UpdateMediaStreamingModeForm {
-    pub media_streaming_mode: String,
+pub(crate) struct UpdateMediaStreamingModeForm {
+    pub(crate) media_streaming_mode: String,
 }
 
 #[derive(Deserialize)]
-pub struct AddServerAdminForm {
-    pub username: String,
-    pub password: Password,
+pub(crate) struct AddServerAdminForm {
+    pub(crate) username: String,
+    pub(crate) password: Password,
 }
 
-async fn render_server_list(state: &AppState) -> Result<String, String> {
+async fn render_server_list(state: &ManagementState) -> Result<String, String> {
     match state.server_storage.list_servers().await {
         Ok(servers) => {
             let mut servers_with_admin = Vec::new();
@@ -82,7 +80,7 @@ async fn render_server_list(state: &AppState) -> Result<String, String> {
 
             let template = ServerListTemplate {
                 servers: servers_with_admin,
-                ui_route: state.get_ui_route().await,
+                ui_route: state.paths.ui_route(),
             };
 
             template.render().map_err(|e| e.to_string())
@@ -92,9 +90,9 @@ async fn render_server_list(state: &AppState) -> Result<String, String> {
 }
 
 /// Main servers management page
-pub async fn servers_page(State(state): State<AppState>) -> impl IntoResponse {
+pub(crate) async fn servers_page(State(state): State<ManagementState>) -> impl IntoResponse {
     let template = ServersPageTemplate {
-        ui_route: state.get_ui_route().await,
+        ui_route: state.paths.ui_route(),
     };
 
     match template.render() {
@@ -107,7 +105,7 @@ pub async fn servers_page(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 /// Get server list partial (for HTMX)
-pub async fn get_server_list(State(state): State<AppState>) -> impl IntoResponse {
+pub(crate) async fn get_server_list(State(state): State<ManagementState>) -> impl IntoResponse {
     match render_server_list(&state).await {
         Ok(html) => Html(html).into_response(),
         Err(e) => {
@@ -118,8 +116,8 @@ pub async fn get_server_list(State(state): State<AppState>) -> impl IntoResponse
 }
 
 /// Add a new server
-pub async fn add_server(
-    State(state): State<AppState>,
+pub(crate) async fn add_server(
+    State(state): State<ManagementState>,
     Form(form): Form<AddServerForm>,
 ) -> Response {
     // Validate the form data
@@ -160,8 +158,8 @@ pub async fn add_server(
 
     // Try to add the server
     match state
-        .server_storage
-        .add_server(
+        .server_administration
+        .add(
             form.name.trim(),
             form.url.trim(),
             form.priority,
@@ -174,9 +172,6 @@ pub async fn add_server(
                 "Added new server: {} ({}) with ID: {}",
                 form.name, form.url, server_id
             );
-
-            // Force Update server state
-            state.server_storage.check_servers_health().await;
 
             // Return updated server list
             get_server_list(State(state)).await.into_response()
@@ -217,8 +212,8 @@ pub async fn add_server(
 }
 
 /// Update server media streaming mode
-pub async fn update_server_media_streaming_mode(
-    State(state): State<AppState>,
+pub(crate) async fn update_server_media_streaming_mode(
+    State(state): State<ManagementState>,
     Path(server_id): Path<ServerId>,
     Form(form): Form<UpdateMediaStreamingModeForm>,
 ) -> Response {
@@ -234,8 +229,8 @@ pub async fn update_server_media_streaming_mode(
     };
 
     match state
-        .server_storage
-        .update_server_media_streaming_mode(server_id, media_streaming_mode)
+        .server_administration
+        .set_streaming_mode(server_id, media_streaming_mode)
         .await
     {
         Ok(true) => {
@@ -262,16 +257,12 @@ pub async fn update_server_media_streaming_mode(
 }
 
 /// Delete a server
-pub async fn delete_server(
-    State(state): State<AppState>,
+pub(crate) async fn delete_server(
+    State(state): State<ManagementState>,
     Path(server_id): Path<ServerId>,
 ) -> Response {
-    match state.server_storage.delete_server(server_id).await {
+    match state.server_administration.delete(server_id).await {
         Ok(true) => {
-            state
-                .play_sessions
-                .remove_sessions_for_server(server_id)
-                .await;
             info!("Deleted server with ID: {}", server_id);
             // Return updated server list
             get_server_list(State(state)).await.into_response()
@@ -293,8 +284,8 @@ pub async fn delete_server(
 }
 
 /// Update server priority
-pub async fn update_server_priority(
-    State(state): State<AppState>,
+pub(crate) async fn update_server_priority(
+    State(state): State<ManagementState>,
     Path(server_id): Path<ServerId>,
     Form(form): Form<UpdatePriorityForm>,
 ) -> Response {
@@ -307,8 +298,8 @@ pub async fn update_server_priority(
     }
 
     match state
-        .server_storage
-        .update_server_priority(server_id, form.priority)
+        .server_administration
+        .set_priority(server_id, form.priority)
         .await
     {
         Ok(true) => {
@@ -333,130 +324,58 @@ pub async fn update_server_priority(
 }
 
 /// Add server admin
-pub async fn add_server_admin(
-    State(state): State<AppState>,
+pub(crate) async fn add_server_admin(
+    State(state): State<ManagementState>,
     Path(server_id): Path<ServerId>,
     Form(form): Form<AddServerAdminForm>,
 ) -> Response {
-    // 1. Get server details
-    let server = match state.server_storage.get_server_by_id(server_id).await {
-        Ok(Some(s)) => s,
-        Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Html("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Server not found</div>"),
-            )
-                .into_response()
-        }
-        Err(e) => {
-            error!("Failed to get server: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Html("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Database error</div>"),
-            )
-                .into_response();
-        }
-    };
-
-    // 2. Verify credentials with upstream Jellyfin and check admin status
-    let client_info = crate::config::CLIENT_INFO.clone();
-
-    let client = match jellyfin_api::JellyfinClient::new(server.url.as_str(), client_info) {
-        Ok(c) => c,
-        Err(e) => {
-            error!("Failed to create jellyfin client: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Html("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Client error</div>"),
-            )
-                .into_response();
-        }
-    };
-
-    match client
-        .authenticate_by_name(&form.username, form.password.as_str())
+    match state
+        .server_credentials
+        .save(server_id, &form.username, &form.password)
         .await
     {
-        Ok(user) => {
-            // Check if user is admin
-            let is_admin = user.policy.map(|p| p.is_administrator).unwrap_or(false);
-
-            if !is_admin {
-                return (
-                    StatusCode::OK,
-                    Html("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">User is not an administrator on this server</div>"),
-                )
-                    .into_response();
-            }
-
-            // 3. Encrypt password with admin master password
-            let config = state.config.read().await;
-            let encrypted_password = match encrypt_password(&form.password, &config.password.clone().into()) {
-                Ok(p) => p,
-                Err(e) => {
-                    error!("Encryption failed: {}", e);
-                    return (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Html("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Encryption failed</div>"),
-                        )
-                            .into_response();
-                }
-            };
-
-            // 4. Save to database
-            match state
-                .server_storage
-                .add_server_admin(server_id, &form.username, &encrypted_password)
-                .await
-            {
-                Ok(_) => {
-                    info!("Added admin for server {}", server.name);
-                    match render_server_list(&state).await {
-                        Ok(html) => Html(format!(
-                            r#"<div id="server-list" hx-swap-oob="innerHTML">{}</div>"#,
-                            html
-                        ))
-                        .into_response(),
-                        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-                    }
-                }
-                Err(e) => {
-                    error!("Failed to add server admin: {}", e);
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Html("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Database error</div>"),
-                    )
-                        .into_response()
-                }
-            }
-        }
-        Err(jellyfin_api::error::Error::AuthenticationFailed(_)) => {
-            (
-                StatusCode::OK,
-                Html("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Invalid credentials</div>"),
-            )
-                .into_response()
-        }
-        Err(e) => {
-            error!("Failed to authenticate with upstream: {}", e);
-            (
-                StatusCode::OK,
-                Html(format!(
-                    "<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">Connection error: {}</div>",
-                    e
-                )),
-            )
-                .into_response()
-        }
+        Ok(()) => match render_server_list(&state).await {
+            Ok(html) => Html(format!(
+                r#"<div id="server-list" hx-swap-oob="innerHTML">{}</div>"#,
+                html
+            ))
+            .into_response(),
+            Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+        },
+        Err(error) => server_credential_error(error),
     }
 }
 
+fn server_credential_error(
+    error: crate::application::admin::servers::ServerCredentialError,
+) -> Response {
+    use crate::application::admin::servers::ServerCredentialError;
+    // Keep upstream failure details out of HTML (and credentials out of logs).
+    let (status, message) = match error {
+        ServerCredentialError::NotFound => (StatusCode::NOT_FOUND, "Server not found"),
+        ServerCredentialError::NotAdministrator => (
+            StatusCode::OK,
+            "User is not an administrator on this server",
+        ),
+        ServerCredentialError::Client(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Client error"),
+        ServerCredentialError::Authentication(
+            jellyfin_api::error::Error::AuthenticationFailed(_),
+        ) => (StatusCode::OK, "Invalid credentials"),
+        ServerCredentialError::Authentication(_) => (StatusCode::OK, "Connection error"),
+        ServerCredentialError::Encryption(_) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, "Encryption failed")
+        }
+        ServerCredentialError::Storage(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
+    };
+    (status, Html(format!("<div style=\"background-color: #e74c3c; color: white; padding: 0.75rem; border-radius: 0.25rem; margin-bottom: 1rem;\">{message}</div>"))).into_response()
+}
+
 /// Delete server admin
-pub async fn delete_server_admin(
-    State(state): State<AppState>,
+pub(crate) async fn delete_server_admin(
+    State(state): State<ManagementState>,
     Path(server_id): Path<ServerId>,
 ) -> Response {
-    match state.server_storage.delete_server_admin(server_id).await {
+    match state.server_credentials.delete(server_id).await {
         Ok(true) => {
             info!("Deleted admin for server ID: {}", server_id);
             get_server_list(State(state)).await.into_response()

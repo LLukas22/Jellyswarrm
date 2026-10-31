@@ -1,0 +1,1129 @@
+//! Catalog grouping, ordering and presentation.
+use crate::application::error::ApplicationError;
+use std::collections::VecDeque;
+use std::str::FromStr;
+
+use crate::{
+    media::catalog::{label_duplicates, TaggedMediaItem},
+    media::presentation::{CatalogItem, ItemNamePolicy},
+    models::{
+        enums::{ItemSortBy, SortOrder},
+        ItemsResponseVariants, ItemsResponseWithCount, MediaItem,
+    },
+    servers::storage::Server,
+};
+
+use super::library_resolution::is_live_tv_user_view;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Pagination {
+    pub(super) start_index: usize,
+    pub(super) limit: Option<usize>,
+}
+
+impl Pagination {
+    pub(super) fn unbounded() -> Self {
+        Self {
+            start_index: 0,
+            limit: None,
+        }
+    }
+
+    pub(super) fn from_url(url: &url::Url) -> Self {
+        let mut pagination = Self::unbounded();
+
+        for (key, value) in url.query_pairs() {
+            if key.eq_ignore_ascii_case("StartIndex") {
+                if let Ok(start_index) = value.parse() {
+                    pagination.start_index = start_index;
+                }
+            } else if key.eq_ignore_ascii_case("Limit") {
+                if let Ok(limit) = value.parse() {
+                    pagination.limit = Some(limit);
+                }
+            }
+        }
+
+        pagination
+    }
+
+    fn apply<T>(self, items: Vec<T>) -> Vec<T> {
+        if self.start_index >= items.len() {
+            return Vec::new();
+        }
+
+        let items = items.into_iter().skip(self.start_index);
+        if let Some(limit) = self.limit {
+            items.take(limit).collect()
+        } else {
+            items.collect()
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResponseShape {
+    Bare,
+    Counted,
+}
+
+impl ResponseShape {
+    pub(super) fn from_responses<'a>(
+        responses: impl IntoIterator<Item = &'a ItemsResponseVariants>,
+    ) -> Self {
+        if responses
+            .into_iter()
+            .any(|response| matches!(response, ItemsResponseVariants::WithCount(_)))
+        {
+            Self::Counted
+        } else {
+            Self::Bare
+        }
+    }
+
+    fn wrap(
+        self,
+        items: Vec<MediaItem>,
+        total_count: usize,
+        pagination: Pagination,
+    ) -> ItemsResponseVariants {
+        match self {
+            Self::Bare => ItemsResponseVariants::Bare(items),
+            Self::Counted => ItemsResponseVariants::WithCount(ItemsResponseWithCount {
+                items,
+                total_record_count: to_i32(total_count),
+                start_index: to_i32(pagination.start_index),
+            }),
+        }
+    }
+}
+
+pub(crate) struct ServerItems {
+    pub(crate) response: ItemsResponseVariants,
+    pub(crate) server: Server,
+}
+
+#[derive(Default)]
+pub(crate) struct FederatedItems {
+    items: Vec<CatalogItem>,
+}
+
+impl FederatedItems {
+    pub(super) fn items_mut(&mut self) -> &mut [CatalogItem] {
+        &mut self.items
+    }
+    #[cfg(test)]
+    pub(super) fn new(items: Vec<MediaItem>) -> Self {
+        Self {
+            items: items.into_iter().map(Into::into).collect(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn interleaved(responses: Vec<ItemsResponseVariants>) -> Self {
+        Self::new(interleave(responses))
+    }
+
+    pub(super) fn from_tagged_items(items: Vec<TaggedMediaItem>) -> Self {
+        Self::from_merged_items(label_duplicates(items))
+    }
+
+    pub(crate) fn from_merged_items(items: Vec<CatalogItem>) -> Self {
+        Self { items }
+    }
+
+    pub(super) fn from_servers(servers: Vec<ServerItems>, policy: ItemNamePolicy) -> Self {
+        Self::from_merged_items(interleave_catalog(
+            servers
+                .into_iter()
+                .map(|source| {
+                    source
+                        .response
+                        .into_items()
+                        .into_iter()
+                        .map(|item| policy.annotate(item, &source.server.name))
+                        .collect()
+                })
+                .collect(),
+        ))
+    }
+
+    pub(super) fn merge_interleaved(mut self, server_items: Vec<Vec<CatalogItem>>) -> Self {
+        self.items.extend(interleave_catalog(server_items));
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_response(
+        self,
+        url: &url::Url,
+        shape: ResponseShape,
+    ) -> ItemsResponseVariants {
+        self.into_response_with_policy(
+            &super::request_policy::CatalogRequestPolicy::from_url(url),
+            shape,
+        )
+    }
+
+    pub(super) fn into_response_with_policy(
+        mut self,
+        policy: &super::request_policy::CatalogRequestPolicy,
+        shape: ResponseShape,
+    ) -> ItemsResponseVariants {
+        let pagination = policy.pagination;
+        self.items.retain(|item| policy.matches_playback(item));
+        policy.sort.apply(&mut self.items);
+        if let Some(start_id) = &policy.episode_start_id {
+            let start = self
+                .items
+                .iter()
+                .position(|item| &item.id == start_id)
+                .unwrap_or(self.items.len());
+            self.items.drain(..start);
+        }
+        let total_count = self.items.len();
+        let items = pagination
+            .apply(self.items)
+            .into_iter()
+            .map(CatalogItem::present)
+            .collect();
+        shape.wrap(items, total_count, pagination)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct SortCriterion {
+    field: ItemSortBy,
+    order: SortOrder,
+}
+
+#[derive(Debug)]
+pub(super) enum SortPolicy {
+    Random,
+    PreserveUpstream,
+    SeasonOrder,
+    EpisodeOrder,
+    Fields(Vec<SortCriterion>),
+}
+
+impl SortPolicy {
+    pub(super) fn from_url(url: &url::Url) -> Self {
+        let path = url.path().trim_end_matches('/').to_ascii_lowercase();
+        if path.ends_with("/shows/nextup") {
+            // Jellyfin ranks Next Up using the previously watched episode's date,
+            // which cannot be reconstructed from the returned episode's metadata.
+            return Self::PreserveUpstream;
+        }
+
+        let mut fields = query_list::<ItemSortBy>(url, "SortBy");
+        let mut orders = query_list::<SortOrder>(url, "SortOrder");
+        if fields.first() == Some(&ItemSortBy::Random) {
+            return Self::Random;
+        }
+        if fields.iter().any(|field| !MediaItem::supports_sort(*field)) {
+            // Do not turn unsupported/backend-only rankings into name or UUID
+            // order, including when an unsupported field has a supported tie-breaker.
+            return Self::PreserveUpstream;
+        }
+        if fields.is_empty() {
+            if path.contains("/shows/") {
+                if path.ends_with("/seasons") {
+                    return Self::SeasonOrder;
+                }
+                if path.ends_with("/episodes") {
+                    return Self::EpisodeOrder;
+                }
+            }
+
+            let path = url.path().to_ascii_lowercase();
+            if path.ends_with("/latest") {
+                fields.push(ItemSortBy::DateCreated);
+                orders = vec![SortOrder::Descending];
+            } else if path.ends_with("/resume") {
+                fields.push(ItemSortBy::DatePlayed);
+                orders = vec![SortOrder::Descending];
+            } else {
+                fields.push(ItemSortBy::SortName);
+            }
+        }
+
+        let default_order = orders.first().copied().unwrap_or_default();
+        Self::Fields(
+            fields
+                .into_iter()
+                .enumerate()
+                .map(|(index, field)| SortCriterion {
+                    field,
+                    order: orders.get(index).copied().unwrap_or(default_order),
+                })
+                .collect(),
+        )
+    }
+
+    fn apply(&self, items: &mut [CatalogItem]) {
+        match self {
+            Self::Random => {
+                use rand::seq::SliceRandom;
+                items.shuffle(&mut rand::rng());
+            }
+            Self::PreserveUpstream => {}
+            Self::SeasonOrder | Self::EpisodeOrder => {
+                let numeric_key = |item: &MediaItem| {
+                    (
+                        if matches!(self, Self::EpisodeOrder) {
+                            item.item_number("ParentIndexNumber")
+                        } else {
+                            0
+                        },
+                        item.item_number("IndexNumber"),
+                    )
+                };
+                items.sort_by(|left, right| {
+                    numeric_key(left)
+                        .cmp(&numeric_key(right))
+                        .then_with(|| left.id.cmp(&right.id))
+                });
+            }
+            Self::Fields(criteria) => items.sort_by(|left, right| {
+                criteria
+                    .iter()
+                    .find_map(|criterion| {
+                        let ordering = left.cmp_by(right, criterion.field);
+                        (!ordering.is_eq()).then(|| match criterion.order {
+                            SortOrder::Ascending => ordering,
+                            SortOrder::Descending => ordering.reverse(),
+                        })
+                    })
+                    .unwrap_or_else(|| left.id.cmp(&right.id))
+            }),
+        }
+    }
+
+    pub(super) fn required_fields(&self) -> Vec<&'static str> {
+        if matches!(self, Self::Random) {
+            return vec!["SortName"];
+        }
+        let Self::Fields(criteria) = self else {
+            return Vec::new();
+        };
+        criteria
+            .iter()
+            .filter_map(|criterion| match criterion.field {
+                ItemSortBy::SortName => Some("SortName"),
+                ItemSortBy::DateCreated => Some("DateCreated"),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+fn query_list<T>(url: &url::Url, expected_key: &str) -> Vec<T>
+where
+    T: FromStr,
+{
+    // SDK clients send repeated keys; legacy clients send comma-separated
+    // lists. Both encodings must preserve every criterion and its order.
+    let mut values = Vec::new();
+    for (key, value) in url.query_pairs() {
+        if key.eq_ignore_ascii_case(expected_key) {
+            values.extend(
+                value
+                    .split(',')
+                    .filter_map(|value| value.trim().parse().ok()),
+            );
+        }
+    }
+    values
+}
+
+#[cfg(test)]
+fn interleave(responses: Vec<ItemsResponseVariants>) -> Vec<MediaItem> {
+    interleave_catalog(
+        responses
+            .into_iter()
+            .map(|response| response.into_items().into_iter().map(Into::into).collect())
+            .collect(),
+    )
+    .into_iter()
+    .map(|entry| entry.item)
+    .collect()
+}
+
+fn interleave_catalog(responses: Vec<Vec<CatalogItem>>) -> Vec<CatalogItem> {
+    let mut queues = responses
+        .into_iter()
+        .map(VecDeque::from)
+        .collect::<Vec<_>>();
+    let mut remaining = queues.iter().map(VecDeque::len).sum();
+    let mut items = Vec::with_capacity(remaining);
+    let mut has_live_tv_user_view = false;
+
+    while remaining > 0 {
+        for queue in &mut queues {
+            let Some(item) = queue.pop_front() else {
+                continue;
+            };
+            remaining -= 1;
+
+            if is_live_tv_user_view(&item) {
+                if has_live_tv_user_view {
+                    continue;
+                }
+                has_live_tv_user_view = true;
+            }
+
+            items.push(item);
+        }
+    }
+
+    items
+}
+
+fn to_i32(value: usize) -> i32 {
+    value.min(i32::MAX as usize) as i32
+}
+
+/// Page an already grouped/sorted materialization without reconstructing DTOs.
+/// Unknown item and envelope fields survive unchanged.
+pub(super) fn page_materialized_response(
+    snapshot: &serde_json::Value,
+    pagination: Pagination,
+) -> Result<serde_json::Value, ApplicationError> {
+    let slice = |items: &[serde_json::Value]| {
+        items
+            .iter()
+            .skip(pagination.start_index)
+            .take(pagination.limit.unwrap_or(usize::MAX))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    if let Some(items) = snapshot.as_array() {
+        return Ok(serde_json::Value::Array(slice(items)));
+    }
+    let mut response = snapshot
+        .as_object()
+        .ok_or_else(|| {
+            ApplicationError::Internal(anyhow::anyhow!("invalid materialized catalog envelope"))
+        })?
+        .clone();
+    let items = snapshot["Items"].as_array().ok_or_else(|| {
+        ApplicationError::Internal(anyhow::anyhow!(
+            "materialized catalog Items must be an array"
+        ))
+    })?;
+    response.insert("Items".into(), serde_json::Value::Array(slice(items)));
+    response.insert(
+        "StartIndex".into(),
+        serde_json::json!(pagination.start_index.min(i32::MAX as usize)),
+    );
+    Ok(serde_json::Value::Object(response))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn episode_window_is_inclusive_sorted_and_never_restarts_at_an_unrelated_episode() {
+        for (anchor, expected, total) in [
+            ("first", vec!["second"], 3),
+            ("second", vec!["third"], 2),
+            ("third", vec![], 1),
+            ("missing", vec![], 0),
+        ] {
+            let url = url::Url::parse(&format!(
+                "http://localhost/Shows/show/Episodes?StartItemId={anchor}&StartIndex=1&Limit=1"
+            ))
+            .unwrap();
+            let items = [("third", 2, 1), ("first", 1, 1), ("second", 1, 2)]
+                .into_iter()
+                .map(|(id, season, episode)| {
+                    serde_json::from_value(json!({
+                        "Id": id, "Type": "Episode", "ParentIndexNumber": season, "IndexNumber": episode
+                    }))
+                    .unwrap()
+                })
+                .collect();
+            let ItemsResponseVariants::WithCount(result) =
+                FederatedItems::new(items).into_response(&url, ResponseShape::Counted)
+            else {
+                panic!("expected counted response")
+            };
+            assert_eq!(item_ids(&result.items), expected);
+            assert_eq!(result.total_record_count, total);
+            assert_eq!(result.start_index, 1);
+        }
+    }
+
+    #[test]
+    fn unsupported_sort_does_not_replace_backend_order_with_name_or_id_order() {
+        for sort in [
+            "FutureBackendRank,SortName",
+            "DateLastContentAdded,SortName",
+        ] {
+            let url = url::Url::parse(&format!("http://localhost/Items?SortBy={sort}")).unwrap();
+            let items = vec![
+                named_media_item("z", "Zulu"),
+                named_media_item("a", "Alpha"),
+            ];
+            let result = FederatedItems::new(items).into_response(&url, ResponseShape::Bare);
+            assert_eq!(item_ids(&result.into_items()), vec!["z", "a"]);
+        }
+    }
+
+    #[test]
+    fn shared_request_policy_survives_upstream_pagination_rewrites() {
+        use super::super::request_policy::{set_upstream_page, CatalogRequestPolicy};
+        let mut url = url::Url::parse(
+            "http://localhost/Items?StartIndex=1&Limit=1&SortBy=DateCreated&SortOrder=Descending",
+        )
+        .unwrap();
+        let policy = CatalogRequestPolicy::from_url(&url);
+        policy.prepare_upstream(&mut url, true);
+        assert!(url.query_pairs().any(|(key, fields)| key == "Fields"
+            && fields.contains("DateCreated")
+            && fields.contains("ProviderIds")));
+        set_upstream_page(&mut url, 0, 100);
+        let items = [
+            ("old", "2020-01-01T00:00:00Z"),
+            ("new", "2022-01-01T00:00:00Z"),
+            ("middle", "2021-01-01T00:00:00Z"),
+        ]
+        .into_iter()
+        .map(|(id, date)| {
+            serde_json::from_value(json!({"Id": id, "Type": "Movie", "DateCreated": date})).unwrap()
+        })
+        .collect();
+        let ItemsResponseVariants::WithCount(result) =
+            FederatedItems::new(items).into_response_with_policy(&policy, ResponseShape::Counted)
+        else {
+            panic!("expected counted response");
+        };
+        assert_eq!(result.start_index, 1);
+        assert_eq!(result.total_record_count, 3);
+        assert_eq!(result.items.len(), 1);
+        assert_eq!(result.items[0].id, "middle");
+    }
+
+    #[test]
+    fn repeated_sort_fields_and_orders_preserve_all_criteria() {
+        let url = url::Url::parse(
+            "http://localhost/Items?sortBy=AlbumArtist&SortBy=DateCreated,%20SortName&sortOrder=Ascending&SortOrder=Descending,Ascending",
+        ).unwrap();
+        let SortPolicy::Fields(criteria) = SortPolicy::from_url(&url) else {
+            panic!("expected field sorting");
+        };
+        assert_eq!(
+            criteria,
+            vec![
+                SortCriterion {
+                    field: ItemSortBy::AlbumArtist,
+                    order: SortOrder::Ascending
+                },
+                SortCriterion {
+                    field: ItemSortBy::DateCreated,
+                    order: SortOrder::Descending
+                },
+                SortCriterion {
+                    field: ItemSortBy::SortName,
+                    order: SortOrder::Ascending
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn pagination_from_url_defaults_when_absent() {
+        let url = url::Url::parse("http://localhost/Items?Recursive=true").unwrap();
+
+        assert_eq!(
+            Pagination::from_url(&url),
+            Pagination {
+                start_index: 0,
+                limit: None,
+            }
+        );
+    }
+
+    #[test]
+    fn pagination_from_url_is_case_insensitive() {
+        let url = url::Url::parse("http://localhost/Items?startindex=12&limit=24").unwrap();
+
+        assert_eq!(
+            Pagination::from_url(&url),
+            Pagination {
+                start_index: 12,
+                limit: Some(24),
+            }
+        );
+    }
+
+    #[test]
+    fn pagination_from_url_ignores_invalid_numbers() {
+        let url = url::Url::parse("http://localhost/Items?StartIndex=nope&Limit=nope").unwrap();
+
+        assert_eq!(
+            Pagination::from_url(&url),
+            Pagination {
+                start_index: 0,
+                limit: None,
+            }
+        );
+    }
+
+    #[test]
+    fn sorting_honors_requested_order() {
+        let url =
+            url::Url::parse("http://localhost/Items?SortBy=SortName&SortOrder=Descending").unwrap();
+        let items = vec![
+            named_media_item("a", "Alpha"),
+            named_media_item("b", "Beta"),
+        ];
+
+        let response = FederatedItems::new(items).into_response(&url, ResponseShape::Bare);
+
+        assert_eq!(item_ids(&response.into_items()), vec!["b", "a"]);
+    }
+
+    #[test]
+    fn album_sorts_use_requested_field_and_direction() {
+        let albums = vec![
+            album_item("a", "Zulu", "alpha", "Beta", "2026-01-01T01:00:00+01:00"),
+            album_item("b", "Alpha", "zulu", "Alpha", "2025-12-31T23:30:00Z"),
+            album_item("c", "Beta", "beta", "Alpha", "2026-01-01T01:30:00Z"),
+        ];
+
+        for (field, ascending) in [
+            ("Name", vec!["b", "c", "a"]),
+            ("SortName", vec!["a", "c", "b"]),
+            ("AlbumArtist,SortName", vec!["c", "b", "a"]),
+            ("DateCreated,SortName", vec!["b", "a", "c"]),
+        ] {
+            for (order, expected) in [
+                ("Ascending", ascending.clone()),
+                ("Descending", ascending.into_iter().rev().collect()),
+            ] {
+                let url = url::Url::parse(&format!(
+                    "http://localhost/Users/u/Items?IncludeItemTypes=MusicAlbum&SortBy={field}&SortOrder={order}"
+                ))
+                .unwrap();
+                let response =
+                    FederatedItems::new(albums.clone()).into_response(&url, ResponseShape::Bare);
+                assert_eq!(
+                    item_ids(&response.into_items()),
+                    expected,
+                    "{field} {order}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn song_sorts_cover_album_artist_and_release_date_tiebreakers() {
+        let songs = vec![
+            song_item("a", "Zulu", "Same", "Beta", "Charlie", 2025),
+            song_item("b", "Alpha", "Same", "Alpha", "Beta", 2025),
+            song_item("c", "Beta", "Zulu", "Alpha", "Alpha", 2024),
+        ];
+
+        for (fields, ascending) in [
+            ("Name", vec!["b", "c", "a"]),
+            ("Album,AlbumArtist,SortName", vec!["b", "a", "c"]),
+            ("AlbumArtist,Album,SortName", vec!["b", "c", "a"]),
+            ("Artist,Album,SortName", vec!["c", "b", "a"]),
+            (
+                "ProductionYear,PremiereDate,AlbumArtist,Album,SortName",
+                vec!["c", "b", "a"],
+            ),
+        ] {
+            for (order, expected) in [
+                ("Ascending", ascending.clone()),
+                ("Descending", ascending.into_iter().rev().collect()),
+            ] {
+                let url = url::Url::parse(&format!(
+                    "http://localhost/Users/u/Items?IncludeItemTypes=Audio&SortBy={fields}&SortOrder={order}"
+                ))
+                .unwrap();
+                let response =
+                    FederatedItems::new(songs.clone()).into_response(&url, ResponseShape::Bare);
+                assert_eq!(
+                    item_ids(&response.into_items()),
+                    expected,
+                    "{fields} {order}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn playlist_updated_sort_preserves_upstream_ranking() {
+        let url = url::Url::parse(
+            "http://localhost/Users/u/Items?IncludeItemTypes=Playlist&SortBy=DateLastContentAdded,SortName&SortOrder=Descending",
+        )
+        .unwrap();
+        let response = FederatedItems::interleaved(vec![ItemsResponseVariants::Bare(vec![
+            named_media_item("newer", "Alpha"),
+            named_media_item("older", "Zulu"),
+        ])])
+        .into_response(&url, ResponseShape::Bare);
+
+        assert_eq!(item_ids(&response.into_items()), vec!["newer", "older"]);
+    }
+
+    #[test]
+    fn legacy_random_with_sort_name_tiebreaker_keeps_all_items() {
+        let url = url::Url::parse(
+            "http://localhost/Users/u/Items?IncludeItemTypes=MusicAlbum&SortBy=Random,SortName",
+        )
+        .unwrap();
+        let response = FederatedItems::interleaved(vec![ItemsResponseVariants::Bare(vec![
+            named_media_item("first", "Zulu"),
+            named_media_item("second", "Alpha"),
+        ])])
+        .into_response(&url, ResponseShape::Bare);
+
+        assert!(matches!(SortPolicy::from_url(&url), SortPolicy::Random));
+        let items = response.into_items();
+        let mut ids = item_ids(&items);
+        ids.sort();
+        assert_eq!(ids, vec!["first", "second"]);
+    }
+
+    #[test]
+    fn sorting_orders_latest_by_date_created() {
+        let url = url::Url::parse("http://localhost/Users/u/Items/Latest").unwrap();
+        let mut older = named_media_item("old", "Older");
+        older.date_created = Some("2025-01-01T00:00:00Z".to_string());
+        let mut newer = named_media_item("new", "Newer");
+        newer.date_created = Some("2026-01-01T00:00:00Z".to_string());
+
+        let response =
+            FederatedItems::new(vec![older, newer]).into_response(&url, ResponseShape::Bare);
+
+        assert_eq!(item_ids(&response.into_items()), vec!["new", "old"]);
+    }
+
+    #[test]
+    fn sorting_orders_legacy_resume_by_last_played_date() {
+        assert_resume_items_are_sorted_by_last_played_date("http://localhost/Users/u/Items/Resume");
+    }
+
+    #[test]
+    fn sorting_orders_modern_resume_by_last_played_date() {
+        assert_resume_items_are_sorted_by_last_played_date("http://localhost/UserItems/Resume");
+    }
+
+    #[test]
+    fn next_up_preserves_upstream_order() {
+        for endpoint in ["/Shows/NextUp", "/jellyfin/shows/nextup/"] {
+            let url = url::Url::parse(&format!("http://localhost{endpoint}")).unwrap();
+            let response = FederatedItems::interleaved(vec![ItemsResponseVariants::Bare(vec![
+                named_media_item("first", "Zulu"),
+                named_media_item("second", "Alpha"),
+                named_media_item("third", "Beta"),
+            ])])
+            .into_response(&url, ResponseShape::Counted);
+
+            assert_eq!(
+                item_ids(&response.into_items()),
+                vec!["first", "second", "third"]
+            );
+        }
+    }
+
+    #[test]
+    fn next_up_preserves_interleaved_ranks_before_pagination() {
+        let url = url::Url::parse("http://localhost/Shows/NextUp?StartIndex=1&Limit=3").unwrap();
+        let response = FederatedItems::interleaved(vec![
+            ItemsResponseVariants::Bare(vec![
+                named_media_item("a1", "Zulu"),
+                named_media_item("a2", "Alpha"),
+            ]),
+            ItemsResponseVariants::Bare(vec![
+                named_media_item("b1", "Yankee"),
+                named_media_item("b2", "Beta"),
+                named_media_item("b3", "Charlie"),
+            ]),
+        ])
+        .into_response(&url, ResponseShape::Counted);
+
+        let ItemsResponseVariants::WithCount(response) = response else {
+            panic!("expected counted response");
+        };
+        assert_eq!(item_ids(&response.items), vec!["b1", "a2", "b2"]);
+        assert_eq!(response.total_record_count, 5);
+        assert_eq!(response.start_index, 1);
+    }
+
+    #[test]
+    fn sorting_defaults_to_sort_name() {
+        let url = url::Url::parse("http://localhost/Items").unwrap();
+        let items = vec![
+            named_media_item("b", "Beta"),
+            named_media_item("a", "Alpha"),
+        ];
+
+        let response = FederatedItems::new(items).into_response(&url, ResponseShape::Bare);
+
+        assert_eq!(item_ids(&response.into_items()), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn show_children_sort_numerically_before_pagination() {
+        for (endpoint, kind, numbers, expected) in [
+            (
+                "Seasons",
+                "Season",
+                vec![(0, 10), (0, 2), (0, 1)],
+                vec!["2", "10"],
+            ),
+            (
+                "Episodes",
+                "Episode",
+                vec![(2, 1), (1, 10), (1, 2)],
+                vec!["10", "1"],
+            ),
+        ] {
+            let items = numbers
+                .into_iter()
+                .map(|(season, index)| {
+                    serde_json::from_value(json!({
+                        "Id": index.to_string(), "Type": kind,
+                        "Name": format!("Title {index}"),
+                        "ParentIndexNumber": season, "IndexNumber": index,
+                    }))
+                    .unwrap()
+                })
+                .collect();
+            let url = url::Url::parse(&format!(
+                "http://localhost/Shows/show/{endpoint}?StartIndex=1&Limit=2"
+            ))
+            .unwrap();
+            let response = FederatedItems::new(items).into_response(&url, ResponseShape::Counted);
+            let ItemsResponseVariants::WithCount(response) = response else {
+                panic!("expected count")
+            };
+            assert_eq!(item_ids(&response.items), expected);
+            assert_eq!(response.total_record_count, 3);
+            assert_eq!(response.start_index, 1);
+        }
+    }
+
+    #[test]
+    fn show_children_numeric_ties_paginate_by_id_regardless_of_input_order() {
+        for (endpoint, kind) in [("Seasons", "Season"), ("Episodes", "Episode")] {
+            let url = url::Url::parse(&format!(
+                "http://localhost/Shows/show/{endpoint}?StartIndex=1&Limit=1"
+            ))
+            .unwrap();
+            for ids in [["a", "b", "c"], ["c", "a", "b"]] {
+                let items = ids
+                    .into_iter()
+                    .map(|id| {
+                        serde_json::from_value(json!({
+                            "Id": id, "Type": kind,
+                            "ParentIndexNumber": 1, "IndexNumber": 2,
+                        }))
+                        .unwrap()
+                    })
+                    .collect();
+                let response = FederatedItems::new(items).into_response(&url, ResponseShape::Bare);
+                assert_eq!(item_ids(&response.into_items()), vec!["b"]);
+            }
+        }
+    }
+
+    #[test]
+    fn show_children_preserve_explicit_sort() {
+        let url = url::Url::parse(
+            "http://localhost/Shows/show/Episodes?SortBy=SortName&SortOrder=Descending",
+        )
+        .unwrap();
+        let items = vec![
+            named_media_item("a", "Alpha"),
+            named_media_item("b", "Beta"),
+        ];
+        let response = FederatedItems::new(items).into_response(&url, ResponseShape::Bare);
+        assert_eq!(item_ids(&response.into_items()), vec!["b", "a"]);
+    }
+
+    #[test]
+    fn pagination_slices_after_interleave() {
+        let url = url::Url::parse("http://localhost/Shows/NextUp?StartIndex=1&Limit=2").unwrap();
+        let response = FederatedItems::interleaved(vec![
+            ItemsResponseVariants::Bare(vec![media_item("a1", None), media_item("a2", None)]),
+            ItemsResponseVariants::Bare(vec![media_item("b1", None), media_item("b2", None)]),
+        ])
+        .into_response(&url, ResponseShape::Bare);
+
+        assert_eq!(item_ids(&response.into_items()), vec!["b1", "a2"]);
+    }
+
+    #[test]
+    fn pagination_returns_rest_when_limit_is_absent() {
+        let items = Pagination {
+            start_index: 1,
+            limit: None,
+        }
+        .apply(vec![
+            media_item("one", None),
+            media_item("two", None),
+            media_item("three", None),
+        ]);
+
+        assert_eq!(item_ids(&items), vec!["two", "three"]);
+    }
+
+    #[test]
+    fn pagination_returns_empty_when_start_is_out_of_range() {
+        let items = Pagination {
+            start_index: 2,
+            limit: Some(10),
+        }
+        .apply(vec![media_item("one", None), media_item("two", None)]);
+
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn pagination_allows_zero_limit() {
+        let items = Pagination {
+            start_index: 0,
+            limit: Some(0),
+        }
+        .apply(vec![media_item("one", None)]);
+
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn interleave_round_robins_uneven_server_lists() {
+        let items = FederatedItems::interleaved(vec![
+            ItemsResponseVariants::Bare(vec![media_item("a1", None), media_item("a2", None)]),
+            ItemsResponseVariants::Bare(vec![
+                media_item("b1", None),
+                media_item("b2", None),
+                media_item("b3", None),
+            ]),
+            ItemsResponseVariants::Bare(vec![media_item("c1", None)]),
+        ]);
+
+        assert_eq!(
+            items
+                .items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a1", "b1", "c1", "a2", "b2", "b3"]
+        );
+    }
+
+    #[test]
+    fn interleave_keeps_only_one_live_tv_user_view() {
+        let items = FederatedItems::interleaved(vec![
+            ItemsResponseVariants::Bare(vec![
+                media_item("live-one", Some("livetv")),
+                media_item("movie-one", None),
+            ]),
+            ItemsResponseVariants::Bare(vec![
+                media_item("live-two", Some("livetv")),
+                media_item("movie-two", None),
+            ]),
+        ]);
+
+        assert_eq!(
+            items
+                .items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["live-one", "movie-one", "movie-two"]
+        );
+    }
+
+    #[test]
+    fn interleave_does_not_dedupe_non_user_view_live_tv_items() {
+        let items = FederatedItems::interleaved(vec![
+            ItemsResponseVariants::Bare(vec![typed_media_item(
+                "channel-one",
+                "LiveTvChannel",
+                Some("livetv"),
+            )]),
+            ItemsResponseVariants::Bare(vec![typed_media_item(
+                "channel-two",
+                "LiveTvChannel",
+                Some("livetv"),
+            )]),
+        ]);
+
+        assert_eq!(
+            items
+                .items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["channel-one", "channel-two"]
+        );
+    }
+
+    #[test]
+    fn response_shape_detects_counted_response() {
+        let responses = [
+            ItemsResponseVariants::Bare(Vec::new()),
+            ItemsResponseVariants::WithCount(ItemsResponseWithCount {
+                items: Vec::new(),
+                total_record_count: 0,
+                start_index: 0,
+            }),
+        ];
+
+        assert_eq!(
+            ResponseShape::from_responses(&responses),
+            ResponseShape::Counted
+        );
+    }
+
+    #[test]
+    fn response_shape_is_bare_when_all_responses_are_bare() {
+        let responses = [
+            ItemsResponseVariants::Bare(Vec::new()),
+            ItemsResponseVariants::Bare(Vec::new()),
+        ];
+
+        assert_eq!(
+            ResponseShape::from_responses(&responses),
+            ResponseShape::Bare
+        );
+    }
+
+    #[test]
+    fn pipeline_sorts_then_paginates_with_exact_total() {
+        let url =
+            url::Url::parse("http://localhost/Items?SortBy=SortName&StartIndex=1&Limit=1").unwrap();
+        let response = FederatedItems::new(vec![
+            named_media_item("c", "Charlie"),
+            named_media_item("a", "Alpha"),
+            named_media_item("b", "Beta"),
+        ])
+        .into_response(&url, ResponseShape::Counted);
+
+        let ItemsResponseVariants::WithCount(response) = response else {
+            panic!("expected counted response");
+        };
+        assert_eq!(
+            (
+                item_ids(&response.items),
+                response.total_record_count,
+                response.start_index,
+            ),
+            (vec!["b"], 3, 1)
+        );
+    }
+
+    fn item_ids(items: &[MediaItem]) -> Vec<&str> {
+        items.iter().map(|item| item.id.as_str()).collect()
+    }
+
+    fn media_item(id: &str, collection_type: Option<&str>) -> MediaItem {
+        typed_media_item(id, "UserView", collection_type)
+    }
+
+    fn named_media_item(id: &str, name: &str) -> MediaItem {
+        serde_json::from_value(json!({
+            "Id": id,
+            "Name": name,
+            "SortName": name,
+            "Type": "Movie",
+        }))
+        .unwrap()
+    }
+
+    fn album_item(
+        id: &str,
+        name: &str,
+        sort_name: &str,
+        album_artist: &str,
+        date_created: &str,
+    ) -> MediaItem {
+        serde_json::from_value(json!({
+            "Id": id,
+            "Name": name,
+            "SortName": sort_name,
+            "AlbumArtist": album_artist,
+            "DateCreated": date_created,
+            "Type": "MusicAlbum",
+        }))
+        .unwrap()
+    }
+
+    fn song_item(
+        id: &str,
+        name: &str,
+        album: &str,
+        album_artist: &str,
+        artist: &str,
+        year: i32,
+    ) -> MediaItem {
+        serde_json::from_value(json!({
+            "Id": id,
+            "Name": name,
+            "SortName": name,
+            "Album": album,
+            "AlbumArtist": album_artist,
+            "Artists": [artist],
+            "ProductionYear": year,
+            "Type": "Audio",
+        }))
+        .unwrap()
+    }
+
+    fn assert_resume_items_are_sorted_by_last_played_date(url: &str) {
+        let url = url::Url::parse(url).unwrap();
+        let response = FederatedItems::interleaved(vec![
+            ItemsResponseVariants::Bare(vec![last_played_media_item(
+                "older",
+                "Alpha",
+                "2025-01-01T00:00:00Z",
+            )]),
+            ItemsResponseVariants::Bare(vec![last_played_media_item(
+                "newer",
+                "Zulu",
+                "2026-01-01T00:00:00Z",
+            )]),
+        ])
+        .into_response(&url, ResponseShape::Counted);
+
+        assert_eq!(item_ids(&response.into_items()), vec!["newer", "older"]);
+    }
+
+    fn last_played_media_item(id: &str, name: &str, last_played_date: &str) -> MediaItem {
+        serde_json::from_value(json!({
+            "Id": id,
+            "Name": name,
+            "SortName": name,
+            "Type": "Movie",
+            "UserData": {
+                "PlaybackPositionTicks": 1,
+                "PlayCount": 0,
+                "IsFavorite": false,
+                "Played": false,
+                "Key": id,
+                "ItemId": id,
+                "LastPlayedDate": last_played_date
+            }
+        }))
+        .unwrap()
+    }
+
+    fn typed_media_item(id: &str, item_type: &str, collection_type: Option<&str>) -> MediaItem {
+        let mut item = json!({
+            "Id": id,
+            "Type": item_type,
+        });
+        if let Some(collection_type) = collection_type {
+            item["CollectionType"] = json!(collection_type);
+        }
+        serde_json::from_value(item).unwrap()
+    }
+}

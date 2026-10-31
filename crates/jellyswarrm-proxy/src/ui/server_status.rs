@@ -1,3 +1,4 @@
+//! Present backend registry health and availability to the management UI.
 use askama::Template;
 use axum::{
     extract::{Path, State},
@@ -6,23 +7,27 @@ use axum::{
 };
 use tracing::error;
 
-use crate::{server_id::ServerId, server_storage::ServerHealthStatus, AppState};
+use crate::{
+    domain::ids::ServerId,
+    servers::storage::{ServerHealthStatus, ServerStorageService},
+};
+use std::sync::Arc;
 
 #[derive(Template)]
 #[template(path = "admin/server_status.html")]
-pub struct ServerStatusTemplate {
-    pub error_message: Option<String>,
-    pub server_version: Option<String>,
+pub(crate) struct ServerStatusTemplate {
+    pub(crate) error_message: Option<String>,
+    pub(crate) server_version: Option<String>,
 }
 
 /// Check server status
-pub async fn check_server_status(
-    State(state): State<AppState>,
+pub(crate) async fn check_server_status(
+    State(state): State<Arc<ServerStorageService>>,
     Path(server_id): Path<ServerId>,
 ) -> impl IntoResponse {
     // Get the server details first
-    match state.server_storage.get_server_by_id(server_id).await {
-        Ok(Some(_)) => match state.server_storage.server_status(server_id).await {
+    match state.get_server_by_id(server_id).await {
+        Ok(Some(_)) => match state.server_status(server_id).await {
             ServerHealthStatus::Healthy(info) => {
                 let template = ServerStatusTemplate {
                     error_message: None,

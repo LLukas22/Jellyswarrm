@@ -10,6 +10,10 @@ Jellyswarrm exposes two unauthenticated monitoring endpoints:
 These endpoints always live at the root, even when `url_prefix` is configured, and
 do not depend on the availability or configuration of upstream Jellyfin servers.
 
+The incoming monitoring handlers live in `src/http/health.rs` in the proxy crate.
+`src/http/router.rs` attaches them outside prefix and authentication/session layers;
+backend health tracking is separately owned by `src/servers/storage.rs`.
+
 ## Docker health check
 
 The Docker image checks both endpoints every 30 seconds, with a 30-second startup

@@ -1,3 +1,4 @@
+//! Render user-facing media/version information and access-scoped library details.
 use askama::Template;
 use axum::{
     body::Body,
@@ -9,54 +10,54 @@ use jellyfin_api::models::{BaseItem, IncludeItemTypes};
 use tracing::error;
 
 use crate::{
-    server_id::ServerId,
-    ui::{auth::AuthenticatedUser, user::common::authenticate_user_on_server},
-    AppState,
+    domain::ids::ServerId,
+    http::state::ManagementState,
+    ui::{auth::AuthenticatedUser, user::authenticate_user_on_server},
 };
 
-pub struct ServerInfo {
-    pub id: ServerId,
-    pub name: String,
+pub(crate) struct ServerSummary {
+    pub(crate) id: ServerId,
+    pub(crate) name: String,
 }
 
-pub struct LibraryWithCount {
-    pub id: String,
-    pub name: String,
-    pub count: i32,
+pub(crate) struct LibraryWithCount {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) count: i32,
 }
 
 #[derive(Template)]
 #[template(path = "user/user_media.html")]
-pub struct UserMediaTemplate {
-    pub servers: Vec<ServerInfo>,
-    pub ui_route: String,
+pub(crate) struct UserMediaTemplate {
+    pub(crate) servers: Vec<ServerSummary>,
+    pub(crate) ui_route: String,
 }
 
 #[derive(Template)]
 #[template(path = "user/server_libraries.html")]
-pub struct ServerLibrariesTemplate {
-    pub server_id: ServerId,
-    pub libraries: Vec<LibraryWithCount>,
-    pub ui_route: String,
+pub(crate) struct ServerLibrariesTemplate {
+    pub(crate) server_id: ServerId,
+    pub(crate) libraries: Vec<LibraryWithCount>,
+    pub(crate) ui_route: String,
 }
 
 #[derive(Template)]
 #[template(path = "user/library_items.html")]
-pub struct LibraryItemsTemplate {
-    pub server_id: ServerId,
-    pub library_id: String,
-    pub items: Vec<BaseItem>,
-    pub next_page: Option<i32>,
-    pub ui_route: String,
+pub(crate) struct LibraryItemsTemplate {
+    pub(crate) server_id: ServerId,
+    pub(crate) library_id: String,
+    pub(crate) items: Vec<BaseItem>,
+    pub(crate) next_page: Option<i32>,
+    pub(crate) ui_route: String,
 }
 
 #[derive(serde::Deserialize)]
-pub struct Pagination {
-    pub page: Option<i32>,
+pub(crate) struct Pagination {
+    pub(crate) page: Option<i32>,
 }
 
-pub async fn get_user_media(
-    State(state): State<AppState>,
+pub(crate) async fn get_user_media(
+    State(state): State<ManagementState>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> impl IntoResponse {
     let servers = match state.user_authorization.get_mapped_servers(&user.id).await {
@@ -69,7 +70,7 @@ pub async fn get_user_media(
 
     let server_infos = servers
         .into_iter()
-        .map(|s| ServerInfo {
+        .map(|s| ServerSummary {
             id: s.id,
             name: s.name,
         })
@@ -77,7 +78,7 @@ pub async fn get_user_media(
 
     let template = UserMediaTemplate {
         servers: server_infos,
-        ui_route: state.get_ui_route().await,
+        ui_route: state.paths.ui_route(),
     };
     match template.render() {
         Ok(html) => Html(html).into_response(),
@@ -88,8 +89,8 @@ pub async fn get_user_media(
     }
 }
 
-pub async fn get_server_libraries(
-    State(state): State<AppState>,
+pub(crate) async fn get_server_libraries(
+    State(state): State<ManagementState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Path(server_id): Path<ServerId>,
 ) -> impl IntoResponse {
@@ -98,10 +99,10 @@ pub async fn get_server_libraries(
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
 
-    if let Ok((client, jellyfin_user, _)) =
-        authenticate_user_on_server(&state, &user, &server).await
-    {
-        match client.get_media_folders(Some(&jellyfin_user.id)).await {
+    if let Ok(authenticated) = authenticate_user_on_server(&state, &user, &server).await {
+        let client = &authenticated.client;
+        let jellyfin_user = &authenticated.user;
+        let response = match client.get_media_folders(Some(&jellyfin_user.id)).await {
             Ok(folders) => {
                 let mut libraries = Vec::new();
                 for folder in folders {
@@ -139,7 +140,7 @@ pub async fn get_server_libraries(
                 let template = ServerLibrariesTemplate {
                     server_id,
                     libraries,
-                    ui_route: state.get_ui_route().await,
+                    ui_route: state.paths.ui_route(),
                 };
                 match template.render() {
                     Ok(html) => Html(html).into_response(),
@@ -153,14 +154,16 @@ pub async fn get_server_libraries(
                 error!("Failed to get media folders: {}", e);
                 (StatusCode::BAD_GATEWAY, "Failed to fetch libraries").into_response()
             }
-        }
+        };
+        authenticated.close().await;
+        response
     } else {
         (StatusCode::UNAUTHORIZED, "Failed to authenticate").into_response()
     }
 }
 
-pub async fn get_library_items(
-    State(state): State<AppState>,
+pub(crate) async fn get_library_items(
+    State(state): State<ManagementState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Path((server_id, library_id)): Path<(ServerId, String)>,
     Query(pagination): Query<Pagination>,
@@ -174,12 +177,11 @@ pub async fn get_library_items(
     let limit = 20;
     let start_index = page * limit;
 
-    if let Ok((client, jellyfin_user, _)) =
-        authenticate_user_on_server(&state, &user, &server).await
-    {
-        match client
+    if let Ok(authenticated) = authenticate_user_on_server(&state, &user, &server).await {
+        let fetched = authenticated
+            .client
             .get_items(
-                &jellyfin_user.id,
+                &authenticated.user.id,
                 Some(&library_id),
                 true,
                 Some(vec![IncludeItemTypes::Movie, IncludeItemTypes::Series]),
@@ -189,8 +191,9 @@ pub async fn get_library_items(
                 Some("Descending".to_string()),
                 None,
             )
-            .await
-        {
+            .await;
+        authenticated.close().await;
+        match fetched {
             Ok(response) => {
                 let total_items = response.total_record_count;
                 let total_pages = (total_items as f64 / limit as f64).ceil() as i32;
@@ -206,7 +209,7 @@ pub async fn get_library_items(
                     library_id,
                     items: response.items,
                     next_page,
-                    ui_route: state.get_ui_route().await,
+                    ui_route: state.paths.ui_route(),
                 };
                 match template.render() {
                     Ok(html) => Html(html).into_response(),
@@ -226,8 +229,8 @@ pub async fn get_library_items(
     }
 }
 
-pub async fn proxy_media_image(
-    State(state): State<AppState>,
+pub(crate) async fn proxy_media_image(
+    State(state): State<ManagementState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Path((server_id, item_id)): Path<(ServerId, String)>,
 ) -> impl IntoResponse {
@@ -238,7 +241,7 @@ pub async fn proxy_media_image(
     };
 
     // Authenticate
-    let (client, _, _) = match authenticate_user_on_server(&state, &user, &server).await {
+    let authenticated = match authenticate_user_on_server(&state, &user, &server).await {
         Ok(res) => res,
         Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
     };
@@ -254,7 +257,7 @@ pub async fn proxy_media_image(
 
     // Fetch image using the client's internal http client would be best, but we can't access it.
     // We can use state.reqwest_client but we need the token.
-    let token = client.get_token().await.unwrap_or_default();
+    let token = authenticated.client.get_token().await.unwrap_or_default();
 
     // Build auth header manually since we are using a raw request
     // Or we can add a method to JellyfinClient to fetch raw resource.
@@ -266,7 +269,7 @@ pub async fn proxy_media_image(
         token
     );
 
-    match state
+    let response = match state
         .reqwest_client
         .get(&image_url)
         .header(header::AUTHORIZATION, auth_header)
@@ -290,5 +293,7 @@ pub async fn proxy_media_image(
                 .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
         }
         Err(_) => StatusCode::BAD_GATEWAY.into_response(),
-    }
+    };
+    authenticated.close().await;
+    response
 }

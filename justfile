@@ -6,6 +6,14 @@ compose := "docker compose --file dev/docker-compose.yml --profile seerr"
 default:
     @just --list
 
+# Build and stage the embedded web client (requires Node.js and the UI submodule).
+ui:
+    bash scripts/build-ui.sh
+
+# Audit dependencies (requires cargo-deny); abandoned dependencies warn.
+audit:
+    cargo deny --locked check --warn unmaintained
+
 # Verify that Docker and Docker Compose are usable.
 doctor:
     @command -v docker >/dev/null || { printf 'Docker is required.\n' >&2; exit 1; }
@@ -66,17 +74,37 @@ check: doctor
     @docker run --rm --volume "$PWD/dev/scripts:/scripts:ro" ghcr.io/astral-sh/uv:python3.12-alpine python -c 'from pathlib import Path; [compile(path.read_text(), str(path), "exec") for path in Path("/scripts").glob("*.py")]'
     @printf 'Development configuration is valid.\n'
 
+# Run client HTTP contracts against the in-process proxy and isolated mock backends.
+http-test:
+    cargo test --locked --package jellyswarrm-proxy --lib http_tests
+
+# Run configuration-dependent HTTP contracts with separate backend libraries.
+http-test-normal:
+    cargo test --locked --package jellyswarrm-proxy --lib normal_servers
+
+# Run configuration-dependent HTTP contracts with merged libraries and deduplicated media.
+http-test-merged:
+    cargo test --locked --package jellyswarrm-proxy --lib merged_libraries
+
+# Refresh the client call-site inventory after installing the UI dependencies.
+http-routes-update:
+    node scripts/scan-client-routes.cjs --write
+
+# Verify the committed inventory matches the current web client and SDK.
+http-routes-check:
+    node scripts/scan-client-routes.cjs --check
+
 # Run the Docker-backed server integration test in an isolated Compose project.
 integration-test: doctor media
-    cargo test --package jellyswarrm-proxy --test server_integration -- --ignored --nocapture --test-threads=1
+    cargo test --locked --package jellyswarrm-proxy --test server_integration -- --ignored --nocapture --test-threads=1
 
 # Opt-in browser test: requires Chrome and a built embedded Jellyfin Web UI.
 browser-integration-test: doctor media
-    cargo test --package jellyswarrm-proxy --features browser-tests --test server_integration browser:: -- --ignored --nocapture --test-threads=1
+    cargo test --locked --package jellyswarrm-proxy --features browser-tests --test server_integration browser:: -- --ignored --nocapture --test-threads=1
 
 # Build the shared image used by both isolated browser containers.
 browser-image: doctor
-    docker build --tag jellyswarrm-browser-tests:1.63.0 dev/browser
+    docker build --tag jellyswarrm-browser-tests:1.64.0 dev/browser
 
 # Linux/CI: browsers and backends in Docker, Rust test runner on the host.
 browser-integration-test-docker: browser-image media

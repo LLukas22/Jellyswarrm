@@ -1,6 +1,6 @@
 use super::*;
 use playwright_rs::protocol::Browser;
-use testcontainers::{core::WaitFor, runners::AsyncRunner, ContainerAsync, GenericImage, ImageExt};
+use testcontainers::{runners::AsyncRunner, ContainerAsync, GenericImage, ImageExt};
 
 /// Owns the container until the browser connection has been closed.
 pub(super) struct ContainerBrowser {
@@ -16,8 +16,7 @@ impl ContainerBrowser {
         );
         let port = available_port()?;
         let path = uuid::Uuid::new_v4().simple().to_string();
-        let mut request = GenericImage::new("jellyswarrm-browser-tests", "1.63.0")
-            .with_wait_for(WaitFor::message_on_stdout("Jellyswarrm browser ready"))
+        let mut request = GenericImage::new("jellyswarrm-browser-tests", "1.64.0")
             .with_network("host")
             .with_shm_size(1024 * 1024 * 1024)
             .with_env_var("PLAYWRIGHT_PORT", port.to_string())
@@ -29,6 +28,32 @@ impl ContainerBrowser {
             .start()
             .await
             .context("start browser container (build with just browser-image)")?;
+        // Docker's journald driver may not expose the startup line to log
+        // readers even when Chrome is ready. Check the actual control endpoint
+        // instead; websocket connection and browser assertions still follow.
+        let client = Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(1))
+            .build()?;
+        tokio::time::timeout(Duration::from_secs(60), async {
+            loop {
+                if let Ok(response) = client.get(format!("http://127.0.0.1:{port}/")).send().await {
+                    if response.status() == StatusCode::OK
+                        && response.text().await.is_ok_and(|body| body == "Running")
+                    {
+                        break;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .with_context(|| {
+            format!(
+                "browser control endpoint did not become ready in container {}",
+                container.id()
+            )
+        })?;
         eprintln!("Started Chrome container {}", container.id());
         Ok(Self {
             endpoint: format!("ws://127.0.0.1:{port}/{path}"),

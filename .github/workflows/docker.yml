@@ -2,7 +2,7 @@ name: Docker Build
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, fix/204-merged-media-titles-and-search ]
     tags: [ 'v*' ]
   pull_request:
     branches: [ main ]
@@ -63,10 +63,12 @@ jobs:
           type=semver,pattern={{major}}.{{minor}}
           type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
           type=raw,value=main,enable={{is_default_branch}}
+          type=raw,value=beta,enable=${{ github.ref == 'refs/heads/fix/204-merged-media-titles-and-search' }}
+          type=sha,prefix=beta-,enable=${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/fix/204-merged-media-titles-and-search' }}
           type=sha,enable=${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
 
     - name: Build and push Docker image
-      if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+      if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/fix/204-merged-media-titles-and-search' || startsWith(github.ref, 'refs/tags/v'))
       uses: docker/build-push-action@v5
       with:
         context: .
@@ -102,7 +104,7 @@ jobs:
           BUILDKIT_INLINE_CACHE=1
 
   create-manifest:
-    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/fix/204-merged-media-titles-and-search' || startsWith(github.ref, 'refs/tags/v'))
     needs: build-and-push
     runs-on: ubuntu-latest
     permissions:
@@ -131,6 +133,8 @@ jobs:
           type=semver,pattern={{major}}.{{minor}}
           type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
           type=raw,value=main,enable={{is_default_branch}}
+          type=raw,value=beta,enable=${{ github.ref == 'refs/heads/fix/204-merged-media-titles-and-search' }}
+          type=sha,prefix=beta-,enable=${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/fix/204-merged-media-titles-and-search' }}
           type=sha,enable=${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
 
     - name: Create and push multi-platform manifest

@@ -1,39 +1,53 @@
+//! Analyze request body IDs and playback hints without mutating the payload.
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
+use std::sync::Arc;
 
 use crate::{
+    auth::service::LocalUser,
+    auth::UserAuthorizationService,
+    media::MediaStorageService,
+    playback::{PlaybackRegistry, RevisionedPlaybackSession},
     processors::{
         field_matcher::{ID_FIELDS, MEDIA_ID_LIST_PARENT_FIELDS, SESSION_FIELDS, USER_FIELDS},
         json_processor::{JsonAnalyzer, JsonProcessingContext},
     },
-    server_storage::Server,
-    session_storage::{PlaybackSession, SessionRevision},
-    user_authorization_service::User,
-    user_id::UserId,
-    virtual_library_service::compare_virtual_library_routes,
-    DataContext,
+    servers::compare_routes,
+    servers::storage::Server,
+    servers::ServerStorageService,
 };
 
-pub struct RequestAnalyzer {
-    pub data_context: DataContext,
+pub(crate) struct RequestAnalyzer {
+    media_storage: Arc<MediaStorageService>,
+    server_storage: Arc<ServerStorageService>,
+    playback_registry: Arc<PlaybackRegistry>,
+    user_authorization: Arc<UserAuthorizationService>,
 }
 
 impl RequestAnalyzer {
-    pub fn new(data_context: DataContext) -> Self {
-        Self { data_context }
+    pub(crate) fn new(
+        media_storage: Arc<MediaStorageService>,
+        server_storage: Arc<ServerStorageService>,
+        playback_registry: Arc<PlaybackRegistry>,
+        user_authorization: Arc<UserAuthorizationService>,
+    ) -> Self {
+        Self {
+            media_storage,
+            server_storage,
+            playback_registry,
+            user_authorization,
+        }
     }
 
     async fn media_version_server(&self, aggregate_id: &str) -> Result<Option<Server>> {
         let members = self
-            .data_context
             .media_storage
             .get_media_version_members_by_virtual_id(aggregate_id)
             .await?;
         let mut healthy_members = Vec::new();
         for member in members {
             if self
-                .data_context
                 .server_storage
                 .server_status(member.server.id)
                 .await
@@ -45,7 +59,7 @@ impl RequestAnalyzer {
         Ok(healthy_members
             .into_iter()
             .max_by(|left, right| {
-                compare_virtual_library_routes(
+                compare_routes(
                     &left.server,
                     &left.mapping.original_media_id,
                     &right.server,
@@ -57,22 +71,21 @@ impl RequestAnalyzer {
 }
 
 #[derive(Debug, Default)]
-pub struct RequestBodyAnalysisResult {
-    pub found_ids: Vec<String>,
-    pub found_session_ids: Vec<String>,
-    pub found_user_ids: Vec<String>,
-    pub servers: Vec<Server>,
-    pub users: Vec<User>,
-    pub authoritative_play_session: Option<PlaybackSession>,
-    pub authoritative_play_session_revision: Option<SessionRevision>,
-    pub requested_play_session_id: Option<String>,
-    pub requested_play_item_id: Option<String>,
-    pub requested_play_source_id: Option<String>,
+pub(crate) struct RequestBodyAnalysisResult {
+    pub(crate) found_ids: Vec<String>,
+    pub(crate) found_session_ids: Vec<String>,
+    pub(crate) found_user_ids: Vec<String>,
+    pub(crate) servers: Vec<Server>,
+    pub(crate) users: Vec<LocalUser>,
+    pub(crate) authoritative_play_session: Option<RevisionedPlaybackSession>,
+    pub(crate) requested_play_session_id: Option<String>,
+    pub(crate) requested_play_item_id: Option<String>,
+    pub(crate) requested_play_source_id: Option<String>,
 }
 
 impl RequestBodyAnalysisResult {
     /// Returns the server with the highest occurance in the servers vector, or None if the vector is empty.
-    pub fn get_server(&self) -> Option<Server> {
+    pub(crate) fn get_server(&self) -> Option<Server> {
         if self.servers.is_empty() {
             return None;
         }
@@ -85,7 +98,7 @@ impl RequestBodyAnalysisResult {
     }
 
     /// Returns the user with the highest occurance in the users vector, or None if the vector is empty.
-    pub fn get_user(&self) -> Option<User> {
+    pub(crate) fn get_user(&self) -> Option<LocalUser> {
         if self.users.is_empty() {
             return None;
         }
@@ -99,15 +112,15 @@ impl RequestBodyAnalysisResult {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlaybackSessionAction {
+pub(crate) enum PlaybackSessionAction {
     Start,
     Refresh,
     Remove,
 }
 
-pub struct RequestAnalysisContext {
-    pub authenticated_user_id: Option<UserId>,
-    pub playback_session_action: Option<PlaybackSessionAction>,
+pub(crate) struct RequestAnalysisContext {
+    pub(crate) authenticated_user_id: Option<crate::domain::user_id::UserId>,
+    pub(crate) playback_session_action: Option<PlaybackSessionAction>,
 }
 
 #[async_trait]
@@ -118,8 +131,11 @@ impl JsonAnalyzer<RequestAnalysisContext, RequestBodyAnalysisResult> for Request
         value: &Value,
         context: &RequestAnalysisContext,
         accumulator: &mut RequestBodyAnalysisResult,
-    ) -> Result<Option<Vec<String>>> {
-        if context.playback_session_action.is_some() && json_context.depth == 0 {
+    ) -> Result<()> {
+        if context.playback_session_action.is_some()
+            && json_context.depth == 0
+            && json_context.parent_path.is_empty()
+        {
             let field = if json_context.key.eq_ignore_ascii_case("ItemId") {
                 Some(&mut accumulator.requested_play_item_id)
             } else if json_context.key.eq_ignore_ascii_case("MediaSourceId") {
@@ -139,7 +155,7 @@ impl JsonAnalyzer<RequestAnalysisContext, RequestBodyAnalysisResult> for Request
                             anyhow::bail!("playback report requires a nonempty item ID");
                         }
                         // Clients may send blank optional IDs instead of omitting them.
-                        return Ok(None);
+                        return Ok(());
                     }
                     if field.as_deref().is_some_and(|previous| previous != id) {
                         anyhow::bail!("conflicting playback authority fields");
@@ -157,7 +173,6 @@ impl JsonAnalyzer<RequestAnalysisContext, RequestBodyAnalysisResult> for Request
         {
             if let serde_json::Value::String(ref virtual_id) = value {
                 let server = self
-                    .data_context
                     .media_storage
                     .get_media_mapping_with_server(virtual_id)
                     .await?
@@ -177,39 +192,33 @@ impl JsonAnalyzer<RequestAnalysisContext, RequestBodyAnalysisResult> for Request
             if let serde_json::Value::String(ref session_id) = value {
                 let is_authoritative_field = context.playback_session_action.is_some()
                     && json_context.depth == 0
+                    && json_context.parent_path.is_empty()
                     && json_context.key.eq_ignore_ascii_case("PlaySessionId");
                 if is_authoritative_field {
                     if let Some(user_id) = context.authenticated_user_id.as_deref() {
                         let binding = self
-                            .data_context
-                            .play_sessions
-                            .resolve_report_session(session_id, user_id)
+                            .playback_registry
+                            .resolve_report_binding(&session_id.as_str().into(), &user_id.into())
                             .await?;
-                        (
-                            accumulator.authoritative_play_session,
-                            accumulator.authoritative_play_session_revision,
-                        ) = binding.unzip();
+                        accumulator.authoritative_play_session = binding;
                     }
                 } else if context.playback_session_action.is_none() {
                     if let Some(play_session) = match context.authenticated_user_id.as_deref() {
                         Some(user_id) => {
-                            self.data_context
-                                .play_sessions
+                            self.playback_registry
                                 .get_session_for_user(session_id, user_id)
                                 .await
                         }
                         None => None,
                     } {
                         if let Some(server) = self
-                            .data_context
                             .server_storage
                             .get_server_by_id(play_session.server_id)
                             .await?
                         {
                             accumulator.servers.push(server);
                         } else {
-                            self.data_context
-                                .play_sessions
+                            self.playback_registry
                                 .remove_sessions_for_server(play_session.server_id)
                                 .await;
                         }
@@ -222,18 +231,13 @@ impl JsonAnalyzer<RequestAnalysisContext, RequestBodyAnalysisResult> for Request
         // Check if this is a UserId field (case-insensitive)
         if USER_FIELDS.contains(&json_context.key) {
             if let serde_json::Value::String(ref user_id) = value {
-                if let Some(user) = self
-                    .data_context
-                    .user_authorization
-                    .get_user_by_id(user_id)
-                    .await?
-                {
+                if let Some(user) = self.user_authorization.get_user_by_id(user_id).await? {
                     accumulator.users.push(user);
                 }
                 accumulator.found_user_ids.push(user_id.clone());
             }
         }
-        Ok(None)
+        Ok(())
     }
 }
 
@@ -242,4 +246,25 @@ fn last_segment(path: &str) -> &str {
         .next()
         .map(|segment| segment.split('[').next().unwrap_or(segment))
         .unwrap_or(path)
+}
+
+/// Recognize playback reports after the caller has stripped its proxy prefix.
+pub(crate) fn playback_session_action(
+    method: &hyper::Method,
+    request_path: &str,
+) -> Option<PlaybackSessionAction> {
+    if method != hyper::Method::POST {
+        return None;
+    }
+
+    let path = request_path.trim_end_matches('/');
+    if path.eq_ignore_ascii_case("/Sessions/Playing") {
+        Some(PlaybackSessionAction::Start)
+    } else if path.eq_ignore_ascii_case("/Sessions/Playing/Progress") {
+        Some(PlaybackSessionAction::Refresh)
+    } else if path.eq_ignore_ascii_case("/Sessions/Playing/Stopped") {
+        Some(PlaybackSessionAction::Remove)
+    } else {
+        None
+    }
 }

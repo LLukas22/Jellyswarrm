@@ -1,0 +1,610 @@
+//! Persist the backend registry and track availability through background health checks.
+use futures_util::StreamExt;
+use serde::{Deserialize, Serialize};
+use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use tracing::{error, info};
+
+use jellyfin_api::{
+    client::{ClientInfo, JellyfinClient},
+    models::PublicSystemInfo,
+};
+
+use crate::config::MediaStreamingMode;
+use crate::domain::ids::ServerId;
+use crate::domain::security::EncryptedPassword;
+use crate::servers::url::ServerUrl;
+
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
+pub(crate) struct Server {
+    pub(crate) id: ServerId,
+    pub(crate) name: String,
+    pub(crate) url: ServerUrl,
+    pub(crate) priority: i32,
+    pub(crate) media_streaming_mode: MediaStreamingMode,
+    pub(crate) created_at: chrono::DateTime<chrono::Utc>,
+    pub(crate) updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl Server {
+    pub(crate) fn from_row(row: SqliteRow) -> Result<Self, sqlx::Error> {
+        Self::from_row_ref(&row)
+    }
+
+    pub(crate) fn from_row_ref(row: &SqliteRow) -> Result<Self, sqlx::Error> {
+        Ok(Server {
+            id: ServerId::new(row.try_get("id")?),
+            name: row.try_get("name")?,
+            url: parse_server_url_column("url", row.try_get("url")?)?,
+            priority: row.try_get("priority")?,
+            media_streaming_mode: row
+                .try_get::<String, _>("media_streaming_mode")?
+                .parse()
+                .unwrap_or(MediaStreamingMode::Redirect),
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+        })
+    }
+
+    pub(crate) fn from_session_join_row(row: &SqliteRow) -> Result<Self, sqlx::Error> {
+        Ok(Server {
+            id: ServerId::new(row.try_get("server_id")?),
+            name: row.try_get("server_name")?,
+            url: parse_server_url_column("server_url_full", row.try_get("server_url_full")?)?,
+            priority: row.try_get("priority")?,
+            media_streaming_mode: row
+                .try_get::<String, _>("media_streaming_mode")?
+                .parse()
+                .unwrap_or(MediaStreamingMode::Redirect),
+            created_at: row.try_get("server_created_at")?,
+            updated_at: row.try_get("server_updated_at")?,
+        })
+    }
+}
+
+pub(crate) fn parse_server_url_column(
+    column: &'static str,
+    value: String,
+) -> Result<ServerUrl, sqlx::Error> {
+    ServerUrl::parse(&value).map_err(|err| sqlx::Error::ColumnDecode {
+        index: column.into(),
+        source: Box::new(err),
+    })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct ServerAdmin {
+    pub(crate) id: i64,
+    pub(crate) server_id: ServerId,
+    pub(crate) username: String,
+    pub(crate) password: EncryptedPassword,
+    pub(crate) created_at: chrono::DateTime<chrono::Utc>,
+    pub(crate) updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl<'r> sqlx::FromRow<'r, SqliteRow> for ServerAdmin {
+    fn from_row(row: &SqliteRow) -> Result<Self, sqlx::Error> {
+        Ok(Self {
+            id: row.try_get("id")?,
+            server_id: ServerId::new(row.try_get("server_id")?),
+            username: row.try_get("username")?,
+            password: row.try_get("password")?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum ServerHealthStatus {
+    /// Server is healthy
+    Healthy(PublicSystemInfo),
+    /// Server is unhealthy with reason
+    Unhealthy(String),
+}
+
+impl ServerHealthStatus {
+    pub(crate) fn is_healthy(&self) -> bool {
+        matches!(self, ServerHealthStatus::Healthy(_))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ServerStorageService {
+    pool: SqlitePool,
+    health_status: Arc<RwLock<HashMap<ServerId, ServerHealthStatus>>>,
+    pub(crate) http_client: reqwest::Client,
+    pub(crate) client_info: ClientInfo,
+}
+
+impl ServerStorageService {
+    pub(crate) fn new(pool: SqlitePool) -> Self {
+        let http_client = reqwest::Client::builder()
+            .user_agent(concat!(
+                "Jellyswarrm API Client/",
+                env!("CARGO_PKG_VERSION")
+            ))
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap_or_else(|e| {
+                error!(
+                    "Failed to create server health-check client with timeout: {}",
+                    e
+                );
+                reqwest::Client::new()
+            });
+        Self {
+            pool,
+            health_status: Arc::new(RwLock::new(HashMap::new())),
+            http_client,
+            client_info: ClientInfo::default(),
+        }
+    }
+
+    pub(crate) async fn add_server(
+        &self,
+        name: &str,
+        url: &str,
+        priority: i32,
+        media_streaming_mode: MediaStreamingMode,
+    ) -> Result<ServerId, sqlx::Error> {
+        let url = match ServerUrl::parse(url) {
+            Ok(url) => url,
+            Err(_) => {
+                return Err(sqlx::Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Invalid URL format",
+                )))
+            }
+        };
+
+        let now = chrono::Utc::now();
+
+        let result = sqlx::query(
+            r#"
+            INSERT INTO servers (name, url, priority, media_streaming_mode, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(name)
+        .bind(url.as_str())
+        .bind(priority)
+        .bind(media_streaming_mode.to_string())
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+
+        let server_id = ServerId::new(result.last_insert_rowid());
+        info!(
+            "Added server: {} ({}) with priority {}",
+            name, url, priority
+        );
+        Ok(server_id)
+    }
+
+    pub(crate) async fn upsert_preconfigured_server(
+        &self,
+        name: &str,
+        url: &str,
+        priority: i32,
+        media_streaming_mode: MediaStreamingMode,
+    ) -> Result<ServerId, sqlx::Error> {
+        let url = ServerUrl::parse(url).map_err(|_| {
+            sqlx::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Invalid URL format",
+            ))
+        })?;
+
+        let existing_id =
+            sqlx::query_scalar::<_, i64>("SELECT id FROM servers WHERE RTRIM(TRIM(url), '/') = ?")
+                .bind(url.as_str())
+                .fetch_optional(&self.pool)
+                .await?;
+
+        let Some(existing_id) = existing_id else {
+            return self
+                .add_server(name, url.as_str(), priority, media_streaming_mode)
+                .await;
+        };
+
+        sqlx::query(
+            r#"
+            UPDATE servers
+            SET name = ?, url = ?, priority = ?, media_streaming_mode = ?, updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(name)
+        .bind(url.as_str())
+        .bind(priority)
+        .bind(media_streaming_mode.to_string())
+        .bind(chrono::Utc::now())
+        .bind(existing_id)
+        .execute(&self.pool)
+        .await?;
+
+        info!("Updated preconfigured server: {} ({})", name, url);
+        Ok(ServerId::new(existing_id))
+    }
+
+    pub(crate) async fn get_server_by_id(
+        &self,
+        id: ServerId,
+    ) -> Result<Option<Server>, sqlx::Error> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, name, url, priority, media_streaming_mode, created_at, updated_at
+            FROM servers 
+            WHERE id = ?
+            "#,
+        )
+        .bind(id.as_i64())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        row.map(Server::from_row).transpose()
+    }
+
+    pub(crate) async fn list_servers(&self) -> Result<Vec<Server>, sqlx::Error> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, name, url, priority, media_streaming_mode, created_at, updated_at
+            FROM servers 
+            ORDER BY priority DESC, name ASC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(Server::from_row).collect()
+    }
+
+    pub(crate) async fn update_server_priority(
+        &self,
+        server_id: ServerId,
+        new_priority: i32,
+    ) -> Result<bool, sqlx::Error> {
+        let now = chrono::Utc::now();
+
+        let result = sqlx::query(
+            r#"
+            UPDATE servers 
+            SET priority = ?, updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(new_priority)
+        .bind(now)
+        .bind(server_id.as_i64())
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub(crate) async fn update_server_media_streaming_mode(
+        &self,
+        server_id: ServerId,
+        media_streaming_mode: MediaStreamingMode,
+    ) -> Result<bool, sqlx::Error> {
+        let now = chrono::Utc::now();
+
+        let result = sqlx::query(
+            r#"
+            UPDATE servers
+            SET media_streaming_mode = ?, updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(media_streaming_mode.to_string())
+        .bind(now)
+        .bind(server_id.as_i64())
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub(crate) async fn delete_server(&self, server_id: ServerId) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query(
+            r#"
+            DELETE FROM servers 
+            WHERE id = ?
+            "#,
+        )
+        .bind(server_id.as_i64())
+        .execute(&self.pool)
+        .await?;
+
+        self.health_status.write().await.remove(&server_id);
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn delete_server_by_name(&self, name: &str) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query(
+            r#"
+            DELETE FROM servers 
+            WHERE name = ?
+            "#,
+        )
+        .bind(name)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Long-lived work; the application runtime owns its spawning/cancellation.
+    pub(crate) async fn health_check_loop(&self, wait_time_secs: u64) {
+        info!("Starting server health check loop");
+        loop {
+            self.check_servers_health().await;
+            tokio::time::sleep(tokio::time::Duration::from_secs(wait_time_secs)).await;
+        }
+    }
+
+    pub(crate) async fn check_servers_health(&self) {
+        let servers = match self.list_servers().await {
+            Ok(s) => s,
+            Err(e) => {
+                error!("Failed to list servers for health check: {}", e);
+                return;
+            }
+        };
+
+        let statuses: Vec<(ServerId, ServerHealthStatus)> =
+            futures_util::stream::iter(servers.into_iter().map(|server| {
+                let http_client = self.http_client.clone();
+                let client_info = self.client_info.clone();
+                async move {
+                    let client = match JellyfinClient::new_with_client(
+                        server.url.as_str(),
+                        client_info,
+                        http_client,
+                    ) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            error!("Failed to create client for server {}: {}", server.name, e);
+                            return (server.id, ServerHealthStatus::Unhealthy(e.to_string()));
+                        }
+                    };
+
+                    let status = match client.get_public_system_info().await {
+                        Ok(info) => ServerHealthStatus::Healthy(info),
+                        Err(e) => ServerHealthStatus::Unhealthy(e.to_string()),
+                    };
+
+                    (server.id, status)
+                }
+            }))
+            .buffer_unordered(5)
+            .collect()
+            .await;
+
+        let mut lock = self.health_status.write().await;
+        for (server_id, status) in statuses {
+            if let Some(old_status) = lock.get(&server_id) {
+                if *old_status == status {
+                    continue; // No change
+                } else {
+                    info!(
+                        "Server ID {} health status changed: {:?} -> {:?}",
+                        server_id, old_status, status
+                    );
+                }
+            }
+            lock.insert(server_id, status);
+        }
+    }
+
+    pub(crate) async fn server_status(&self, server_id: ServerId) -> ServerHealthStatus {
+        let health = self.health_status.read().await;
+        health
+            .get(&server_id)
+            .unwrap_or(&ServerHealthStatus::Unhealthy(
+                "Unknown Server Status".to_string(),
+            ))
+            .clone()
+    }
+
+    /// Get the best available server (highest priority, healthy, active)
+    pub(crate) async fn get_best_server(&self) -> Result<Option<Server>, sqlx::Error> {
+        let servers = self.list_servers().await?;
+
+        if servers.is_empty() {
+            return Ok(None);
+        }
+
+        let mut best_healthy = None;
+        for server in &servers {
+            if self.server_status(server.id).await.is_healthy() {
+                best_healthy = Some(server);
+                break;
+            }
+        }
+
+        if let Some(server) = best_healthy {
+            Ok(Some(server.clone()))
+        } else {
+            // Fallback to first if exists
+            error!("No healthy servers found, falling back to first available server");
+            Ok(servers.into_iter().next())
+        }
+    }
+
+    pub(crate) async fn add_server_admin(
+        &self,
+        server_id: ServerId,
+        username: &str,
+        password: &EncryptedPassword,
+    ) -> Result<i64, sqlx::Error> {
+        let now = chrono::Utc::now();
+
+        let result = sqlx::query(
+            r#"
+            INSERT OR REPLACE INTO server_admins (server_id, username, password, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(server_id.as_i64())
+        .bind(username)
+        .bind(password)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+
+        let admin_id = result.last_insert_rowid();
+        info!("Added admin for server ID: {}", server_id);
+        Ok(admin_id)
+    }
+
+    pub(crate) async fn get_server_admin(
+        &self,
+        server_id: ServerId,
+    ) -> Result<Option<ServerAdmin>, sqlx::Error> {
+        let row = sqlx::query_as::<_, ServerAdmin>(
+            r#"
+            SELECT id, server_id, username, password, created_at, updated_at
+            FROM server_admins 
+            WHERE server_id = ?
+            "#,
+        )
+        .bind(server_id.as_i64())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row)
+    }
+
+    pub(crate) async fn delete_server_admin(
+        &self,
+        server_id: ServerId,
+    ) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query(
+            r#"
+            DELETE FROM server_admins 
+            WHERE server_id = ?
+            "#,
+        )
+        .bind(server_id.as_i64())
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::persistence::MIGRATOR;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_server_storage_service() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = ServerStorageService::new(pool);
+
+        // Test adding a server
+        let server_id = service
+            .add_server(
+                "test-server",
+                "http://localhost:8096",
+                100,
+                MediaStreamingMode::Redirect,
+            )
+            .await
+            .unwrap();
+
+        // Test getting the server
+        let server = service.get_server_by_id(server_id).await.unwrap();
+        assert!(server.is_some());
+
+        let server = server.unwrap();
+        assert_eq!(server.name, "test-server");
+        assert_eq!(server.url.as_str(), "http://localhost:8096");
+        assert_eq!(server.priority, 100);
+        assert_eq!(server.media_streaming_mode, MediaStreamingMode::Redirect);
+
+        let duplicate_url = service
+            .add_server(
+                "duplicate-url-server",
+                "http://localhost:8096/",
+                100,
+                MediaStreamingMode::Redirect,
+            )
+            .await;
+        assert!(duplicate_url.is_err());
+
+        // Test listing servers
+        let servers = service.list_servers().await.unwrap();
+        assert_eq!(servers.len(), 1);
+
+        // Test updating priority
+        let updated = service
+            .update_server_priority(server_id, 200)
+            .await
+            .unwrap();
+        assert!(updated);
+
+        let updated = service
+            .update_server_media_streaming_mode(server_id, MediaStreamingMode::Proxy)
+            .await
+            .unwrap();
+        assert!(updated);
+
+        let server = service.get_server_by_id(server_id).await.unwrap().unwrap();
+        assert_eq!(server.media_streaming_mode, MediaStreamingMode::Proxy);
+    }
+
+    #[tokio::test]
+    async fn upsert_preconfigured_server_should_update_existing_server_by_url() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let service = ServerStorageService::new(pool);
+        let original_id = service
+            .add_server(
+                "Movies",
+                "http://localhost:8096",
+                100,
+                MediaStreamingMode::Redirect,
+            )
+            .await
+            .unwrap();
+
+        let updated_id = service
+            .upsert_preconfigured_server(
+                "Movies 1",
+                "http://localhost:8096/",
+                101,
+                MediaStreamingMode::Proxy,
+            )
+            .await
+            .unwrap();
+
+        let updated = service.get_server_by_id(updated_id).await.unwrap().unwrap();
+        assert_eq!(
+            (
+                updated_id,
+                updated.name,
+                updated.priority,
+                updated.media_streaming_mode
+            ),
+            (
+                original_id,
+                "Movies 1".to_string(),
+                101,
+                MediaStreamingMode::Proxy
+            )
+        );
+    }
+}

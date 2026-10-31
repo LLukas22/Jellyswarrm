@@ -1,3 +1,4 @@
+//! Manage local profile credentials and safely rekey backend mappings after password changes.
 use askama::Template;
 use axum::{
     extract::State,
@@ -8,25 +9,23 @@ use axum::{
 use serde::Deserialize;
 use tracing::error;
 
-use crate::{encryption::Password, ui::auth::AuthenticatedUser, AppState};
+use crate::{
+    domain::security::Password, http::state::ManagementState, ui::auth::AuthenticatedUser,
+};
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
-        config::{AppConfig, MIGRATOR},
-        encryption::{HashedPassword, MappingEncryptionKey},
-        handlers::quick_connect::QuickConnectStorage,
-        media_storage_service::MediaStorageService,
-        server_storage::{Server, ServerStorageService},
-        session_storage::SessionStorage,
-        ui::auth::{User, UserRole},
-        user_authorization_service::{CredentialFormat, UserAuthorizationService},
-        virtual_library_service::VirtualLibraryService,
-        DataContext, ProxyProcessors,
+        auth::service::{CredentialFormat, UserAuthorizationService},
+        config::AppConfig,
+        domain::security::{HashedPassword, MappingEncryptionKey},
+        persistence::MIGRATOR,
+        servers::storage::Server,
+        test_support::{adapters::AdapterFixture, MediaFixture},
+        ui::auth::{UiUser, UserRole},
     };
     use sqlx::SqlitePool;
-    use std::sync::Arc;
     use wiremock::{
         matchers::{body_json, method, path},
         Mock, MockServer, ResponseTemplate,
@@ -70,28 +69,10 @@ mod tests {
             MappingEncryptionKey::from_session_key(&config.session_key).unwrap(),
             (&config.password).into(),
         );
-        let server_storage = ServerStorageService::new(pool.clone());
-        let media_storage = MediaStorageService::new(pool.clone());
-        let context = DataContext {
-            user_authorization: Arc::new(service),
-            server_storage: Arc::new(server_storage.clone()),
-            media_storage: Arc::new(media_storage.clone()),
-            virtual_library_service: Arc::new(VirtualLibraryService::new(
-                pool,
-                server_storage,
-                media_storage,
-            )),
-            play_sessions: Arc::new(SessionStorage::new()),
-            config: Arc::new(tokio::sync::RwLock::new(config)),
-        };
-        let processors = ProxyProcessors::new(context.clone());
-        let state = AppState::new(
-            reqwest::Client::new(),
-            reqwest::Client::new(),
-            context,
-            processors,
-            QuickConnectStorage::new(),
-        );
+        let state =
+            AdapterFixture::from_media(MediaFixture::with_authorization(pool, config, service))
+                .await
+                .management;
         Mock::given(method("POST"))
             .and(path("/Users/AuthenticateByName"))
             .and(body_json(
@@ -117,7 +98,7 @@ mod tests {
             .await;
         let response = post_user_password(
             State(state.clone()),
-            AuthenticatedUser(User {
+            AuthenticatedUser(UiUser {
                 id: local.id.clone(),
                 username: "local".into(),
                 local_credential: local.local_credential.clone(),
@@ -212,25 +193,25 @@ mod tests {
 
 #[derive(Template)]
 #[template(path = "user/user_profile.html")]
-pub struct UserProfileTemplate {
-    pub username: String,
-    pub ui_route: String,
+pub(crate) struct UserProfileTemplate {
+    pub(crate) username: String,
+    pub(crate) ui_route: String,
 }
 
 #[derive(Deserialize)]
-pub struct ChangePasswordForm {
-    pub current_password: Password,
-    pub new_password: Password,
-    pub confirm_password: Password,
+pub(crate) struct ChangePasswordForm {
+    pub(crate) current_password: Password,
+    pub(crate) new_password: Password,
+    pub(crate) confirm_password: Password,
 }
 
-pub async fn get_user_profile(
-    State(state): State<AppState>,
+pub(crate) async fn get_user_profile(
+    State(state): State<ManagementState>,
     AuthenticatedUser(user): AuthenticatedUser,
 ) -> impl IntoResponse {
     let template = UserProfileTemplate {
         username: user.username,
-        ui_route: state.get_ui_route().await,
+        ui_route: state.paths.ui_route(),
     };
 
     match template.render() {
@@ -242,8 +223,8 @@ pub async fn get_user_profile(
     }
 }
 
-pub async fn post_user_password(
-    State(state): State<AppState>,
+pub(crate) async fn post_user_password(
+    State(state): State<ManagementState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Form(form): Form<ChangePasswordForm>,
 ) -> impl IntoResponse {
@@ -265,7 +246,7 @@ pub async fn post_user_password(
         .await
     {
         Ok(true) => {
-            if let Err(error) = super::common::prepare_mappings_for_password_change(
+            if let Err(error) = prepare_mappings_for_password_change(
                 &state, &user, &form.current_password,
             ).await {
                 error!("Failed to validate legacy mappings before password change: {error}");
@@ -274,8 +255,7 @@ pub async fn post_user_password(
                 )).into_response();
             }
             let admin_password = {
-                let config = state.config.read().await;
-                config.password.clone()
+                state.credentials.password()
             };
 
             match state
@@ -289,7 +269,7 @@ pub async fn post_user_password(
                 .await
             {
                 Ok(true) => {
-                    let logout_url = format!("/{}/logout", state.get_ui_route().await);
+                    let logout_url = format!("/{}/logout", state.paths.ui_route());
                     (
                         StatusCode::OK,
                         Html(format!(r#"
@@ -347,4 +327,24 @@ pub async fn post_user_password(
                 .into_response()
         }
     }
+}
+
+/// Validate ambiguous legacy values before the local password transaction.
+/// Do not accept a cached token as proof of the saved password's correctness.
+async fn prepare_mappings_for_password_change(
+    state: &ManagementState,
+    user: &crate::ui::auth::UiUser,
+    verified_password: &Password,
+) -> Result<(), String> {
+    let local_user = state
+        .user_authorization
+        .get_user_by_id(&user.id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or("Local user not found")?;
+    state
+        .mapping_authenticator
+        .prepare_password_change(&local_user, &state.server_storage, verified_password)
+        .await
+        .map_err(|error| error.to_string())
 }
