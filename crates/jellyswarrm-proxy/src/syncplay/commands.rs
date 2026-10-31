@@ -1,6 +1,6 @@
 //! Named transitions with synchronization and ordered publication owned by SyncPlay.
 use super::{models::*, service::SyncPlayService};
-use crate::sessions::SessionContext;
+use crate::sessions::SessionCaller;
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
 use uuid::Uuid;
@@ -60,7 +60,7 @@ impl SyncPlayGroup {
 impl SyncPlayService {
     pub(crate) async fn queue_items(
         &self,
-        session: &SessionContext,
+        session: &SessionCaller,
         payload: QueueRequestDto,
         expected: Option<QueueAccessSnapshot>,
     ) -> QueueOutcome {
@@ -113,7 +113,7 @@ impl SyncPlayService {
 
     pub(crate) async fn set_queue(
         &self,
-        session: &SessionContext,
+        session: &SessionCaller,
         payload: PlayRequestDto,
         expected: Option<QueueAccessSnapshot>,
         now: DateTime<Utc>,
@@ -157,12 +157,12 @@ impl QueueAccessSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::service::{LocalCredential, User};
+    use crate::auth::service::{LocalCredential, LocalUser};
 
-    fn session(id: &str) -> SessionContext {
-        SessionContext {
+    fn session(id: &str) -> SessionCaller {
+        SessionCaller {
             session_id: id.into(),
-            user: User {
+            user: LocalUser {
                 id: id.into(),
                 virtual_key: "key".into(),
                 original_username: id.into(),

@@ -8,11 +8,11 @@ use crate::{
 };
 
 use super::{
+    fetch::fetch_refresh_catalog,
     library_resolution::{CatalogFetchTarget, ResolvedCatalogParent},
     media_reconciliation::{reconcile_fetched_catalog, ReconciliationContext},
     query::CatalogQuery,
     scan::CatalogReport,
-    upstream::fetch_refresh_catalog,
 };
 
 /// Caller-provided credentials and authorization are explicit. A background

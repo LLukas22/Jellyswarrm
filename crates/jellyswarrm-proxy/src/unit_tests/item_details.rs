@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::{
-    application::context::RequestContext,
+    application::request::context::RequestContext,
     auth::service::AuthorizationSession,
     config::{AppConfig, MediaStreamingMode},
     libraries::service::VirtualLibraryAccessScope,

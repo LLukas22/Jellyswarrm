@@ -1,6 +1,6 @@
 //! Compose translation and wire encoding for an application-authorized target.
 use crate::{
-    application::context::AuthorizedTarget, auth::service::AuthorizationSession,
+    application::request::context::AuthorizedTarget, auth::service::AuthorizationSession,
     libraries::service::VirtualLibraryAccessScope, processors::url_processor::UrlProcessor,
     protocol::identity::JellyfinAuthorization, protocol::url::join_server_url,
     servers::storage::Server, upstream::headers::remove_hop_by_hop_headers,
@@ -144,7 +144,7 @@ mod tests {
         libraries::service::VirtualLibraryService,
         media::storage::MediaStorageService,
         persistence::MIGRATOR,
-        playback::SessionStorage,
+        playback::PlaybackRegistry,
         servers::storage::ServerStorageService,
     };
 
@@ -172,7 +172,7 @@ mod tests {
         let urls = UrlProcessor::new(
             Arc::new(media.clone()),
             Arc::new(libraries),
-            Arc::new(SessionStorage::new()),
+            Arc::new(PlaybackRegistry::new()),
             Arc::new(UserAuthorizationService::new(pool)),
             crate::config::SettingsView::new(Arc::new(tokio::sync::RwLock::new(
                 AppConfig::default(),

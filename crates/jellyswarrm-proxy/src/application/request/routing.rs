@@ -45,9 +45,14 @@ pub(crate) async fn resolve_server(
 ) -> Result<(Server, Option<AuthorizationSession>, bool)> {
     let path =
         crate::protocol::url::decoded_path_segments(state.remove_prefix(request.url().path()));
-    if let Some(target) =
-        reports::resolve_cancellation(sessions, &state.play_sessions, request, &path, access_scope)
-            .await?
+    if let Some(target) = reports::resolve_cancellation(
+        sessions,
+        &state.playback_registry,
+        request,
+        &path,
+        access_scope,
+    )
+    .await?
     {
         return Ok((target.server, Some(target.session), true));
     }

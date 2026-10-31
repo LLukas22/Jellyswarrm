@@ -1,8 +1,8 @@
 //! Maintain proxy-owned client presence, device metadata, playback state, and remote control.
-use super::{models::Capabilities, transport::ConnectionHub};
+use super::{connections::ConnectionHub, models::Capabilities};
 use crate::domain::ids::ServerId;
 use crate::domain::user_id::UserId;
-use crate::{auth::service::User, protocol::device::Device};
+use crate::{auth::service::LocalUser, protocol::device::Device};
 use chrono::{DateTime, Duration, Utc};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -42,8 +42,8 @@ impl ClientSession {
         &self.token
     }
 
-    pub(crate) fn dto(&self, server_id: &str, transport: &ConnectionHub) -> Value {
-        let connected = transport.is_connected(&self.id);
+    pub(crate) fn dto(&self, server_id: &str, connections: &ConnectionHub) -> Value {
+        let connected = connections.is_connected(&self.id);
         let controllable = connected && self.capabilities.supports_media_control;
         let last_playback = self
             .last_playback
@@ -66,15 +66,15 @@ impl ClientSession {
 
 pub(crate) struct ClientSessionService {
     entries: RwLock<HashMap<String, ClientSession>>,
-    pub(crate) transport: ConnectionHub,
+    pub(crate) connections: ConnectionHub,
     media_metadata: moka::future::Cache<(String, String), Value>,
 }
 
 impl ClientSessionService {
-    pub(crate) fn new(transport: ConnectionHub) -> Self {
+    pub(crate) fn new(connections: ConnectionHub) -> Self {
         Self {
             entries: RwLock::new(HashMap::new()),
-            transport,
+            connections,
             media_metadata: moka::future::Cache::builder()
                 .max_capacity(2048)
                 .time_to_live(std::time::Duration::from_secs(1800))
@@ -145,11 +145,16 @@ impl ClientSessionService {
             .await
     }
 
-    pub(crate) async fn ensure(&self, user: &User, token: &str, device: Option<&Device>) -> String {
+    pub(crate) async fn ensure(
+        &self,
+        user: &LocalUser,
+        token: &str,
+        device: Option<&Device>,
+    ) -> String {
         let mut entries = self.entries.write().await;
         let now = Utc::now();
         entries.retain(|id, entry| {
-            self.transport.is_connected(id)
+            self.connections.is_connected(id)
                 || now - entry.last_activity < Duration::seconds(SESSION_TTL_SECONDS)
         });
         let device_id = device.map(|d| d.device_id.as_str()).unwrap_or("");
@@ -272,7 +277,7 @@ impl ClientSessionService {
         let now = Utc::now();
         let mut entries = self.entries.write().await;
         entries.retain(|id, entry| {
-            self.transport.is_connected(id)
+            self.connections.is_connected(id)
                 || now - entry.last_activity < Duration::seconds(SESSION_TTL_SECONDS)
         });
         let mut result: Vec<_> = entries
@@ -297,7 +302,7 @@ impl ClientSessionService {
 
     pub(crate) async fn remove(&self, id: &str) {
         self.entries.write().await.remove(id);
-        self.transport.remove(id);
+        self.connections.remove(id);
     }
 
     pub(crate) async fn viewing(&self, id: &str, item_id: &str) {
@@ -383,8 +388,8 @@ fn empty_play_state() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn user() -> User {
-        User {
+    fn user() -> LocalUser {
+        LocalUser {
             id: "user".into(),
             virtual_key: "secret".into(),
             original_username: "Alice".into(),
@@ -431,7 +436,7 @@ mod tests {
             .get(&id)
             .await
             .unwrap()
-            .dto("proxy", &service.transport);
+            .dto("proxy", &service.connections);
         assert!(!dto.to_string().contains("episode_server"));
 
         service
@@ -488,7 +493,7 @@ mod tests {
         let replacement = service.ensure(&user(), "secret", None).await;
         assert_ne!(id, replacement);
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        service.transport.register(replacement.clone(), tx);
+        service.connections.register(replacement.clone(), tx);
         service
             .entries
             .write()

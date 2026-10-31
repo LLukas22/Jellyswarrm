@@ -216,7 +216,7 @@ mod tests {
         libraries::service::VirtualLibraryService,
         media::storage::MediaStorageService,
         persistence::MIGRATOR,
-        playback::SessionStorage,
+        playback::PlaybackRegistry,
         servers::storage::ServerStorageService,
         servers::Server,
     };
@@ -230,7 +230,7 @@ mod tests {
         let processor = UrlProcessor::new(
             Arc::new(media),
             Arc::new(libraries),
-            Arc::new(SessionStorage::new()),
+            Arc::new(PlaybackRegistry::new()),
             Arc::new(UserAuthorizationService::new(pool)),
             crate::config::SettingsView::new(Arc::new(tokio::sync::RwLock::new(
                 AppConfig::default(),

@@ -320,8 +320,8 @@ fn accepts_collection_type(group_type: Option<&str>, library_type: &str) -> bool
         && group_type.is_none_or(|group_type| group_type.eq_ignore_ascii_case(library_type))
 }
 
-fn discovery_message(issue: crate::application::library_admin::DiscoveryIssue) -> String {
-    use crate::application::library_admin::DiscoveryStage;
+fn discovery_message(issue: crate::application::admin::libraries::DiscoveryIssue) -> String {
+    use crate::application::admin::libraries::DiscoveryStage;
     let server = issue.server.unwrap_or_default();
     match issue.stage {
         DiscoveryStage::Servers => "Could not load servers. Library discovery is incomplete.".into(),

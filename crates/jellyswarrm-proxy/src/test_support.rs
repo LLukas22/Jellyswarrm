@@ -9,13 +9,15 @@ use crate::{
     domain::ids::ServerId,
     libraries::VirtualLibraryService,
     media::MediaStorageService,
-    playback::{LiveStreamBinding, PreparedLiveStream, RevisionedPlaybackSession, SessionStorage},
+    playback::{
+        LiveStreamBinding, PlaybackRegistry, PreparedLiveStream, RevisionedPlaybackSession,
+    },
     processors::{
         request_analyzer::RequestAnalyzer, request_processor::RequestProcessor,
         response_processor::ResponseProcessor, url_processor::UrlProcessor, ProxyProcessors,
     },
     servers::ServerStorageService,
-    sessions::{transport::ConnectionHub, ClientSessionService},
+    sessions::{connections::ConnectionHub, ClientSessionService},
     syncplay::SyncPlayService,
 };
 
@@ -48,7 +50,7 @@ impl MediaFixture {
             (*media_storage).clone(),
         ));
         let user_authorization = Arc::new(authorization);
-        let play_sessions = Arc::new(SessionStorage::new());
+        let playback_registry = Arc::new(PlaybackRegistry::new());
         let url_prefix = config.url_prefix.as_ref().map(ToString::to_string);
         let config = Arc::new(tokio::sync::RwLock::new(config));
         let settings = SettingsView::new(config.clone());
@@ -57,19 +59,19 @@ impl MediaFixture {
             RequestAnalyzer::new(
                 media_storage.clone(),
                 server_storage.clone(),
-                play_sessions.clone(),
+                playback_registry.clone(),
                 user_authorization.clone(),
             ),
             ResponseProcessor::new(media_storage.clone(), user_authorization.clone()),
             UrlProcessor::new(
                 media_storage.clone(),
                 virtual_library_service.clone(),
-                play_sessions.clone(),
+                playback_registry.clone(),
                 user_authorization.clone(),
                 settings.clone(),
             ),
         ));
-        let url_selection = application::url_selection::UrlSelection::new(
+        let url_selection = application::request::selection::UrlSelection::new(
             media_storage.clone(),
             server_storage.clone(),
             virtual_library_service.clone(),
@@ -81,7 +83,7 @@ impl MediaFixture {
             server_storage,
             media_storage,
             virtual_library_service,
-            play_sessions,
+            playback_registry,
             config: settings,
             url_selection,
             processors,
@@ -112,7 +114,7 @@ impl MediaFixture {
 
 /// Wire-string conveniences for historical fixtures. Production APIs require
 /// distinct ID namespaces, especially for session and viewer arguments.
-impl SessionStorage {
+impl PlaybackRegistry {
     pub(crate) async fn register_live_stream(
         &self,
         original: &str,

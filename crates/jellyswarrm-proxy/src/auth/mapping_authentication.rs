@@ -1,6 +1,6 @@
 //! Authenticate saved backend mappings and select credentials for new client sessions.
 use crate::{
-    auth::service::{MappingAuth, ServerMapping, User as LocalUser},
+    auth::service::{LocalUser, MappingAuth, ServerMapping},
     models::User,
     servers::storage::Server,
 };

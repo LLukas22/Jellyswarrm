@@ -221,7 +221,7 @@ async fn same_server_episode_selection_survives_streams_and_all_playback_reports
         }
         assert!(f
             .state
-            .play_sessions
+            .playback_registry
             .get_session_for_user(&play_session, &f.user.id)
             .await
             .is_none());

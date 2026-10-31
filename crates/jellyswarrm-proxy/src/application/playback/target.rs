@@ -1,10 +1,10 @@
 //! Shared playback authority and identity resolution. Endpoint adapters choose
 //! availability/status policy; this module never falls back from an explicit owner.
 use crate::{
-    application::context::{AuthorizedTarget, RequestContext, TargetError},
+    application::request::context::{AuthorizedTarget, RequestContext, TargetError},
     domain::ids::ServerId,
     media::storage::{MediaMapping, MediaStorageService},
-    playback::{LiveStreamBinding, PlaybackSession, RevisionedPlaybackSession, SessionStorage},
+    playback::{LiveStreamBinding, PlaybackRegistry, PlaybackSession, RevisionedPlaybackSession},
     servers::storage::ServerStorageService,
 };
 
@@ -289,7 +289,7 @@ impl MediaTargetResolver<'_> {
     /// Ambiguous implicit matches deliberately return None (mapping fallback).
     pub(crate) async fn session(
         &self,
-        sessions: &SessionStorage,
+        sessions: &PlaybackRegistry,
         item: &str,
         session: Option<&str>,
         viewer: &str,
@@ -313,7 +313,7 @@ impl MediaTargetResolver<'_> {
 
 /// Shared viewer authority for delivery, live-open and transcoder cancellation.
 pub(crate) async fn owned_session(
-    sessions: &SessionStorage,
+    sessions: &PlaybackRegistry,
     id: &crate::domain::ids::PlaybackSessionId,
     viewer: &crate::domain::ids::ViewerId,
 ) -> Result<Option<RevisionedPlaybackSession>, ResolutionError> {
@@ -327,7 +327,7 @@ pub(crate) async fn owned_session(
 /// owner, rather than a default server or item lookup, is authoritative.
 pub(crate) async fn live_target(
     context: &RequestContext,
-    sessions: &SessionStorage,
+    sessions: &PlaybackRegistry,
     id: &crate::domain::ids::VirtualLiveStreamId,
     viewer: &crate::domain::ids::ViewerId,
 ) -> Result<(AuthorizedTarget, LiveStreamBinding), ResolutionError> {

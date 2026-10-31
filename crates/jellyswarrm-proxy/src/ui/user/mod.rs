@@ -8,7 +8,7 @@ use crate::{http::state::ManagementState, servers::storage::Server};
 /// Authenticate the caller's saved mapping on one server, for pages that query it live.
 pub(crate) async fn authenticate_user_on_server(
     state: &ManagementState,
-    user: &crate::ui::auth::User,
+    user: &crate::ui::auth::UiUser,
     server: &Server,
 ) -> Result<crate::auth::mapping_authentication::AuthenticatedMapping, String> {
     let mapping = state

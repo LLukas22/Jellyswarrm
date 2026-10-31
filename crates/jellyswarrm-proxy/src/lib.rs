@@ -1,5 +1,4 @@
 //! Jellyswarrm server lifecycle. The executable supplies the Tokio runtime.
-mod app;
 mod application;
 mod auth;
 mod config;
@@ -16,6 +15,7 @@ mod processors;
 mod protocol;
 mod servers;
 mod sessions;
+mod startup;
 mod syncplay;
 mod ui;
 mod upstream;
@@ -36,5 +36,5 @@ mod test_support;
 /// }
 /// ```
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    app::run().await
+    startup::run().await
 }

@@ -12,7 +12,7 @@ impl UserAuthorizationService {
         &self,
         username: &str,
         password: &Password,
-    ) -> Result<User, sqlx::Error> {
+    ) -> Result<LocalUser, sqlx::Error> {
         let username_key = Self::normalized_username_key(username);
 
         if let Some(user) = self.get_user_by_username(username).await? {
@@ -44,7 +44,7 @@ impl UserAuthorizationService {
 
         info!("Created new user for: {}", username);
 
-        Ok(User {
+        Ok(LocalUser {
             id: user_id,
             virtual_key,
             original_username: username_key,
@@ -60,7 +60,7 @@ impl UserAuthorizationService {
         &self,
         username: &str,
         password: &Password,
-    ) -> Result<Option<User>, sqlx::Error> {
+    ) -> Result<Option<LocalUser>, sqlx::Error> {
         if let Some(user) = self.get_user_by_username(username).await? {
             return if user.local_credential.verify_async(password).await? {
                 self.upgrade_local_password_hash(user, password)
@@ -85,7 +85,7 @@ impl UserAuthorizationService {
         &self,
         username: &str,
         password: &Password,
-    ) -> Result<User, sqlx::Error> {
+    ) -> Result<LocalUser, sqlx::Error> {
         let local_credential = LocalCredential::from_password(password).await?;
         let username_key = Self::normalized_username_key(username);
         let virtual_key = generate_token();
@@ -109,7 +109,7 @@ impl UserAuthorizationService {
         .execute(&self.pool)
         .await?;
 
-        Ok(User {
+        Ok(LocalUser {
             id: user_id,
             virtual_key,
             original_username: username_key,
@@ -123,8 +123,8 @@ impl UserAuthorizationService {
     pub(crate) async fn get_user_by_username(
         &self,
         username: &str,
-    ) -> Result<Option<User>, sqlx::Error> {
-        let user = sqlx::query_as::<_, User>(
+    ) -> Result<Option<LocalUser>, sqlx::Error> {
+        let user = sqlx::query_as::<_, LocalUser>(
             r#"
             SELECT id, virtual_key, original_username, original_password_hash,
                    local_credential_kind, created_at, updated_at
@@ -143,8 +143,8 @@ impl UserAuthorizationService {
     pub(crate) async fn get_user_by_virtual_key(
         &self,
         virtual_key: &str,
-    ) -> Result<Option<User>, sqlx::Error> {
-        let user = sqlx::query_as::<_, User>(
+    ) -> Result<Option<LocalUser>, sqlx::Error> {
+        let user = sqlx::query_as::<_, LocalUser>(
             r#"
             SELECT id, virtual_key, original_username, original_password_hash,
                    local_credential_kind, created_at, updated_at
@@ -160,12 +160,15 @@ impl UserAuthorizationService {
     }
 
     /// Resolve either a login token or an application API key to its virtual user.
-    pub(crate) async fn get_user_by_token(&self, token: &str) -> Result<Option<User>, sqlx::Error> {
+    pub(crate) async fn get_user_by_token(
+        &self,
+        token: &str,
+    ) -> Result<Option<LocalUser>, sqlx::Error> {
         if let Some(user) = self.get_user_by_virtual_key(token).await? {
             return Ok(Some(user));
         }
 
-        sqlx::query_as::<_, User>(
+        sqlx::query_as::<_, LocalUser>(
             r#"
             SELECT u.id, u.virtual_key, u.original_username, u.original_password_hash,
                    u.local_credential_kind, u.created_at, u.updated_at
@@ -180,8 +183,8 @@ impl UserAuthorizationService {
     }
 
     /// Get user by virtual ID, accepting equivalent UUID formats.
-    pub(crate) async fn get_user_by_id(&self, id: &str) -> Result<Option<User>, sqlx::Error> {
-        let user = sqlx::query_as::<_, User>(
+    pub(crate) async fn get_user_by_id(&self, id: &str) -> Result<Option<LocalUser>, sqlx::Error> {
+        let user = sqlx::query_as::<_, LocalUser>(
             r#"
             SELECT id, virtual_key, original_username, original_password_hash,
                    local_credential_kind, created_at, updated_at
@@ -201,7 +204,7 @@ impl UserAuthorizationService {
         &self,
         username: &str,
         password: &Password,
-    ) -> Result<Option<User>, sqlx::Error> {
+    ) -> Result<Option<LocalUser>, sqlx::Error> {
         let user = self.get_user_by_username(username).await?;
         if let Some(user) = user {
             if user.local_credential.verify_async(password).await? {
@@ -216,9 +219,9 @@ impl UserAuthorizationService {
 
     pub(super) async fn upgrade_local_password_hash(
         &self,
-        mut user: User,
+        mut user: LocalUser,
         password: &Password,
-    ) -> Result<User, sqlx::Error> {
+    ) -> Result<LocalUser, sqlx::Error> {
         let LocalCredential::Password(old_hash) = &user.local_credential else {
             return Ok(user);
         };
@@ -256,8 +259,8 @@ impl UserAuthorizationService {
     }
 
     /// List all users
-    pub(crate) async fn list_users(&self) -> Result<Vec<User>, sqlx::Error> {
-        let users = sqlx::query_as::<_, User>(
+    pub(crate) async fn list_users(&self) -> Result<Vec<LocalUser>, sqlx::Error> {
+        let users = sqlx::query_as::<_, LocalUser>(
             r#"
             SELECT id, virtual_key, original_username, original_password_hash,
                    local_credential_kind, created_at, updated_at
@@ -303,7 +306,7 @@ impl UserAuthorizationService {
 
     pub(super) async fn update_user_password_if_current(
         &self,
-        expected_user: &User,
+        expected_user: &LocalUser,
         old_password: &Password,
         local_credential: &LocalCredential,
         admin_password: &Password,

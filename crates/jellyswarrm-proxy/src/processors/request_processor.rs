@@ -4,7 +4,7 @@ use serde_json::Value;
 use tracing::debug;
 
 use super::user_ids::BackendUserIds;
-use crate::auth::service::{AuthorizationSession, User};
+use crate::auth::service::{AuthorizationSession, LocalUser};
 use crate::processors::field_matcher::{
     ID_FIELDS, MEDIA_ID_LIST_PARENT_FIELDS, SESSION_FIELDS, USER_FIELDS,
 };
@@ -57,7 +57,7 @@ impl RequestProcessor {
 
 #[allow(dead_code)]
 pub(crate) struct RequestProcessingContext {
-    pub(crate) user: Option<User>,
+    pub(crate) user: Option<LocalUser>,
     pub(crate) server: Server,
     pub(crate) sessions: Option<Vec<(AuthorizationSession, Server)>>,
     pub(crate) auth: Option<JellyfinAuthorization>,
@@ -205,7 +205,7 @@ mod tests {
         let analyzer = RequestAnalyzer::new(
             data.media_storage,
             data.server_storage,
-            data.play_sessions,
+            data.playback_registry,
             data.user_authorization,
         );
         let analyzed = analyze_json(&json!([{"ItemId":"nested-item", "MediaSourceId":"nested-source", "PlaySessionId":"nested-session"}]), &analyzer,
@@ -347,7 +347,7 @@ mod tests {
             &RequestAnalyzer::new(
                 data.media_storage.clone(),
                 data.server_storage.clone(),
-                data.play_sessions.clone(),
+                data.playback_registry.clone(),
                 data.user_authorization.clone(),
             ),
             &RequestAnalysisContext {
@@ -481,7 +481,7 @@ mod tests {
                     &RequestAnalyzer::new(
                         data.media_storage.clone(),
                         data.server_storage.clone(),
-                        data.play_sessions.clone(),
+                        data.playback_registry.clone(),
                         data.user_authorization.clone(),
                     ),
                     &RequestAnalysisContext {

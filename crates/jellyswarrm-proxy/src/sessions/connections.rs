@@ -10,7 +10,7 @@ use uuid::Uuid;
 pub(crate) const OUTBOUND_CAPACITY: usize = 64;
 
 #[derive(thiserror::Error)]
-pub(crate) enum DeliveryError {
+pub(crate) enum SendError {
     #[error("session message encoding failed")]
     Encoding(#[source] serde_json::Error),
     #[error("session connection is unavailable")]
@@ -19,7 +19,7 @@ pub(crate) enum DeliveryError {
     Backpressure,
 }
 
-impl std::fmt::Debug for DeliveryError {
+impl std::fmt::Debug for SendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(self, f)
     }
@@ -88,24 +88,24 @@ impl ConnectionHub {
         id: &str,
         message_type: &str,
         data: &T,
-    ) -> Result<(), DeliveryError> {
+    ) -> Result<(), SendError> {
         // Keep the existing Value normalization (including object-key ordering),
         // but propagate serialization failures instead of panicking inside json!.
-        let data = serde_json::to_value(data).map_err(DeliveryError::Encoding)?;
+        let data = serde_json::to_value(data).map_err(SendError::Encoding)?;
         let text = serde_json::to_string(&Envelope {
             data: &data,
             message_id: Uuid::new_v4().simple().to_string(),
             message_type,
         })
-        .map_err(DeliveryError::Encoding)?;
+        .map_err(SendError::Encoding)?;
         let mut connections = self.0.lock().unwrap();
-        let connection = connections.get(id).ok_or(DeliveryError::Disconnected)?;
+        let connection = connections.get(id).ok_or(SendError::Disconnected)?;
         match connection.sender.try_send(text) {
             Ok(()) => Ok(()),
-            Err(mpsc::error::TrySendError::Full(_)) => Err(DeliveryError::Backpressure),
+            Err(mpsc::error::TrySendError::Full(_)) => Err(SendError::Backpressure),
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 connections.remove(id);
-                Err(DeliveryError::Disconnected)
+                Err(SendError::Disconnected)
             }
         }
     }
@@ -127,7 +127,7 @@ mod tests {
         let error = ConnectionHub::default()
             .send("session", "Play", &Unserializable)
             .unwrap_err();
-        assert!(matches!(error, DeliveryError::Encoding(_)));
+        assert!(matches!(error, SendError::Encoding(_)));
         assert!(std::error::Error::source(&error)
             .unwrap()
             .is::<serde_json::Error>());
@@ -135,14 +135,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bounded_transport_replacement_and_closed_channels() {
+    async fn bounded_connection_replacement_and_closed_channels() {
         let hub = ConnectionHub::default();
         let (tx, mut rx) = mpsc::channel(1);
         let old = hub.register("session".into(), tx);
         hub.send("session", "Play", &json!({})).unwrap();
         assert!(matches!(
             hub.send("session", "Play", &json!({})),
-            Err(DeliveryError::Backpressure)
+            Err(SendError::Backpressure)
         ));
         rx.recv().await.unwrap();
         let (tx, rx2) = mpsc::channel(1);
@@ -152,7 +152,7 @@ mod tests {
         drop(rx2);
         assert!(matches!(
             hub.send("session", "Play", &json!({})),
-            Err(DeliveryError::Disconnected)
+            Err(SendError::Disconnected)
         ));
         assert!(!hub.is_connected("session"));
     }

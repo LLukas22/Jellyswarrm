@@ -6,7 +6,7 @@ use tracing::info;
 #[cfg(test)]
 use crate::test_support::MediaFixture;
 use crate::{
-    application::upstream::response_json_to_payload,
+    application::request::response::response_json_to_payload,
     auth::service::AuthorizationSession,
     models::{MediaSource, PlaybackRequest, PlaybackResponse},
     processors::response_processor::ResponseProcessingProfile,
@@ -52,7 +52,7 @@ pub(crate) async fn remap_playback_request(
         if key.eq_ignore_ascii_case("LiveStreamId") {
             if let Some(id) = value.as_str().filter(|id| !id.is_empty()) {
                 let binding = state
-                    .play_sessions
+                    .playback_registry
                     .live_binding(&id.into(), &session.user_id.as_str().into())
                     .await
                     .ok_or(ApplicationError::InvalidInput("unknown live identity"))?;
@@ -78,7 +78,7 @@ pub(crate) async fn process_playback_response(
     let mut plans = Vec::new();
     for source in &mut response.media_sources {
         if let Some(plan) = crate::application::playback::live::prepare_live_source(
-            &state.play_sessions,
+            &state.playback_registry,
             source,
             &session.user_id,
             server,
@@ -190,7 +190,7 @@ async fn add_tracked_play_session(
         "Tracking play session for item: {}, server: {}",
         item_id, server.name
     );
-    super::lifecycle::PlaybackLifecycle::new(&state.play_sessions)
+    super::lifecycle::PlaybackLifecycle::new(&state.playback_registry)
         .alias(item_id, session_id, user_id, server.id)
         .await;
 }
@@ -645,12 +645,12 @@ mod tests {
         track_play_session(&source, "session-1", "user-1", &server, &state).await;
 
         let source_session = state
-            .play_sessions
+            .playback_registry
             .get_session_by_session_and_item_id("session-1", "media-source-id")
             .await
             .unwrap();
         let video_session = state
-            .play_sessions
+            .playback_registry
             .get_session_by_session_and_item_id("session-1", "video-resource-id")
             .await
             .unwrap();
@@ -696,7 +696,7 @@ mod tests {
             ] {
                 assert!(
                     state
-                        .play_sessions
+                        .playback_registry
                         .get_session_by_session_and_item_id(session_id, item_id)
                         .await
                         .is_some(),

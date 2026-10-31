@@ -9,7 +9,8 @@ use tracing::{debug, error};
 
 use crate::application::accounts::{self, user_for_credential, RequestIdentity};
 use crate::application::{
-    context::RequestContext, input::OperationRequest, services::MediaServices,
+    request::{context::RequestContext, input::OperationRequest},
+    services::MediaServices,
 };
 use crate::auth::service::AuthorizationSession;
 use crate::libraries::service::VirtualLibraryAccessScope;

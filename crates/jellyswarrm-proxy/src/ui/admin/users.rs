@@ -13,7 +13,7 @@ use tracing::{error, info};
 
 use crate::{
     auth::federation::ServerSyncResult,
-    auth::service::{ServerMapping, User},
+    auth::service::{LocalUser, ServerMapping},
     domain::ids::ServerId,
     domain::security::Password,
     http::state::ManagementState,
@@ -27,7 +27,7 @@ pub(crate) struct UsersPageTemplate {
 }
 
 pub(crate) struct UserWithMappings {
-    pub(crate) user: User,
+    pub(crate) user: LocalUser,
     pub(crate) mappings: Vec<(ServerMapping, Server, i64)>, // per mapping session count
     pub(crate) available_servers: Vec<Server>,              // servers not yet mapped
     pub(crate) total_sessions: i64,
@@ -66,7 +66,7 @@ pub(crate) struct AddMappingForm {
 
 pub(crate) async fn create_user_with_mappings(
     state: &ManagementState,
-    user: User,
+    user: LocalUser,
     servers: &[Server],
 ) -> UserWithMappings {
     // Session counts keyed by canonical server URL for template display.

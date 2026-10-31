@@ -91,7 +91,7 @@ pub(crate) fn request(path: &str, sessions: &[(AuthorizationSession, Server)]) -
         reqwest::Method::GET,
         url::Url::parse(&format!("http://localhost{path}")).unwrap(),
     );
-    let context = crate::application::context::RequestContext::new(
+    let context = crate::application::request::context::RequestContext::new(
         &original_request,
         None,
         None,
@@ -269,7 +269,7 @@ async fn request_independent_refresh_rejects_foreign_viewer_credentials_before_t
 async fn catalog_service_boundaries_preserve_source_and_storage_causes() {
     use crate::application::{
         catalog::{filters::get_filters, get_catalog},
-        input::OperationRequest,
+        request::input::OperationRequest,
     };
     let (state, pool, sessions, upstreams) = setup().await;
     let mut ids = Vec::new();
@@ -336,7 +336,7 @@ async fn catalog_service_boundaries_preserve_source_and_storage_causes() {
 #[tokio::test]
 async fn catalog_query_is_always_derived_from_the_authoritative_wire_request() {
     let (_state, _pool, sessions, _upstreams) = setup().await;
-    let mut input: crate::application::input::OperationRequest =
+    let mut input: crate::application::request::input::OperationRequest =
         request("/Items?ParentId=before&Limit=10", &sessions);
     *input.original_request.url_mut() = "http://localhost/Items?ParentId=after&Limit=3"
         .parse()

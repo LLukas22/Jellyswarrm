@@ -14,8 +14,8 @@ use std::sync::Arc;
 use crate::{
     application::{
         error::ApplicationError,
-        input::OperationRequest,
         playback::{lifecycle::record_playback_sources, response::track_play_session},
+        request::input::OperationRequest,
     },
     models::MediaSource,
     processors::set_json_body,
@@ -24,7 +24,7 @@ use crate::{
 
 /// Virtualize opaque live IDs and their delivery URL references together.
 pub(crate) async fn prepare_live_source(
-    state: &crate::playback::SessionStorage,
+    state: &crate::playback::PlaybackRegistry,
     source: &mut MediaSource,
     user: &str,
     server: &crate::servers::storage::Server,
@@ -167,7 +167,7 @@ pub(crate) async fn post_live_stream_action(
         .ok_or(ApplicationError::InvalidInput("missing live identity"))?;
     let (target, binding) = super::target::live_target(
         &preprocessed.context,
-        &state.play_sessions,
+        &state.playback_registry,
         &id.as_str().into(),
         &scope.user_id().into(),
     )
@@ -213,7 +213,7 @@ pub(crate) async fn post_live_stream_action(
     if close {
         let status = crate::upstream::json::execute_status(&state.reqwest_client, request).await?;
         if status.is_success() {
-            super::lifecycle::PlaybackLifecycle::new(&state.play_sessions)
+            super::lifecycle::PlaybackLifecycle::new(&state.playback_registry)
                 .close_live(&id.as_str().into(), &scope.user_id().into())
                 .await;
         }
@@ -263,7 +263,7 @@ pub(crate) async fn post_livestream_open(
         media: &state.media_storage,
     })
     .session(
-        &state.play_sessions,
+        &state.playback_registry,
         item_id,
         Some(&session_id),
         scope.user_id(),
@@ -354,8 +354,13 @@ pub(crate) async fn post_livestream_open(
     // Jellyfin returns a singular MediaSource here, not a PlaybackResponse.
     let mut source: MediaSource = serde_json::from_value(response["MediaSource"].clone())
         .map_err(ApplicationError::InvalidUpstreamJson)?;
-    let live_plan =
-        prepare_live_source(&state.play_sessions, &mut source, scope.user_id(), server).await?;
+    let live_plan = prepare_live_source(
+        &state.playback_registry,
+        &mut source,
+        scope.user_id(),
+        server,
+    )
+    .await?;
     let mut sources = vec![source];
     record_playback_sources(
         &state.media_storage,
@@ -371,14 +376,14 @@ pub(crate) async fn post_livestream_open(
         serde_json::to_value(source).map_err(ApplicationError::Serialization)?;
     // Finish all fallible work before publishing either live or ordinary bindings.
     serde_json::to_vec(&response).map_err(ApplicationError::Serialization)?;
-    super::lifecycle::PlaybackLifecycle::new(&state.play_sessions)
+    super::lifecycle::PlaybackLifecycle::new(&state.playback_registry)
         .commit_live(&live_plan.into_iter().collect::<Vec<_>>())
         .await
         .map_err(|error| {
             ApplicationError::Internal(error.into()).at(FailureStage::PlaybackCommit)
         })?;
     track_play_session(source, &session_id, scope.user_id(), server, state).await;
-    super::lifecycle::PlaybackLifecycle::new(&state.play_sessions)
+    super::lifecycle::PlaybackLifecycle::new(&state.playback_registry)
         .bind_original(&session_id, scope.user_id(), server.id, original_item_id)
         .await;
     Ok(response)

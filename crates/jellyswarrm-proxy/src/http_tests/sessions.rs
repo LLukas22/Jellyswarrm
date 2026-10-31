@@ -506,7 +506,7 @@ async fn identity_reconnect_revocation_and_authentication_dto_are_consistent() {
     let (tx, mut rx) = mpsc::channel(1);
     f.state
         .client_sessions
-        .transport
+        .connections
         .register(revoked.clone(), tx);
     assert_eq!(
         f.post(&format!("/Sessions/{revoked}/Playing/Pause"), Value::Null)
@@ -656,7 +656,7 @@ async fn query_capabilities_filters_browse_and_admin_reset_are_local() {
         StatusCode::CONFLICT
     );
     f.state.sessions.end_user_sessions(&f.user.id).await;
-    assert!(!f.state.client_sessions.transport.is_connected(id));
+    assert!(!f.state.client_sessions.connections.is_connected(id));
     assert!(f.state.client_sessions.get(id).await.is_none());
     f.no_upstream_requests().await;
 }

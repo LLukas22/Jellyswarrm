@@ -163,7 +163,7 @@ impl UserAuthorizationService {
     pub(crate) async fn get_user_sessions_by_user_id(
         &self,
         user_id: &str,
-    ) -> Result<Option<(User, Vec<(AuthorizationSession, Server)>)>, sqlx::Error> {
+    ) -> Result<Option<(LocalUser, Vec<(AuthorizationSession, Server)>)>, sqlx::Error> {
         let Some(user) = self.get_user_by_id(user_id).await? else {
             return Ok(None);
         };
@@ -177,7 +177,7 @@ impl UserAuthorizationService {
     pub(crate) async fn get_user_sessions_by_virtual_token(
         &self,
         virtual_token: &str,
-    ) -> Result<Option<(User, Vec<(AuthorizationSession, Server)>)>, sqlx::Error> {
+    ) -> Result<Option<(LocalUser, Vec<(AuthorizationSession, Server)>)>, sqlx::Error> {
         let user = match self.get_user_by_token(virtual_token).await? {
             Some(user) => user,
             None => return Ok(None),

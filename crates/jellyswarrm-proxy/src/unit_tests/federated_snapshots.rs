@@ -8,7 +8,7 @@ async fn a_mutation_fences_inflight_builds_without_invalidating_another_viewer()
     let state = state.services.clone();
     let prepare = |viewer: &str| {
         let mut request = request("/Items?Limit=1", &sessions);
-        request.context = crate::application::context::RequestContext::new(
+        request.context = crate::application::request::context::RequestContext::new(
             &request.original_request,
             None,
             None,

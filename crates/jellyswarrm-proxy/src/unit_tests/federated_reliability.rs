@@ -201,7 +201,7 @@ async fn snapshots_are_scoped_to_viewer_token_targets_and_display_configuration(
         crate::servers::storage::Server,
     )]| {
         let mut req = request("/Items?SearchTerm=equal&Limit=1", selected);
-        req.context = crate::application::context::RequestContext::new(
+        req.context = crate::application::request::context::RequestContext::new(
             &req.original_request,
             Some(JellyfinAuthorization::XEmbyToken(token.to_string())),
             None,

@@ -12,7 +12,7 @@ use tracing::info;
 #[cfg(test)]
 use crate::test_support::MediaFixture;
 use crate::{
-    application::{
+    application::request::{
         context::{AuthorizedTarget, RequestContext},
         input::OperationRequest,
     },
@@ -59,7 +59,7 @@ async fn selected_play_session(
         media: &state.media_storage,
     })
     .session(
-        &state.play_sessions,
+        &state.playback_registry,
         item_id,
         session_id,
         user_id,
@@ -101,7 +101,7 @@ async fn delivery_target(
     .await;
     if matches!(plan, Err(ResolutionError::MissingOwner)) {
         if let Some(binding) = binding {
-            super::lifecycle::PlaybackLifecycle::new(&state.play_sessions)
+            super::lifecycle::PlaybackLifecycle::new(&state.playback_registry)
                 .remove_server(binding.server_id)
                 .await;
         }
@@ -309,7 +309,7 @@ pub(crate) async fn get_stream(
                 .map(|user| user.id.as_str()),
         )
         .await?;
-        super::lifecycle::PlaybackLifecycle::new(&state.play_sessions)
+        super::lifecycle::PlaybackLifecycle::new(&state.playback_registry)
             .direct_stream(
                 response.status,
                 session_id.as_deref(),
@@ -361,7 +361,7 @@ mod tests {
         wiremock::MockServer,
     ) {
         use crate::{
-            auth::service::{LocalCredential, User},
+            auth::service::{LocalCredential, LocalUser},
             config::AppConfig,
             media::storage::MediaStorageService,
             persistence::MIGRATOR,
@@ -398,7 +398,7 @@ mod tests {
         let context = RequestContext::new(
             &original,
             None,
-            Some(User {
+            Some(LocalUser {
                 id: "viewer".into(),
                 virtual_key: "proxy-token".into(),
                 original_username: "Viewer".into(),
@@ -473,7 +473,7 @@ mod tests {
         let failed = get_stream(&state, operation("direct")).await.unwrap();
         assert_eq!(failed.status, StatusCode::SERVICE_UNAVAILABLE);
         assert!(state
-            .play_sessions
+            .playback_registry
             .resolve_report_session("direct", "viewer")
             .await
             .unwrap()
@@ -495,7 +495,7 @@ mod tests {
         );
         assert!(matches!(delivered.body, delivery::DeliveryBody::Stream(_)));
         let (binding, _) = state
-            .play_sessions
+            .playback_registry
             .resolve_report_session("direct", "viewer")
             .await
             .unwrap()
@@ -522,7 +522,7 @@ mod tests {
             .unwrap()
             .contains("/Audio/upstream-item/universal?PlaySessionId=redirect&Extension=kept"));
         let (binding, _) = state
-            .play_sessions
+            .playback_registry
             .resolve_report_session("redirect", "viewer")
             .await
             .unwrap()

@@ -4,14 +4,15 @@
 //! Connect keep their own state and are not reachable from here.
 use crate::{
     application::{
-        catalog::snapshots::CatalogSnapshots, error::ApplicationError,
-        request::UpstreamRequestBuilder, upstream,
+        catalog::snapshots::CatalogSnapshots,
+        error::ApplicationError,
+        request::{response, UpstreamRequestBuilder},
     },
     auth::UserAuthorizationService,
     config::SettingsView,
     libraries::VirtualLibraryService,
     media::MediaStorageService,
-    playback::SessionStorage,
+    playback::PlaybackRegistry,
     processors::{
         response_processor::{ResponseProcessingContext, ResponseProcessingProfile},
         ProxyProcessors,
@@ -21,7 +22,7 @@ use crate::{
 };
 use std::sync::Arc;
 
-use super::url_selection::UrlSelection;
+use super::request::selection::UrlSelection;
 
 #[derive(Clone)]
 pub(crate) struct MediaServices {
@@ -31,7 +32,7 @@ pub(crate) struct MediaServices {
     pub(crate) server_storage: Arc<ServerStorageService>,
     pub(crate) media_storage: Arc<MediaStorageService>,
     pub(crate) virtual_library_service: Arc<VirtualLibraryService>,
-    pub(crate) play_sessions: Arc<SessionStorage>,
+    pub(crate) playback_registry: Arc<PlaybackRegistry>,
     pub(crate) config: SettingsView,
     pub(crate) url_selection: UrlSelection,
     pub(crate) processors: Arc<ProxyProcessors>,
@@ -91,7 +92,7 @@ impl MediaServices {
         profile: ResponseProcessingProfile,
         token: Option<&str>,
     ) -> Result<serde_json::Value, ApplicationError> {
-        let mut payload = upstream::execute_json_request(&self.reqwest_client, request).await?;
+        let mut payload = response::execute_json_request(&self.reqwest_client, request).await?;
         self.process_response_json(&mut payload, server, profile, token)
             .await?;
         Ok(payload)

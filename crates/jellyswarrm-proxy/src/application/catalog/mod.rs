@@ -1,17 +1,18 @@
 //! Catalog workflow entry points and dispatch. Start with `get_catalog`.
 //!
-//! Flow: input → library_resolution → snapshots/upstream → media_reconciliation
+//! Flow: input → library_resolution → snapshots/fetch → media_reconciliation
 //! → postprocessing. Roots, batch lookup, and facets branch to their named modules.
 //! See `../../DATA_FLOW.md`; dependencies come from `application::services`.
 use crate::application::details::get_item_detail;
 use crate::application::error::{ApplicationError, FailureStage};
 use tracing::debug;
 
-use crate::application::{input::OperationRequest, services::MediaServices};
+use crate::application::{request::input::OperationRequest, services::MediaServices};
 
 mod query;
 pub(crate) mod refresh;
 
+mod fetch;
 mod filters;
 mod item_lookup;
 mod library_resolution;
@@ -21,15 +22,14 @@ mod postprocessing;
 mod request_policy;
 pub(crate) mod scan;
 pub(crate) mod snapshots;
-mod upstream;
 
+use fetch::{fetch_catalog, FetchMode, FetchedCatalog};
 use library_resolution::{
     resolve_catalog_plan, CatalogFetchTarget, CatalogPlan, ResolvedCatalogParent,
 };
 use library_root::{get_automatic_library_root, get_configured_library_root};
 use postprocessing::{FederatedItems, ResponseShape};
 use request_policy::{has_query_key, CatalogRequestPolicy};
-use upstream::{fetch_catalog, FetchMode, FetchedCatalog};
 
 /// Series detail and single-channel/genre guides identify one upstream item.
 /// Query only its owning server so unrelated programs cannot enter the result.

@@ -5,7 +5,7 @@ use crate::{
         error::ApplicationError,
         syncplay::{JoinOutcome, SyncPlayOperations},
     },
-    sessions::SessionContext,
+    sessions::SessionCaller,
     syncplay::models::*,
 };
 use axum::{
@@ -27,14 +27,14 @@ macro_rules! commands {
     ) => {
         $(pub(crate) async fn $name(
             State(state): State<SyncPlayOperations>,
-            session: SessionContext,
+            session: SessionCaller,
         ) -> StatusCode {
             state.groups.$name(&session).await;
             StatusCode::NO_CONTENT
         })*
         $(pub(crate) async fn $with_body(
             State(state): State<SyncPlayOperations>,
-            session: SessionContext,
+            session: SessionCaller,
             Json(payload): Json<$payload>,
         ) -> StatusCode {
             state.groups.$with_body(&session, payload).await;
@@ -60,7 +60,7 @@ commands! {
 
 pub(crate) async fn create_group(
     State(state): State<SyncPlayOperations>,
-    session: SessionContext,
+    session: SessionCaller,
     Json(payload): Json<NewGroupRequestDto>,
 ) -> Result<Json<GroupInfoDto>, StatusCode> {
     state
@@ -73,7 +73,7 @@ pub(crate) async fn create_group(
 
 pub(crate) async fn join_group(
     State(state): State<SyncPlayOperations>,
-    session: SessionContext,
+    session: SessionCaller,
     Json(payload): Json<JoinGroupRequestDto>,
 ) -> Result<StatusCode, ApplicationError> {
     let outcome = state
@@ -88,7 +88,7 @@ pub(crate) async fn join_group(
 
 pub(crate) async fn leave_group(
     State(state): State<SyncPlayOperations>,
-    session: SessionContext,
+    session: SessionCaller,
 ) -> StatusCode {
     info!("SyncPlay leave requested");
     state.groups.leave_group(&session).await;
@@ -97,7 +97,7 @@ pub(crate) async fn leave_group(
 
 pub(crate) async fn list_groups(
     State(state): State<SyncPlayOperations>,
-    session: SessionContext,
+    session: SessionCaller,
 ) -> Result<Json<Vec<GroupInfoDto>>, ApplicationError> {
     state
         .list(&session)
@@ -108,7 +108,7 @@ pub(crate) async fn list_groups(
 
 pub(crate) async fn get_group(
     State(state): State<SyncPlayOperations>,
-    session: SessionContext,
+    session: SessionCaller,
     Path(group_id): Path<String>,
 ) -> Result<Json<GroupInfoDto>, StatusCode> {
     let group_id = Uuid::from_str(&group_id).map_err(|_| StatusCode::NOT_FOUND)?;
@@ -122,7 +122,7 @@ pub(crate) async fn get_group(
 
 pub(crate) async fn set_new_queue(
     State(state): State<SyncPlayOperations>,
-    session: SessionContext,
+    session: SessionCaller,
     Json(payload): Json<PlayRequestDto>,
 ) -> Result<StatusCode, ApplicationError> {
     state
@@ -134,7 +134,7 @@ pub(crate) async fn set_new_queue(
 
 pub(crate) async fn queue_items(
     State(state): State<SyncPlayOperations>,
-    session: SessionContext,
+    session: SessionCaller,
     Json(payload): Json<QueueRequestDto>,
 ) -> Result<StatusCode, ApplicationError> {
     state
@@ -146,7 +146,7 @@ pub(crate) async fn queue_items(
 
 pub(crate) async fn next_item(
     State(state): State<SyncPlayOperations>,
-    session: SessionContext,
+    session: SessionCaller,
     payload: Option<Json<NextItemRequestDto>>,
 ) -> StatusCode {
     let item = payload.and_then(|Json(payload)| payload.playlist_item_id);
@@ -156,7 +156,7 @@ pub(crate) async fn next_item(
 
 pub(crate) async fn previous_item(
     State(state): State<SyncPlayOperations>,
-    session: SessionContext,
+    session: SessionCaller,
     payload: Option<Json<NextItemRequestDto>>,
 ) -> StatusCode {
     let item = payload.and_then(|Json(payload)| payload.playlist_item_id);

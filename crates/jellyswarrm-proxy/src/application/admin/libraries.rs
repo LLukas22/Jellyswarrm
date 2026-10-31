@@ -3,7 +3,9 @@
 use std::sync::Arc;
 
 use crate::{
-    auth::{mapping_authentication::MappingAuthenticator, service::User, UserAuthorizationService},
+    auth::{
+        mapping_authentication::MappingAuthenticator, service::LocalUser, UserAuthorizationService,
+    },
     domain::security::{decrypt_password, HashedPassword},
     libraries::{
         service::{normalize_library_id, DiscoveredLibrary},
@@ -154,7 +156,7 @@ impl LibraryAdministration {
     async fn discover_mapped(
         &self,
         server: &Server,
-        users: &[User],
+        users: &[LocalUser],
         issues: &mut Vec<DiscoveryIssue>,
     ) {
         let mut libraries = Vec::new();
@@ -202,7 +204,7 @@ impl LibraryAdministration {
 fn issue(
     issues: &mut Vec<DiscoveryIssue>,
     server: &Server,
-    user: Option<&User>,
+    user: Option<&LocalUser>,
     stage: DiscoveryStage,
 ) {
     issues.push(DiscoveryIssue {

@@ -2,7 +2,7 @@
 use super::*;
 use crate::{
     config::AppConfig, libraries::VirtualLibraryService, media::MediaStorageService,
-    persistence::MIGRATOR, servers::ServerStorageService, sessions::transport::ConnectionHub,
+    persistence::MIGRATOR, servers::ServerStorageService, sessions::connections::ConnectionHub,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -12,7 +12,7 @@ struct Fixture {
     pool: sqlx::SqlitePool,
     authorization: Arc<UserAuthorizationService>,
     media: Arc<MediaStorageService>,
-    selection: super::super::url_selection::UrlSelection,
+    selection: super::super::request::selection::UrlSelection,
     sessions: Arc<ClientSessionService>,
     groups: Arc<SyncPlayService>,
     settings: SettingsView,
@@ -36,7 +36,7 @@ impl Fixture {
         let hub = ConnectionHub::default();
         Self {
             authorization: Arc::new(UserAuthorizationService::new(pool.clone())),
-            selection: super::super::url_selection::UrlSelection::new(
+            selection: super::super::request::selection::UrlSelection::new(
                 media.clone(),
                 servers,
                 libraries,
@@ -44,7 +44,7 @@ impl Fixture {
             media,
             pool,
             sessions: Arc::new(ClientSessionService::new(hub.clone())),
-            groups: Arc::new(SyncPlayService::with_transport(hub)),
+            groups: Arc::new(SyncPlayService::with_connections(hub)),
             settings: SettingsView::new(Arc::new(tokio::sync::RwLock::new(AppConfig::default()))),
         }
     }
@@ -63,16 +63,20 @@ impl Fixture {
         )
     }
 
-    async fn user(&self) -> User {
+    async fn user(&self) -> LocalUser {
         self.authorization
             .create_user("Alice", &"".into())
             .await
             .unwrap()
     }
 
-    async fn connect(&self, user: User, token: &str) -> (SessionContext, mpsc::Receiver<String>) {
+    async fn connect(
+        &self,
+        user: LocalUser,
+        token: &str,
+    ) -> (SessionCaller, mpsc::Receiver<String>) {
         let id = self.sessions.ensure(&user, token, None).await;
-        let context = SessionContext {
+        let context = SessionCaller {
             user,
             session_id: id,
         };
@@ -189,7 +193,7 @@ async fn discovery_removes_invalid_credentials_and_their_group_membership() {
     assert!(f.sessions.get(&revoked.session_id).await.is_none());
     assert!(!f.groups.is_group_member(&revoked.session_id).await);
     while rx.recv().await.is_some() {}
-    assert!(!f.sessions.transport.is_connected(&revoked.session_id));
+    assert!(!f.sessions.connections.is_connected(&revoked.session_id));
 }
 
 #[tokio::test]

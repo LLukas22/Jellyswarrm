@@ -177,7 +177,7 @@ async fn redeem_owned(
 
 async fn authenticate_and_register(
     state: &AuthenticationService,
-    user: &crate::auth::service::User,
+    user: &crate::auth::service::LocalUser,
     server: &crate::servers::Server,
     mapping: &crate::auth::service::ServerMapping,
     authorization: &Authorization,

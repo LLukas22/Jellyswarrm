@@ -1,6 +1,6 @@
 //! Incoming request identity, body translation, authorization, and playback-report regressions.
 use super::*;
-use crate::auth::service::User;
+use crate::auth::service::LocalUser;
 use crate::protocol::authorization::Authorization;
 use crate::protocol::device::Device;
 use crate::protocol::routes::{matches_case_insensitive, MEDIA_ID_PATH_TAGS, MEDIA_ID_QUERY_TAGS};
@@ -188,7 +188,7 @@ async fn abbreviated_seasons_headers_dispatch_with_stored_credentials() {
             .body(axum::body::Body::empty())
             .unwrap();
         let response =
-            crate::http::proxy::proxy_handler(axum::extract::State(state.clone()), request)
+            crate::http::fallback::fallback_handler(axum::extract::State(state.clone()), request)
                 .await
                 .unwrap();
         assert_eq!(
@@ -414,7 +414,7 @@ async fn image_request_follows_same_origin_redirects_preserving_authorization() 
     }
 }
 
-async fn test_user(state: &MediaServices, name: &str) -> User {
+async fn test_user(state: &MediaServices, name: &str) -> LocalUser {
     state
         .user_authorization
         .get_or_create_user(name, &"password123".into())
@@ -566,7 +566,7 @@ async fn playback_server(state: &MediaServices) -> Server {
         .unwrap()
 }
 
-fn authorization_session(caller: &User, server: &Server) -> AuthorizationSession {
+fn authorization_session(caller: &LocalUser, server: &Server) -> AuthorizationSession {
     let now = chrono::Utc::now();
     AuthorizationSession {
         id: 1,
@@ -939,7 +939,7 @@ async fn blank_session_alias_does_not_clear_known_authority() {
     let state = media_fixture().await;
     let caller = test_user(&state, "caller").await;
     state
-        .play_sessions
+        .playback_registry
         .add_session(PlaybackSession {
             session_id: "known-session".into(),
             item_id: "item".into(),
@@ -983,7 +983,7 @@ async fn progress_rejects_a_session_owned_by_another_user() {
     let state = media_fixture().await;
     let caller = test_user(&state, "caller").await;
     state
-        .play_sessions
+        .playback_registry
         .add_session(PlaybackSession {
             session_id: "victim-session".to_string(),
             item_id: "item".to_string(),

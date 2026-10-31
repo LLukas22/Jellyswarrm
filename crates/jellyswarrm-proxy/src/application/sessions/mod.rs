@@ -4,12 +4,12 @@ pub(crate) mod access;
 #[path = "../../unit_tests/session_operations.rs"]
 mod tests;
 use crate::{
-    auth::{service::User, UserAuthorizationService},
+    auth::{service::LocalUser, UserAuthorizationService},
     config::SettingsView,
     protocol::{authorization::Authorization, device::Device},
     sessions::{
         models::{Capabilities, GeneralCommand},
-        ClientSession, ClientSessionService, SessionContext,
+        ClientSession, ClientSessionService, SessionCaller,
     },
     syncplay::service::{RemoteCommandError, SyncPlayService},
 };
@@ -73,7 +73,7 @@ impl SessionOperations {
         url: &url::Url,
         mutating: bool,
         device_hint: Option<Device>,
-    ) -> Result<SessionContext, SessionOperationError> {
+    ) -> Result<SessionCaller, SessionOperationError> {
         let identity = super::accounts::resolve_identity(headers, url, &self.authorization).await?;
         let user = identity
             .user
@@ -94,7 +94,7 @@ impl SessionOperations {
             .or(device_hint)
             .or(identity.device);
         let session_id = self.sessions.ensure(&user, token, device.as_ref()).await;
-        Ok(SessionContext { user, session_id })
+        Ok(SessionCaller { user, session_id })
     }
 
     pub(crate) async fn valid_session(
@@ -121,7 +121,7 @@ impl SessionOperations {
         let mut result = Vec::new();
         for session in self.sessions.for_user(user_id).await {
             if self.valid_session(&session).await? {
-                result.push(session.dto(&server_id, &self.sessions.transport));
+                result.push(session.dto(&server_id, &self.sessions.connections));
             }
         }
         Ok(result)
@@ -129,7 +129,7 @@ impl SessionOperations {
 
     pub(crate) async fn target(
         &self,
-        caller: &SessionContext,
+        caller: &SessionCaller,
         id: &str,
     ) -> Result<ClientSession, SessionOperationError> {
         let target = self
@@ -140,7 +140,8 @@ impl SessionOperations {
         if target.user_id != caller.user.id || !self.valid_session(&target).await? {
             return Err(SessionOperationError::NotFound);
         }
-        if !self.sessions.transport.is_connected(id) || !target.capabilities.supports_media_control
+        if !self.sessions.connections.is_connected(id)
+            || !target.capabilities.supports_media_control
         {
             return Err(SessionOperationError::NotControllable);
         }
@@ -149,7 +150,7 @@ impl SessionOperations {
 
     pub(crate) async fn capabilities(
         &self,
-        caller: &SessionContext,
+        caller: &SessionCaller,
         capabilities: Capabilities,
     ) -> Result<(), SessionOperationError> {
         self.sessions
@@ -158,14 +159,14 @@ impl SessionOperations {
             .ok_or(SessionOperationError::NotFound)
     }
 
-    pub(crate) async fn logout(&self, caller: &SessionContext) {
+    pub(crate) async fn logout(&self, caller: &SessionCaller) {
         self.groups.end_session(&caller.session_id).await;
         self.sessions.remove(&caller.session_id).await;
     }
 
     pub(crate) async fn viewing(
         &self,
-        caller: &SessionContext,
+        caller: &SessionCaller,
         item: &str,
     ) -> Result<(), SessionOperationError> {
         self.require_media(&caller.user.id, &[item.to_owned()], None)
@@ -221,7 +222,7 @@ impl SessionOperations {
     /// SyncPlay serializes its membership gate with enqueue under the group lock.
     pub(crate) async fn send(
         &self,
-        caller: &SessionContext,
+        caller: &SessionCaller,
         id: &str,
         message_type: &str,
         data: &Value,
@@ -256,7 +257,7 @@ impl SessionOperations {
 pub(crate) async fn decorate_authentication(
     sessions: &ClientSessionService,
     server_id: &str,
-    user: &User,
+    user: &LocalUser,
     auth: &Authorization,
     response: &mut crate::models::AuthenticateResponse,
 ) {
@@ -270,8 +271,9 @@ pub(crate) async fn decorate_authentication(
         .ensure(user, &user.virtual_key, Some(&device))
         .await;
     if let Some(session) = sessions.get(&id).await {
-        response.session_info = serde_json::from_value(session.dto(server_id, &sessions.transport))
-            .expect("local SessionInfo DTO");
+        response.session_info =
+            serde_json::from_value(session.dto(server_id, &sessions.connections))
+                .expect("local SessionInfo DTO");
     }
 }
 
@@ -279,7 +281,7 @@ pub(crate) async fn decorate_authentication(
 impl SessionOperations {
     pub(crate) async fn general_command(
         &self,
-        caller: &SessionContext,
+        caller: &SessionCaller,
         target: &ClientSession,
         command: GeneralCommand,
     ) -> Result<(&'static str, Value), SessionOperationError> {

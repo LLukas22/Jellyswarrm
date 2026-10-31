@@ -6,17 +6,17 @@ use crate::application::error::{ApplicationError, FailureStage};
 
 use crate::application::services::MediaServices;
 use crate::{
-    application::input::OperationRequest,
+    application::request::input::OperationRequest,
     media::catalog::{merge_media_group, TaggedMediaItem},
     media::storage::{MediaMapping, MediaStorageService},
 };
 
 use super::{
+    fetch::{fetch_catalog, FetchMode},
     finalize_items_response,
     library_resolution::CatalogFetchTarget,
     postprocessing::{FederatedItems, ResponseShape, SortPolicy},
     request_policy::CatalogRequestPolicy,
-    upstream::{fetch_catalog, FetchMode},
 };
 
 struct RequestedItem {

@@ -1,5 +1,5 @@
 //! Target-bound URL rewriting. Backend selection belongs to application routing.
-use super::delivery::{relative_url_from_parts, DeliveryUrlTranslator};
+use super::delivery_urls::{relative_url_from_parts, DeliveryUrlTranslator};
 use anyhow::Result;
 use tracing::debug;
 
@@ -12,7 +12,7 @@ use crate::{
     libraries::VirtualLibraryService,
     media::storage::{MediaMapping, MediaVersionMember},
     media::MediaStorageService,
-    playback::SessionStorage,
+    playback::PlaybackRegistry,
     protocol::url::{contains_id, decoded_path_segments, is_id_like, replace_id},
     servers::storage::Server,
 };
@@ -84,7 +84,7 @@ pub(crate) fn play_session_id(url: &url::Url) -> Result<Option<String>> {
 pub(crate) struct UrlProcessor {
     media_storage: Arc<MediaStorageService>,
     virtual_library_service: Arc<VirtualLibraryService>,
-    play_sessions: Arc<SessionStorage>,
+    playback_registry: Arc<PlaybackRegistry>,
     user_ids: super::user_ids::BackendUserIds,
     config: SettingsView,
 }
@@ -93,14 +93,14 @@ impl UrlProcessor {
     pub(crate) fn new(
         media_storage: Arc<MediaStorageService>,
         virtual_library_service: Arc<VirtualLibraryService>,
-        play_sessions: Arc<SessionStorage>,
+        playback_registry: Arc<PlaybackRegistry>,
         authorization: Arc<UserAuthorizationService>,
         config: SettingsView,
     ) -> Self {
         Self {
             media_storage,
             virtual_library_service,
-            play_sessions,
+            playback_registry,
             user_ids: super::user_ids::BackendUserIds::new(authorization),
             config,
         }
@@ -156,7 +156,7 @@ impl UrlProcessor {
             let value = if key.eq_ignore_ascii_case("LiveStreamId") {
                 match viewer {
                     Some(user) => self
-                        .play_sessions
+                        .playback_registry
                         .register_live_binding(&value.as_ref().into(), &user.into(), server.id)
                         .await
                         .as_str()
@@ -412,7 +412,7 @@ impl UrlProcessor {
                 *value = session.jellyfin_token.clone();
             } else if name.eq_ignore_ascii_case("LiveStreamId") {
                 if let Some(binding) = self
-                    .play_sessions
+                    .playback_registry
                     .live_binding(&value.as_str().into(), &session.user_id.as_str().into())
                     .await
                 {
@@ -573,7 +573,7 @@ fn server_is_allowed(
 #[cfg(test)]
 mod tests {
     use crate::{
-        auth::service::User, domain::user_id::UserId, protocol::authorization::Authorization,
+        auth::service::LocalUser, domain::user_id::UserId, protocol::authorization::Authorization,
     };
 
     #[tokio::test]
@@ -585,7 +585,7 @@ mod tests {
         let processor = UrlProcessor::new(
             Arc::new(media.clone()),
             Arc::new(VirtualLibraryService::new(pool.clone(), servers, media)),
-            Arc::new(SessionStorage::new()),
+            Arc::new(PlaybackRegistry::new()),
             Arc::new(UserAuthorizationService::new(pool.clone())),
             SettingsView::new(Arc::new(tokio::sync::RwLock::new(AppConfig::default()))),
         );
@@ -612,7 +612,8 @@ mod tests {
         }
     }
 
-    async fn user_mapping_fixture() -> (UrlProcessor, User, Vec<(AuthorizationSession, Server)>) {
+    async fn user_mapping_fixture() -> (UrlProcessor, LocalUser, Vec<(AuthorizationSession, Server)>)
+    {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         MIGRATOR.run(&pool).await.unwrap();
         let server_storage = ServerStorageService::new(pool.clone());
@@ -678,7 +679,7 @@ mod tests {
         let processor = UrlProcessor::new(
             Arc::new(media_storage),
             Arc::new(virtual_libraries),
-            Arc::new(SessionStorage::new()),
+            Arc::new(PlaybackRegistry::new()),
             Arc::new(user_authorization),
             crate::config::SettingsView::new(Arc::new(tokio::sync::RwLock::new(
                 AppConfig::default(),
@@ -818,7 +819,7 @@ mod tests {
         libraries::service::VirtualLibraryService,
         media::storage::MediaStorageService,
         persistence::MIGRATOR,
-        playback::SessionStorage,
+        playback::PlaybackRegistry,
         servers::storage::ServerStorageService,
     };
 
@@ -834,7 +835,7 @@ mod tests {
             .create_group("Empty library")
             .await
             .unwrap();
-        let processor = crate::application::url_selection::UrlSelection::new(
+        let processor = crate::application::request::selection::UrlSelection::new(
             Arc::new(media_storage),
             Arc::new(server_storage),
             Arc::new(virtual_libraries),
@@ -883,7 +884,7 @@ mod tests {
         let processor = UrlProcessor::new(
             Arc::new(media_storage),
             Arc::new(virtual_libraries),
-            Arc::new(SessionStorage::new()),
+            Arc::new(PlaybackRegistry::new()),
             Arc::new(UserAuthorizationService::new(pool)),
             SettingsView::new(Arc::new(tokio::sync::RwLock::new(AppConfig::default()))),
         );
@@ -936,7 +937,7 @@ mod tests {
         let processor = UrlProcessor::new(
             Arc::new(media_storage),
             Arc::new(virtual_libraries),
-            Arc::new(SessionStorage::new()),
+            Arc::new(PlaybackRegistry::new()),
             Arc::new(UserAuthorizationService::new(pool)),
             SettingsView::new(Arc::new(tokio::sync::RwLock::new(AppConfig::default()))),
         );
@@ -1003,7 +1004,7 @@ mod tests {
             .unwrap();
         let virtual_libraries =
             VirtualLibraryService::new(pool.clone(), server_storage.clone(), media_storage.clone());
-        let processor = crate::application::url_selection::UrlSelection::new(
+        let processor = crate::application::request::selection::UrlSelection::new(
             Arc::new(media_storage),
             Arc::new(server_storage),
             Arc::new(virtual_libraries),
@@ -1053,7 +1054,7 @@ mod tests {
             .unwrap();
         let virtual_libraries =
             VirtualLibraryService::new(pool.clone(), server_storage.clone(), media_storage.clone());
-        let selection = crate::application::url_selection::UrlSelection::new(
+        let selection = crate::application::request::selection::UrlSelection::new(
             Arc::new(media_storage.clone()),
             Arc::new(server_storage.clone()),
             Arc::new(virtual_libraries.clone()),
@@ -1061,7 +1062,7 @@ mod tests {
         let processor = UrlProcessor::new(
             Arc::new(media_storage),
             Arc::new(virtual_libraries),
-            Arc::new(SessionStorage::new()),
+            Arc::new(PlaybackRegistry::new()),
             Arc::new(UserAuthorizationService::new(pool)),
             SettingsView::new(Arc::new(tokio::sync::RwLock::new(AppConfig::default()))),
         );

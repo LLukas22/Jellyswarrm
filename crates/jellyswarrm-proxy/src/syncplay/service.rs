@@ -1,4 +1,4 @@
-//! Coordinate SyncPlay groups, queue state, playback timing, and shared transport notifications.
+//! Coordinate SyncPlay groups, queue state, playback timing, and shared connections notifications.
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -11,10 +11,10 @@ use tracing::{debug, info};
 use uuid::Uuid;
 
 #[cfg(test)]
-use crate::auth::service::User;
+use crate::auth::service::LocalUser;
 use crate::sessions::{
-    transport::{ConnectionHub, DeliveryError},
-    SessionContext,
+    connections::{ConnectionHub, SendError},
+    SessionCaller,
 };
 
 #[derive(thiserror::Error)]
@@ -22,7 +22,7 @@ pub(crate) enum RemoteCommandError {
     #[error("target playback is controlled by SyncPlay")]
     GroupPlayback,
     #[error("remote command delivery failed")]
-    Delivery(#[from] DeliveryError),
+    Delivery(#[from] SendError),
 }
 
 impl std::fmt::Debug for RemoteCommandError {
@@ -44,7 +44,7 @@ const WEBSOCKET_DISCONNECT_GRACE: Duration = Duration::from_secs(30);
 pub(super) struct SyncPlayState {
     groups: HashMap<Uuid, SyncPlayGroup>,
     session_to_group: HashMap<String, Uuid>,
-    transport: ConnectionHub,
+    connections: ConnectionHub,
     disconnect_grace_ids: HashMap<String, Uuid>,
 }
 
@@ -56,7 +56,7 @@ impl SyncPlayState {
         msg_type: &'static str,
         data: &T,
     ) {
-        let _ = self.transport.send(session_id, msg_type, data);
+        let _ = self.connections.send(session_id, msg_type, data);
     }
 
     /// Send a group-update envelope to specific sessions.
@@ -235,13 +235,13 @@ impl SyncPlayGroup {
 impl SyncPlayService {
     #[cfg(test)]
     pub(crate) fn new() -> Self {
-        Self::with_transport(ConnectionHub::default())
+        Self::with_connections(ConnectionHub::default())
     }
 
-    pub(crate) fn with_transport(transport: ConnectionHub) -> Self {
+    pub(crate) fn with_connections(connections: ConnectionHub) -> Self {
         Self {
             state: Arc::new(RwLock::new(SyncPlayState {
-                transport,
+                connections,
                 ..Default::default()
             })),
         }
@@ -249,7 +249,7 @@ impl SyncPlayService {
 
     pub(crate) async fn end_session(&self, session_id: &str) {
         let mut state = self.state.write().await;
-        state.transport.remove(session_id);
+        state.connections.remove(session_id);
         state.disconnect_grace_ids.remove(session_id);
         Self::leave_locked(&mut state, session_id);
     }
@@ -267,7 +267,7 @@ impl SyncPlayService {
             return Err(RemoteCommandError::GroupPlayback);
         }
         state
-            .transport
+            .connections
             .send(session_id, message_type, data)
             .map_err(Into::into)
     }
@@ -287,7 +287,7 @@ impl SyncPlayService {
         tx: mpsc::Sender<String>,
     ) -> Uuid {
         let mut state = self.state.write().await;
-        let connection_id = state.transport.register(session_id.clone(), tx);
+        let connection_id = state.connections.register(session_id.clone(), tx);
         state.disconnect_grace_ids.remove(&session_id);
         debug!(session_id = %session_id, "Registered SyncPlay websocket");
         state.send_to_session(&session_id, "ForceKeepAlive", &15_u64);
@@ -344,7 +344,7 @@ impl SyncPlayService {
     ) {
         {
             let mut state = self.state.write().await;
-            if !state.transport.unregister(&session_id, connection_id) {
+            if !state.connections.unregister(&session_id, connection_id) {
                 return;
             }
             let disconnect_grace_id = Uuid::new_v4();
@@ -374,7 +374,7 @@ impl SyncPlayService {
 
     async fn leave_if_still_disconnected(&self, session_id: &str, disconnect_grace_id: Uuid) {
         let mut state = self.state.write().await;
-        if state.transport.is_connected(session_id) {
+        if state.connections.is_connected(session_id) {
             return;
         }
         if state.disconnect_grace_ids.get(session_id) != Some(&disconnect_grace_id) {
@@ -385,7 +385,7 @@ impl SyncPlayService {
         Self::leave_locked(&mut state, session_id);
     }
 
-    fn make_participant(session: &SessionContext, is_buffering: bool) -> GroupParticipant {
+    fn make_participant(session: &SessionCaller, is_buffering: bool) -> GroupParticipant {
         GroupParticipant {
             user_id: session.user.id.to_string(),
             user_name: session.user.original_username.clone(),
@@ -399,12 +399,12 @@ impl SyncPlayService {
 
     pub(crate) async fn create_group(
         &self,
-        session: &SessionContext,
+        session: &SessionCaller,
         group_name: String,
     ) -> Option<GroupInfoDto> {
         let group_id = Uuid::new_v4();
         let mut state = self.state.write().await;
-        if !state.transport.is_connected(&session.session_id) {
+        if !state.connections.is_connected(&session.session_id) {
             return None;
         }
         Self::leave_locked(&mut state, &session.session_id);
@@ -453,12 +453,12 @@ impl SyncPlayService {
 
     pub(crate) async fn join_group(
         &self,
-        session: &SessionContext,
+        session: &SessionCaller,
         group_id: Uuid,
         expected_queue_item_ids: Option<Vec<String>>,
     ) -> bool {
         let mut state = self.state.write().await;
-        if !state.transport.is_connected(&session.session_id) {
+        if !state.connections.is_connected(&session.session_id) {
             return false;
         }
         Self::leave_locked(&mut state, &session.session_id);
@@ -586,7 +586,7 @@ impl SyncPlayService {
         }
     }
 
-    pub(crate) async fn leave_group(&self, session: &SessionContext) {
+    pub(crate) async fn leave_group(&self, session: &SessionCaller) {
         let mut state = self.state.write().await;
         Self::leave_locked(&mut state, &session.session_id);
     }
@@ -598,7 +598,7 @@ impl SyncPlayService {
 
     pub(super) async fn with_group_for_session(
         &self,
-        session: &SessionContext,
+        session: &SessionCaller,
         f: impl FnOnce(&mut SyncPlayGroup, &mut SyncPlayState),
     ) -> bool {
         let mut state = self.state.write().await;
@@ -648,8 +648,8 @@ mod tests {
     use chrono::DateTime;
     use tokio::time::{timeout, Duration};
 
-    fn make_user(id: &str, name: &str) -> User {
-        User {
+    fn make_user(id: &str, name: &str) -> LocalUser {
+        LocalUser {
             id: id.into(),
             virtual_key: format!("vk-{id}"),
             original_username: name.to_string(),
@@ -661,8 +661,8 @@ mod tests {
         }
     }
 
-    fn make_session(user: User, device: &str) -> SessionContext {
-        SessionContext {
+    fn make_session(user: LocalUser, device: &str) -> SessionCaller {
+        SessionCaller {
             session_id: format!("{}:{}", user.id, device),
             user,
         }
@@ -918,7 +918,7 @@ mod tests {
             .state
             .read()
             .await
-            .transport
+            .connections
             .send(&s1.session_id, "KeepAlive", &Value::Null)
             .unwrap();
 

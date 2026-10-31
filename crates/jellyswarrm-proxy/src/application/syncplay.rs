@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::{
     application::sessions::access::MediaAccess,
-    sessions::SessionContext,
+    sessions::SessionCaller,
     syncplay::{
         models::{GroupInfoDto, PlayRequestDto, QueueRequestDto, SyncPlayGroup},
         service::SyncPlayService,
@@ -43,7 +43,7 @@ impl SyncPlayOperations {
 
     pub(crate) async fn set_queue(
         &self,
-        session: &SessionContext,
+        session: &SessionCaller,
         payload: PlayRequestDto,
     ) -> Result<(), sqlx::Error> {
         let mut expected = None;
@@ -68,7 +68,7 @@ impl SyncPlayOperations {
 
     pub(crate) async fn queue_items(
         &self,
-        session: &SessionContext,
+        session: &SessionCaller,
         payload: QueueRequestDto,
     ) -> Result<(), sqlx::Error> {
         let mut expected = None;
@@ -91,7 +91,7 @@ impl SyncPlayOperations {
 
     pub(crate) async fn join(
         &self,
-        session: &SessionContext,
+        session: &SessionCaller,
         id: uuid::Uuid,
     ) -> Result<JoinOutcome, sqlx::Error> {
         let mut expected = None;
@@ -114,7 +114,7 @@ impl SyncPlayOperations {
 
     pub(crate) async fn list(
         &self,
-        session: &SessionContext,
+        session: &SessionCaller,
     ) -> Result<Vec<GroupInfoDto>, sqlx::Error> {
         let mut groups = Vec::new();
         for group in self.groups.list_group_snapshots().await {
@@ -131,7 +131,7 @@ impl SyncPlayOperations {
 
     pub(crate) async fn get(
         &self,
-        session: &SessionContext,
+        session: &SessionCaller,
         id: uuid::Uuid,
     ) -> Result<Option<GroupInfoDto>, sqlx::Error> {
         let Some(group) = self.groups.get_group_snapshot_by_id(id).await else {

@@ -2,8 +2,10 @@
 use crate::{
     application::{
         self,
-        library_admin::LibraryAdministration,
-        server_admin::{ServerAdministration, ServerCredentials},
+        admin::{
+            libraries::LibraryAdministration,
+            servers::{ServerAdministration, ServerCredentials},
+        },
         sessions::{access::MediaAccess, SessionOperations},
         syncplay::SyncPlayOperations,
     },
@@ -15,7 +17,7 @@ use crate::{
     http::state::{AdapterPaths, AppState, ManagementState, SettingsState},
     libraries::VirtualLibraryService,
     media::MediaStorageService,
-    playback::SessionStorage,
+    playback::PlaybackRegistry,
     processors::{
         request_analyzer::RequestAnalyzer, request_processor::RequestProcessor,
         response_processor::ResponseProcessor, url_processor::UrlProcessor, ProxyProcessors,
@@ -46,11 +48,11 @@ pub(super) fn adapter_state(
     let config = Arc::new(tokio::sync::RwLock::new(config));
     let settings = SettingsView::new(config.clone());
     let configuration = crate::config::service::ConfigurationService::new(config, paths);
-    let play_sessions = Arc::new(SessionStorage::new());
+    let playback_registry = Arc::new(PlaybackRegistry::new());
     let urls = UrlProcessor::new(
         media_storage.clone(),
         virtual_library_service.clone(),
-        play_sessions.clone(),
+        playback_registry.clone(),
         user_authorization.clone(),
         settings.clone(),
     );
@@ -59,20 +61,20 @@ pub(super) fn adapter_state(
         RequestAnalyzer::new(
             media_storage.clone(),
             server_storage.clone(),
-            play_sessions.clone(),
+            playback_registry.clone(),
             user_authorization.clone(),
         ),
         ResponseProcessor::new(media_storage.clone(), user_authorization.clone()),
         urls,
     ));
-    let selection = application::url_selection::UrlSelection::new(
+    let selection = application::request::selection::UrlSelection::new(
         media_storage.clone(),
         server_storage.clone(),
         virtual_library_service.clone(),
     );
-    let transport = sessions::transport::ConnectionHub::default();
-    let client_sessions = Arc::new(sessions::ClientSessionService::new(transport.clone()));
-    let syncplay = Arc::new(SyncPlayService::with_transport(transport));
+    let connections = sessions::connections::ConnectionHub::default();
+    let client_sessions = Arc::new(sessions::ClientSessionService::new(connections.clone()));
+    let syncplay = Arc::new(SyncPlayService::with_connections(connections));
     let quick_connect = QuickConnectStorage::new();
     let catalog_snapshots = Arc::new(application::catalog::snapshots::CatalogSnapshots::default());
     let media_access = MediaAccess::new(
@@ -122,7 +124,7 @@ pub(super) fn adapter_state(
         ),
         server_administration: ServerAdministration::new(
             server_storage.clone(),
-            play_sessions.clone(),
+            playback_registry.clone(),
             catalog_snapshots.clone(),
         ),
         library_administration: LibraryAdministration::new(
@@ -148,7 +150,7 @@ pub(super) fn adapter_state(
         server_storage,
         media_storage,
         virtual_library_service,
-        play_sessions,
+        playback_registry,
         config: settings,
         url_selection: selection,
         processors,

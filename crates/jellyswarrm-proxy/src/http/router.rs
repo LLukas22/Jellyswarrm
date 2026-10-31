@@ -1,8 +1,8 @@
 //! Production adapter composition: route table, session/auth layers, URL-prefix
 //! wrapping, and root monitoring endpoints. No listeners or background tasks.
 use super::{
-    assets::index_handler, auth_keys, branding, proxy::proxy_handler, quick_connect, sessions,
-    state::AppState, syncplay,
+    assets::index_handler, auth_keys, branding, fallback::fallback_handler, quick_connect,
+    sessions, state::AppState, syncplay,
 };
 use axum::{
     extract::{FromRef, Request},
@@ -107,8 +107,8 @@ fn routes() -> Router<AppState> {
                 .route("/SetShuffleMode", post(syncplay::set_shuffle_mode))
                 .route("/Ping", post(syncplay::ping)))
             .merge(super::client_routes::router())
-            .route("/{*path}", any(proxy_handler))
-            .fallback(proxy_handler)
+            .route("/{*path}", any(fallback_handler))
+            .fallback(fallback_handler)
     }
 }
 

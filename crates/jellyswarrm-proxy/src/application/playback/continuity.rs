@@ -2,8 +2,8 @@
 //! Explicit sources and playback bindings remain authoritative.
 use crate::{
     application::{
-        context::{AuthorizedTarget, RequestContext},
         error::ApplicationError,
+        request::context::{AuthorizedTarget, RequestContext},
     },
     domain::ids::ServerId,
     media::storage::MediaStorageService,

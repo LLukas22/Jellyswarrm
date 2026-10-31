@@ -2,9 +2,9 @@
 //! a cause and stage; only this endpoint adapter chooses response status codes.
 use crate::{
     application::{
-        context::TargetError,
         error::{ApplicationError, FailureStage},
         playback::target::ResolutionError,
+        request::context::TargetError,
     },
     processors::response_processor::PlaylistResponseError,
 };
@@ -124,7 +124,7 @@ mod tests {
 
     #[test]
     fn input_aggregates_with_storage_failure_are_not_bad_requests() {
-        use crate::application::input::{request_body_error, routing_error};
+        use crate::application::request::input::{request_body_error, routing_error};
         use crate::processors::ProcessingErrors;
         for classify in [routing_error, request_body_error] {
             for storage_failed in [false, true] {
@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn routing_policy_distinguishes_storage_denial_availability_and_input() {
-        use crate::application::routing::RoutingError;
+        use crate::application::request::routing::RoutingError;
         for (error, expected) in [
             (
                 RoutingError::Storage(sqlx::Error::PoolClosed),

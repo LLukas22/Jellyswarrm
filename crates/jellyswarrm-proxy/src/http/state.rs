@@ -2,8 +2,10 @@
 use crate::{
     application::{
         accounts::AuthenticationService,
-        library_admin::LibraryAdministration,
-        server_admin::{ServerAdministration, ServerCredentials},
+        admin::{
+            libraries::LibraryAdministration,
+            servers::{ServerAdministration, ServerCredentials},
+        },
         services::MediaServices,
         sessions::SessionOperations,
         syncplay::SyncPlayOperations,

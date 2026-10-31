@@ -14,7 +14,6 @@ use crate::test_support::MediaFixture;
 use crate::{
     application::{
         error::ApplicationError,
-        input::OperationRequest,
         playback::{
             lifecycle::record_playback_sources,
             response::{
@@ -23,6 +22,7 @@ use crate::{
             },
             target::{MediaTargetResolver, PlaybackIntent, SelectionPolicy},
         },
+        request::input::OperationRequest,
     },
     models::{PlaybackRequest, PlaybackResponse},
     processors::{payload_from_request, set_json_body},
@@ -193,7 +193,7 @@ pub(crate) async fn post_playback_info(
     let original_item_id = contains_id(request.url(), "Items").ok_or(
         ApplicationError::InvalidInput("missing upstream playback item"),
     )?;
-    match crate::application::upstream::execute_json_request::<PlaybackResponse>(
+    match crate::application::request::response::execute_json_request::<PlaybackResponse>(
         &state.reqwest_client,
         request,
     )
@@ -250,7 +250,7 @@ pub(crate) async fn post_playback_info(
                         })
                     })
             });
-            super::lifecycle::PlaybackLifecycle::new(&state.play_sessions)
+            super::lifecycle::PlaybackLifecycle::new(&state.playback_registry)
                 .commit_live(&live_plans)
                 .await
                 .map_err(|error| {
@@ -276,7 +276,7 @@ pub(crate) async fn post_playback_info(
                 state,
             )
             .await;
-            super::lifecycle::PlaybackLifecycle::new(&state.play_sessions)
+            super::lifecycle::PlaybackLifecycle::new(&state.playback_registry)
                 .bind_original(
                     &response.play_session_id,
                     &session.user_id,

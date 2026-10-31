@@ -26,7 +26,7 @@ pub(crate) fn client_request_error(error: &anyhow::Error) -> &'static str {
 }
 
 #[axum::debug_handler]
-pub(crate) async fn proxy_handler(
+pub(crate) async fn fallback_handler(
     State(state): State<MediaServices>,
     req: Request,
 ) -> Result<Response<Body>, StatusCode> {
@@ -52,7 +52,7 @@ pub(crate) async fn proxy_handler(
 
     let prepared = async {
         let request = super::preprocessing::extract_request_infos(req, &state, action).await?;
-        application::proxy::prepare(&state, request, action).await
+        application::fallback::prepare(&state, request, action).await
     }
     .await;
     let prepared = match prepared {
@@ -60,13 +60,13 @@ pub(crate) async fn proxy_handler(
         Err(error) => {
             error!("Failed to preprocess request: {}", error);
             let message = client_request_error(&error);
-            let error = application::input::routing_error(error);
+            let error = application::request::input::routing_error(error);
             let status = super::error::status(&error);
             return Ok((status, message).into_response());
         }
     };
 
-    let response = match application::proxy::forward(&state, prepared, response_profile).await {
+    let response = match application::fallback::forward(&state, prepared, response_profile).await {
         Ok(response) => response,
         Err(application::error::ApplicationError::RequestBody(cause)) => {
             return Ok((StatusCode::BAD_REQUEST, client_request_error(&cause)).into_response())

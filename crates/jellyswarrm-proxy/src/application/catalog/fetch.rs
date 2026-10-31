@@ -9,7 +9,7 @@ use tracing::{debug, error, trace, warn};
 
 use crate::application::services::MediaServices;
 use crate::{
-    application::upstream::response_json_to_payload,
+    application::request::response::response_json_to_payload,
     auth::service::AuthorizationSession,
     domain::ids::ServerId,
     libraries::service::DiscoveredLibrary,
@@ -741,7 +741,7 @@ async fn prepare_backend_request(
     let auth = JellyfinAuthorization::Authorization(session.to_authorization());
     // This executor only receives concrete targets from access-checked plans.
     // Preserve its established session Authorization wire style.
-    let target = crate::application::context::AuthorizedTarget::new(
+    let target = crate::application::request::context::AuthorizedTarget::new(
         server.clone(),
         Some(session.clone()),
         Some(auth),
@@ -761,14 +761,15 @@ async fn execute_raw_items_request(
     request: reqwest::Request,
     server: Server,
 ) -> Result<RawServerItems, ApplicationError> {
-    let response = crate::application::upstream::execute_json_request::<serde_json::Value>(
-        &state.reqwest_client,
-        request,
-    )
-    .await
-    .inspect_err(|e| {
-        error!("Failed to get items from server '{}': {:?}", server.name, e);
-    })?;
+    let response =
+        crate::application::request::response::execute_json_request::<serde_json::Value>(
+            &state.reqwest_client,
+            request,
+        )
+        .await
+        .inspect_err(|e| {
+            error!("Failed to get items from server '{}': {:?}", server.name, e);
+        })?;
 
     let items_response: ItemsResponseVariants = response_json_to_payload(response)?;
     debug!(

@@ -2,7 +2,7 @@
 //! client pagination is not part of materialized query identity.
 use super::{postprocessing::Pagination, request_policy::CatalogRequestPolicy};
 use crate::application::{
-    error::ApplicationError, input::OperationRequest, services::MediaServices,
+    error::ApplicationError, request::input::OperationRequest, services::MediaServices,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

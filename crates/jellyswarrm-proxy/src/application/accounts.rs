@@ -7,12 +7,12 @@ use tracing::{debug, error, info, warn};
 use std::sync::Arc;
 
 use crate::{
-    application::input::OperationRequest,
+    application::request::input::OperationRequest,
+    application::request::response::execute_json_request,
     application::services::MediaServices,
-    application::upstream::execute_json_request,
     auth::{
         mapping_authentication::MappingAuthenticator,
-        service::{LocalCredential, User},
+        service::{LocalCredential, LocalUser},
         UserAuthorizationService,
     },
     config::SettingsView,
@@ -43,7 +43,7 @@ pub(crate) struct AuthenticationService {
 /// A parsed caller credential, resolved without incoming-adapter or startup state.
 pub(crate) struct RequestIdentity {
     pub(crate) auth: Option<JellyfinAuthorization>,
-    pub(crate) user: Option<User>,
+    pub(crate) user: Option<LocalUser>,
     pub(crate) device: Option<Device>,
 }
 
@@ -61,7 +61,7 @@ pub(crate) async fn resolve_identity(
 pub(crate) async fn user_for_credential(
     auth: Option<&JellyfinAuthorization>,
     authorization: &UserAuthorizationService,
-) -> Result<Option<User>, sqlx::Error> {
+) -> Result<Option<LocalUser>, sqlx::Error> {
     let Some(token) = auth.and_then(JellyfinAuthorization::token_ref) else {
         return Ok(None);
     };
@@ -70,7 +70,7 @@ pub(crate) async fn user_for_credential(
 
 async fn process_user(
     mut server_user: crate::models::User,
-    user: &crate::auth::service::User,
+    user: &crate::auth::service::LocalUser,
     state: &MediaServices,
 ) -> crate::models::User {
     server_user.id = user.id.to_string();
@@ -128,7 +128,7 @@ fn normalize_user_path(request: &mut reqwest::Request, user_id: &str) {
 
 async fn build_request(
     state: &MediaServices,
-    target: &crate::application::context::AuthorizedTarget,
+    target: &crate::application::request::context::AuthorizedTarget,
     request: &reqwest::Request,
 ) -> Result<reqwest::Request, ApplicationError> {
     state
@@ -433,7 +433,7 @@ async fn resolve_or_create_login_user(
     state: &AuthenticationService,
     username: &str,
     password: &Password,
-) -> Result<crate::auth::service::User, ApplicationError> {
+) -> Result<crate::auth::service::LocalUser, ApplicationError> {
     state
         .user_authorization
         .resolve_or_create_login_user(username, password)
@@ -447,7 +447,7 @@ async fn resolve_or_create_login_user(
 
 async fn persist_successful_auths(
     state: &AuthenticationService,
-    user: &crate::auth::service::User,
+    user: &crate::auth::service::LocalUser,
     login_authorization: &Authorization,
     successful_auths: &[SuccessfulServerAuth],
 ) -> Result<(), ApplicationError> {
@@ -496,7 +496,7 @@ async fn persist_successful_auths(
 
 async fn decorate_auth_response(
     state: &AuthenticationService,
-    user: &crate::auth::service::User,
+    user: &crate::auth::service::LocalUser,
     login_username: &str,
     login_authorization: &Authorization,
     successful_auth: &SuccessfulServerAuth,

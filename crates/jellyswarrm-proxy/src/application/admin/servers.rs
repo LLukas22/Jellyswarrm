@@ -7,7 +7,7 @@ use crate::{
     config::MediaStreamingMode,
     domain::ids::ServerId,
     domain::security::{encrypt_password, EncryptionError, HashedPassword, Password},
-    playback::SessionStorage,
+    playback::PlaybackRegistry,
     servers::ServerStorageService,
 };
 
@@ -96,14 +96,14 @@ impl ServerCredentials {
 #[derive(Clone)]
 pub(crate) struct ServerAdministration {
     registry: Arc<ServerStorageService>,
-    playback: Arc<SessionStorage>,
+    playback: Arc<PlaybackRegistry>,
     catalogs: Arc<CatalogSnapshots>,
 }
 
 impl ServerAdministration {
     pub(crate) fn new(
         registry: Arc<ServerStorageService>,
-        playback: Arc<SessionStorage>,
+        playback: Arc<PlaybackRegistry>,
         catalogs: Arc<CatalogSnapshots>,
     ) -> Self {
         Self {
@@ -285,7 +285,7 @@ mod tests {
         MIGRATOR.run(&pool).await.unwrap();
         let registry = Arc::new(ServerStorageService::new(pool.clone()));
         let media = MediaStorageService::new(pool);
-        let playback = Arc::new(SessionStorage::new());
+        let playback = Arc::new(PlaybackRegistry::new());
         let catalogs = Arc::new(CatalogSnapshots::default());
         let id = registry
             .add_server(

@@ -7,8 +7,8 @@ use tracing::{error, warn};
 
 use crate::application::services::MediaServices;
 use crate::{
-    application::input::OperationRequest,
-    application::upstream::response_json_to_payload,
+    application::request::input::OperationRequest,
+    application::request::response::response_json_to_payload,
     domain::ids::ServerId,
     libraries::service::{
         normalize_library_id, VirtualLibraryAccessScope, VirtualLibraryResolution,
@@ -21,13 +21,13 @@ use crate::{
 };
 
 use super::{
+    fetch::{fetch_inventory, FetchedCatalog, FetchedServerItems, RawServerItems},
     finalize_items_response,
     library_resolution::CatalogFetchTarget,
     library_resolution::{
         automatic_library_key, is_live_tv_user_view, presentable_library_collection_type,
     },
     postprocessing::FederatedItems,
-    upstream::{fetch_inventory, FetchedCatalog, FetchedServerItems, RawServerItems},
 };
 
 struct AutomaticGroupPresentation {

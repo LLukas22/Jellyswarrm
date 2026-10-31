@@ -6,14 +6,14 @@ use tracing::error;
 use crate::{
     application::{
         error::ApplicationError,
-        input::{routing_error, OperationRequest},
+        request::input::{routing_error, OperationRequest},
         services::MediaServices,
     },
-    auth::service::User,
+    auth::service::LocalUser,
     http::preprocessing::{extract_request_infos, resolve_request_identity},
 };
 
-pub(crate) struct RequirePrimaryUser(pub(crate) User);
+pub(crate) struct RequirePrimaryUser(pub(crate) LocalUser);
 
 impl<S: Send + Sync> FromRequest<S> for RequirePrimaryUser
 where

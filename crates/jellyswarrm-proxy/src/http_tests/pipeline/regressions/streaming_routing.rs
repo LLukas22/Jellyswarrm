@@ -108,7 +108,7 @@ async fn offline_explicit_sources_keep_route_specific_errors_without_sibling_tra
     }
     assert!(f
         .state
-        .play_sessions
+        .playback_registry
         .get_sessions_by_item_id(&aggregate)
         .await
         .is_empty());
@@ -156,7 +156,7 @@ async fn ambiguous_implicit_delivery_preserves_deterministic_mapping_default() {
         }
         assert_eq!(
             f.state
-                .play_sessions
+                .playback_registry
                 .get_sessions_by_item_id(&aggregate)
                 .await
                 .len(),
@@ -398,7 +398,7 @@ async fn explicit_source_without_session_is_not_overridden_by_another_playback()
     negotiate(&f, &aggregate, &sources[0]).await;
     let original = f
         .state
-        .play_sessions
+        .playback_registry
         .get_session_for_user("play-0", &f.user.id)
         .await
         .unwrap();
@@ -437,7 +437,7 @@ async fn explicit_source_without_session_is_not_overridden_by_another_playback()
     }
     assert_eq!(
         f.state
-            .play_sessions
+            .playback_registry
             .get_session_for_user("play-0", &f.user.id)
             .await
             .unwrap()
@@ -511,7 +511,7 @@ async fn stop_transcoding_uses_play_session_backend() {
     // Quality changes stop an encoding while retaining the playback identity.
     assert!(f
         .state
-        .play_sessions
+        .playback_registry
         .get_session_for_user("play-1", &f.user.id)
         .await
         .is_some());
@@ -553,7 +553,7 @@ async fn equivalent_aggregate_uuids_keep_negotiated_backend_and_binding() {
     negotiate(&f, &aggregate, &sources[1]).await;
     let original = f
         .state
-        .play_sessions
+        .playback_registry
         .get_session_for_user("play-1", &f.user.id)
         .await
         .unwrap();
@@ -597,7 +597,7 @@ async fn equivalent_aggregate_uuids_keep_negotiated_backend_and_binding() {
     }
     assert_eq!(
         f.state
-            .play_sessions
+            .playback_registry
             .get_session_for_user("play-1", &f.user.id)
             .await
             .unwrap()
@@ -645,7 +645,7 @@ async fn conflicting_stream_authorities_are_rejected_before_forwarding() {
     }
     assert_eq!(
         f.state
-            .play_sessions
+            .playback_registry
             .get_session_for_user("play-0", &f.user.id)
             .await
             .unwrap()
@@ -667,7 +667,7 @@ async fn cancellation_rejects_unknown_foreign_and_unavailable_sessions() {
         .unwrap()
         .unwrap();
     f.state
-        .play_sessions
+        .playback_registry
         .add_session(crate::playback::PlaybackSession {
             session_id: "foreign".into(),
             item_id: aggregate.clone(),

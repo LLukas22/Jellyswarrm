@@ -1,9 +1,9 @@
 //! Opt-in HTTP fixture wiring; core media tests do not construct these handles.
 use super::*;
 use crate::{
-    application::{
-        library_admin::LibraryAdministration,
-        server_admin::{ServerAdministration, ServerCredentials},
+    application::admin::{
+        libraries::LibraryAdministration,
+        servers::{ServerAdministration, ServerCredentials},
     },
     auth::{
         federation::FederatedUserService, mapping_authentication::MappingAuthenticator,
@@ -38,8 +38,8 @@ impl AdapterFixture {
         let credentials = config.admin_credentials();
         drop(config);
         let client = reqwest::Client::new();
-        let syncplay = Arc::new(SyncPlayService::with_transport(
-            media.client_sessions.transport.clone(),
+        let syncplay = Arc::new(SyncPlayService::with_connections(
+            media.client_sessions.connections.clone(),
         ));
         let access = application::sessions::access::MediaAccess::new(
             media.user_authorization.clone(),
@@ -87,7 +87,7 @@ impl AdapterFixture {
             ),
             server_administration: ServerAdministration::new(
                 media.server_storage.clone(),
-                media.play_sessions.clone(),
+                media.playback_registry.clone(),
                 media.catalog_snapshots.clone(),
             ),
             library_administration: LibraryAdministration::new(

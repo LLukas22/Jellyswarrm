@@ -27,14 +27,14 @@ pub(crate) enum UserRole {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub(crate) struct User {
+pub(crate) struct UiUser {
     pub(crate) id: UserId,
     pub(crate) username: String,
     pub(crate) local_credential: LocalCredential,
     pub(crate) role: UserRole,
 }
 
-pub(crate) struct AuthenticatedUser(pub(crate) User);
+pub(crate) struct AuthenticatedUser(pub(crate) UiUser);
 
 impl<S> FromRequestParts<S> for AuthenticatedUser
 where
@@ -56,9 +56,9 @@ where
 
 // Here we've implemented `Debug` manually to avoid accidentally logging the
 // password hash.
-impl std::fmt::Debug for User {
+impl std::fmt::Debug for UiUser {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("User")
+        f.debug_struct("UiUser")
             .field("id", &self.id)
             .field("username", &self.username)
             .field("password", &"[redacted]")
@@ -67,7 +67,7 @@ impl std::fmt::Debug for User {
     }
 }
 
-impl AuthUser for User {
+impl AuthUser for UiUser {
     type Id = UserId;
 
     fn id(&self) -> Self::Id {
@@ -115,7 +115,7 @@ pub(crate) enum Error {
 }
 
 impl AuthnBackend for Backend {
-    type User = User;
+    type User = UiUser;
     type Credentials = Credentials;
     type Error = Error;
 
@@ -129,7 +129,7 @@ impl AuthnBackend for Backend {
         {
             info!("Admin authentication successful");
             // If the password is correct, we return the default user.
-            let user = User {
+            let user = UiUser {
                 id: "admin".into(),
                 username: creds.username,
                 local_credential: LocalCredential::Password(self.credentials.password().into()),
@@ -144,7 +144,7 @@ impl AuthnBackend for Backend {
             .await?
         {
             info!("User authentication successful: {}", user.original_username);
-            let user = User {
+            let user = UiUser {
                 id: user.id,
                 username: user.original_username,
                 local_credential: user.local_credential,
@@ -162,7 +162,7 @@ impl AuthnBackend for Backend {
         user_id: &AuthUserId<Self>,
     ) -> Result<Option<Self::User>, Self::Error> {
         if user_id.as_str() == "admin" {
-            return Ok(Some(User {
+            return Ok(Some(UiUser {
                 id: "admin".into(),
                 username: self.credentials.username().to_owned(),
                 local_credential: LocalCredential::Password(self.credentials.password().into()),
@@ -171,7 +171,7 @@ impl AuthnBackend for Backend {
         }
 
         if let Some(user) = self.user_auth.get_user_by_id(user_id).await? {
-            let user = User {
+            let user = UiUser {
                 id: user.id,
                 username: user.original_username,
                 local_credential: user.local_credential,
@@ -202,7 +202,7 @@ mod tests {
         ] {
             let legacy = json!({"id": id, "username": "viewer",
                 "local_credential": {"Password": "existing-password-hash"}, "role": role});
-            let user: User = serde_json::from_value(legacy.clone()).unwrap();
+            let user: UiUser = serde_json::from_value(legacy.clone()).unwrap();
             assert_eq!(user.id.as_str(), id);
             assert_eq!(user.session_auth_hash(), b"existing-password-hash");
             assert_eq!(serde_json::to_value(user).unwrap(), legacy);

@@ -2,7 +2,7 @@
 use super::status;
 use crate::sessions::{
     models::{Capabilities, GeneralCommand, MessageCommand},
-    SessionContext,
+    SessionCaller,
 };
 use crate::{
     application::sessions::SessionOperations, domain::user_id::UserId, http::state::AppState,
@@ -27,9 +27,9 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/Sessions", get(list))
         .route("/Sessions/", get(list))
         // Playback telemetry continues through the existing media pipeline.
-        .route("/Sessions/Playing", post(crate::http::proxy::proxy_handler))
-        .route("/Sessions/Playing/Progress", post(crate::http::proxy::proxy_handler))
-        .route("/Sessions/Playing/Stopped", post(crate::http::proxy::proxy_handler))
+        .route("/Sessions/Playing", post(crate::http::fallback::fallback_handler))
+        .route("/Sessions/Playing/Progress", post(crate::http::fallback::fallback_handler))
+        .route("/Sessions/Playing/Stopped", post(crate::http::fallback::fallback_handler))
         // All other session operations are local, including unsupported ones.
         .route("/Sessions/{*path}", any(dispatch))
     }
@@ -86,7 +86,7 @@ impl Params {
             .map(str::to_string)
             .collect()
     }
-    fn own_id(&self, key: &str, session: &SessionContext) -> ApiResult<()> {
+    fn own_id(&self, key: &str, session: &SessionCaller) -> ApiResult<()> {
         if self
             .get(key)
             .is_some_and(|id| !id.is_empty() && id != session.session_id)
@@ -99,7 +99,7 @@ impl Params {
 
 async fn list(
     State(operations): State<SessionOperations>,
-    caller: SessionContext,
+    caller: SessionCaller,
     uri: Uri,
 ) -> ApiResult<Json<Vec<Value>>> {
     let p = Params::new(&uri)?;
@@ -130,7 +130,7 @@ async fn list(
 
 async fn dispatch(
     State(operations): State<SessionOperations>,
-    caller: SessionContext,
+    caller: SessionCaller,
     Path(path): Path<String>,
     req: Request,
 ) -> ApiResult<StatusCode> {

@@ -23,7 +23,7 @@ mod tests {
         persistence::MIGRATOR,
         servers::storage::Server,
         test_support::{adapters::AdapterFixture, MediaFixture},
-        ui::auth::{User, UserRole},
+        ui::auth::{UiUser, UserRole},
     };
     use sqlx::SqlitePool;
     use wiremock::{
@@ -98,7 +98,7 @@ mod tests {
             .await;
         let response = post_user_password(
             State(state.clone()),
-            AuthenticatedUser(User {
+            AuthenticatedUser(UiUser {
                 id: local.id.clone(),
                 username: "local".into(),
                 local_credential: local.local_credential.clone(),
@@ -333,7 +333,7 @@ pub(crate) async fn post_user_password(
 /// Do not accept a cached token as proof of the saved password's correctness.
 async fn prepare_mappings_for_password_change(
     state: &ManagementState,
-    user: &crate::ui::auth::User,
+    user: &crate::ui::auth::UiUser,
     verified_password: &Password,
 ) -> Result<(), String> {
     let local_user = state

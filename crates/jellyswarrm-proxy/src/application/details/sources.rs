@@ -8,9 +8,9 @@ use tracing::{error, warn};
 
 use crate::application::services::MediaServices;
 use crate::{
-    application::context::{RequestContext, TargetError},
     application::error::ApplicationError,
-    application::upstream::response_json_to_payload,
+    application::request::context::{RequestContext, TargetError},
+    application::request::response::response_json_to_payload,
     auth::service::AuthorizationSession,
     libraries::service::VirtualLibraryAccessScope,
     media::storage::{
@@ -167,7 +167,11 @@ pub(crate) async fn merge_media_detail(
     // A static detail inventory cannot revoke a source negotiated by an active
     // player (for example the dynamic source returned by LiveStreams/Open).
     if let Some(scope) = context.access_scope {
-        for session in state.play_sessions.sessions_for_user(scope.user_id()).await {
+        for session in state
+            .playback_registry
+            .sessions_for_user(scope.user_id())
+            .await
+        {
             let Some(route) = state
                 .media_storage
                 .get_media_version_source_route(group.id, &session.item_id)

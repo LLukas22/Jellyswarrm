@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use super::*;
 use crate::{
-    application::{context::RequestContext, input::OperationRequest},
+    application::request::{context::RequestContext, input::OperationRequest},
     auth::service::AuthorizationSession,
     config::{AppConfig, MediaStreamingMode},
     libraries::service::VirtualLibraryAccessScope,

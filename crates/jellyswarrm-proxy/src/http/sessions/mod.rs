@@ -7,8 +7,8 @@ pub(crate) use websocket::websocket;
 
 use crate::{
     application::sessions::{SessionOperationError, SessionOperations},
-    sessions::transport::DeliveryError,
-    sessions::SessionContext,
+    sessions::connections::SendError,
+    sessions::SessionCaller,
     syncplay::service::RemoteCommandError,
 };
 use axum::{
@@ -76,7 +76,7 @@ fn websocket_cookie_device(
     })
 }
 
-impl<S: Send + Sync> FromRequestParts<S> for SessionContext
+impl<S: Send + Sync> FromRequestParts<S> for SessionCaller
 where
     SessionOperations: FromRef<S>,
 {
@@ -108,14 +108,14 @@ pub(super) fn status(error: SessionOperationError) -> StatusCode {
         SessionOperationError::NotFound => StatusCode::NOT_FOUND,
         SessionOperationError::NotControllable
         | SessionOperationError::Remote(RemoteCommandError::GroupPlayback)
-        | SessionOperationError::Remote(RemoteCommandError::Delivery(
-            DeliveryError::Disconnected,
-        )) => StatusCode::CONFLICT,
-        SessionOperationError::Remote(RemoteCommandError::Delivery(
-            DeliveryError::Backpressure,
-        )) => StatusCode::SERVICE_UNAVAILABLE,
+        | SessionOperationError::Remote(RemoteCommandError::Delivery(SendError::Disconnected)) => {
+            StatusCode::CONFLICT
+        }
+        SessionOperationError::Remote(RemoteCommandError::Delivery(SendError::Backpressure)) => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
         SessionOperationError::Storage(_)
-        | SessionOperationError::Remote(RemoteCommandError::Delivery(DeliveryError::Encoding(_))) => {
+        | SessionOperationError::Remote(RemoteCommandError::Delivery(SendError::Encoding(_))) => {
             StatusCode::INTERNAL_SERVER_ERROR
         }
     }
@@ -142,13 +142,13 @@ mod status_tests {
             ),
             (
                 SessionOperationError::Remote(RemoteCommandError::Delivery(
-                    DeliveryError::Disconnected,
+                    SendError::Disconnected,
                 )),
                 StatusCode::CONFLICT,
             ),
             (
                 SessionOperationError::Remote(RemoteCommandError::Delivery(
-                    DeliveryError::Backpressure,
+                    SendError::Backpressure,
                 )),
                 StatusCode::SERVICE_UNAVAILABLE,
             ),
@@ -157,11 +157,9 @@ mod status_tests {
                 StatusCode::INTERNAL_SERVER_ERROR,
             ),
             (
-                SessionOperationError::Remote(RemoteCommandError::Delivery(
-                    DeliveryError::Encoding(
-                        serde_json::from_str::<serde_json::Value>("{").unwrap_err(),
-                    ),
-                )),
+                SessionOperationError::Remote(RemoteCommandError::Delivery(SendError::Encoding(
+                    serde_json::from_str::<serde_json::Value>("{").unwrap_err(),
+                ))),
                 StatusCode::INTERNAL_SERVER_ERROR,
             ),
         ] {

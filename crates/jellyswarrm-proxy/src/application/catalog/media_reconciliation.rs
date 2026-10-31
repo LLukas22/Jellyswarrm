@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 use crate::application::services::MediaServices;
 use crate::{
-    application::input::OperationRequest,
+    application::request::input::OperationRequest,
     media::catalog::{MediaDedupPlan, TaggedMediaItem},
     media::identity::{MediaAlias, MediaKind, MediaObservation},
     media::scope::{MediaCatalogScope, MediaScopeKind},
@@ -16,11 +16,11 @@ use crate::{
 };
 
 use super::{
+    fetch::{fetch_catalog, fetch_show_catalog, FetchMode, FetchedCatalog},
     finalize_items_response,
     library_resolution::CatalogFetchTarget,
     postprocessing::{FederatedItems, ServerItems},
     request_policy::CatalogRequestPolicy,
-    upstream::{fetch_catalog, fetch_show_catalog, FetchMode, FetchedCatalog},
 };
 
 async fn show_catalog_aliases(

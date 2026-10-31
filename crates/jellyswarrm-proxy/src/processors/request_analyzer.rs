@@ -5,10 +5,10 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use crate::{
-    auth::service::User,
+    auth::service::LocalUser,
     auth::UserAuthorizationService,
     media::MediaStorageService,
-    playback::{RevisionedPlaybackSession, SessionStorage},
+    playback::{PlaybackRegistry, RevisionedPlaybackSession},
     processors::{
         field_matcher::{ID_FIELDS, MEDIA_ID_LIST_PARENT_FIELDS, SESSION_FIELDS, USER_FIELDS},
         json_processor::{JsonAnalyzer, JsonProcessingContext},
@@ -21,7 +21,7 @@ use crate::{
 pub(crate) struct RequestAnalyzer {
     media_storage: Arc<MediaStorageService>,
     server_storage: Arc<ServerStorageService>,
-    play_sessions: Arc<SessionStorage>,
+    playback_registry: Arc<PlaybackRegistry>,
     user_authorization: Arc<UserAuthorizationService>,
 }
 
@@ -29,13 +29,13 @@ impl RequestAnalyzer {
     pub(crate) fn new(
         media_storage: Arc<MediaStorageService>,
         server_storage: Arc<ServerStorageService>,
-        play_sessions: Arc<SessionStorage>,
+        playback_registry: Arc<PlaybackRegistry>,
         user_authorization: Arc<UserAuthorizationService>,
     ) -> Self {
         Self {
             media_storage,
             server_storage,
-            play_sessions,
+            playback_registry,
             user_authorization,
         }
     }
@@ -76,7 +76,7 @@ pub(crate) struct RequestBodyAnalysisResult {
     pub(crate) found_session_ids: Vec<String>,
     pub(crate) found_user_ids: Vec<String>,
     pub(crate) servers: Vec<Server>,
-    pub(crate) users: Vec<User>,
+    pub(crate) users: Vec<LocalUser>,
     pub(crate) authoritative_play_session: Option<RevisionedPlaybackSession>,
     pub(crate) requested_play_session_id: Option<String>,
     pub(crate) requested_play_item_id: Option<String>,
@@ -98,7 +98,7 @@ impl RequestBodyAnalysisResult {
     }
 
     /// Returns the user with the highest occurance in the users vector, or None if the vector is empty.
-    pub(crate) fn get_user(&self) -> Option<User> {
+    pub(crate) fn get_user(&self) -> Option<LocalUser> {
         if self.users.is_empty() {
             return None;
         }
@@ -197,7 +197,7 @@ impl JsonAnalyzer<RequestAnalysisContext, RequestBodyAnalysisResult> for Request
                 if is_authoritative_field {
                     if let Some(user_id) = context.authenticated_user_id.as_deref() {
                         let binding = self
-                            .play_sessions
+                            .playback_registry
                             .resolve_report_binding(&session_id.as_str().into(), &user_id.into())
                             .await?;
                         accumulator.authoritative_play_session = binding;
@@ -205,7 +205,7 @@ impl JsonAnalyzer<RequestAnalysisContext, RequestBodyAnalysisResult> for Request
                 } else if context.playback_session_action.is_none() {
                     if let Some(play_session) = match context.authenticated_user_id.as_deref() {
                         Some(user_id) => {
-                            self.play_sessions
+                            self.playback_registry
                                 .get_session_for_user(session_id, user_id)
                                 .await
                         }
@@ -218,7 +218,7 @@ impl JsonAnalyzer<RequestAnalysisContext, RequestBodyAnalysisResult> for Request
                         {
                             accumulator.servers.push(server);
                         } else {
-                            self.play_sessions
+                            self.playback_registry
                                 .remove_sessions_for_server(play_session.server_id)
                                 .await;
                         }

@@ -15,7 +15,7 @@ use crate::{
     ui::{auth::AuthenticatedUser, user::authenticate_user_on_server},
 };
 
-pub(crate) struct ServerInfo {
+pub(crate) struct ServerSummary {
     pub(crate) id: ServerId,
     pub(crate) name: String,
 }
@@ -29,7 +29,7 @@ pub(crate) struct LibraryWithCount {
 #[derive(Template)]
 #[template(path = "user/user_media.html")]
 pub(crate) struct UserMediaTemplate {
-    pub(crate) servers: Vec<ServerInfo>,
+    pub(crate) servers: Vec<ServerSummary>,
     pub(crate) ui_route: String,
 }
 
@@ -70,7 +70,7 @@ pub(crate) async fn get_user_media(
 
     let server_infos = servers
         .into_iter()
-        .map(|s| ServerInfo {
+        .map(|s| ServerSummary {
             id: s.id,
             name: s.name,
         })

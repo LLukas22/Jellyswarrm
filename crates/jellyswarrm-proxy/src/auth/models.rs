@@ -9,7 +9,7 @@ use crate::protocol::authorization::Authorization;
 use super::credentials::LocalCredential;
 use crate::protocol::device::Device;
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub(crate) struct User {
+pub(crate) struct LocalUser {
     pub(crate) id: UserId,
     pub(crate) virtual_key: String,
     pub(crate) original_username: String,
@@ -18,7 +18,7 @@ pub(crate) struct User {
     pub(crate) updated_at: chrono::DateTime<chrono::Utc>,
 }
 
-impl<'r> FromRow<'r, SqliteRow> for User {
+impl<'r> FromRow<'r, SqliteRow> for LocalUser {
     fn from_row(row: &SqliteRow) -> Result<Self, sqlx::Error> {
         let password_hash = row.try_get("original_password_hash")?;
         let credential_kind: String = row.try_get("local_credential_kind")?;

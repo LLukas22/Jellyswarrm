@@ -3,9 +3,9 @@
 use crate::config::MediaStreamingMode;
 use crate::processors::response_processor::ResponseProcessingProfile;
 use crate::{
-    auth::service::User,
+    auth::service::LocalUser,
     config::AppConfig,
-    http::{client_routes::item_detail_routes, proxy::proxy_handler},
+    http::{client_routes::item_detail_routes, fallback::fallback_handler},
     persistence::MIGRATOR,
     protocol::authorization::Authorization,
     servers::Server,
@@ -27,7 +27,7 @@ struct Fixture {
     pool: sqlx::SqlitePool,
     upstreams: Vec<MockServer>,
     servers: Vec<Server>,
-    caller: User,
+    caller: LocalUser,
     url: String,
     task: tokio::task::JoinHandle<()>,
 }
@@ -96,7 +96,7 @@ impl Fixture {
         state.server_storage.check_servers_health().await;
         let app = Router::new()
             .route("/Items/{item_id}", item_detail_routes())
-            .fallback(proxy_handler)
+            .fallback(fallback_handler)
             .with_state(state.app_state().await);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
@@ -114,7 +114,12 @@ impl Fixture {
         }
     }
 
-    async fn map_user(state: &AdapterFixture, user: &User, server: &Server, upstream_id: &str) {
+    async fn map_user(
+        state: &AdapterFixture,
+        user: &LocalUser,
+        server: &Server,
+        upstream_id: &str,
+    ) {
         state
             .user_authorization
             .add_server_mapping(

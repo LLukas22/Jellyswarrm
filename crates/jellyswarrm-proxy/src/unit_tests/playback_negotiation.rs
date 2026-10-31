@@ -3,7 +3,7 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use super::*;
 use crate::{
-    application::context::RequestContext,
+    application::request::context::RequestContext,
     auth::service::AuthorizationSession,
     config::{AppConfig, MediaStreamingMode},
     libraries::service::VirtualLibraryAccessScope,
@@ -43,7 +43,7 @@ async fn target_bound_translation_does_not_repeat_backend_availability_selection
     // must reject this aggregate, but translating an already selected owner
     // remains stable and never silently switches to another copy.
     let registry = Arc::new(ServerStorageService::new(fixture.pool.clone()));
-    let selection = crate::application::url_selection::UrlSelection::new(
+    let selection = crate::application::request::selection::UrlSelection::new(
         fixture.state.media_storage.clone(),
         registry,
         fixture.state.virtual_library_service.clone(),
@@ -281,7 +281,7 @@ async fn first_negotiation_selects_exact_member_before_binding() {
         );
         assert!(fixture
             .state
-            .play_sessions
+            .playback_registry
             .get_session_for_user("first-play", "viewer")
             .await
             .is_none());
@@ -310,7 +310,7 @@ async fn first_negotiation_selects_exact_member_before_binding() {
             .contains(&format!("backend-token-{backend}")));
         let binding = fixture
             .state
-            .play_sessions
+            .playback_registry
             .get_session_for_user("first-play", "viewer")
             .await
             .unwrap();
@@ -452,8 +452,8 @@ async fn sessionless_passthrough_is_rejected_without_negotiation() {
 
 #[tokio::test]
 async fn selection_plan_distinguishes_invalid_source_and_unavailable_owner() {
-    use crate::application::context::TargetError;
     use crate::application::playback::target::{PlaybackIntent, SelectionPolicy};
+    use crate::application::request::context::TargetError;
     let fixture = fixture().await;
     let mut input = operation(&fixture, "", json!({}));
     let resolver = MediaTargetResolver {
@@ -554,7 +554,7 @@ async fn failed_negotiation_does_not_commit_playback_binding() {
     ));
     assert!(fixture
         .state
-        .play_sessions
+        .playback_registry
         .get_sessions_by_item_id(&fixture.aggregate)
         .await
         .is_empty());
@@ -572,7 +572,7 @@ async fn shared_resolution_keeps_implicit_ambiguity_and_explicit_binding_conflic
     for (index, original) in [(0, 100), (1, 102)] {
         fixture
             .state
-            .play_sessions
+            .playback_registry
             .add_session(PlaybackSession {
                 session_id: format!("player-{index}"),
                 item_id: fixture.aggregate.clone(),
@@ -585,7 +585,7 @@ async fn shared_resolution_keeps_implicit_ambiguity_and_explicit_binding_conflic
     // Ambiguity means mapping fallback for delivery, not a universal 400.
     assert!(resolver
         .session(
-            &fixture.state.play_sessions,
+            &fixture.state.playback_registry,
             &fixture.aggregate,
             None,
             "viewer",
@@ -597,7 +597,7 @@ async fn shared_resolution_keeps_implicit_ambiguity_and_explicit_binding_conflic
     // Even a single implicit player cannot override an explicit source.
     assert!(resolver
         .session(
-            &fixture.state.play_sessions,
+            &fixture.state.playback_registry,
             &fixture.aggregate,
             None,
             "viewer",
@@ -608,7 +608,7 @@ async fn shared_resolution_keeps_implicit_ambiguity_and_explicit_binding_conflic
         .is_none());
     let binding = resolver
         .session(
-            &fixture.state.play_sessions,
+            &fixture.state.playback_registry,
             &fixture.aggregate,
             Some("player-0"),
             "viewer",
@@ -654,7 +654,7 @@ async fn shared_resolution_keeps_implicit_ambiguity_and_explicit_binding_conflic
     assert!(matches!(
         resolver
             .session(
-                &fixture.state.play_sessions,
+                &fixture.state.playback_registry,
                 "another-item",
                 Some("player-0"),
                 "viewer",
@@ -666,7 +666,7 @@ async fn shared_resolution_keeps_implicit_ambiguity_and_explicit_binding_conflic
     assert!(matches!(
         resolver
             .session(
-                &fixture.state.play_sessions,
+                &fixture.state.playback_registry,
                 &fixture.aggregate,
                 Some("player-0"),
                 "another-viewer",
@@ -708,7 +708,7 @@ async fn shared_explicit_source_plan_never_falls_back_from_offline_owner() {
     }
     assert!(fixture
         .state
-        .play_sessions
+        .playback_registry
         .sessions_for_user("viewer")
         .await
         .is_empty());
@@ -728,7 +728,7 @@ async fn invalid_live_open_and_failed_refresh_do_not_commit_playback_transitions
     use crate::playback::PlaybackSession;
     let fixture = fixture().await;
     let owner = &fixture.sessions[0].1;
-    PlaybackLifecycle::new(&fixture.state.play_sessions)
+    PlaybackLifecycle::new(&fixture.state.playback_registry)
         .establish(PlaybackSession {
             session_id: "live-player".into(),
             item_id: fixture.aggregate.clone(),
@@ -739,7 +739,7 @@ async fn invalid_live_open_and_failed_refresh_do_not_commit_playback_transitions
         .await;
     let (_, revision) = fixture
         .state
-        .play_sessions
+        .playback_registry
         .resolve_report_session("live-player", "viewer")
         .await
         .unwrap()
@@ -772,7 +772,7 @@ async fn invalid_live_open_and_failed_refresh_do_not_commit_playback_transitions
             | crate::application::error::ApplicationError::InvalidUpstreamJson(_)
             | crate::application::error::ApplicationError::At { .. }
     ));
-    let lifecycle = PlaybackLifecycle::new(&fixture.state.play_sessions);
+    let lifecycle = PlaybackLifecycle::new(&fixture.state.playback_registry);
     let live_id = lifecycle
         .register_live("backend-live", "viewer", owner.id)
         .await;
@@ -804,14 +804,14 @@ async fn invalid_live_open_and_failed_refresh_do_not_commit_playback_transitions
     ));
     let binding = fixture
         .state
-        .play_sessions
+        .playback_registry
         .live_stream(&live_id, "viewer")
         .await
         .unwrap();
     assert_eq!(binding.original_id.as_str(), "backend-live");
     let (binding, current_revision) = fixture
         .state
-        .play_sessions
+        .playback_registry
         .resolve_report_session("live-player", "viewer")
         .await
         .unwrap()
@@ -827,7 +827,7 @@ async fn invalid_live_open_and_failed_refresh_do_not_commit_playback_transitions
 async fn live_open_input(fixture: &Fixture, original: &str) -> OperationRequest {
     fixture
         .state
-        .play_sessions
+        .playback_registry
         .add_session(crate::playback::PlaybackSession {
             session_id: "live-player".into(),
             item_id: fixture.aggregate.clone(),
@@ -860,24 +860,24 @@ async fn valid_live_sources_do_not_publish_when_translation_or_reconciliation_fa
                 };
                 let before = fixture
                     .state
-                    .play_sessions
+                    .playback_registry
                     .resolve_report_session("live-player", "viewer")
                     .await
                     .unwrap();
                 let abandoned = if existing == 2 {
                     let old = fixture
                         .state
-                        .play_sessions
+                        .playback_registry
                         .register_live_stream("backend-live", "viewer", server.id)
                         .await;
                     let pending = fixture
                         .state
-                        .play_sessions
+                        .playback_registry
                         .prepare_live_stream("backend-live", "viewer", server.id)
                         .await;
                     fixture
                         .state
-                        .play_sessions
+                        .playback_registry
                         .remove_live_stream(&old, "viewer")
                         .await;
                     Some(pending)
@@ -888,7 +888,7 @@ async fn valid_live_sources_do_not_publish_when_translation_or_reconciliation_fa
                     Some(
                         fixture
                             .state
-                            .play_sessions
+                            .playback_registry
                             .register_live_stream("backend-live", "viewer", server.id)
                             .await,
                     )
@@ -897,12 +897,12 @@ async fn valid_live_sources_do_not_publish_when_translation_or_reconciliation_fa
                 };
                 let plan = fixture
                     .state
-                    .play_sessions
+                    .playback_registry
                     .prepare_live_stream("backend-live", "viewer", server.id)
                     .await;
                 let other_plan = fixture
                     .state
-                    .play_sessions
+                    .playback_registry
                     .prepare_live_stream("other-live", "viewer", server.id)
                     .await;
                 let source_id = "deadbeefdeadbeefdeadbeefdeadbeef";
@@ -957,7 +957,7 @@ async fn valid_live_sources_do_not_publish_when_translation_or_reconciliation_fa
                     assert!(
                         !fixture
                             .state
-                            .play_sessions
+                            .playback_registry
                             .commit_live_streams(&[abandoned])
                             .await
                     );
@@ -966,7 +966,7 @@ async fn valid_live_sources_do_not_publish_when_translation_or_reconciliation_fa
                     assert_eq!(id, plan.virtual_id());
                     let binding = fixture
                         .state
-                        .play_sessions
+                        .playback_registry
                         .live_stream(&id, "viewer")
                         .await
                         .unwrap();
@@ -974,26 +974,26 @@ async fn valid_live_sources_do_not_publish_when_translation_or_reconciliation_fa
                 } else {
                     assert!(fixture
                         .state
-                        .play_sessions
+                        .playback_registry
                         .live_stream(plan.virtual_id(), "viewer")
                         .await
                         .is_none());
                 }
                 assert!(fixture
                     .state
-                    .play_sessions
+                    .playback_registry
                     .get_session_for_user("failed-live", "viewer")
                     .await
                     .is_none());
                 assert!(fixture
                     .state
-                    .play_sessions
+                    .playback_registry
                     .live_stream(other_plan.virtual_id(), "viewer")
                     .await
                     .is_none());
                 let after = fixture
                     .state
-                    .play_sessions
+                    .playback_registry
                     .resolve_report_session("live-player", "viewer")
                     .await
                     .unwrap();
@@ -1018,7 +1018,7 @@ async fn stale_reconciliation_drops_live_identity_with_its_unroutable_source() {
         };
         let plan = fixture
             .state
-            .play_sessions
+            .playback_registry
             .prepare_live_stream("stale-live", "viewer", fixture.sessions[0].1.id)
             .await;
         let source = "feedfeedfeedfeedfeedfeedfeedfeed";
@@ -1044,7 +1044,7 @@ async fn stale_reconciliation_drops_live_identity_with_its_unroutable_source() {
         if let Some(input) = input {
             let before = fixture
                 .state
-                .play_sessions
+                .playback_registry
                 .resolve_report_session("live-player", "viewer")
                 .await
                 .unwrap()
@@ -1060,7 +1060,7 @@ async fn stale_reconciliation_drops_live_identity_with_its_unroutable_source() {
             assert_eq!(
                 fixture
                     .state
-                    .play_sessions
+                    .playback_registry
                     .resolve_report_session("live-player", "viewer")
                     .await
                     .unwrap()
@@ -1079,7 +1079,7 @@ async fn stale_reconciliation_drops_live_identity_with_its_unroutable_source() {
         }
         assert!(fixture
             .state
-            .play_sessions
+            .playback_registry
             .live_stream(plan.virtual_id(), "viewer")
             .await
             .is_none());
@@ -1136,7 +1136,7 @@ async fn live_open_query_translates_owner_once_even_when_original_is_another_vir
     );
     let binding = fixture
         .state
-        .play_sessions
+        .playback_registry
         .live_stream(
             response["MediaSource"]["LiveStreamId"].as_str().unwrap(),
             "viewer",
@@ -1147,7 +1147,7 @@ async fn live_open_query_translates_owner_once_even_when_original_is_another_vir
     assert_eq!(
         fixture
             .state
-            .play_sessions
+            .playback_registry
             .get_session_for_user("live-player", "viewer")
             .await
             .unwrap()
@@ -1171,12 +1171,12 @@ async fn live_actions_translate_colliding_live_identity_exactly_once() {
         let server = &fixture.sessions[0].1;
         let other = fixture
             .state
-            .play_sessions
+            .playback_registry
             .register_live_stream("other-original", "viewer", server.id)
             .await;
         let owner = fixture
             .state
-            .play_sessions
+            .playback_registry
             .register_live_stream(&other, "viewer", server.id)
             .await;
         Mock::given(method("POST"))
@@ -1222,7 +1222,7 @@ async fn live_actions_translate_colliding_live_identity_exactly_once() {
         );
         assert!(fixture
             .state
-            .play_sessions
+            .playback_registry
             .live_stream(&other, "viewer")
             .await
             .is_some());
@@ -1242,7 +1242,7 @@ async fn successful_live_workflows_publish_the_exact_advertised_identity_and_url
         };
         let id = fixture
             .state
-            .play_sessions
+            .playback_registry
             .register_live_stream("stable-live", "viewer", server.id)
             .await;
         let source = json!({
@@ -1304,7 +1304,7 @@ async fn successful_live_workflows_publish_the_exact_advertised_identity_and_url
         assert_eq!(
             fixture
                 .state
-                .play_sessions
+                .playback_registry
                 .live_stream(&id, "viewer")
                 .await
                 .unwrap()

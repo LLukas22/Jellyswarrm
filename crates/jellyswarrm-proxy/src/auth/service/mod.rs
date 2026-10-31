@@ -16,7 +16,8 @@ use crate::{domain::security::generate_token, protocol::authorization::Authoriza
 use super::credentials::password_work;
 pub(crate) use super::credentials::LocalCredential;
 pub(crate) use super::models::{
-    AuthorizationSession, CredentialFormat, MappingAuth, ServerMapping, User, VirtualUserApiKey,
+    AuthorizationSession, CredentialFormat, LocalUser, MappingAuth, ServerMapping,
+    VirtualUserApiKey,
 };
 use crate::protocol::device::{is_android_tv_client, normalize_device, Device};
 #[derive(Debug, Clone)]

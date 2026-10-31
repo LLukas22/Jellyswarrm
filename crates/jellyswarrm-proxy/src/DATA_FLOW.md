@@ -6,7 +6,7 @@ The arrows show runtime handoffs, not module dependency declarations.
 
 ## Before requests arrive
 
-Startup constructs services in [app/composition.rs](app/composition.rs) and
+Startup constructs services in [startup/composition.rs](startup/composition.rs) and
 assembles the client API and management UI in [http/router.rs](http/router.rs).
 Handlers receive focused service handles from `http/state.rs`; they do not call
 back into startup to find dependencies.
@@ -70,7 +70,7 @@ Application API keys are read-only proxy credentials, not new Jellyfin tokens.
 **Code:** [token resolution](application/accounts.rs),
 [media request collection](http/preprocessing.rs),
 [stored sessions](auth/service/sessions.rs),
-[outgoing credential replacement](application/request.rs).
+[outgoing credential replacement](application/request/builder.rs).
 
 These diagrams describe mapped-user authentication. Some forwarding/media paths
 also allow backend-token passthrough; that does not authenticate a local user.

@@ -17,7 +17,7 @@ use crate::{
         merge_media_detail, normalize_detail_member, DetailMergeContext,
     },
     application::error::ApplicationError,
-    application::{context::TargetError, input::OperationRequest},
+    application::request::{context::TargetError, input::OperationRequest},
     libraries::service::VirtualLibraryResolution,
     processors::response_processor::ResponseProcessingProfile,
     protocol::url::{contains_id, ensure_query_list_value},

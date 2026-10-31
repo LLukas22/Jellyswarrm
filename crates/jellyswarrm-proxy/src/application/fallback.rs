@@ -12,11 +12,9 @@ use tracing::{debug, warn};
 use crate::{
     application::request::remap_authorization,
     application::{
-        context::AuthorizedTarget,
         error::ApplicationError,
-        input::OperationRequest,
         playback::{lifecycle::PendingPlaybackSessionUpdate, reports},
-        routing,
+        request::{context::AuthorizedTarget, input::OperationRequest, routing},
         services::MediaServices,
     },
     processors::request_analyzer::PlaybackSessionAction,
@@ -96,7 +94,7 @@ async fn forwarded_success(
 
 /// A selected, validated operation whose client IDs have not yet been encoded.
 /// Retain the untouched input for local observation after successful delivery.
-pub(crate) struct PreparedProxyOperation {
+pub(crate) struct PreparedFallback {
     input: OperationRequest,
     normalized_request: reqwest::Request,
     target: AuthorizedTarget,
@@ -107,7 +105,7 @@ pub(crate) async fn prepare(
     state: &MediaServices,
     input: OperationRequest,
     action: Option<PlaybackSessionAction>,
-) -> anyhow::Result<PreparedProxyOperation> {
+) -> anyhow::Result<PreparedFallback> {
     let mut request = input
         .original_request
         .try_clone()
@@ -187,7 +185,7 @@ pub(crate) async fn prepare(
         .await?;
     let auth = remap_authorization(context.authorization(), session.as_ref());
     let target = AuthorizedTarget::new(server, session, auth, context.access_scope().cloned())?;
-    Ok(PreparedProxyOperation {
+    Ok(PreparedFallback {
         input,
         normalized_request: request,
         target,
@@ -201,7 +199,7 @@ pub(crate) async fn prepare(
 /// through the dedicated delivery adapter.
 pub(crate) async fn forward(
     state: &MediaServices,
-    prepared: PreparedProxyOperation,
+    prepared: PreparedFallback,
     response_profile: ResponseProcessingProfile,
 ) -> Result<Response<hyper::body::Bytes>, ApplicationError> {
     if let Some(response) = update_aggregate(state, &prepared.input).await? {
@@ -211,7 +209,7 @@ pub(crate) async fn forward(
             .body(bytes.into())
             .map_err(|error| ApplicationError::Internal(error.into()));
     }
-    let PreparedProxyOperation {
+    let PreparedFallback {
         input,
         normalized_request,
         target,
@@ -326,7 +324,7 @@ pub(crate) async fn forward(
         .map_err(|error| ApplicationError::Internal(error.into()))?;
     if status.is_success() {
         if let Some(update) = pending_update {
-            update.commit(&state.play_sessions).await;
+            update.commit(&state.playback_registry).await;
         }
     }
     Ok(response)
@@ -408,9 +406,11 @@ pub(crate) async fn update_aggregate(
     }
     let mut result = None;
     for (upstream, server) in targets {
-        let mut data: Value =
-            crate::application::upstream::execute_json_request(&state.reqwest_client, upstream)
-                .await?;
+        let mut data: Value = crate::application::request::response::execute_json_request(
+            &state.reqwest_client,
+            upstream,
+        )
+        .await?;
         // Also invalidate after a partial write if a later member rejects it.
         state.catalog_snapshots.invalidate_viewer(scope.user_id());
         if result.is_none() {
@@ -444,8 +444,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        application::context::RequestContext,
-        auth::service::{AuthorizationSession, LocalCredential, User},
+        application::request::context::RequestContext,
+        auth::service::{AuthorizationSession, LocalCredential, LocalUser},
         config::{AppConfig, MediaStreamingMode},
         libraries::service::VirtualLibraryAccessScope,
         media::storage::MediaStorageService,
@@ -493,7 +493,7 @@ mod tests {
             .unwrap()
             .into(),
         );
-        let user = User {
+        let user = LocalUser {
             id: "viewer".into(),
             virtual_key: "proxy-token".into(),
             original_username: "Viewer".into(),
@@ -550,7 +550,7 @@ mod tests {
         );
         assert!(upstream.received_requests().await.unwrap().is_empty());
         assert!(state
-            .play_sessions
+            .playback_registry
             .resolve_report_session("report-session", "viewer")
             .await
             .unwrap()
@@ -564,7 +564,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert!(state
-            .play_sessions
+            .playback_registry
             .resolve_report_session("report-session", "viewer")
             .await
             .unwrap()
@@ -593,7 +593,7 @@ mod tests {
         .unwrap_err();
         assert!(matches!(error, ApplicationError::InvalidUpstreamJson(_)));
         assert!(state
-            .play_sessions
+            .playback_registry
             .resolve_report_session("report-session", "viewer")
             .await
             .unwrap()
@@ -625,7 +625,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
         let (binding, _) = state
-            .play_sessions
+            .playback_registry
             .resolve_report_session("report-session", "viewer")
             .await
             .unwrap()

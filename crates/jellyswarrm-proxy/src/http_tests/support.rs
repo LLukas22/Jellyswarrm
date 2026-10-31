@@ -1,7 +1,7 @@
 //! Real SQLite identity/session state, real production media routes, and two
 //! independently observable backends. Unmatched upstream requests return 404.
 use crate::{
-    auth::service::User,
+    auth::service::LocalUser,
     config::{AppConfig, MediaStreamingMode},
     persistence::MIGRATOR,
     protocol::authorization::Authorization,
@@ -30,8 +30,8 @@ impl Scenario {
 pub(crate) struct Fixture {
     pub(crate) pool: sqlx::SqlitePool,
     pub(crate) state: AdapterFixture,
-    pub(crate) user: User,
-    pub(crate) other: User,
+    pub(crate) user: LocalUser,
+    pub(crate) other: LocalUser,
     pub(crate) upstreams: Vec<wiremock::MockServer>,
     pub(crate) items: Vec<String>,
     pub(crate) url: String,
@@ -50,7 +50,7 @@ pub(crate) fn device(id: &str) -> Device {
         version: "1".into(),
     }
 }
-pub(crate) fn auth(user: &User, id: &str) -> String {
+pub(crate) fn auth(user: &LocalUser, id: &str) -> String {
     Authorization {
         client: "Test".into(),
         device: format!("Device {id}"),
@@ -188,7 +188,7 @@ impl Fixture {
         &self,
         method: reqwest::Method,
         path: &str,
-        user: &User,
+        user: &LocalUser,
         device: &str,
     ) -> reqwest::RequestBuilder {
         reqwest::Client::new()

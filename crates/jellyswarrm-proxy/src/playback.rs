@@ -14,7 +14,7 @@ use crate::domain::user_id::UserId;
 const PLAYBACK_SESSION_TTL: Duration = Duration::from_secs(12 * 60 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SessionRevision(uuid::Uuid);
+pub(crate) struct PlaybackRevision(uuid::Uuid);
 
 #[derive(Debug, Clone)]
 pub(crate) struct PlaybackSession {
@@ -31,7 +31,7 @@ pub(crate) struct PlaybackSession {
 #[derive(Debug, Clone)]
 pub(crate) struct RevisionedPlaybackSession {
     session: PlaybackSession,
-    revision: SessionRevision,
+    revision: PlaybackRevision,
 }
 
 impl RevisionedPlaybackSession {
@@ -39,12 +39,12 @@ impl RevisionedPlaybackSession {
         &self.session
     }
     #[cfg(test)]
-    pub(crate) fn revision(&self) -> SessionRevision {
+    pub(crate) fn revision(&self) -> PlaybackRevision {
         self.revision
     }
 
     #[cfg(test)]
-    pub(crate) fn into_parts(self) -> (PlaybackSession, SessionRevision) {
+    pub(crate) fn into_parts(self) -> (PlaybackSession, PlaybackRevision) {
         (self.session, self.revision)
     }
 }
@@ -54,12 +54,12 @@ impl From<PlaybackSession> for RevisionedPlaybackSession {
     fn from(session: PlaybackSession) -> Self {
         Self {
             session,
-            revision: SessionRevision(uuid::Uuid::new_v4()),
+            revision: PlaybackRevision(uuid::Uuid::new_v4()),
         }
     }
 }
 
-pub(crate) struct SessionStorage {
+pub(crate) struct PlaybackRegistry {
     sessions: RwLock<Vec<TrackedPlaybackSession>>,
     live_streams: RwLock<LiveStreams>,
     session_ttl: Duration,
@@ -93,23 +93,23 @@ pub(crate) struct LiveStreamBinding {
 
 struct TrackedPlaybackSession {
     session: PlaybackSession,
-    revision: SessionRevision,
+    revision: PlaybackRevision,
     updated_at: Instant,
 }
 
-impl Default for SessionStorage {
+impl Default for PlaybackRegistry {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl SessionStorage {
+impl PlaybackRegistry {
     pub(crate) fn new() -> Self {
         Self::with_session_ttl(PLAYBACK_SESSION_TTL)
     }
 
     pub(crate) fn with_session_ttl(session_ttl: Duration) -> Self {
-        SessionStorage {
+        PlaybackRegistry {
             sessions: RwLock::new(Vec::new()),
             live_streams: RwLock::new(LiveStreams::default()),
             session_ttl,
@@ -130,7 +130,7 @@ impl SessionStorage {
                 })
                 .and_then(|tracked| tracked.session.original_item_id.clone());
         }
-        let revision = SessionRevision(uuid::Uuid::new_v4());
+        let revision = PlaybackRevision(uuid::Uuid::new_v4());
 
         sessions.retain(|tracked| {
             let same_authority = tracked.session.session_id == session.session_id
@@ -294,7 +294,7 @@ impl SessionStorage {
     ) {
         let user_id = UserId::new(user_id);
         let mut sessions = self.live_sessions().await;
-        let revision = SessionRevision(uuid::Uuid::new_v4());
+        let revision = PlaybackRevision(uuid::Uuid::new_v4());
         for tracked in sessions.iter_mut().filter(|tracked| {
             tracked.session.session_id == session_id
                 && tracked.session.user_id == user_id
@@ -363,7 +363,7 @@ impl SessionStorage {
         &self,
         session_id: &str,
         user_id: &str,
-        revision: SessionRevision,
+        revision: PlaybackRevision,
     ) -> bool {
         let user_id = UserId::new(user_id);
         let mut sessions = self.live_sessions().await;
@@ -405,7 +405,7 @@ impl SessionStorage {
         &self,
         session_id: &str,
         user_id: &str,
-        revision: SessionRevision,
+        revision: PlaybackRevision,
     ) {
         let user_id = UserId::new(user_id);
         let mut sessions = self.sessions.write().await;
@@ -439,7 +439,7 @@ impl SessionStorage {
 
 // Fixture lookups by wire string; production code addresses bindings by viewer.
 #[cfg(test)]
-impl SessionStorage {
+impl PlaybackRegistry {
     pub(crate) async fn get_session(&self, session_id: &str) -> Option<PlaybackSession> {
         let sessions = self.live_sessions().await;
 
@@ -477,7 +477,7 @@ mod tests {
 
     #[tokio::test]
     async fn user_uuid_formats_share_playback_and_live_stream_bindings() {
-        let storage = SessionStorage::new();
+        let storage = PlaybackRegistry::new();
         let id = uuid::Uuid::new_v4();
         let canonical = id.simple().to_string();
         let alternate = id.hyphenated().to_string().to_uppercase();
@@ -529,7 +529,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_stream_bindings_are_viewer_scoped_and_expire() {
-        let storage = SessionStorage::with_session_ttl(Duration::from_secs(10));
+        let storage = PlaybackRegistry::with_session_ttl(Duration::from_secs(10));
         let server = ServerId::new(1);
         let alice = storage
             .register_live_stream("opaque", "alice", server)
@@ -548,7 +548,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_prepare_is_unpublished_and_does_not_refresh_existing_binding() {
-        let storage = SessionStorage::new();
+        let storage = PlaybackRegistry::new();
         let server = ServerId::new(1);
         let pending = storage.prepare_live_stream("new", "viewer", server).await;
         assert!(storage
@@ -574,7 +574,7 @@ mod tests {
 
     #[tokio::test]
     async fn successful_live_commit_prunes_expired_bindings_without_lookup() {
-        let storage = SessionStorage::with_session_ttl(Duration::from_millis(1));
+        let storage = PlaybackRegistry::with_session_ttl(Duration::from_millis(1));
         let server = ServerId::new(1);
         let expired = storage
             .register_live_stream("opaque", "viewer", server)
@@ -601,7 +601,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejected_live_commit_does_not_prune_expired_bindings_or_valid_reservations() {
-        let storage = SessionStorage::with_session_ttl(Duration::from_millis(1));
+        let storage = PlaybackRegistry::with_session_ttl(Duration::from_millis(1));
         let server = ServerId::new(1);
         storage
             .register_live_stream("expired", "viewer", server)
@@ -630,7 +630,7 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_live_preparations_share_identity_and_commit_atomically() {
-        let storage = SessionStorage::new();
+        let storage = PlaybackRegistry::new();
         let server = ServerId::new(1);
         let (first, second) = tokio::join!(
             storage.prepare_live_stream("opaque", "viewer", server),
@@ -738,7 +738,7 @@ mod tests {
                 "replacement-item",
             ),
         ] {
-            let storage = SessionStorage::new();
+            let storage = PlaybackRegistry::new();
             storage
                 .add_session(playback_session("session", "item", "user", 1))
                 .await;
@@ -861,7 +861,7 @@ mod tests {
 
     #[tokio::test]
     async fn report_lookup_distinguishes_unknown_and_other_user_sessions() {
-        let storage = SessionStorage::new();
+        let storage = PlaybackRegistry::new();
         assert!(storage
             .resolve_report_session("session", "caller")
             .await
@@ -883,7 +883,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_add_session_upserts_by_session_and_item_id() {
-        let storage = SessionStorage::new();
+        let storage = PlaybackRegistry::new();
 
         storage
             .add_session(playback_session("session-1", "item-1", "user-1", 1))
@@ -906,7 +906,7 @@ mod tests {
 
     #[tokio::test]
     async fn reused_user_session_id_has_one_server_authority() {
-        let storage = SessionStorage::new();
+        let storage = PlaybackRegistry::new();
         storage
             .add_session(playback_session("session-1", "item-1", "user-1", 1))
             .await;
@@ -930,7 +930,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_same_item_id_requires_matching_session_id() {
-        let storage = SessionStorage::new();
+        let storage = PlaybackRegistry::new();
 
         storage
             .add_session(playback_session("session-1", "shared-item", "user-1", 1))
@@ -959,7 +959,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_stale_sessions_expire() {
-        let storage = SessionStorage::with_session_ttl(Duration::from_millis(1));
+        let storage = PlaybackRegistry::with_session_ttl(Duration::from_millis(1));
 
         storage
             .add_session(playback_session("session-1", "item-1", "user-1", 1))
@@ -976,7 +976,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_add_session_prunes_stale_sessions() {
-        let storage = SessionStorage::with_session_ttl(Duration::from_millis(1));
+        let storage = PlaybackRegistry::with_session_ttl(Duration::from_millis(1));
 
         storage
             .add_session(playback_session("stale-session", "stale-item", "user-1", 1))
@@ -994,7 +994,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_remove_sessions_for_server() {
-        let storage = SessionStorage::new();
+        let storage = PlaybackRegistry::new();
 
         storage
             .add_session(playback_session("session-1", "item-1", "user-1", 1))
@@ -1011,7 +1011,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_sessions_by_item_id_returns_active_matches_newest_first() {
-        let storage = SessionStorage::new();
+        let storage = PlaybackRegistry::new();
 
         storage
             .add_session(playback_session("session-1", "shared-item", "user-1", 1))

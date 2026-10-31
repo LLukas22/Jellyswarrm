@@ -1,6 +1,6 @@
 //! Authenticate client WebSockets and manage subscriptions and bounded notification delivery.
 use crate::application::{sessions::SessionOperations, syncplay::SyncPlayOperations};
-use crate::sessions::{models::InboundMessage, transport::OUTBOUND_CAPACITY, SessionContext};
+use crate::sessions::{connections::OUTBOUND_CAPACITY, models::InboundMessage, SessionCaller};
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -18,7 +18,7 @@ use tokio::{
 pub(crate) async fn websocket(
     State(operations): State<SessionOperations>,
     State(syncplay): State<SyncPlayOperations>,
-    session: SessionContext,
+    session: SessionCaller,
     ws: WebSocketUpgrade,
 ) -> Result<Response, StatusCode> {
     Ok(ws
@@ -44,7 +44,7 @@ fn subscription_interval(data: &serde_json::Value) -> Option<(Duration, Duration
 async fn handle(
     operations: SessionOperations,
     syncplay: SyncPlayOperations,
-    session: SessionContext,
+    session: SessionCaller,
     socket: WebSocket,
 ) {
     let (mut sender, mut receiver) = socket.split();
@@ -53,7 +53,7 @@ async fn handle(
         .groups
         .register_websocket(session.session_id.clone(), tx)
         .await;
-    let transport = &operations.sessions.transport;
+    let connections = &operations.sessions.connections;
     let mut interval = tokio::time::interval(Duration::from_millis(250));
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut subscription: Option<(Instant, Duration)> = None;
@@ -63,18 +63,18 @@ async fn handle(
         tokio::select! {
             outbound = rx.recv() => {
                 let Some(text) = outbound else { break; };
-                if !transport.is_current(&session.session_id, generation) { break; }
+                if !connections.is_current(&session.session_id, generation) { break; }
                 if !tokio::time::timeout(Duration::from_secs(10), sender.send(Message::Text(text.into()))).await.is_ok_and(|r| r.is_ok()) { break; }
             }
             inbound = receiver.next() => {
                 let Some(Ok(inbound)) = inbound else { break; };
-                if !transport.is_current(&session.session_id, generation) { break; }
+                if !connections.is_current(&session.session_id, generation) { break; }
                 last_inbound = Instant::now();
                 operations.sessions.touch(&session.session_id).await;
                 match inbound {
                     Message::Text(text) => if let Ok(message) = serde_json::from_str::<InboundMessage>(&text) {
                         match message.message_type.to_ascii_lowercase().as_str() {
-                            "keepalive" => { let _ = transport.send(&session.session_id, "KeepAlive", &serde_json::Value::Null); }
+                            "keepalive" => { let _ = connections.send(&session.session_id, "KeepAlive", &serde_json::Value::Null); }
                             "sessionsstart" => if let Some((delay, period)) = subscription_interval(&message.data) { subscription = Some((Instant::now() + delay, period)); },
                             "sessionsstop" => subscription = None,
                             _ => {}
@@ -88,7 +88,7 @@ async fn handle(
                 }
             }
             _ = interval.tick() => {
-                if !transport.is_current(&session.session_id, generation) || last_inbound.elapsed() > Duration::from_secs(60) { break; }
+                if !connections.is_current(&session.session_id, generation) || last_inbound.elapsed() > Duration::from_secs(60) { break; }
                 if auth_check.elapsed() >= Duration::from_secs(15) {
                     let Some(current) = operations.sessions.get(&session.session_id).await else { break; };
                     if !matches!(operations.valid_session(&current).await, Ok(true)) { break; }
@@ -97,7 +97,7 @@ async fn handle(
                 if let Some((next, period)) = subscription {
                     if Instant::now() >= next {
                         match operations.snapshots(&session.user.id).await {
-                            Ok(sessions) => if transport.send(&session.session_id, "Sessions", &sessions).is_err() { break; },
+                            Ok(sessions) => if connections.send(&session.session_id, "Sessions", &sessions).is_err() { break; },
                             Err(_) => break,
                         }
                         subscription = Some((Instant::now() + period, period));

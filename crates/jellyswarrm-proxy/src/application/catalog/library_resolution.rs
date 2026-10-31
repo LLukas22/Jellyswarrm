@@ -11,7 +11,7 @@ use tracing::{debug, error};
 
 use crate::application::services::MediaServices;
 use crate::{
-    application::input::OperationRequest,
+    application::request::input::OperationRequest,
     auth::service::AuthorizationSession,
     libraries::service::{normalize_library_id, LibraryGrouping, VirtualLibraryResolution},
     media::scope::{MediaCatalogScope, MediaScopeKind},

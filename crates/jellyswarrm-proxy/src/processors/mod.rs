@@ -1,5 +1,5 @@
 //! Translate request/response JSON fields and URLs through the shared proxy processor pipeline.
-mod delivery;
+mod delivery_urls;
 pub(crate) mod field_matcher;
 mod json_processor;
 pub(crate) mod request_analyzer;

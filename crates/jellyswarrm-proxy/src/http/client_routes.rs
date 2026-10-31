@@ -3,7 +3,7 @@
 //! workflow, and renders the result; status policy lives in `http::error`.
 use super::{
     extractors::{CatalogInput, LiveInput, OperationInput},
-    proxy::proxy_handler,
+    fallback::fallback_handler,
     quick_connect,
     state::AppState,
 };
@@ -93,7 +93,7 @@ pub(crate) fn router() -> Router<AppState> {
             .route("/Studios", get(all_servers))
             .nest("/Videos", Router::new()
                 .route("/{item_id}/AdditionalParts", get(item_list))
-                .route("/{stream_id}/Trickplay/{*path}", get(proxy_handler))
+                .route("/{stream_id}/Trickplay/{*path}", get(fallback_handler))
                 .route("/{item_id}/stream", get(stream))
                 .route("/{item_id}/stream.mkv", get(stream))
                 .route("/{item_id}/stream.mp4", get(stream))
@@ -114,7 +114,7 @@ pub(crate) fn router() -> Router<AppState> {
 
 // Shared with HTTP integration tests so mutations exercise the production route.
 pub(crate) fn item_detail_routes() -> MethodRouter<AppState> {
-    get(item).post(proxy_handler).delete(proxy_handler)
+    get(item).post(fallback_handler).delete(fallback_handler)
 }
 
 type JsonResult<T = Value> = Result<Json<T>, ApplicationError>;

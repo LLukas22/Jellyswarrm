@@ -29,7 +29,7 @@ pub(crate) enum ApplicationError {
     RequestBody(anyhow::Error),
     PlaylistResponse(crate::processors::response_processor::PlaylistResponseError),
     PlaybackResolution(super::playback::target::ResolutionError),
-    TargetSelection(super::context::TargetError),
+    TargetSelection(super::request::context::TargetError),
     At {
         stage: FailureStage,
         cause: Box<ApplicationError>,
@@ -94,7 +94,7 @@ impl From<crate::processors::JsonBodyError> for ApplicationError {
 /// Request construction failures are routing failures; storage causes stay internal.
 impl From<crate::application::request::UpstreamBuildError> for ApplicationError {
     fn from(error: crate::application::request::UpstreamBuildError) -> Self {
-        super::input::routing_error(error.0)
+        super::request::input::routing_error(error.0)
     }
 }
 
@@ -138,7 +138,7 @@ impl From<crate::processors::ProcessingError> for ApplicationError {
     fn from(error: crate::processors::ProcessingError) -> Self {
         use crate::processors::ProcessingError;
         match error {
-            ProcessingError::RequestBody(error) => super::input::request_body_error(error),
+            ProcessingError::RequestBody(error) => super::request::input::request_body_error(error),
             ProcessingError::Response(error) => Self::Internal(error),
             ProcessingError::Playlist(error) => Self::PlaylistResponse(error),
             ProcessingError::JsonBody(error) => error.into(),

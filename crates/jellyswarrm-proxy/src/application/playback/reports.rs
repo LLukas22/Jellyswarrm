@@ -8,7 +8,7 @@ use crate::{
     auth::service::AuthorizationSession,
     libraries::service::VirtualLibraryAccessScope,
     media::storage::{MediaMapping, MediaStorageService},
-    playback::SessionStorage,
+    playback::PlaybackRegistry,
     processors::request_analyzer::RequestBodyAnalysisResult,
     servers::storage::Server,
 };
@@ -92,12 +92,15 @@ pub(crate) async fn resolve_member(
 /// Unrelated requests return `None`; invalid cancellation requests remain errors.
 pub(crate) async fn resolve_cancellation(
     sessions: &Option<Vec<(AuthorizationSession, Server)>>,
-    play_sessions: &SessionStorage,
+    playback_registry: &PlaybackRegistry,
     request: &reqwest::Request,
     path: &[String],
     access_scope: Option<&VirtualLibraryAccessScope>,
-) -> std::result::Result<Option<ResolvedReportTarget>, crate::application::routing::RoutingError> {
-    use crate::application::routing::RoutingError;
+) -> std::result::Result<
+    Option<ResolvedReportTarget>,
+    crate::application::request::routing::RoutingError,
+> {
+    use crate::application::request::routing::RoutingError;
     if request.method() != reqwest::Method::DELETE
         || !matches!(path, [videos, action] if videos.eq_ignore_ascii_case("Videos") && action.eq_ignore_ascii_case("ActiveEncodings"))
     {
@@ -123,7 +126,7 @@ pub(crate) async fn resolve_cancellation(
         )));
     }
     let binding = super::target::owned_session(
-        play_sessions,
+        playback_registry,
         &session_id.as_str().into(),
         &scope.user_id().into(),
     )
@@ -268,7 +271,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancellation_preserves_validation_and_unavailable_owner_errors() {
-        let storage = SessionStorage::new();
+        let storage = PlaybackRegistry::new();
         let id = ServerId::new(1);
         storage.add_session(binding(id, "item")).await;
         let scope = VirtualLibraryAccessScope::new("viewer", [id]);
@@ -293,7 +296,8 @@ mod tests {
             let error = resolve_cancellation(&None, &storage, &request, &path, Some(&scope))
                 .await
                 .unwrap_err();
-            let crate::application::routing::RoutingError::InvalidSelection(cause) = error else {
+            let crate::application::request::routing::RoutingError::InvalidSelection(cause) = error
+            else {
                 panic!("expected invalid selection, got {error:?}");
             };
             assert_eq!(cause.to_string(), expected);
@@ -309,7 +313,7 @@ mod tests {
             .unwrap_err();
         assert!(matches!(
             error,
-            crate::application::routing::RoutingError::UnavailableOwner
+            crate::application::request::routing::RoutingError::UnavailableOwner
         ));
         let foreign = VirtualLibraryAccessScope::new("other-viewer", [id]);
         assert!(

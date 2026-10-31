@@ -11,10 +11,10 @@ All module paths below are relative to `src/`.
 
 | Module | Purpose |
 |---|---|
-| `app/` | Starts the process: loads configuration, constructs services, assembles both routers and owns background tasks and shutdown. |
+| `startup/` | Starts the process: loads configuration, constructs services, assembles both routers and owns background tasks and shutdown. |
 | `http/` | Handles the client API, authentication extraction, WebSocket connections, embedded web assets and HTTP responses. `http/state.rs` holds the focused service handles handlers need. |
 | `ui/` | Serves the management pages, forms and UI login. It is separate from the client API because its presentation and authentication needs differ. |
-| `application/` | Coordinates catalog, playback, account and administration operations. It decides which backends a caller may use and combines the services needed to complete a request. |
+| `application/` | Coordinates catalog, playback, account and administration operations. It decides which backends a caller may use and combines the services needed to complete a request. Steps every workflow shares (caller context, backend routing, upstream request building) live in `application/request/`; server and library administration in `application/admin/`. |
 
 `main.rs` supplies the Tokio runtime and calls the library's only public entry
 point, `run()`. Startup wires the modules together; request handling never calls

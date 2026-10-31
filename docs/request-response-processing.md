@@ -19,7 +19,7 @@ flowchart TD
     A[Incoming Axum request] --> B{Route handler type}
 
     B -->|Routed handler| C[OperationInput / PlaybackInput / CatalogInput / LiveInput]
-    B -->|Catch-all proxy_handler| D[Static asset check]
+    B -->|Catch-all fallback_handler| D[Static asset check]
     D -->|Asset found| E[Return asset]
     D -->|No asset| F[Incoming preprocessing]
     C --> F
@@ -113,7 +113,7 @@ flowchart TD
 - `http/preprocessing.rs`: authentication/device identity, session lookup, body analysis, HTTP conversion, and playback-report recognition.
 - `application/routing.rs` and `application/playback/`: authorized backend selection and playback ownership/lifecycle decisions.
 - `application/request.rs`: outgoing URL, credential and header translation after backend selection.
-- `http/proxy.rs` and `http/assets.rs`: fallback forwarding and embedded web-asset serving.
+- `http/fallback.rs` and `http/assets.rs`: fallback forwarding and embedded web-asset serving.
 - `processors/url_processor.rs`: all path/query URL rewriting for client-to-server request URLs, server-to-client delivery URLs, and request server detection.
 - `processors/request_analyzer.rs`: scans incoming JSON bodies for media IDs, user IDs, and session IDs that help pick the upstream server/session.
 - `processors/request_processor.rs`: rewrites JSON request body IDs from Jellyswarrm virtual IDs to upstream Jellyfin IDs.

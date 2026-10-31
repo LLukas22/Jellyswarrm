@@ -5,7 +5,7 @@ use crate::{
     domain::ids::ServerId,
     media::storage::{MediaStorageService, MediaVersionSourceObservation},
     models::MediaSource,
-    playback::{PlaybackSession, PreparedLiveStream, RevisionedPlaybackSession, SessionStorage},
+    playback::{PlaybackRegistry, PlaybackSession, PreparedLiveStream, RevisionedPlaybackSession},
     processors::request_analyzer::{PlaybackSessionAction, RequestBodyAnalysisResult},
     servers::storage::Server,
 };
@@ -13,7 +13,7 @@ use crate::{
 /// The sole application owner of local binding writes. Call only at the
 /// operation's documented commit point, never during target planning.
 pub(crate) struct PlaybackLifecycle<'a> {
-    sessions: &'a SessionStorage,
+    sessions: &'a PlaybackRegistry,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -21,7 +21,7 @@ pub(crate) struct PlaybackLifecycle<'a> {
 pub(crate) struct InvalidatedReservation;
 
 impl<'a> PlaybackLifecycle<'a> {
-    pub(crate) fn new(sessions: &'a SessionStorage) -> Self {
+    pub(crate) fn new(sessions: &'a PlaybackRegistry) -> Self {
         Self { sessions }
     }
 
@@ -126,7 +126,7 @@ mod reservation_tests {
 
     #[tokio::test]
     async fn live_commit_reports_invalidation_without_consuming_shared_reservations() {
-        let storage = SessionStorage::new();
+        let storage = PlaybackRegistry::new();
         let lifecycle = PlaybackLifecycle::new(&storage);
         let first = storage
             .prepare_live_stream("backend-live", "viewer", ServerId::new(1))
@@ -185,7 +185,7 @@ impl PendingPlaybackSessionUpdate {
 
     /// Retains revision fencing: a delayed report cannot refresh or remove a
     /// replacement session. Every refresh/remove carries a storage-issued revision.
-    pub(crate) async fn commit(self, sessions: &SessionStorage) {
+    pub(crate) async fn commit(self, sessions: &PlaybackRegistry) {
         match self {
             Self::Start(session) => PlaybackLifecycle::new(sessions).establish(session).await,
             Self::Refresh(binding) => {
@@ -281,7 +281,7 @@ mod tests {
 
     #[tokio::test]
     async fn refresh_and_remove_require_a_revisioned_lookup_and_commit_current_binding() {
-        let storage = SessionStorage::new();
+        let storage = PlaybackRegistry::new();
         let mut analysis = RequestBodyAnalysisResult {
             requested_play_session_id: Some("player".into()),
             requested_play_item_id: Some("item".into()),
@@ -348,7 +348,7 @@ mod tests {
 
     #[tokio::test]
     async fn planned_report_cannot_remove_replacement_binding() {
-        let storage = SessionStorage::new();
+        let storage = PlaybackRegistry::new();
         storage.add_session(session("old")).await;
         let old = storage
             .resolve_report_session("player", "viewer")
@@ -384,7 +384,7 @@ mod tests {
 
     #[tokio::test]
     async fn planned_refresh_cannot_touch_replacement_revision() {
-        let storage = SessionStorage::new();
+        let storage = PlaybackRegistry::new();
         storage.add_session(session("old")).await;
         let old = storage
             .resolve_report_session("player", "viewer")
@@ -414,7 +414,7 @@ mod tests {
 
     #[tokio::test]
     async fn planning_start_does_not_publish_binding_before_commit() {
-        let storage = SessionStorage::new();
+        let storage = PlaybackRegistry::new();
         let analysis = RequestBodyAnalysisResult {
             requested_play_session_id: Some("player".into()),
             requested_play_item_id: Some("item".into()),

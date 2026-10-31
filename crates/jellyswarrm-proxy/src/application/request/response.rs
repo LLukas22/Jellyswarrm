@@ -1,6 +1,6 @@
 //! Typed workflow decoding of upstream JSON documents. The execution contract
 //! belongs to upstream; it must never depend on this module.
-use super::error::ApplicationError;
+use crate::application::error::ApplicationError;
 use crate::upstream::json;
 
 pub(crate) fn response_json_to_payload<T: serde::de::DeserializeOwned>(

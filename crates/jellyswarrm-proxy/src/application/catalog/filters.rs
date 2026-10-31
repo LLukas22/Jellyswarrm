@@ -8,7 +8,8 @@ use super::{
 };
 use crate::application::services::MediaServices;
 use crate::{
-    application::input::OperationRequest, processors::response_processor::ResponseProcessingProfile,
+    application::request::input::OperationRequest,
+    processors::response_processor::ResponseProcessingProfile,
 };
 
 /// Facet IDs remain source-owned. Partition OR lists for each backend instead
@@ -81,7 +82,7 @@ pub(crate) async fn get_filters(
             return Ok(json!({"Genres":[],"Tags":[],"Years":[],"OfficialRatings":[]}))
         }
         CatalogPlan::SingleServer => {
-            let (server, session, _) = crate::application::routing::resolve_server(
+            let (server, session, _) = crate::application::request::routing::resolve_server(
                 &preprocessed.context.backends().sessions,
                 &preprocessed.body_analysis,
                 state,

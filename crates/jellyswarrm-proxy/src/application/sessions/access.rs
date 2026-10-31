@@ -2,7 +2,7 @@
 use std::sync::Arc;
 
 use crate::{
-    application::url_selection::UrlSelection, auth::UserAuthorizationService,
+    application::request::selection::UrlSelection, auth::UserAuthorizationService,
     libraries::service::VirtualLibraryAccessScope, media::MediaStorageService,
 };
 

@@ -347,9 +347,9 @@ pub(crate) async fn add_server_admin(
 }
 
 fn server_credential_error(
-    error: crate::application::server_admin::ServerCredentialError,
+    error: crate::application::admin::servers::ServerCredentialError,
 ) -> Response {
-    use crate::application::server_admin::ServerCredentialError;
+    use crate::application::admin::servers::ServerCredentialError;
     // Keep upstream failure details out of HTML (and credentials out of logs).
     let (status, message) = match error {
         ServerCredentialError::NotFound => (StatusCode::NOT_FOUND, "Server not found"),

@@ -84,7 +84,7 @@ async fn active_opened_source_survives_detail_refresh_and_stop_releases_it() {
     let progress = f.request(reqwest::Method::POST,"/Sessions/Playing/Progress",&f.user,"tv")
         .json(&json!({"ItemId":aggregate,"MediaSourceId":source_id,"PlaySessionId":"web-1","PositionTicks":100})).send().await.unwrap();
     assert_eq!(progress.status(), StatusCode::NO_CONTENT);
-    f.state.play_sessions.remove_session("web-1").await;
+    f.state.playback_registry.remove_session("web-1").await;
     catalog(&f, &format!("/Items/{aggregate}")).await;
     let group = f
         .state
@@ -107,7 +107,7 @@ async fn live_actions_follow_owner_and_close_only_releases_on_success() {
     let (f, _, source) = open_dynamic_source().await;
     let id = source["LiveStreamId"].as_str().unwrap();
     // Stop reports can precede close; the live resource has its own lifetime.
-    f.state.play_sessions.remove_session("web-1").await;
+    f.state.playback_registry.remove_session("web-1").await;
     Mock::given(method("POST"))
         .and(path("/LiveStreams/MediaInfo"))
         .respond_with(|request: &wiremock::Request| {
@@ -172,7 +172,7 @@ async fn live_actions_follow_owner_and_close_only_releases_on_success() {
     );
     assert!(f
         .state
-        .play_sessions
+        .playback_registry
         .live_stream(id, &f.user.id)
         .await
         .is_none());

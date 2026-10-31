@@ -4,7 +4,7 @@ use super::{
     models::*,
     service::{SyncPlayService, SyncPlayState},
 };
-use crate::sessions::SessionContext;
+use crate::sessions::SessionCaller;
 use chrono::{DateTime, Duration, Utc};
 use std::collections::HashSet;
 use uuid::Uuid;
@@ -12,7 +12,7 @@ use uuid::Uuid;
 impl SyncPlayService {
     pub(crate) async fn set_playlist_item(
         &self,
-        session: &SessionContext,
+        session: &SessionCaller,
         payload: SetPlaylistItemRequestDto,
     ) {
         self.with_group_for_session(session, |group, state| {
@@ -35,7 +35,7 @@ impl SyncPlayService {
 
     pub(crate) async fn remove_from_playlist(
         &self,
-        session: &SessionContext,
+        session: &SessionCaller,
         payload: RemoveFromPlaylistRequestDto,
     ) {
         self.with_group_for_session(session, |group, state| {
@@ -80,7 +80,7 @@ impl SyncPlayService {
 
     pub(crate) async fn move_playlist_item(
         &self,
-        session: &SessionContext,
+        session: &SessionCaller,
         payload: MovePlaylistItemRequestDto,
     ) {
         self.with_group_for_session(session, |group, state| {
@@ -110,7 +110,7 @@ impl SyncPlayService {
         .await;
     }
 
-    pub(crate) async fn unpause(&self, session: &SessionContext) {
+    pub(crate) async fn unpause(&self, session: &SessionCaller) {
         self.with_group_for_session(session, |group, state| {
             let delay = group.ping_delay_ms();
             group.state = GroupStateType::Playing;
@@ -130,7 +130,7 @@ impl SyncPlayService {
         .await;
     }
 
-    pub(crate) async fn pause(&self, session: &SessionContext) {
+    pub(crate) async fn pause(&self, session: &SessionCaller) {
         self.with_group_for_session(session, |group, state| {
             let position = group.freeze_at_estimated_position(Utc::now());
             group.state = GroupStateType::Paused;
@@ -144,7 +144,7 @@ impl SyncPlayService {
         .await;
     }
 
-    pub(crate) async fn stop(&self, session: &SessionContext) {
+    pub(crate) async fn stop(&self, session: &SessionCaller) {
         self.with_group_for_session(session, |group, state| {
             reset_playback(group);
             group.touch();
@@ -154,7 +154,7 @@ impl SyncPlayService {
         .await;
     }
 
-    pub(crate) async fn seek(&self, session: &SessionContext, payload: SeekRequestDto) {
+    pub(crate) async fn seek(&self, session: &SessionCaller, payload: SeekRequestDto) {
         self.with_group_for_session(session, |group, state| {
             group.set_position(payload.position_ticks.max(0), Utc::now());
             group.pending_position_ticks = Some(group.start_position_ticks);
@@ -171,7 +171,7 @@ impl SyncPlayService {
         .await;
     }
 
-    pub(crate) async fn buffering(&self, session: &SessionContext, payload: BufferRequestDto) {
+    pub(crate) async fn buffering(&self, session: &SessionCaller, payload: BufferRequestDto) {
         self.with_group_for_session(session, |group, state| {
             let when = sanitize_client_when(payload.when);
             if correct_playlist(group, state, payload.playlist_item_id, &session.session_id) {
@@ -212,7 +212,7 @@ impl SyncPlayService {
         .await;
     }
 
-    pub(crate) async fn ready(&self, session: &SessionContext, payload: BufferRequestDto) {
+    pub(crate) async fn ready(&self, session: &SessionCaller, payload: BufferRequestDto) {
         self.with_group_for_session(session, |group, state| {
             let when = sanitize_client_when(payload.when);
             if correct_playlist(group, state, payload.playlist_item_id, &session.session_id) {
@@ -241,7 +241,7 @@ impl SyncPlayService {
 
     pub(crate) async fn set_ignore_wait(
         &self,
-        session: &SessionContext,
+        session: &SessionCaller,
         payload: IgnoreWaitRequestDto,
     ) {
         self.with_group_for_session(session, |group, state| {
@@ -254,7 +254,7 @@ impl SyncPlayService {
         .await;
     }
 
-    pub(crate) async fn next_item(&self, session: &SessionContext, item: Option<Uuid>) {
+    pub(crate) async fn next_item(&self, session: &SessionCaller, item: Option<Uuid>) {
         self.with_group_for_session(session, |group, state| {
             navigate(
                 group,
@@ -268,7 +268,7 @@ impl SyncPlayService {
         .await;
     }
 
-    pub(crate) async fn previous_item(&self, session: &SessionContext, item: Option<Uuid>) {
+    pub(crate) async fn previous_item(&self, session: &SessionCaller, item: Option<Uuid>) {
         self.with_group_for_session(session, |group, state| {
             navigate(
                 group,
@@ -284,7 +284,7 @@ impl SyncPlayService {
 
     pub(crate) async fn set_repeat_mode(
         &self,
-        session: &SessionContext,
+        session: &SessionCaller,
         payload: SetRepeatModeRequestDto,
     ) {
         self.with_group_for_session(session, |group, state| {
@@ -297,7 +297,7 @@ impl SyncPlayService {
 
     pub(crate) async fn set_shuffle_mode(
         &self,
-        session: &SessionContext,
+        session: &SessionCaller,
         payload: SetShuffleModeRequestDto,
     ) {
         self.with_group_for_session(session, |group, state| {
@@ -308,7 +308,7 @@ impl SyncPlayService {
         .await;
     }
 
-    pub(crate) async fn ping(&self, session: &SessionContext, payload: PingRequestDto) {
+    pub(crate) async fn ping(&self, session: &SessionCaller, payload: PingRequestDto) {
         self.with_group_for_session(session, |group, _| {
             if let Some(member) = group.participants.get_mut(&session.session_id) {
                 member.ping = payload.ping.max(0.0).round() as u64;
@@ -391,15 +391,15 @@ fn navigate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::service::{LocalCredential, User};
+    use crate::auth::service::{LocalCredential, LocalUser};
     use serde_json::Value;
     use tokio::sync::mpsc;
 
-    async fn fixture() -> (SyncPlayService, SessionContext, mpsc::Receiver<String>) {
+    async fn fixture() -> (SyncPlayService, SessionCaller, mpsc::Receiver<String>) {
         let service = SyncPlayService::new();
-        let session = SessionContext {
+        let session = SessionCaller {
             session_id: "caller".into(),
-            user: User {
+            user: LocalUser {
                 id: "user".into(),
                 virtual_key: "key".into(),
                 original_username: "User".into(),
@@ -433,7 +433,7 @@ mod tests {
         (service, session, rx)
     }
 
-    async fn snapshot(service: &SyncPlayService, session: &SessionContext) -> SyncPlayGroup {
+    async fn snapshot(service: &SyncPlayService, session: &SessionCaller) -> SyncPlayGroup {
         service
             .get_group_snapshot_for_session(&session.session_id)
             .await

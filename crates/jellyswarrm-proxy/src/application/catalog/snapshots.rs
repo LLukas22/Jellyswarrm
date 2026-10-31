@@ -5,7 +5,9 @@ use super::{
 };
 use crate::application::error::ApplicationError;
 use crate::application::services::MediaServices;
-use crate::{application::input::OperationRequest, protocol::identity::JellyfinAuthorization};
+use crate::{
+    application::request::input::OperationRequest, protocol::identity::JellyfinAuthorization,
+};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
@@ -319,7 +321,7 @@ mod materialization_tests {
         request
             .headers_mut()
             .insert("X-Emby-Token", token.parse().unwrap());
-        let context = crate::application::context::RequestContext::new(
+        let context = crate::application::request::context::RequestContext::new(
             &request,
             None,
             None,

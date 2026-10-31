@@ -5,9 +5,11 @@
 use crate::{
     application::request::remap_authorization,
     application::{
-        context::{AuthorizedTarget, RequestContext, TargetError},
         error::ApplicationError,
-        url_selection::UrlSelection,
+        request::{
+            context::{AuthorizedTarget, RequestContext, TargetError},
+            selection::UrlSelection,
+        },
     },
     processors::request_analyzer::RequestBodyAnalysisResult,
 };
@@ -57,16 +59,15 @@ impl OperationRequest {
         &self,
         state: &crate::application::services::MediaServices,
     ) -> Result<ResolvedTarget, ApplicationError> {
-        let (server, session, server_matched_request) =
-            crate::application::routing::resolve_server(
-                &self.context.backends().sessions,
-                &self.body_analysis,
-                state,
-                &self.original_request,
-                self.context.access_scope(),
-            )
-            .await
-            .map_err(ApplicationError::from)?;
+        let (server, session, server_matched_request) = super::routing::resolve_server(
+            &self.context.backends().sessions,
+            &self.body_analysis,
+            state,
+            &self.original_request,
+            self.context.access_scope(),
+        )
+        .await
+        .map_err(ApplicationError::from)?;
         state
             .processors
             .url_processor
@@ -105,9 +106,9 @@ pub(crate) fn routing_error(error: anyhow::Error) -> ApplicationError {
                 .downcast::<sqlx::Error>()
                 .expect("checked storage cause"),
         )
-    } else if error.is::<crate::application::routing::RoutingError>() {
+    } else if error.is::<super::routing::RoutingError>() {
         error
-            .downcast::<crate::application::routing::RoutingError>()
+            .downcast::<super::routing::RoutingError>()
             .expect("checked routing cause")
             .into()
     } else if error.is::<TargetError>() {

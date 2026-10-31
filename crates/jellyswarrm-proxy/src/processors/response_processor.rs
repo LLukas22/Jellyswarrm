@@ -8,7 +8,7 @@ use crate::{
     auth::UserAuthorizationService,
     media::MediaStorageService,
     processors::{
-        delivery::DeliveryUrlTranslator,
+        delivery_urls::DeliveryUrlTranslator,
         field_matcher::{
             DELIVERY_URL_FIELDS, DISABLED_BOOL_FIELDS, MEDIA_ID_ARRAY_FIELDS,
             MEDIA_ID_LIST_PARENT_FIELDS, MEDIA_ID_MAP_KEY_FIELDS, MEDIA_ID_MAP_VALUE_FIELDS,

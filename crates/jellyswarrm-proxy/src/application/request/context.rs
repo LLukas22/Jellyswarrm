@@ -2,7 +2,7 @@
 //!
 //! Credentials deliberately have no derived Debug/Serialize implementation.
 use crate::{
-    auth::service::{AuthorizationSession, User},
+    auth::service::{AuthorizationSession, LocalUser},
     domain::ids::ServerId,
     libraries::service::VirtualLibraryAccessScope,
     protocol::device::Device,
@@ -25,7 +25,7 @@ pub(crate) struct BackendAccessSnapshot {
 pub(crate) struct RequestContext {
     identity: CallerIdentity,
     /// Anonymous requests can retain legacy user metadata without authenticating.
-    legacy_user: Option<User>,
+    legacy_user: Option<LocalUser>,
     device: Option<Device>,
     access_scope: Option<VirtualLibraryAccessScope>,
     backends: BackendAccessSnapshot,
@@ -37,7 +37,7 @@ enum CallerIdentity {
         authorization: JellyfinAuthorization,
     },
     ProxyUser {
-        user: User,
+        user: LocalUser,
         authorization: JellyfinAuthorization,
     },
 }
@@ -46,7 +46,7 @@ impl RequestContext {
     pub(crate) fn new(
         request: &reqwest::Request,
         auth: Option<JellyfinAuthorization>,
-        user: Option<User>,
+        user: Option<LocalUser>,
         sessions: Option<Vec<(AuthorizationSession, Server)>>,
         access_scope: Option<VirtualLibraryAccessScope>,
     ) -> Self {
@@ -83,7 +83,7 @@ impl RequestContext {
 
     /// Includes legacy metadata. Use principal()/authorization() to establish
     /// authentication, never the presence of this metadata alone.
-    pub(crate) fn user(&self) -> Option<&User> {
+    pub(crate) fn user(&self) -> Option<&LocalUser> {
         match &self.identity {
             CallerIdentity::ProxyUser { user, .. } => Some(user),
             _ => self.legacy_user.as_ref(),
@@ -114,7 +114,7 @@ impl RequestContext {
         &self,
         url: &url::Url,
         analysis: Option<&crate::processors::request_analyzer::RequestBodyAnalysisResult>,
-        urls: &crate::application::url_selection::UrlSelection,
+        urls: &super::selection::UrlSelection,
     ) -> Result<(), super::routing::RoutingError> {
         use crate::protocol::routes::{MEDIA_ID_PATH_TAGS, MEDIA_ID_QUERY_TAGS};
         if let Some(scope) = &self.access_scope {
@@ -161,7 +161,7 @@ impl RequestContext {
         AuthorizedTarget::new(
             server.clone(),
             Some(session.clone()),
-            crate::application::request::remap_authorization(self.authorization(), Some(session)),
+            super::remap_authorization(self.authorization(), Some(session)),
             self.access_scope.clone(),
         )
     }
@@ -231,8 +231,8 @@ mod tests {
     use super::*;
     use crate::{auth::service::LocalCredential, config::MediaStreamingMode};
 
-    fn user() -> User {
-        User {
+    fn user() -> LocalUser {
+        LocalUser {
             id: "viewer".into(),
             virtual_key: "proxy-token".into(),
             original_username: "Viewer".into(),
