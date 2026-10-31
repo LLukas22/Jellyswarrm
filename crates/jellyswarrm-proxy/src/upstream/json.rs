@@ -1,4 +1,4 @@
-//! Jellyfin JSON wire normalization and execution, without workflow error policy.
+//! Execute Jellyfin JSON requests and normalize their responses.
 
 use crate::processors::{payload_from_request, set_json_body, JsonBodyError};
 #[cfg(test)]

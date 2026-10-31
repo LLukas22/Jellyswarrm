@@ -1,4 +1,4 @@
-//! Pure Jellyfin wire conventions, independent of workflows and I/O adapters.
+//! Jellyfin wire conventions: authorization, device identity, routes and URLs.
 pub(crate) mod authorization;
 pub(crate) mod device;
 pub(crate) mod identity;

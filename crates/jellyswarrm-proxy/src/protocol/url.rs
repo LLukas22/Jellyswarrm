@@ -1,4 +1,4 @@
-//! Pure Jellyfin URL conventions for ID lookup/replacement and URL composition.
+//! Jellyfin URL conventions for ID lookup/replacement and URL composition.
 use url::Url;
 use uuid::Uuid;
 

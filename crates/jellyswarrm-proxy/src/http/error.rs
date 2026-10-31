@@ -1,5 +1,4 @@
-//! HTTP compatibility policy for typed pipeline failures. Workflow code reports
-//! a cause and stage; only this endpoint adapter chooses response status codes.
+//! Map application errors and their workflow stage to HTTP status codes.
 use crate::{
     application::{
         error::{ApplicationError, FailureStage},

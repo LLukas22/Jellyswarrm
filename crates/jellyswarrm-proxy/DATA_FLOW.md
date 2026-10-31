@@ -1,15 +1,13 @@
 # Request and data flow
 
 This guide follows authentication and client operations through the modules in
-[Proxy architecture](../ARCHITECTURE.md). All code paths are relative to `src/`.
-The arrows show runtime handoffs, not module dependency declarations.
+[Proxy architecture](ARCHITECTURE.md). All code paths are relative to `src/`.
 
 ## Before requests arrive
 
-Startup constructs services in [startup/composition.rs](startup/composition.rs) and
-assembles the client API and management UI in [http/router.rs](http/router.rs).
-Handlers receive focused service handles from `http/state.rs`; they do not call
-back into startup to find dependencies.
+Startup constructs services in [startup/composition.rs](src/startup/composition.rs) and
+assembles the client API and management UI in [http/router.rs](src/http/router.rs).
+Handlers receive their service handles from `http/state.rs`.
 
 ## Authenticating with backend servers
 
@@ -43,9 +41,9 @@ flowchart TD
 Backend session tokens are encrypted in storage. The login response substitutes
 the local user's virtual IDs and uses the proxy token as its `AccessToken`.
 
-**Code:** [login handler](http/client_routes.rs) →
-[login orchestration](application/accounts.rs) →
-[backend mapping authentication](auth/mapping_authentication.rs).
+**Code:** [login handler](src/http/client_routes.rs) →
+[login orchestration](src/application/accounts.rs) →
+[backend mapping authentication](src/auth/mapping_authentication.rs).
 
 ### Authenticating later requests
 
@@ -67,16 +65,16 @@ do not repeat password authentication on every request. A mapping defines access
 scope but does not by itself provide a usable backend session.
 Application API keys are read-only proxy credentials, not new Jellyfin tokens.
 
-**Code:** [token resolution](application/accounts.rs),
-[media request collection](http/preprocessing.rs),
-[stored sessions](auth/service/sessions.rs),
-[outgoing credential replacement](application/request/builder.rs).
+**Code:** [token resolution](src/application/accounts.rs),
+[media request collection](src/http/preprocessing.rs),
+[stored sessions](src/auth/service/sessions.rs),
+[outgoing credential replacement](src/application/request/builder.rs).
 
 These diagrams describe mapped-user authentication. Some forwarding/media paths
 also allow backend-token passthrough; that does not authenticate a local user.
 Proxy Quick Connect is an alternative client login: approval redeems existing
 mappings, registers backend sessions and returns the same proxy token
-([workflow](application/quick_connect.rs)). Management-page login is separate
+([workflow](src/application/quick_connect.rs)). Management-page login is separate
 under `ui/`.
 
 ## Browsing the catalog
@@ -99,9 +97,9 @@ flowchart TD
     Response --> Client
 ```
 
-**Code:** [HTTP handler](http/client_routes.rs) →
-[input extraction](http/extractors.rs) →
-[catalog workflow](application/catalog/mod.rs).
+**Code:** [HTTP handler](src/http/client_routes.rs) →
+[input extraction](src/http/extractors.rs) →
+[catalog workflow](src/application/catalog/mod.rs).
 
 The diagram shows a federated listing; single-owner requests can delegate to
 `application/details/`. Application combines `processors/` for translation,
@@ -130,8 +128,8 @@ flowchart TD
 Explicit source selections win over episode-server preferences. Bindings are
 published only after reconciliation and final-response validation.
 
-**Code:** [negotiation](application/playback/negotiation.rs),
-[target selection](application/playback/target.rs).
+**Code:** [negotiation](src/application/playback/negotiation.rs),
+[target selection](src/application/playback/target.rs).
 
 ### 2. Deliver the media
 
@@ -151,9 +149,9 @@ In proxy mode, HLS links are translated for subsequent proxy requests. In redire
 mode, the backend token is placed in the URL because redirects cannot forward an
 authorization header.
 
-**Code:** [delivery selection](application/playback/resources.rs),
-[bindings](playback.rs),
-[streaming and redirects](upstream/delivery.rs).
+**Code:** [delivery selection](src/application/playback/resources.rs),
+[bindings](src/playback.rs),
+[streaming and redirects](src/upstream/delivery.rs).
 
 ## Sending a remote-control command
 
@@ -172,12 +170,11 @@ flowchart TD
     Socket --> Target[Target client]
 ```
 
-**Code:** [session routes](http/sessions/routes.rs) →
-[application checks and coordination](application/sessions/mod.rs) →
-[WebSocket delivery](http/sessions/websocket.rs).
+**Code:** [session routes](src/http/sessions/routes.rs) →
+[application checks and coordination](src/application/sessions/mod.rs) →
+[WebSocket delivery](src/http/sessions/websocket.rs).
 
-Application owns cross-feature authorization; SyncPlay owns group rules;
-sessions own connection-aware queuing. Delivery failures also become HTTP errors.
+Delivery failures also become HTTP errors.
 
 Client sessions track presence and connections; playback bindings track media
 routing. Accordingly, `/Sessions/Playing`, `/Sessions/Playing/Progress` and

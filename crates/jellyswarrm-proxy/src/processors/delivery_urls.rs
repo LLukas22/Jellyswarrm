@@ -1,4 +1,4 @@
-//! Backend-to-client delivery translation. No backend selection or account access.
+//! Translate backend delivery URLs into client-facing proxy URLs.
 use std::sync::Arc;
 
 use anyhow::Result;

@@ -1,4 +1,4 @@
-//! Playback entry points, in request order. See `../../DATA_FLOW.md` for the full map.
+//! Playback entry points, in request order. See `../../../DATA_FLOW.md` for the full map.
 //!
 //! `negotiation` handles PlaybackInfo; `resources` handles subsequent media requests;
 //! `live` handles live open/refresh/close. They share target selection and lifecycle

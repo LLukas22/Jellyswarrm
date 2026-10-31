@@ -1,4 +1,4 @@
-//! Explicit startup wiring. Adapter handles own clones, never writable config.
+//! Construct services and the handler state from loaded configuration.
 use crate::{
     application::{
         self,

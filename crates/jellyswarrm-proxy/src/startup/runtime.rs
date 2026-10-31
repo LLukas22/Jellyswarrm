@@ -1,5 +1,5 @@
-//! Own permanent process tasks. Feature constructors never start these tasks;
-//! dropping the runtime also aborts them on startup/serve errors.
+//! Own permanent background tasks. Dropping the runtime aborts them on
+//! startup/serve errors.
 use tokio::task::JoinSet;
 use tower_sessions::ExpiredDeletion;
 use tower_sessions_sqlx_store::SqliteStore;

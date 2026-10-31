@@ -1,5 +1,5 @@
-//! SyncPlay access-check orchestration. Incoming adapters neither choose whose
-//! library access to check nor commit after an unchecked asynchronous gap.
+//! SyncPlay operations that check the caller's media access before changing
+//! group state.
 use std::sync::Arc;
 
 use crate::{

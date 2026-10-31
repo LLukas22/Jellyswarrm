@@ -1,4 +1,4 @@
-//! Root-level monitoring routes, independent of authentication and upstream servers.
+//! Root-level monitoring routes that need no authentication.
 use axum::{extract::State, http::StatusCode, routing::get, Router};
 use sqlx::SqlitePool;
 use std::time::Duration;

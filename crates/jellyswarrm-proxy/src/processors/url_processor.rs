@@ -1,4 +1,4 @@
-//! Target-bound URL rewriting. Backend selection belongs to application routing.
+//! Rewrite IDs and credentials in URLs for a selected backend.
 use super::delivery_urls::{relative_url_from_parts, DeliveryUrlTranslator};
 use anyhow::Result;
 use tracing::debug;

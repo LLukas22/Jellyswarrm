@@ -1,4 +1,4 @@
-//! Adapter-owned handles, wired by startup without I/O or configuration reads.
+//! Service handles for the HTTP and UI handlers, built at startup.
 use crate::{
     application::{
         accounts::AuthenticationService,

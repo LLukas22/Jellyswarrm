@@ -1,6 +1,5 @@
-//! Unselected operation input shared by every client entry point (catalog, detail,
-//! playback, live, fallback). Collecting caller context never constructs a backend
-//! request; workflows select and encode one.
+//! Operation input shared by every client entry point (catalog, detail, playback,
+//! live, fallback), before a backend is selected.
 
 use crate::{
     application::request::remap_authorization,

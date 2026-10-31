@@ -1,4 +1,4 @@
-//! Caller identity and backend availability, independent of a selected target.
+//! Caller identity, device, access scope and available backend sessions.
 //!
 //! Credentials deliberately have no derived Debug/Serialize implementation.
 use crate::{

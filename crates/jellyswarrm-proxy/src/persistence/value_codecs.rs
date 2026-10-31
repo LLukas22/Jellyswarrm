@@ -1,4 +1,4 @@
-//! SQLite representations of shared values. Domain types do not depend on SQLx.
+//! SQLite representations of shared domain values.
 use crate::domain::{
     security::{EncryptedPassword, HashedPassword, Password},
     user_id::UserId,

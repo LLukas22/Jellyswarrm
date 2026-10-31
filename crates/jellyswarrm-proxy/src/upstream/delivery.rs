@@ -1,4 +1,4 @@
-//! Target-bound redirect and streamed media delivery, independent of Axum.
+//! Redirect or stream media from a selected backend.
 
 use std::{io, pin::Pin};
 

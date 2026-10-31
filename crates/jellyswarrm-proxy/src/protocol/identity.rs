@@ -1,4 +1,4 @@
-//! Normalized caller credentials and device identity, independent of incoming adapters.
+//! Normalized caller credentials and device identity.
 use super::{authorization::Authorization, device::Device};
 use std::fmt;
 

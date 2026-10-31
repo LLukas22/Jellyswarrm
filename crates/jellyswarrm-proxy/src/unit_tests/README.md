@@ -5,8 +5,7 @@ source module includes its file with `#[cfg(test)]` and `#[path = "..."]`.
 This preserves private access, `super::` imports, and existing test filters.
 The owning modules are declared by `src/lib.rs`, so use the library test target.
 
-Owners now include `auth/service/mod.rs`, `libraries/service/mod.rs`,
-`media/storage/mod.rs`, `http/preprocessing.rs`, and `http/client_routes.rs`.
+Search for `unit_tests/` in `#[path]` attributes to find each owner.
 Paths are relative to the owning source file, not this directory. Keep these
 suites attached to their owners when splitting implementation modules; do not
 broaden visibility merely to make tests compile. Playlist contracts live in

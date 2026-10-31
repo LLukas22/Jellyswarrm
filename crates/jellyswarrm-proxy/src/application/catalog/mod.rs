@@ -2,7 +2,7 @@
 //!
 //! Flow: input → library_resolution → snapshots/fetch → media_reconciliation
 //! → postprocessing. Roots, batch lookup, and facets branch to their named modules.
-//! See `../../DATA_FLOW.md`; dependencies come from `application::services`.
+//! See `../../../DATA_FLOW.md`; dependencies come from `application::services`.
 use crate::application::details::get_item_detail;
 use crate::application::error::{ApplicationError, FailureStage};
 use tracing::debug;

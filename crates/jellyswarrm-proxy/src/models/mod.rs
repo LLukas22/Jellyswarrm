@@ -1,4 +1,4 @@
-//! Jellyfin response DTOs. Header parsing belongs to `protocol::authorization`.
+//! Jellyfin request and response DTOs.
 mod jellyfin;
 
 #[cfg(test)]

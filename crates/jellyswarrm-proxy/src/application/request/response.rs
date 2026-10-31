@@ -1,5 +1,4 @@
-//! Typed workflow decoding of upstream JSON documents. The execution contract
-//! belongs to upstream; it must never depend on this module.
+//! Decode upstream JSON documents into typed workflow results.
 use crate::application::error::ApplicationError;
 use crate::upstream::json;
 

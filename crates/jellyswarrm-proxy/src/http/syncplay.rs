@@ -1,5 +1,4 @@
-//! SyncPlay HTTP extraction, access checks, and response policy. State mutation
-//! and ordered notifications belong to named commands in the SyncPlay feature.
+//! SyncPlay HTTP handlers: extraction, access checks and responses.
 use crate::{
     application::{
         error::ApplicationError,

@@ -1,5 +1,5 @@
-//! Client identity routing and availability policy. Translation receives a
-//! selected server; only this application capability chooses among candidates.
+//! Choose the backend for client-supplied IDs, respecting access scope and
+//! server availability.
 use super::routing::RoutingError;
 use crate::{
     domain::ids::ServerId,
