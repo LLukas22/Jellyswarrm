@@ -1,5 +1,5 @@
 //! Explicit background inventory refresh. No scheduler or incoming HTTP request.
-use crate::application::services::MediaServices;
+use crate::application::media_services::MediaServices;
 use crate::{
     application::error::ApplicationError,
     auth::service::AuthorizationSession,

@@ -4,7 +4,7 @@ use super::{
     models::*,
     service::{SyncPlayService, SyncPlayState},
 };
-use crate::sessions::SessionCaller;
+use crate::client_sessions::SessionCaller;
 use chrono::{DateTime, Duration, Utc};
 use std::collections::HashSet;
 use uuid::Uuid;

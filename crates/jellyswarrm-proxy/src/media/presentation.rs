@@ -1,5 +1,5 @@
 //! Apply client-facing media presentation policies after identity translation and grouping.
-use crate::models::MediaItem;
+use crate::protocol::models::MediaItem;
 
 #[derive(Debug, Clone)]
 pub(crate) enum ItemPresentation {

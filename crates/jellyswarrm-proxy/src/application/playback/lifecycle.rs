@@ -4,10 +4,11 @@ use crate::{
     application::{details::sources::version_name, error::ApplicationError},
     domain::ids::ServerId,
     media::storage::{MediaStorageService, MediaVersionSourceObservation},
-    models::MediaSource,
     playback::{PlaybackRegistry, PlaybackSession, PreparedLiveStream, RevisionedPlaybackSession},
-    processors::request_analyzer::{PlaybackSessionAction, RequestBodyAnalysisResult},
+    protocol::models::MediaSource,
+    protocol::routes::PlaybackSessionAction,
     servers::storage::Server,
+    translation::request_analyzer::RequestBodyAnalysisResult,
 };
 
 /// The sole application owner of local binding writes. Call only at the

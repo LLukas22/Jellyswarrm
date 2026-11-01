@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use crate::{
-    application::sessions::access::MediaAccess,
-    sessions::SessionCaller,
+    application::client_sessions::access::MediaAccess,
+    client_sessions::SessionCaller,
     syncplay::{
         models::{GroupInfoDto, PlayRequestDto, QueueRequestDto, SyncPlayGroup},
         service::SyncPlayService,

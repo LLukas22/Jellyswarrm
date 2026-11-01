@@ -1,7 +1,5 @@
 //! Prepare authorized fallback requests and forward responses through the proxy workflow.
 use crate::application::error::FailureStage;
-#[cfg(test)]
-use hyper::StatusCode;
 use hyper::{
     header::{self, HeaderValue},
     Method, Response,
@@ -13,15 +11,15 @@ use crate::{
     application::request::remap_authorization,
     application::{
         error::ApplicationError,
+        media_services::MediaServices,
         playback::{lifecycle::PendingPlaybackSessionUpdate, reports},
         request::{context::AuthorizedTarget, input::OperationRequest, routing},
-        services::MediaServices,
     },
-    processors::request_analyzer::PlaybackSessionAction,
-    processors::request_processor::RequestProcessingContext,
-    processors::response_processor::ResponseProcessingProfile,
+    protocol::routes::PlaybackSessionAction,
     protocol::url::{decoded_path_segments, replace_path_id},
     servers::compare_routes,
+    translation::request_processor::RequestProcessingContext,
+    translation::response_processor::ResponseProcessingProfile,
     upstream::headers::is_hop_by_hop_header,
 };
 
@@ -44,10 +42,8 @@ async fn forwarded_success(
         return;
     };
     let path = state.remove_prefix(input.original_request.url().path());
-    let action = crate::processors::request_analyzer::playback_session_action(
-        input.original_request.method(),
-        path,
-    );
+    let action =
+        crate::protocol::routes::playback_session_action(input.original_request.method(), path);
     if let Some(action) = action {
         if let Some(report) = input
             .original_request
@@ -169,7 +165,7 @@ pub(crate) async fn prepare(
             .map(|member| member.original_media_id.as_str()),
     );
     state
-        .processors
+        .translation
         .url_processor
         .validate_container_request(
             request.url(),
@@ -238,7 +234,7 @@ pub(crate) async fn forward(
         new_auth: target.authorization().cloned(),
     };
     state
-        .processors
+        .translation
         .process_request_body(&mut request, &processing, &request_url)
         .await?;
     let response = state
@@ -450,11 +446,12 @@ mod tests {
         libraries::service::VirtualLibraryAccessScope,
         media::storage::MediaStorageService,
         persistence::MIGRATOR,
-        processors::request_analyzer::RequestBodyAnalysisResult,
         protocol::device::Device,
         servers::storage::ServerStorageService,
         test_support::MediaFixture,
+        translation::request_analyzer::RequestBodyAnalysisResult,
     };
+    use hyper::StatusCode;
 
     async fn report_fixture() -> (MediaFixture, OperationRequest, wiremock::MockServer) {
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();

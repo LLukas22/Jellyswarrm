@@ -9,8 +9,8 @@ use crate::{
     libraries::service::VirtualLibraryAccessScope,
     media::storage::{MediaMapping, MediaStorageService},
     playback::PlaybackRegistry,
-    processors::request_analyzer::RequestBodyAnalysisResult,
     servers::storage::Server,
+    translation::request_analyzer::RequestBodyAnalysisResult,
 };
 
 #[derive(Debug)]
@@ -107,7 +107,7 @@ pub(crate) async fn resolve_cancellation(
         return Ok(None);
     }
     let scope = access_scope.ok_or(RoutingError::AccessDenied)?;
-    let session_id = crate::processors::url_processor::play_session_id(request.url())
+    let session_id = crate::translation::url_processor::play_session_id(request.url())
         .map_err(RoutingError::InvalidSelection)?
         .ok_or_else(|| {
             RoutingError::InvalidSelection(anyhow!(

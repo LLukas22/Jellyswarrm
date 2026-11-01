@@ -126,5 +126,4 @@ fn server_is_allowed(
 }
 
 #[cfg(test)]
-#[path = "../../unit_tests/libraries.rs"]
 mod tests;

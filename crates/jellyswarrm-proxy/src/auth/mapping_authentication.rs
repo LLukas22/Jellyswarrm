@@ -1,7 +1,7 @@
 //! Authenticate saved backend mappings and select credentials for new client sessions.
 use crate::{
     auth::service::{LocalUser, MappingAuth, ServerMapping},
-    models::User,
+    protocol::models::User,
     servers::storage::Server,
 };
 use jellyfin_api::{ClientInfo, JellyfinClient};
@@ -31,7 +31,7 @@ impl std::fmt::Debug for MappingAuthenticationError {
 }
 
 pub(crate) struct MappingLogin {
-    pub(crate) response: crate::models::AuthenticateResponse,
+    pub(crate) response: crate::protocol::models::AuthenticateResponse,
     pub(crate) username: String,
     pub(crate) password: Option<crate::domain::security::Password>,
 }
@@ -230,7 +230,7 @@ impl MappingAuthenticator {
         server: &Server,
         mapping: &ServerMapping,
         client_info: ClientInfo,
-    ) -> Result<crate::models::AuthenticateResponse, MappingAuthenticationError> {
+    ) -> Result<crate::protocol::models::AuthenticateResponse, MappingAuthenticationError> {
         let login = self
             .authenticate_login(user, server, mapping, None, client_info)
             .await?;
@@ -265,9 +265,9 @@ impl MappingAuthenticator {
             return Ok(MappingLogin {
                 username: mapping.auth.username().to_owned(),
                 password: None,
-                response: crate::models::AuthenticateResponse {
+                response: crate::protocol::models::AuthenticateResponse {
                     server_id: remote.server_id.clone(),
-                    session_info: crate::models::SessionInfo {
+                    session_info: crate::protocol::models::SessionInfo {
                         user_id: remote.id.clone(),
                         user_name: remote.name.clone(),
                         server_id: remote.server_id.clone(),

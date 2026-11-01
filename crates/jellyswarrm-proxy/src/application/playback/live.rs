@@ -4,7 +4,7 @@
 //! playback/live binding selects the sole target before translation.
 use super::target::MediaTargetResolver;
 use crate::application::error::FailureStage;
-use crate::application::services::MediaServices;
+use crate::application::media_services::MediaServices;
 use crate::media::storage::MediaStorageService;
 use hyper::StatusCode;
 use serde_json::Value;
@@ -17,9 +17,9 @@ use crate::{
         playback::{lifecycle::record_playback_sources, response::track_play_session},
         request::input::OperationRequest,
     },
-    models::MediaSource,
-    processors::set_json_body,
-    processors::{response_processor::ResponseProcessingProfile, url_processor::play_session_id},
+    protocol::body::set_json_body,
+    protocol::models::MediaSource,
+    translation::{response_processor::ResponseProcessingProfile, url_processor::play_session_id},
 };
 
 /// Virtualize opaque live IDs and their delivery URL references together.

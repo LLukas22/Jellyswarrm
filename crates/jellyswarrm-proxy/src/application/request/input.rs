@@ -10,7 +10,7 @@ use crate::{
             selection::UrlSelection,
         },
     },
-    processors::request_analyzer::RequestBodyAnalysisResult,
+    translation::request_analyzer::RequestBodyAnalysisResult,
 };
 
 pub(crate) struct OperationRequest {
@@ -56,7 +56,7 @@ impl OperationRequest {
 
     pub(crate) async fn resolve_target(
         &self,
-        state: &crate::application::services::MediaServices,
+        state: &crate::application::media_services::MediaServices,
     ) -> Result<ResolvedTarget, ApplicationError> {
         let (server, session, server_matched_request) = super::routing::resolve_server(
             &self.context.backends().sessions,
@@ -68,7 +68,7 @@ impl OperationRequest {
         .await
         .map_err(ApplicationError::from)?;
         state
-            .processors
+            .translation
             .url_processor
             .validate_container_request(
                 self.original_request.url(),
@@ -116,7 +116,7 @@ pub(crate) fn routing_error(error: anyhow::Error) -> ApplicationError {
                 .downcast::<TargetError>()
                 .expect("checked target cause"),
         )
-    } else if crate::processors::ProcessingErrors::contains_cause::<sqlx::Error>(error.as_ref()) {
+    } else if crate::translation::ProcessingErrors::contains_cause::<sqlx::Error>(error.as_ref()) {
         // Keep the entire aggregate/context tree, not just its first database
         // cause. A validation failure in an earlier field must not hide storage
         // failure in a later one.
@@ -136,7 +136,7 @@ pub(crate) fn request_body_error(error: anyhow::Error) -> ApplicationError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::processors::ProcessingErrors;
+    use crate::translation::ProcessingErrors;
 
     fn mixed_failures() -> anyhow::Error {
         anyhow::Error::new(ProcessingErrors {
@@ -161,7 +161,7 @@ mod tests {
             };
             let fields = error.downcast_ref::<ProcessingErrors>().unwrap();
             assert_eq!(fields.causes.len(), 2);
-            assert!(crate::processors::ProcessingErrors::contains_cause::<
+            assert!(crate::translation::ProcessingErrors::contains_cause::<
                 sqlx::Error,
             >(error.as_ref()));
         }

@@ -8,12 +8,8 @@ use crate::domain::security::{
     EncryptedPassword, HashedPassword, MappingEncryptionKey, Password,
 };
 use crate::servers::storage::Server;
-#[cfg(test)]
-use crate::servers::url::ServerUrl;
 use crate::{domain::security::generate_token, protocol::authorization::Authorization};
 
-#[cfg(test)]
-use super::credentials::password_work;
 pub(crate) use super::credentials::LocalCredential;
 pub(crate) use super::models::{
     AuthorizationSession, CredentialFormat, LocalUser, MappingAuth, ServerMapping,
@@ -58,7 +54,7 @@ impl<'a> From<&'a &'a str> for ServerReference<'a> {
 mod api_keys;
 mod server_mappings;
 pub(crate) use server_mappings::MappingCredentialError;
-mod sessions;
+mod authorization_sessions;
 mod users;
 
 impl UserAuthorizationService {
@@ -104,5 +100,4 @@ impl UserAuthorizationService {
 }
 
 #[cfg(test)]
-#[path = "../../unit_tests/auth.rs"]
 mod tests;

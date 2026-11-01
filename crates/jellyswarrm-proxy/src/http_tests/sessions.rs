@@ -1,6 +1,6 @@
 //! HTTP/WebSocket integration tests with real SQLite authorization and zero-upstream assertions.
-use crate::application::sessions::decorate_authentication;
-use crate::sessions::models;
+use crate::application::client_sessions::decorate_authentication;
+use crate::client_sessions::models;
 use crate::{
     http_tests::support::{device, Fixture},
     protocol::authorization::Authorization,
@@ -441,7 +441,7 @@ async fn identity_reconnect_revocation_and_authentication_dto_are_consistent() {
         version: "1".into(),
         token: None,
     };
-    let mut response: crate::models::AuthenticateResponse = serde_json::from_value(json!({
+    let mut response: crate::protocol::models::AuthenticateResponse = serde_json::from_value(json!({
         "User":{"Id":"backend-user", "Name":"Alice", "ServerId":"backend", "Policy":{"IsAdministrator":false, "SyncPlayAccess":"None"}},
         "SessionInfo":{"Id":"backend-session", "UserId":"backend-user", "UserName":"Alice", "ServerId":"backend"},
         "AccessToken":"backend-token", "ServerId":"backend"
@@ -679,7 +679,7 @@ async fn encoded_session_paths_do_not_escape_local_handling() {
 
 #[test]
 fn discovery_filter_does_not_change_the_callers_device_identity() {
-    let auth = crate::protocol::identity::JellyfinAuthorization::Authorization(Authorization {
+    let auth = crate::protocol::caller::JellyfinAuthorization::Authorization(Authorization {
         client: "Test".into(),
         device: "Web".into(),
         device_id: "web".into(),
@@ -691,7 +691,7 @@ fn discovery_filter_does_not_change_the_callers_device_identity() {
         url::Url::parse("http://local/Sessions?DeviceId=tv").unwrap(),
     );
     assert_eq!(
-        crate::protocol::identity::request_device(request.headers(), request.url(), Some(&auth))
+        crate::protocol::caller::request_device(request.headers(), request.url(), Some(&auth))
             .unwrap()
             .device_id,
         "web"
@@ -700,9 +700,9 @@ fn discovery_filter_does_not_change_the_callers_device_identity() {
         reqwest::Method::GET,
         url::Url::parse("http://local/socket?deviceId=tv").unwrap(),
     );
-    let token = crate::protocol::identity::JellyfinAuthorization::XEmbyToken("token".into());
+    let token = crate::protocol::caller::JellyfinAuthorization::XEmbyToken("token".into());
     assert_eq!(
-        crate::protocol::identity::request_device(request.headers(), request.url(), Some(&token))
+        crate::protocol::caller::request_device(request.headers(), request.url(), Some(&token))
             .unwrap()
             .device_id,
         "tv"

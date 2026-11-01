@@ -1,6 +1,7 @@
 //! Jellyswarrm server lifecycle. The executable supplies the Tokio runtime.
 mod application;
 mod auth;
+mod client_sessions;
 mod config;
 mod domain;
 mod http;
@@ -8,15 +9,13 @@ mod http;
 mod http_tests;
 mod libraries;
 mod media;
-mod models;
 mod persistence;
 mod playback;
-mod processors;
 mod protocol;
 mod servers;
-mod sessions;
 mod startup;
 mod syncplay;
+mod translation;
 mod ui;
 mod upstream;
 

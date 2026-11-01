@@ -2,21 +2,19 @@
 use std::time::Duration;
 
 use crate::application::error::{ApplicationError, FailureStage};
-#[cfg(test)]
-use hyper::StatusCode;
 use tokio::task::JoinSet;
 use tracing::{debug, error, trace, warn};
 
-use crate::application::services::MediaServices;
+use crate::application::media_services::MediaServices;
 use crate::{
     application::request::response::response_json_to_payload,
     auth::service::AuthorizationSession,
     domain::ids::ServerId,
     libraries::service::DiscoveredLibrary,
-    models::{ItemsResponseVariants, ItemsResponseWithCount},
-    processors::response_processor::ResponseProcessingProfile,
-    protocol::identity::JellyfinAuthorization,
+    protocol::caller::JellyfinAuthorization,
+    protocol::models::{ItemsResponseVariants, ItemsResponseWithCount},
     servers::storage::Server,
+    translation::response_processor::ResponseProcessingProfile,
 };
 
 use super::{
@@ -857,8 +855,9 @@ async fn process_items_response_json(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::MediaItem;
+    use crate::protocol::models::MediaItem;
     use crate::test_support::MediaFixture;
+    use hyper::StatusCode;
     use serde_json::json;
 
     async fn collision_fixture() -> (

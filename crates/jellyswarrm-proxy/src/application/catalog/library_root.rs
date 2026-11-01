@@ -5,7 +5,7 @@ use crate::application::error::{ApplicationError, FailureStage};
 use tokio::task::JoinSet;
 use tracing::{error, warn};
 
-use crate::application::services::MediaServices;
+use crate::application::media_services::MediaServices;
 use crate::{
     application::request::input::OperationRequest,
     application::request::response::response_json_to_payload,
@@ -14,10 +14,10 @@ use crate::{
         normalize_library_id, VirtualLibraryAccessScope, VirtualLibraryResolution,
     },
     media::presentation::{CatalogItem, ItemNamePolicy},
-    models::MediaItem,
-    processors::response_processor::ResponseProcessingProfile,
+    protocol::models::MediaItem,
     servers::compare_routes,
     servers::storage::Server,
+    translation::response_processor::ResponseProcessingProfile,
 };
 
 use super::{
@@ -52,7 +52,7 @@ struct LibraryRootInventory {
     non_library_per_server: Vec<Vec<CatalogItem>>,
 }
 
-type ServerMediaItem = crate::media::catalog::TaggedMediaItem;
+type ServerMediaItem = crate::media::grouping::TaggedMediaItem;
 
 async fn process_library_group_individually(
     state: &MediaServices,

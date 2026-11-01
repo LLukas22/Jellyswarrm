@@ -1,8 +1,8 @@
 //! Production adapter composition: route table, session/auth layers, URL-prefix
 //! wrapping, and root monitoring endpoints. No listeners or background tasks.
 use super::{
-    assets::index_handler, auth_keys, branding, fallback::fallback_handler, quick_connect,
-    sessions, state::AppState, syncplay,
+    assets::index_handler, auth_keys, branding, client_sessions, fallback::fallback_handler,
+    quick_connect, state::AppState, syncplay,
 };
 use axum::{
     extract::{FromRef, Request},
@@ -72,15 +72,15 @@ pub(crate) fn build_router(
 fn routes() -> Router<AppState> {
     lowercase_routes! {
         Router::new()
-            .merge(sessions::router())
+            .merge(client_sessions::router())
             .route("/", get(index_handler))
             .route("/QuickConnect/Enabled", get(quick_connect::enabled))
             .route("/QuickConnect/Initiate", post(quick_connect::initiate))
             .route("/QuickConnect/Connect", get(quick_connect::connect))
             .route("/QuickConnect/Authorize", post(quick_connect::authorize))
             .route("/Branding/Configuration", get(branding::handle_branding))
-            .route("/websocket", get(sessions::websocket))
-            .route("/socket", get(sessions::websocket))
+            .route("/websocket", get(client_sessions::websocket))
+            .route("/socket", get(client_sessions::websocket))
             .route("/GetUtcTime", get(syncplay::get_utc_time))
             .route("/Auth/Keys", get(auth_keys::list_api_keys).post(auth_keys::create_api_key))
             .nest("/SyncPlay", Router::new()

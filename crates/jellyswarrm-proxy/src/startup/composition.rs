@@ -6,25 +6,25 @@ use crate::{
             libraries::LibraryAdministration,
             servers::{ServerAdministration, ServerCredentials},
         },
-        sessions::{access::MediaAccess, SessionOperations},
+        client_sessions::{access::MediaAccess, SessionOperations},
         syncplay::SyncPlayOperations,
     },
     auth::{
         federation::FederatedUserService, mapping_authentication::MappingAuthenticator,
         quick_connect::QuickConnectStorage, UserAuthorizationService,
     },
+    client_sessions,
     config::{AppConfig, Paths, SettingsView},
     http::state::{AdapterPaths, AppState, ManagementState, SettingsState},
     libraries::VirtualLibraryService,
     media::MediaStorageService,
     playback::PlaybackRegistry,
-    processors::{
+    servers::ServerStorageService,
+    syncplay::SyncPlayService,
+    translation::{
         request_analyzer::RequestAnalyzer, request_processor::RequestProcessor,
         response_processor::ResponseProcessor, url_processor::UrlProcessor, ProxyProcessors,
     },
-    servers::ServerStorageService,
-    sessions,
-    syncplay::SyncPlayService,
 };
 use std::sync::Arc;
 
@@ -56,7 +56,7 @@ pub(super) fn adapter_state(
         user_authorization.clone(),
         settings.clone(),
     );
-    let processors = Arc::new(ProxyProcessors::new(
+    let translation = Arc::new(ProxyProcessors::new(
         RequestProcessor::new(media_storage.clone(), user_authorization.clone()),
         RequestAnalyzer::new(
             media_storage.clone(),
@@ -72,8 +72,10 @@ pub(super) fn adapter_state(
         server_storage.clone(),
         virtual_library_service.clone(),
     );
-    let connections = sessions::connections::ConnectionHub::default();
-    let client_sessions = Arc::new(sessions::ClientSessionService::new(connections.clone()));
+    let connections = client_sessions::connections::ConnectionHub::default();
+    let client_sessions = Arc::new(client_sessions::ClientSessionService::new(
+        connections.clone(),
+    ));
     let syncplay = Arc::new(SyncPlayService::with_connections(connections));
     let quick_connect = QuickConnectStorage::new();
     let catalog_snapshots = Arc::new(application::catalog::snapshots::CatalogSnapshots::default());
@@ -143,7 +145,7 @@ pub(super) fn adapter_state(
         configuration,
         paths: adapter_paths,
     };
-    let media = application::services::MediaServices {
+    let media = application::media_services::MediaServices {
         reqwest_client: clients.api,
         streaming_reqwest_client: clients.streaming,
         user_authorization,
@@ -153,7 +155,7 @@ pub(super) fn adapter_state(
         playback_registry,
         config: settings,
         url_selection: selection,
-        processors,
+        translation,
         client_sessions,
         catalog_snapshots,
         url_prefix,

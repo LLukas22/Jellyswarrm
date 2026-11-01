@@ -1,12 +1,12 @@
 //! Reconcile fetched media observations and validated inventory evidence before catalog presentation.
 use crate::application::error::ApplicationError;
-use crate::models::enums::BaseItemKind;
+use crate::protocol::models::enums::BaseItemKind;
 use std::collections::BTreeSet;
 
-use crate::application::services::MediaServices;
+use crate::application::media_services::MediaServices;
 use crate::{
     application::request::input::OperationRequest,
-    media::catalog::{MediaDedupPlan, TaggedMediaItem},
+    media::grouping::{MediaDedupPlan, TaggedMediaItem},
     media::identity::{MediaAlias, MediaKind, MediaObservation},
     media::scope::{MediaCatalogScope, MediaScopeKind},
     media::storage::{
@@ -25,7 +25,7 @@ use super::{
 
 async fn show_catalog_aliases(
     state: &MediaServices,
-    items: &[crate::models::MediaItem],
+    items: &[crate::protocol::models::MediaItem],
     viewer: &str,
     series_group: Option<&str>,
     catalog_scope: &str,
@@ -476,10 +476,11 @@ mod tests {
                 .get_or_create_media_mapping(id, &server)
                 .await
                 .unwrap();
-            let item: crate::models::MediaItem = serde_json::from_value(serde_json::json!({
-                "Id": mapping.virtual_media_id, "Type": kind, "ProviderIds": {"Tmdb": "42"}
-            }))
-            .unwrap();
+            let item: crate::protocol::models::MediaItem =
+                serde_json::from_value(serde_json::json!({
+                    "Id": mapping.virtual_media_id, "Type": kind, "ProviderIds": {"Tmdb": "42"}
+                }))
+                .unwrap();
             observations.push(MediaObservation {
                 virtual_media_id: mapping.virtual_media_id,
                 kind: MediaKind::from_item_kind(&item.item_type).unwrap(),

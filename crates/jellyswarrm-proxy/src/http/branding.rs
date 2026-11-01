@@ -4,7 +4,7 @@ use hyper::StatusCode;
 use jellyfin_api::JellyfinClient;
 
 use crate::{
-    models::BrandingConfig,
+    protocol::models::BrandingConfig,
     servers::storage::{Server, ServerStorageService},
 };
 

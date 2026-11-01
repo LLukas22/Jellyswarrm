@@ -1,6 +1,6 @@
 //! Media identity, grouping and presentation rules, with persisted inventory and mappings.
 
-pub(crate) mod catalog;
+pub(crate) mod grouping;
 pub(crate) mod identity;
 pub(crate) mod presentation;
 pub(crate) mod scope;

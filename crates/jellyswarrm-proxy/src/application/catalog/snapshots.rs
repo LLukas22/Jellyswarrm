@@ -4,9 +4,9 @@ use super::{
     request_policy::is_upstream_limited_catalog_request,
 };
 use crate::application::error::ApplicationError;
-use crate::application::services::MediaServices;
+use crate::application::media_services::MediaServices;
 use crate::{
-    application::request::input::OperationRequest, protocol::identity::JellyfinAuthorization,
+    application::request::input::OperationRequest, protocol::caller::JellyfinAuthorization,
 };
 use sha2::{Digest, Sha256};
 use std::{

@@ -1,5 +1,5 @@
 //! Catalog target planning and library eligibility/grouping policy.
-use crate::models::{
+use crate::protocol::models::{
     enums::{BaseItemKind, CollectionType},
     MediaItem,
 };
@@ -9,7 +9,7 @@ use crate::application::error::{ApplicationError, FailureStage};
 use crate::domain::ids::{BackendItemId, VirtualItemId};
 use tracing::{debug, error};
 
-use crate::application::services::MediaServices;
+use crate::application::media_services::MediaServices;
 use crate::{
     application::request::input::OperationRequest,
     auth::service::AuthorizationSession,

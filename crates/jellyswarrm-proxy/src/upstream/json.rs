@@ -1,6 +1,6 @@
 //! Execute Jellyfin JSON requests and normalize their responses.
 
-use crate::processors::{payload_from_request, set_json_body, JsonBodyError};
+use crate::protocol::body::{payload_from_request, set_json_body, JsonBodyError};
 #[cfg(test)]
 use hyper::StatusCode;
 use serde_json::Value;
@@ -12,7 +12,7 @@ pub(crate) enum JsonTransportError {
     #[error("upstream response failure")]
     Status(hyper::StatusCode),
     #[error("outgoing JSON body preparation failed")]
-    RequestBody(#[from] crate::processors::JsonBodyError),
+    RequestBody(#[from] JsonBodyError),
 }
 
 // Never render authenticated URLs, body excerpts, or underlying diagnostics.
@@ -106,8 +106,6 @@ fn sync_posted_guide_body(request: &mut reqwest::Request) -> Result<(), JsonBody
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reqwest::header::{CONTENT_LENGTH, TRANSFER_ENCODING};
-    use serde_json::json;
     use std::error::Error;
     use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
 
@@ -203,48 +201,6 @@ mod tests {
             result.unwrap_err(),
             JsonTransportError::Status(StatusCode::NOT_FOUND)
         ));
-    }
-
-    #[test]
-    fn set_json_body_replaces_length_and_removes_transfer_encoding() {
-        let mut request = reqwest::Client::new()
-            .post("http://localhost/Items")
-            .header(CONTENT_LENGTH, "999")
-            .header(TRANSFER_ENCODING, "chunked")
-            .body("old body")
-            .build()
-            .unwrap();
-        let payload = json!({"UnknownField": {"preserved": true}});
-
-        set_json_body(&mut request, &payload).unwrap();
-
-        let body = request.body().unwrap().as_bytes().unwrap();
-        assert_eq!(
-            request.headers()[CONTENT_LENGTH].to_str().unwrap(),
-            body.len().to_string()
-        );
-        assert!(!request.headers().contains_key(TRANSFER_ENCODING));
-        assert_eq!(
-            payload_from_request::<serde_json::Value>(&request).unwrap(),
-            payload
-        );
-    }
-
-    #[test]
-    fn missing_or_invalid_request_json_retains_input_causes() {
-        let client = reqwest::Client::new();
-        let missing = client.post("http://localhost/Items").build().unwrap();
-        let invalid = client
-            .post("http://localhost/Items")
-            .body("{")
-            .build()
-            .unwrap();
-        for request in [missing, invalid] {
-            assert!(matches!(
-                payload_from_request::<serde_json::Value>(&request).unwrap_err(),
-                JsonBodyError::InvalidInput(_) | JsonBodyError::Decode(_)
-            ));
-        }
     }
 
     #[tokio::test]

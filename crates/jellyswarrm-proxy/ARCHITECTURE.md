@@ -6,6 +6,34 @@ top-level modules so you know where to look; see
 
 All module paths below are relative to `src/`.
 
+## Where code for a feature goes
+
+Most features are split into up to three tiers, with the same module name in
+each tier so you can find all of them by name:
+
+| Tier | Location | Owns |
+|---|---|---|
+| Adapter | `http/<feature>` or `ui/` | Axum extraction, status codes and rendering. One handler calls one application workflow. |
+| Workflow | `application/<feature>` | Steps that combine several feature services, access checks and upstream requests for one operation. |
+| Feature state | `<feature>/` (or a submodule of `auth/`, `media/`) | Owned state, storage and rules for one concept. No HTTP types, no other features' workflows. |
+
+| Feature | Adapter | Workflow | Feature state |
+|---|---|---|---|
+| Quick Connect | `http/quick_connect.rs` | `application/quick_connect.rs` | `auth/quick_connect/` |
+| Client sessions, remote control | `http/client_sessions/` | `application/client_sessions/` | `client_sessions/` |
+| SyncPlay | `http/syncplay.rs` | `application/syncplay.rs` | `syncplay/` |
+| Playback | `http/client_routes/` | `application/playback/` | `playback.rs` |
+| Catalog and item details | `http/client_routes/` | `application/catalog/`, `application/details/` | `media/` |
+| Libraries, servers (admin) | `ui/admin/` | `application/admin/` | `libraries/`, `servers/` |
+
+Add a workflow tier only when an operation needs more than one feature service;
+simple reads may go straight from an adapter to feature state. Dependencies point
+down this table: feature state never imports `application`, `http` or `ui`.
+
+Tests follow the code they exercise. Small tests stay inline; larger suites live
+in a `tests.rs` (or a named `*_tests.rs`) next to their owning `mod.rs`. HTTP
+contract tests are in `http_tests/` and real-server/browser tests in `../tests/`.
+
 ## Startup and incoming requests
 
 | Module | Purpose |
@@ -13,7 +41,7 @@ All module paths below are relative to `src/`.
 | `startup/` | Starts the process: loads configuration, constructs services, assembles both routers and owns background tasks and shutdown. |
 | `http/` | Handles the client API, authentication extraction, WebSocket connections, embedded web assets and HTTP responses. `http/state.rs` holds the service handles handlers need. |
 | `ui/` | Serves the management pages, forms and UI login. It is separate from the client API because its presentation and authentication needs differ. |
-| `application/` | Coordinates catalog, playback, account and administration operations. It decides which backends a caller may use and combines the services needed to complete a request. Steps every workflow shares (caller context, backend routing, upstream request building) live in `application/request/`; server and library administration in `application/admin/`. |
+| `application/` | Coordinates catalog, playback, account and administration operations. It decides which backends a caller may use and combines the services needed to complete a request. Steps every workflow shares (caller context, backend routing, upstream request building) live in `application/request/`; the media service handles they use in `application/media_services.rs`. |
 
 `main.rs` supplies the Tokio runtime and calls the library's only public entry
 point, `run()`. Startup wires the modules together.
@@ -22,22 +50,24 @@ point, `run()`. Startup wires the modules together.
 
 | Module | Purpose |
 |---|---|
-| `auth/` | Local users, credentials, API keys, backend account mappings and Quick Connect. |
+| `auth/` | Local users, credentials, API keys, backend authorization sessions (`auth/service/authorization_sessions.rs`), backend account mappings and Quick Connect. |
 | `servers/` | Backend registration, addresses, health and stable server ordering. |
 | `libraries/` | Virtual library groups and their backend members. |
-| `media/` | Media identity, virtual ID mappings, versions and catalog inventory. |
+| `media/` | Media identity, grouping and deduplication rules, virtual ID mappings, versions and catalog inventory. |
 | `playback.rs` | Playback-session and stream bindings that keep later requests on the right backend. |
-| `sessions/` | Connected client presence, observed playback state and bounded message delivery. |
+| `client_sessions/` | Connected client presence, observed playback state and bounded message delivery. |
 | `syncplay/` | Group membership, shared queues and synchronized playback control. |
 
-Playback bindings and client sessions are separate: one tracks **where media is
-playing**, the other tracks **which clients are connected**.
+Three kinds of "session" exist and are kept apart by name:
+**authorization sessions** (`auth`) hold backend tokens per device and server,
+**playback sessions** (`playback.rs`) track *where media is playing*, and
+**client sessions** (`client_sessions/`) track *which clients are connected*.
 
 ## Translation, transport and storage
 
 | Module | Purpose |
 |---|---|
-| `processors/` | Inspects and translates JSON, URLs and identifiers between the virtual server and a selected backend, including JSON body framing. |
+| `translation/` | Inspects and translates JSON, URLs and identifiers between the virtual server and a selected backend. |
 | `upstream/` | Makes backend requests and delivers JSON, streams and HLS playlists. |
 | `persistence/` | Opens SQLite, runs migrations and converts shared values to database representations. SQL also still lives in feature services. |
 | `config.rs`, `config/` | Loads configuration, provides startup and runtime settings, and serializes save/reload operations. |
@@ -50,13 +80,12 @@ through `ConfigurationService`.
 | Module | Purpose |
 |---|---|
 | `domain/` | Shared IDs and security values. |
-| `models/` | Jellyfin request and response data shapes, including compatibility fields. |
-| `protocol/` | Authorization/device parsing and Jellyfin route and URL conventions. |
+| `protocol/` | Jellyfin wire conventions: request/response DTOs (`protocol/models/`), authorization headers, caller and device identity, JSON body framing, route classification and URL conventions. |
 
 ## Following a request
 
 A catalog request enters through `http/`, becomes an application operation, then
-uses feature services, processors and upstream transport to produce a response.
+uses feature services, translation and upstream transport to produce a response.
 A remote-control request instead uses application session checks, SyncPlay's
 group rules and session delivery before the WebSocket adapter sends the message.
 See [request and data flow](DATA_FLOW.md) for concrete paths.

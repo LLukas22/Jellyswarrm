@@ -1,9 +1,9 @@
 //! Compose translation and wire encoding for an application-authorized target.
 use crate::{
     application::request::context::AuthorizedTarget, auth::service::AuthorizationSession,
-    libraries::service::VirtualLibraryAccessScope, processors::url_processor::UrlProcessor,
-    protocol::identity::JellyfinAuthorization, protocol::url::join_server_url,
-    servers::storage::Server, upstream::headers::remove_hop_by_hop_headers,
+    libraries::service::VirtualLibraryAccessScope, protocol::caller::JellyfinAuthorization,
+    protocol::url::join_server_url, servers::storage::Server,
+    translation::url_processor::UrlProcessor, upstream::headers::remove_hop_by_hop_headers,
 };
 
 #[derive(Debug, thiserror::Error)]

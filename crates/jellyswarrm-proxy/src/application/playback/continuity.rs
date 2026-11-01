@@ -5,9 +5,9 @@ use crate::{
         error::ApplicationError,
         request::context::{AuthorizedTarget, RequestContext},
     },
+    client_sessions::ClientSessionService,
     domain::ids::ServerId,
     media::storage::MediaStorageService,
-    sessions::ClientSessionService,
 };
 
 pub(crate) struct EpisodeContinuity {
@@ -46,7 +46,7 @@ impl EpisodeContinuity {
 
     pub(super) async fn preferred_target(
         &self,
-        state: &crate::application::services::MediaServices,
+        state: &crate::application::media_services::MediaServices,
         context: &RequestContext,
         item: &str,
     ) -> Result<Option<AuthorizedTarget>, ApplicationError> {

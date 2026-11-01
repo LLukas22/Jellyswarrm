@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 #[cfg(test)]
 use crate::auth::service::LocalUser;
-use crate::sessions::{
+use crate::client_sessions::{
     connections::{ConnectionHub, SendError},
     SessionCaller,
 };

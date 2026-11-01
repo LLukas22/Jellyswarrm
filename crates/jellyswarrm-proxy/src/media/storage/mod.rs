@@ -7,16 +7,10 @@ use std::{
 
 use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 use tracing::{debug, trace};
-#[cfg(test)]
-use tracing::{error, info};
 use uuid::Uuid;
 
-#[cfg(test)]
-use crate::config::MediaStreamingMode;
 use crate::domain::ids::ServerId;
 use crate::servers::storage::Server;
-#[cfg(test)]
-use crate::servers::url::ServerUrl;
 use crate::{
     domain::security::generate_token,
     media::identity::{MediaAlias, MediaKind, MediaObservation, StableMediaGroup},
@@ -85,5 +79,4 @@ fn union_indexes(parents: &mut [usize], left: usize, right: usize) {
 }
 
 #[cfg(test)]
-#[path = "../../unit_tests/media_storage.rs"]
 mod tests;

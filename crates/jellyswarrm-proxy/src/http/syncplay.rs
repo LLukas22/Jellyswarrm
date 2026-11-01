@@ -4,7 +4,7 @@ use crate::{
         error::ApplicationError,
         syncplay::{JoinOutcome, SyncPlayOperations},
     },
-    sessions::SessionCaller,
+    client_sessions::SessionCaller,
     syncplay::models::*,
 };
 use axum::{

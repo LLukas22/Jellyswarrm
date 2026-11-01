@@ -1,16 +1,10 @@
 //! Delivery/resource selection before target-bound request construction.
 
-#[cfg(test)]
-use super::target::matching_session as matching_play_session;
 use super::target::{MediaTargetResolver, PlaybackIntent, ResolutionError, SelectionPolicy};
 use crate::application::error::{ApplicationError, FailureStage};
-use crate::application::services::MediaServices;
-#[cfg(test)]
-use hyper::StatusCode;
+use crate::application::media_services::MediaServices;
 use tracing::info;
 
-#[cfg(test)]
-use crate::test_support::MediaFixture;
 use crate::{
     application::request::{
         context::{AuthorizedTarget, RequestContext},
@@ -18,7 +12,7 @@ use crate::{
     },
     config::MediaStreamingMode,
     playback::PlaybackSession,
-    protocol::identity::JellyfinAuthorization,
+    protocol::caller::JellyfinAuthorization,
     servers::storage::Server,
     upstream::{
         delivery::{self, DeliveryResponse},
@@ -39,7 +33,8 @@ fn extract_stream_item_id(path: &str) -> Option<&str> {
 }
 
 fn extract_play_session_id(url: &url::Url) -> Result<Option<String>, ApplicationError> {
-    crate::processors::url_processor::play_session_id(url).map_err(ApplicationError::InvalidRouting)
+    crate::translation::url_processor::play_session_id(url)
+        .map_err(ApplicationError::InvalidRouting)
 }
 
 async fn selected_play_session(
@@ -52,7 +47,7 @@ async fn selected_play_session(
         return Ok(None);
     };
     let explicit_source =
-        crate::processors::url_processor::selected_media_source(operation.original_request.url())
+        crate::translation::url_processor::selected_media_source(operation.original_request.url())
             .map_err(ApplicationError::InvalidRouting)?
             .is_some();
     (MediaTargetResolver {
@@ -82,7 +77,7 @@ async fn delivery_target(
     policy: SelectionPolicy,
 ) -> Result<AuthorizedTarget, ApplicationError> {
     let source =
-        crate::processors::url_processor::selected_media_source(operation.original_request.url())
+        crate::translation::url_processor::selected_media_source(operation.original_request.url())
             .map_err(ApplicationError::InvalidRouting)?;
     let plan = (MediaTargetResolver {
         media: &state.media_storage,
@@ -156,7 +151,7 @@ async fn forward_media_request(
             let context = delivery::DeliveryContext::new(
                 &state.streaming_reqwest_client,
                 HlsContext::new(
-                    &state.processors.url_processor,
+                    &state.translation.url_processor,
                     server,
                     proxy_api_key,
                     viewer,
@@ -212,7 +207,7 @@ pub(crate) async fn get_download(
     let context = delivery::DeliveryContext::new(
         &state.streaming_reqwest_client,
         HlsContext::new(
-            &state.processors.url_processor,
+            &state.translation.url_processor,
             resolved.target.server(),
             proxy_api_key.as_deref(),
             request_user_id(&operation.context),
@@ -349,7 +344,10 @@ pub(crate) async fn get_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::playback::target::matching_session as matching_play_session;
     use crate::domain::ids::ServerId;
+    use crate::test_support::MediaFixture;
+    use hyper::StatusCode;
 
     async fn direct_fixture(
         mode: MediaStreamingMode,
@@ -418,7 +416,7 @@ mod tests {
         let client = reqwest::Client::new();
         let context = delivery::DeliveryContext::new(
             &client,
-            HlsContext::new(&state.processors.url_processor, &server, None, None, 5),
+            HlsContext::new(&state.translation.url_processor, &server, None, None, 5),
         );
         let request = reqwest::Request::new(
             reqwest::Method::GET,

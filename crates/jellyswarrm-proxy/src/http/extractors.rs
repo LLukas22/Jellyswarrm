@@ -6,8 +6,8 @@ use tracing::error;
 use crate::{
     application::{
         error::ApplicationError,
+        media_services::MediaServices,
         request::input::{routing_error, OperationRequest},
-        services::MediaServices,
     },
     auth::service::LocalUser,
     http::preprocessing::{extract_request_infos, resolve_request_identity},

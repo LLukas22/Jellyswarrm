@@ -2,12 +2,12 @@
 //!
 //! Flow: input → library_resolution → snapshots/fetch → media_reconciliation
 //! → postprocessing. Roots, batch lookup, and facets branch to their named modules.
-//! See `../../../DATA_FLOW.md`; dependencies come from `application::services`.
+//! See `../../../DATA_FLOW.md`; dependencies come from `application::media_services`.
 use crate::application::details::get_item_detail;
 use crate::application::error::{ApplicationError, FailureStage};
 use tracing::debug;
 
-use crate::application::{request::input::OperationRequest, services::MediaServices};
+use crate::application::{media_services::MediaServices, request::input::OperationRequest};
 
 mod query;
 pub(crate) mod refresh;
@@ -309,7 +309,7 @@ pub(super) async fn finalize_items_response(
     let response = serde_json::to_value(items.into_response_with_policy(policy, response_shape))
         .map_err(ApplicationError::Serialization)?;
     if library_resolution::is_library_root_request(request.url(), state.url_prefix()) {
-        if let Some(auth) = crate::protocol::identity::JellyfinAuthorization::from_headers_url(
+        if let Some(auth) = crate::protocol::caller::JellyfinAuthorization::from_headers_url(
             request.headers(),
             request.url(),
         ) {
@@ -325,13 +325,10 @@ pub(super) async fn finalize_items_response(
 }
 
 #[cfg(test)]
-#[path = "../../unit_tests/federated_reliability.rs"]
 mod reliability_tests;
 #[cfg(test)]
-#[path = "../../unit_tests/federated_snapshots.rs"]
 mod snapshot_tests;
 #[cfg(test)]
-#[path = "../../unit_tests/federated_catalog.rs"]
 pub(crate) mod tests;
 
 pub(crate) use filters::get_filters;

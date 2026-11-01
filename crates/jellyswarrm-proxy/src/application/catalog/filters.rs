@@ -6,10 +6,10 @@ use super::{
     library_resolution::{resolve_catalog_plan, CatalogFetchTarget, CatalogPlan},
     request_policy::replace_aggregate_parent_id,
 };
-use crate::application::services::MediaServices;
+use crate::application::media_services::MediaServices;
 use crate::{
     application::request::input::OperationRequest,
-    processors::response_processor::ResponseProcessingProfile,
+    translation::response_processor::ResponseProcessingProfile,
 };
 
 /// Facet IDs remain source-owned. Partition OR lists for each backend instead

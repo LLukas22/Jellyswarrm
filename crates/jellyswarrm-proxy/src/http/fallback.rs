@@ -1,7 +1,7 @@
 //! Handle fallback forwarding, translating preprocessing failures into safe HTTP responses.
 use crate::{
-    application, application::services::MediaServices,
-    processors::response_processor::ResponseProcessingProfile,
+    application, application::media_services::MediaServices,
+    translation::response_processor::ResponseProcessingProfile,
 };
 use axum::{
     body::Body,
@@ -35,10 +35,8 @@ pub(crate) async fn fallback_handler(
     let decoded = percent_decode_str(path_without_prefix).decode_utf8_lossy();
     let response_profile =
         ResponseProcessingProfile::for_proxy_request(req.method(), path_without_prefix);
-    let action = crate::processors::request_analyzer::playback_session_action(
-        req.method(),
-        path_without_prefix,
-    );
+    let action =
+        crate::protocol::routes::playback_session_action(req.method(), path_without_prefix);
     let is_session_path = decoded
         .split('/')
         .find(|part| !part.is_empty())

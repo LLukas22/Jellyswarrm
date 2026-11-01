@@ -142,7 +142,7 @@ impl CatalogRequestPolicy {
         }
     }
 
-    pub(crate) fn matches_playback(&self, item: &crate::models::MediaItem) -> bool {
+    pub(crate) fn matches_playback(&self, item: &crate::protocol::models::MediaItem) -> bool {
         !self.reconcile_playback
             || self.playback_filters.iter().all(|filter| match filter {
                 PlaybackFilter::Played(played) => {

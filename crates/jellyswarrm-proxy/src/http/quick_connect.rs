@@ -10,7 +10,7 @@ use crate::{
         UserAuthorizationService,
     },
     domain::user_id::UserId,
-    http::sessions::{authentication_response, AuthenticationResponse},
+    http::client_sessions::{authentication_response, AuthenticationResponse},
     protocol::authorization::Authorization,
 };
 use axum::{
@@ -174,9 +174,11 @@ mod tests {
     }
     use crate::{
         config::{AppConfig, MediaStreamingMode},
-        models::{AuthenticateResponse, SessionInfo, SyncPlayUserAccessType, User, UserPolicy},
         persistence::MIGRATOR,
         protocol::device::Device,
+        protocol::models::{
+            AuthenticateResponse, SessionInfo, SyncPlayUserAccessType, User, UserPolicy,
+        },
         test_support::adapters::AdapterFixture,
     };
     use axum::{extract::Query, Json};

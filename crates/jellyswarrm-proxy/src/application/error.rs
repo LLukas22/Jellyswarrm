@@ -27,7 +27,7 @@ pub(crate) enum ApplicationError {
     InvalidRequestJson(serde_json::Error),
     InvalidRouting(anyhow::Error),
     RequestBody(anyhow::Error),
-    PlaylistResponse(crate::processors::response_processor::PlaylistResponseError),
+    PlaylistResponse(crate::translation::response_processor::PlaylistResponseError),
     PlaybackResolution(super::playback::target::ResolutionError),
     TargetSelection(super::request::context::TargetError),
     At {
@@ -79,9 +79,9 @@ impl ApplicationError {
     }
 }
 
-impl From<crate::processors::JsonBodyError> for ApplicationError {
-    fn from(error: crate::processors::JsonBodyError) -> Self {
-        use crate::processors::JsonBodyError;
+impl From<crate::protocol::body::JsonBodyError> for ApplicationError {
+    fn from(error: crate::protocol::body::JsonBodyError) -> Self {
+        use crate::protocol::body::JsonBodyError;
         match error {
             JsonBodyError::InvalidInput(reason) => Self::InvalidInput(reason),
             JsonBodyError::Decode(error) => Self::InvalidRequestJson(error),
@@ -134,9 +134,9 @@ impl From<DeliveryError> for ApplicationError {
     }
 }
 
-impl From<crate::processors::ProcessingError> for ApplicationError {
-    fn from(error: crate::processors::ProcessingError) -> Self {
-        use crate::processors::ProcessingError;
+impl From<crate::translation::ProcessingError> for ApplicationError {
+    fn from(error: crate::translation::ProcessingError) -> Self {
+        use crate::translation::ProcessingError;
         match error {
             ProcessingError::RequestBody(error) => super::request::input::request_body_error(error),
             ProcessingError::Response(error) => Self::Internal(error),
@@ -223,7 +223,7 @@ mod tests {
 
     #[test]
     fn processor_conversion_classifies_body_failures_without_losing_storage_causes() {
-        use crate::processors::{ProcessingError, ProcessingErrors};
+        use crate::translation::{ProcessingError, ProcessingErrors};
         for storage_failed in [false, true] {
             let mut causes = vec![anyhow::anyhow!("invalid selection")];
             if storage_failed {
@@ -254,7 +254,7 @@ mod tests {
 
     #[test]
     fn outgoing_json_conversion_preserves_request_and_encoding_causes() {
-        use crate::processors::JsonBodyError;
+        use crate::protocol::body::JsonBodyError;
         let json_error = || serde_json::from_str::<serde_json::Value>("{").unwrap_err();
         for (body_error, decoding) in [
             (JsonBodyError::Decode(json_error()), true),

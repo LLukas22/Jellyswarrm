@@ -49,7 +49,7 @@ impl UserAuthorizationService {
         match server {
             ServerReference::Server(server) => Ok((server.id, server.url.as_str().to_string())),
             ServerReference::Url(server_url) => {
-                let server_url = ServerUrl::canonicalize(server_url)
+                let server_url = crate::servers::url::ServerUrl::canonicalize(server_url)
                     .unwrap_or_else(|_| server_url.trim().trim_end_matches('/').to_string());
                 let server_id = sqlx::query_scalar::<_, i64>(
                     r#"

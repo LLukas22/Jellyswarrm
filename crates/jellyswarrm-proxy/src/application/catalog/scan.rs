@@ -1,6 +1,6 @@
 //! Completeness tracking for catalog scans.
 use crate::application::error::ApplicationError;
-use crate::models::ItemsResponseVariants;
+use crate::protocol::models::ItemsResponseVariants;
 
 pub(super) const MAX_SCAN_ITEMS: usize = 100_000;
 pub(super) const MAX_SCAN_PAGES: usize = 10_000;
@@ -265,11 +265,12 @@ mod tests {
         );
         // Large, counted libraries must remain browsable past the defensive
         // limits intended for sources that provide no completion evidence.
-        let counted = ItemsResponseVariants::WithCount(crate::models::ItemsResponseWithCount {
-            total_record_count: oversized.len() as i32,
-            start_index: 0,
-            items: oversized.into_items(),
-        });
+        let counted =
+            ItemsResponseVariants::WithCount(crate::protocol::models::ItemsResponseWithCount {
+                total_record_count: oversized.len() as i32,
+                start_index: 0,
+                items: oversized.into_items(),
+            });
         let mut progress = ScanProgress {
             pages: MAX_SCAN_PAGES,
             ..Default::default()

@@ -6,8 +6,8 @@ use crate::{
             libraries::LibraryAdministration,
             servers::{ServerAdministration, ServerCredentials},
         },
-        services::MediaServices,
-        sessions::SessionOperations,
+        client_sessions::SessionOperations,
+        media_services::MediaServices,
         syncplay::SyncPlayOperations,
     },
     auth::{

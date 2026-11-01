@@ -3,8 +3,9 @@
 use std::sync::Arc;
 pub(crate) mod adapters;
 use crate::{
-    application::{self, services::MediaServices},
+    application::{self, media_services::MediaServices},
     auth::UserAuthorizationService,
+    client_sessions::{connections::ConnectionHub, ClientSessionService},
     config::{AppConfig, SettingsView},
     domain::ids::ServerId,
     libraries::VirtualLibraryService,
@@ -12,13 +13,12 @@ use crate::{
     playback::{
         LiveStreamBinding, PlaybackRegistry, PreparedLiveStream, RevisionedPlaybackSession,
     },
-    processors::{
+    servers::ServerStorageService,
+    syncplay::SyncPlayService,
+    translation::{
         request_analyzer::RequestAnalyzer, request_processor::RequestProcessor,
         response_processor::ResponseProcessor, url_processor::UrlProcessor, ProxyProcessors,
     },
-    servers::ServerStorageService,
-    sessions::{connections::ConnectionHub, ClientSessionService},
-    syncplay::SyncPlayService,
 };
 
 /// Media services plus the writable configuration behind `services.config`.
@@ -54,7 +54,7 @@ impl MediaFixture {
         let url_prefix = config.url_prefix.as_ref().map(ToString::to_string);
         let config = Arc::new(tokio::sync::RwLock::new(config));
         let settings = SettingsView::new(config.clone());
-        let processors = Arc::new(ProxyProcessors::new(
+        let translation = Arc::new(ProxyProcessors::new(
             RequestProcessor::new(media_storage.clone(), user_authorization.clone()),
             RequestAnalyzer::new(
                 media_storage.clone(),
@@ -86,7 +86,7 @@ impl MediaFixture {
             playback_registry,
             config: settings,
             url_selection,
-            processors,
+            translation,
             client_sessions: Arc::new(ClientSessionService::new(ConnectionHub::default())),
             catalog_snapshots: Arc::new(
                 application::catalog::snapshots::CatalogSnapshots::default(),

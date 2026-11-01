@@ -57,3 +57,32 @@ pub(crate) fn matches_case_insensitive(value: &str, candidates: &[&str]) -> bool
         .iter()
         .any(|candidate| value.eq_ignore_ascii_case(candidate))
 }
+
+/// Playback-report route kinds that change proxy playback-session bindings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlaybackSessionAction {
+    Start,
+    Refresh,
+    Remove,
+}
+
+/// Recognize playback reports after the caller has stripped its proxy prefix.
+pub(crate) fn playback_session_action(
+    method: &hyper::Method,
+    request_path: &str,
+) -> Option<PlaybackSessionAction> {
+    if method != hyper::Method::POST {
+        return None;
+    }
+
+    let path = request_path.trim_end_matches('/');
+    if path.eq_ignore_ascii_case("/Sessions/Playing") {
+        Some(PlaybackSessionAction::Start)
+    } else if path.eq_ignore_ascii_case("/Sessions/Playing/Progress") {
+        Some(PlaybackSessionAction::Refresh)
+    } else if path.eq_ignore_ascii_case("/Sessions/Playing/Stopped") {
+        Some(PlaybackSessionAction::Remove)
+    } else {
+        None
+    }
+}

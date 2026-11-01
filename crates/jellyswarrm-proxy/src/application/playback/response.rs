@@ -1,16 +1,14 @@
 //! Translate and validate PlaybackInfo media sources before publishing retained bindings.
 use crate::application::error::ApplicationError;
-use crate::application::services::MediaServices;
+use crate::application::media_services::MediaServices;
 use tracing::info;
 
-#[cfg(test)]
-use crate::test_support::MediaFixture;
 use crate::{
     application::request::response::response_json_to_payload,
     auth::service::AuthorizationSession,
-    models::{MediaSource, PlaybackRequest, PlaybackResponse},
-    processors::response_processor::ResponseProcessingProfile,
+    protocol::models::{MediaSource, PlaybackRequest, PlaybackResponse},
     servers::storage::Server,
+    translation::response_processor::ResponseProcessingProfile,
 };
 
 fn parse_delivery_url(value: &str) -> Option<url::Url> {
@@ -241,6 +239,7 @@ mod tests {
     use sqlx::SqlitePool;
 
     use super::*;
+    use crate::test_support::MediaFixture;
     use crate::{
         config::{AppConfig, MediaStreamingMode},
         domain::ids::ServerId,
@@ -459,7 +458,7 @@ mod tests {
                     )
                     .await
                     .unwrap();
-                let mut items: crate::models::ItemsResponseWithCount =
+                let mut items: crate::protocol::models::ItemsResponseWithCount =
                     serde_json::from_value(json!({
                         "Items": payload["Items"], "TotalRecordCount": 2, "StartIndex": 0
                     }))

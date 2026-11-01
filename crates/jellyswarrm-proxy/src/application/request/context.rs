@@ -5,8 +5,8 @@ use crate::{
     auth::service::{AuthorizationSession, LocalUser},
     domain::ids::ServerId,
     libraries::service::VirtualLibraryAccessScope,
+    protocol::caller::{request_device, JellyfinAuthorization},
     protocol::device::Device,
-    protocol::identity::{request_device, JellyfinAuthorization},
     servers::storage::Server,
 };
 
@@ -113,7 +113,7 @@ impl RequestContext {
     pub(crate) async fn validate_media_ids(
         &self,
         url: &url::Url,
-        analysis: Option<&crate::processors::request_analyzer::RequestBodyAnalysisResult>,
+        analysis: Option<&crate::translation::request_analyzer::RequestBodyAnalysisResult>,
         urls: &super::selection::UrlSelection,
     ) -> Result<(), super::routing::RoutingError> {
         use crate::protocol::routes::{MEDIA_ID_PATH_TAGS, MEDIA_ID_QUERY_TAGS};

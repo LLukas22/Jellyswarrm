@@ -4,7 +4,7 @@ use hyper::StatusCode;
 use std::{sync::LazyLock, time::Duration};
 
 use crate::{
-    processors::url_processor::UrlProcessor, servers::Server,
+    servers::Server, translation::url_processor::UrlProcessor,
     upstream::headers::remove_hop_by_hop_headers,
 };
 

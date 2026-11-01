@@ -4,10 +4,10 @@ use std::collections::{HashMap, HashSet};
 
 use crate::application::error::{ApplicationError, FailureStage};
 
-use crate::application::services::MediaServices;
+use crate::application::media_services::MediaServices;
 use crate::{
     application::request::input::OperationRequest,
-    media::catalog::{merge_media_group, TaggedMediaItem},
+    media::grouping::{merge_media_group, TaggedMediaItem},
     media::storage::{MediaMapping, MediaStorageService},
 };
 

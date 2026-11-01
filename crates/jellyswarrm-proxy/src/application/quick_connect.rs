@@ -4,8 +4,8 @@
 use crate::{
     application::accounts::AuthenticationService,
     auth::quick_connect::{QuickConnectSession, Redemption},
-    models::{AuthenticateResponse, SyncPlayUserAccessType},
     protocol::authorization::Authorization,
+    protocol::models::{AuthenticateResponse, SyncPlayUserAccessType},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -224,7 +224,7 @@ async fn authenticate_and_register(
     response.user.policy.is_administrator = false;
     response.user.policy.sync_play_access = SyncPlayUserAccessType::CreateAndJoinGroups;
     response.access_token = user.virtual_key.clone();
-    crate::application::sessions::decorate_authentication(
+    crate::application::client_sessions::decorate_authentication(
         &state.client_sessions,
         &state.settings.read().await.server_id,
         user,
@@ -330,7 +330,7 @@ mod tests {
             settings: crate::config::SettingsView::new(Arc::new(tokio::sync::RwLock::new(
                 config.clone(),
             ))),
-            client_sessions: Arc::new(crate::sessions::ClientSessionService::new(
+            client_sessions: Arc::new(crate::client_sessions::ClientSessionService::new(
                 Default::default(),
             )),
             mapping_authenticator: MappingAuthenticator::new(

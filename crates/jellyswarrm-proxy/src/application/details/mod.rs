@@ -3,15 +3,9 @@
 pub(crate) mod sources;
 
 #[cfg(test)]
-use hyper::StatusCode;
-
-#[cfg(test)]
-#[path = "../../unit_tests/item_details.rs"]
 mod tests;
 
-use crate::application::services::MediaServices;
-#[cfg(test)]
-use crate::test_support::MediaFixture;
+use crate::application::media_services::MediaServices;
 use crate::{
     application::details::sources::{
         merge_media_detail, normalize_detail_member, DetailMergeContext,
@@ -19,8 +13,8 @@ use crate::{
     application::error::ApplicationError,
     application::request::{context::TargetError, input::OperationRequest},
     libraries::service::VirtualLibraryResolution,
-    processors::response_processor::ResponseProcessingProfile,
     protocol::url::{contains_id, ensure_query_list_value},
+    translation::response_processor::ResponseProcessingProfile,
 };
 
 /// Retry ordered virtual-library members only for an upstream response failure.

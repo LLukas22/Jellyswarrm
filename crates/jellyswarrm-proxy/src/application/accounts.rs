@@ -7,24 +7,24 @@ use tracing::{debug, error, info, warn};
 use std::sync::Arc;
 
 use crate::{
+    application::media_services::MediaServices,
     application::request::input::OperationRequest,
     application::request::response::execute_json_request,
-    application::services::MediaServices,
     auth::{
         mapping_authentication::MappingAuthenticator,
         service::{LocalCredential, LocalUser},
         UserAuthorizationService,
     },
+    client_sessions::ClientSessionService,
     config::SettingsView,
     domain::security::Password,
-    models::{AuthenticateRequest, AuthenticateResponse, SyncPlayUserAccessType},
+    protocol::models::{AuthenticateRequest, AuthenticateResponse, SyncPlayUserAccessType},
     protocol::{
         authorization::Authorization,
+        caller::{request_device, JellyfinAuthorization},
         device::Device,
-        identity::{request_device, JellyfinAuthorization},
     },
     servers::ServerStorageService,
-    sessions::ClientSessionService,
 };
 
 use anyhow::Result;
@@ -69,10 +69,10 @@ pub(crate) async fn user_for_credential(
 }
 
 async fn process_user(
-    mut server_user: crate::models::User,
+    mut server_user: crate::protocol::models::User,
     user: &crate::auth::service::LocalUser,
     state: &MediaServices,
-) -> crate::models::User {
+) -> crate::protocol::models::User {
     server_user.id = user.id.to_string();
     server_user.name = user.original_username.clone();
     server_user.policy.is_administrator = false;
@@ -81,7 +81,7 @@ async fn process_user(
 }
 
 // http://foo:3000/users/public?)
-pub(crate) fn public_users() -> Vec<crate::models::User> {
+pub(crate) fn public_users() -> Vec<crate::protocol::models::User> {
     // For now, return an empty list
     vec![]
 }
@@ -89,13 +89,13 @@ pub(crate) fn public_users() -> Vec<crate::models::User> {
 pub(crate) async fn get_me(
     state: &MediaServices,
     input: OperationRequest,
-) -> Result<crate::models::User, ApplicationError> {
+) -> Result<crate::protocol::models::User, ApplicationError> {
     // Preserve routing failures before the legacy RequireUser rejection.
     let resolved = input.resolve_target(state).await?;
     let user = input.context.user().ok_or_else(unauthenticated)?;
     let request = build_request(state, &resolved.target, &input.original_request).await?;
     // Execute request and parse JSON response
-    let server_user: crate::models::User =
+    let server_user: crate::protocol::models::User =
         execute_json_request(&state.reqwest_client, request).await?;
 
     Ok(process_user(server_user, user, state).await)
@@ -104,7 +104,7 @@ pub(crate) async fn get_me(
 pub(crate) async fn get_user_by_id(
     state: &MediaServices,
     mut input: OperationRequest,
-) -> Result<crate::models::User, ApplicationError> {
+) -> Result<crate::protocol::models::User, ApplicationError> {
     let resolved = input.resolve_target(state).await?;
     let user = input.context.user().ok_or_else(unauthenticated)?;
     resolved.target.session().ok_or_else(unauthenticated)?;
@@ -115,7 +115,7 @@ pub(crate) async fn get_user_by_id(
     let request = build_request(state, &resolved.target, &input.original_request).await?;
 
     // Execute request and parse JSON response
-    let server_user: crate::models::User =
+    let server_user: crate::protocol::models::User =
         execute_json_request(&state.reqwest_client, request).await?;
 
     Ok(process_user(server_user, user, state).await)
@@ -151,9 +151,9 @@ fn reported_server_version(ui_version: &str) -> String {
 pub(crate) async fn public_server_info(
     state: &AuthenticationService,
     ui_version: &str,
-) -> crate::models::PublicServerInfo {
+) -> crate::protocol::models::PublicServerInfo {
     let cfg = state.settings.read().await;
-    crate::models::PublicServerInfo {
+    crate::protocol::models::PublicServerInfo {
         id: cfg.server_id.clone(),
         server_name: cfg.server_name.clone(),
         local_address: cfg.public_address.clone(),
@@ -168,24 +168,26 @@ pub(crate) async fn server_info(
     state: &MediaServices,
     input: OperationRequest,
     ui_version: &str,
-) -> Result<crate::models::ServerInfo, ApplicationError> {
+) -> Result<crate::protocol::models::ServerInfo, ApplicationError> {
     let resolved = input.resolve_target(state).await?;
     input.context.user().ok_or_else(unauthenticated)?;
     // Match the legacy original authorization: only the Authorization variant
     // enabled this response, not X-Emby-Authorization after remapping.
     let is_seerr = matches!(
         input.context.authorization(),
-        Some(crate::protocol::identity::JellyfinAuthorization::Authorization(authorization))
+        Some(crate::protocol::caller::JellyfinAuthorization::Authorization(authorization))
             if is_seerr_client(authorization)
     );
     if !is_seerr {
         let request = build_request(state, &resolved.target, &input.original_request).await?;
-        let mut server_info =
-            execute_json_request::<crate::models::ServerInfo>(&state.reqwest_client, request)
-                .await
-                .inspect_err(|status| {
-                    error!("Failed to get upstream server info: {status}");
-                })?;
+        let mut server_info = execute_json_request::<crate::protocol::models::ServerInfo>(
+            &state.reqwest_client,
+            request,
+        )
+        .await
+        .inspect_err(|status| {
+            error!("Failed to get upstream server info: {status}");
+        })?;
         let cfg = state.config.read().await;
         server_info.id = cfg.server_id.clone();
         server_info.server_name = cfg.server_name.clone();
@@ -195,7 +197,7 @@ pub(crate) async fn server_info(
     }
 
     let cfg = state.config.read().await;
-    Ok(crate::models::ServerInfo {
+    Ok(crate::protocol::models::ServerInfo {
         operating_system_display_name: Some(std::env::consts::OS.to_string()),
         has_pending_restart: Some(false),
         is_shutting_down: Some(false),
@@ -515,7 +517,7 @@ async fn decorate_auth_response(
     auth_response.user.policy.sync_play_access = SyncPlayUserAccessType::CreateAndJoinGroups;
     auth_response.access_token = user.virtual_key.clone();
     auth_response.user.id = user.id.to_string();
-    crate::application::sessions::decorate_authentication(
+    crate::application::client_sessions::decorate_authentication(
         &state.client_sessions,
         &state.settings.read().await.server_id,
         user,

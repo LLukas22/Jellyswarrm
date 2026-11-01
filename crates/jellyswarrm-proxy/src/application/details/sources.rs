@@ -1,12 +1,12 @@
 //! Resolve authorized media-source detail routes and project backend item details.
-use crate::models::enums::BaseItemKind;
+use crate::protocol::models::enums::BaseItemKind;
 use std::collections::HashSet;
 
 use serde_json::Value;
 use tokio::task::JoinSet;
 use tracing::{error, warn};
 
-use crate::application::services::MediaServices;
+use crate::application::media_services::MediaServices;
 use crate::{
     application::error::ApplicationError,
     application::request::context::{RequestContext, TargetError},
@@ -16,12 +16,12 @@ use crate::{
     media::storage::{
         MediaMapping, MediaVersionGroup, MediaVersionMember, MediaVersionSourceObservation,
     },
-    models::{MediaItem, MediaSource},
-    processors::response_processor::ResponseProcessingProfile,
-    protocol::identity::JellyfinAuthorization,
+    protocol::caller::JellyfinAuthorization,
+    protocol::models::{MediaItem, MediaSource},
     protocol::url::{ensure_query_list_value, replace_path_id},
     servers::compare_routes,
     servers::storage::Server,
+    translation::response_processor::ResponseProcessingProfile,
 };
 
 const MEDIA_SOURCES_FIELD: &str = "MediaSources";
@@ -77,7 +77,7 @@ struct HostedMediaSources {
     member_mapping: MediaMapping,
     server: Server,
     sources: Vec<MediaSource>,
-    user_data: Option<crate::models::UserData>,
+    user_data: Option<crate::protocol::models::UserData>,
     is_primary: bool,
 }
 
@@ -152,7 +152,7 @@ pub(crate) async fn merge_media_detail(
         if crate::media::identity::MediaKind::from_item_kind(&item.item_type)
             .is_some_and(|kind| kind.has_media_sources())
         {
-            crate::media::catalog::merge_playback_user_data(
+            crate::media::grouping::merge_playback_user_data(
                 &mut item.user_data,
                 hosted_sources
                     .iter()

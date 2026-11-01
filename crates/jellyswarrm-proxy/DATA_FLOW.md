@@ -41,7 +41,7 @@ flowchart TD
 Backend session tokens are encrypted in storage. The login response substitutes
 the local user's virtual IDs and uses the proxy token as its `AccessToken`.
 
-**Code:** [login handler](src/http/client_routes.rs) →
+**Code:** [login handler](src/http/client_routes/mod.rs) →
 [login orchestration](src/application/accounts.rs) →
 [backend mapping authentication](src/auth/mapping_authentication.rs).
 
@@ -66,8 +66,8 @@ scope but does not by itself provide a usable backend session.
 Application API keys are read-only proxy credentials, not new Jellyfin tokens.
 
 **Code:** [token resolution](src/application/accounts.rs),
-[media request collection](src/http/preprocessing.rs),
-[stored sessions](src/auth/service/sessions.rs),
+[media request collection](src/http/preprocessing/mod.rs),
+[stored sessions](src/auth/service/authorization_sessions.rs),
 [outgoing credential replacement](src/application/request/builder.rs).
 
 These diagrams describe mapped-user authentication. Some forwarding/media paths
@@ -97,12 +97,12 @@ flowchart TD
     Response --> Client
 ```
 
-**Code:** [HTTP handler](src/http/client_routes.rs) →
+**Code:** [HTTP handler](src/http/client_routes/mod.rs) →
 [input extraction](src/http/extractors.rs) →
 [catalog workflow](src/application/catalog/mod.rs).
 
 The diagram shows a federated listing; single-owner requests can delegate to
-`application/details/`. Application combines `processors/` for translation,
+`application/details/`. Application combines `translation/` for ID and URL rewriting,
 `upstream/` for transport and `media/` for identity storage. A reusable snapshot
 already contains the processed listing; cache hits only paginate it. Incomplete
 results are not cached, and incomplete or stale fetches must not erase newer
@@ -128,7 +128,7 @@ flowchart TD
 Explicit source selections win over episode-server preferences. Bindings are
 published only after reconciliation and final-response validation.
 
-**Code:** [negotiation](src/application/playback/negotiation.rs),
+**Code:** [negotiation](src/application/playback/negotiation/mod.rs),
 [target selection](src/application/playback/target.rs).
 
 ### 2. Deliver the media
@@ -170,9 +170,9 @@ flowchart TD
     Socket --> Target[Target client]
 ```
 
-**Code:** [session routes](src/http/sessions/routes.rs) →
-[application checks and coordination](src/application/sessions/mod.rs) →
-[WebSocket delivery](src/http/sessions/websocket.rs).
+**Code:** [session routes](src/http/client_sessions/routes.rs) →
+[application checks and coordination](src/application/client_sessions/mod.rs) →
+[WebSocket delivery](src/http/client_sessions/websocket.rs).
 
 Delivery failures also become HTTP errors.
 

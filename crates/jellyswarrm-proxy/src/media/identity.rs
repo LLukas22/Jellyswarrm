@@ -1,7 +1,7 @@
 //! Represent stable media identities, aliases, observations, and grouping evidence.
 use std::collections::BTreeSet;
 
-use crate::models::{enums::BaseItemKind, MediaItem};
+use crate::protocol::models::{enums::BaseItemKind, MediaItem};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) enum MediaProvider {

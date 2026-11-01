@@ -15,7 +15,7 @@ use crate::{
 #[derive(Clone)]
 pub(crate) struct AdapterFixture {
     media: MediaFixture,
-    pub(crate) sessions: application::sessions::SessionOperations,
+    pub(crate) sessions: application::client_sessions::SessionOperations,
     syncplay_operations: application::syncplay::SyncPlayOperations,
     pub(crate) management: ManagementState,
     pub(crate) quick_connect: QuickConnectStorage,
@@ -41,12 +41,12 @@ impl AdapterFixture {
         let syncplay = Arc::new(SyncPlayService::with_connections(
             media.client_sessions.connections.clone(),
         ));
-        let access = application::sessions::access::MediaAccess::new(
+        let access = application::client_sessions::access::MediaAccess::new(
             media.user_authorization.clone(),
             media.media_storage.clone(),
             media.url_selection.clone(),
         );
-        let sessions = application::sessions::SessionOperations::new(
+        let sessions = application::client_sessions::SessionOperations::new(
             media.user_authorization.clone(),
             media.client_sessions.clone(),
             syncplay.clone(),

@@ -4,9 +4,9 @@ use std::collections::VecDeque;
 use std::str::FromStr;
 
 use crate::{
-    media::catalog::{label_duplicates, TaggedMediaItem},
+    media::grouping::{label_duplicates, TaggedMediaItem},
     media::presentation::{CatalogItem, ItemNamePolicy},
-    models::{
+    protocol::models::{
         enums::{ItemSortBy, SortOrder},
         ItemsResponseVariants, ItemsResponseWithCount, MediaItem,
     },

@@ -1,5 +1,5 @@
 //! Enforce read-only API-key permissions before incoming requests reach handlers.
-use crate::{auth::UserAuthorizationService, protocol::identity::JellyfinAuthorization};
+use crate::{auth::UserAuthorizationService, protocol::caller::JellyfinAuthorization};
 use axum::{
     extract::{Request, State},
     http::{Method, StatusCode},

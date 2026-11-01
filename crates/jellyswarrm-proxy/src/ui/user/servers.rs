@@ -1,5 +1,5 @@
 //! Manage the current user’s backend server mappings and authentication methods.
-use crate::auth::pending_connects::PendingConnect;
+use crate::auth::quick_connect::pending::PendingConnect;
 use askama::Template;
 use axum::{
     extract::{Path, State},

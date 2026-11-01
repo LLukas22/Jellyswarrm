@@ -1,7 +1,7 @@
 //! HTTP coverage through the real proxy handler, preprocessing, SQLite mappings,
-//! request/response processors and the production item-detail method router.
+//! request/response translation and the production item-detail method router.
 use crate::config::MediaStreamingMode;
-use crate::processors::response_processor::ResponseProcessingProfile;
+use crate::translation::response_processor::ResponseProcessingProfile;
 use crate::{
     auth::service::LocalUser,
     config::AppConfig,

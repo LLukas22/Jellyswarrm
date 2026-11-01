@@ -5,7 +5,7 @@ use crate::{
         playback::target::ResolutionError,
         request::context::TargetError,
     },
-    processors::response_processor::PlaylistResponseError,
+    translation::response_processor::PlaylistResponseError,
 };
 use axum::response::{IntoResponse, Response};
 use hyper::StatusCode;
@@ -124,7 +124,7 @@ mod tests {
     #[test]
     fn input_aggregates_with_storage_failure_are_not_bad_requests() {
         use crate::application::request::input::{request_body_error, routing_error};
-        use crate::processors::ProcessingErrors;
+        use crate::translation::ProcessingErrors;
         for classify in [routing_error, request_body_error] {
             for storage_failed in [false, true] {
                 let mut causes = vec![anyhow::anyhow!("invalid selection")];

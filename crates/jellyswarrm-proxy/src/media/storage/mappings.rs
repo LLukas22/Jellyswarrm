@@ -210,11 +210,11 @@ impl MediaStorageService {
                             value.virtual_media_id == id_to_invalidate
                         })
                 {
-                    error!("Failed to invalidate cache entry: {}", e);
+                    tracing::error!("Failed to invalidate cache entry: {}", e);
                     self.original_mapping_cache.invalidate_all();
                 }
             }
-            info!("Deleted media mapping: {}", virtual_media_id);
+            tracing::info!("Deleted media mapping: {}", virtual_media_id);
             Ok(true)
         } else {
             Ok(false)
