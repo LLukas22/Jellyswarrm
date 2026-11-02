@@ -116,14 +116,5 @@ fn resolution(
     }
 }
 
-fn server_is_allowed(
-    server_id: ServerId,
-    access_scope: Option<&VirtualLibraryAccessScope>,
-    required_server_id: Option<ServerId>,
-) -> bool {
-    required_server_id.is_none_or(|required| required == server_id)
-        && access_scope.is_none_or(|scope| scope.allows(server_id))
-}
-
 #[cfg(test)]
 mod tests;

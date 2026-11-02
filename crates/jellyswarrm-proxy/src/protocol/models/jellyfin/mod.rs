@@ -4,7 +4,7 @@ pub(crate) mod enums;
 use std::collections::HashMap;
 
 use jellyswarrm_macros::multi_case_struct;
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 
 use crate::{
@@ -47,70 +47,6 @@ pub(crate) struct PlaybackResponse {
 
     #[serde(flatten)]
     pub(crate) extra: std::collections::HashMap<String, serde_json::Value>,
-}
-
-#[allow(dead_code)]
-fn serialize_playback_rate<S>(value: &Option<f64>, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    //For some reason Jellyfin expects playbackrates without decimal point to be integers
-    if let Some(value) = value {
-        if value.fract() == 0.0 {
-            // Serialize as integer if no fractional part
-            serializer.serialize_i64(*value as i64)
-        } else {
-            // Serialize as float if there's a fractional part
-            serializer.serialize_f64(*value)
-        }
-    } else {
-        serializer.serialize_none()
-    }
-}
-
-#[skip_serializing_none]
-#[multi_case_struct(pascal, camel)]
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct ProgressRequest {
-    pub(crate) audio_stream_index: Option<StreamIndex>,
-    pub(crate) buffered_ranges: Option<serde_json::Value>,
-    pub(crate) can_seek: Option<bool>,
-    pub(crate) event_name: Option<String>,
-    pub(crate) is_muted: Option<bool>,
-    pub(crate) is_paused: Option<bool>,
-    pub(crate) item_id: String,
-    pub(crate) max_streaming_bitrate: Option<i64>,
-    pub(crate) media_source_id: Option<String>,
-    pub(crate) now_playing_queue: Option<Vec<NowPlayingQueueItem>>,
-    #[serde(serialize_with = "serialize_playback_rate")]
-    pub(crate) playback_rate: Option<f64>,
-    pub(crate) playback_start_time_ticks: Option<i64>,
-    pub(crate) playlist_item_id: Option<String>,
-    pub(crate) play_method: Option<String>,
-    pub(crate) play_session_id: Option<String>,
-    pub(crate) position_ticks: Option<i64>,
-    pub(crate) repeat_mode: Option<String>,
-    pub(crate) secondary_subtitle_stream_index: Option<StreamIndex>,
-    pub(crate) shuffle_mode: Option<String>,
-    pub(crate) subtitle_stream_index: Option<StreamIndex>,
-    pub(crate) volume_level: Option<i32>,
-
-    #[serde(flatten)]
-    pub(crate) extra: std::collections::HashMap<String, serde_json::Value>,
-}
-
-#[multi_case_struct(pascal, camel)]
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct BufferedRange {
-    pub(crate) start: i64,
-    pub(crate) end: i64,
-}
-
-#[multi_case_struct(pascal, camel)]
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct NowPlayingQueueItem {
-    pub(crate) id: String,
-    pub(crate) playlist_item_id: String,
 }
 
 #[multi_case_struct(pascal, camel)]

@@ -6,7 +6,7 @@ pub(crate) mod catalog;
 pub(crate) mod client_sessions;
 pub(crate) mod details;
 pub(crate) mod error;
-pub(crate) mod fallback;
+pub(crate) mod forwarding;
 pub(crate) mod media_services;
 pub(crate) mod playback;
 pub(crate) mod quick_connect;

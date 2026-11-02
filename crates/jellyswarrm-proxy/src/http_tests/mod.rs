@@ -1,4 +1,6 @@
 //! Client-to-proxy-to-upstream HTTP contracts. Run with `cargo test ... http_tests`.
+//!
+#![doc = include_str!("README.md")]
 // Source-owned transport contracts run once. Opt into scenario_test! only when
 // merging changes the fixture's identities or the behavior being asserted.
 macro_rules! contract_test {

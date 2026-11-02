@@ -131,7 +131,7 @@ impl UrlSelection {
         scope: Option<&VirtualLibraryAccessScope>,
     ) -> Result<Option<Server>> {
         if let Some((_, server)) = self.media.get_media_mapping_with_server(id).await? {
-            if !allowed(server.id, scope, None) {
+            if !VirtualLibraryAccessScope::permits(server.id, scope, None) {
                 return Err(RoutingError::AccessDenied);
             }
             return Ok(Some(server));
@@ -167,7 +167,10 @@ impl UrlSelection {
         server: Option<ServerId>,
     ) -> std::result::Result<Option<MediaMapping>, sqlx::Error> {
         if let Some(mapping) = self.media.get_media_mapping_by_virtual(id).await? {
-            return Ok(allowed(mapping.server_id, scope, server).then_some(mapping));
+            return Ok(
+                VirtualLibraryAccessScope::permits(mapping.server_id, scope, server)
+                    .then_some(mapping),
+            );
         }
         if let Some(member) = self.media_version_member(id, scope, server).await? {
             return Ok(Some(member.mapping));
@@ -191,7 +194,7 @@ impl UrlSelection {
             .await?;
         let mut healthy = Vec::new();
         for member in members {
-            if allowed(member.server.id, scope, server)
+            if VirtualLibraryAccessScope::permits(member.server.id, scope, server)
                 && self
                     .servers
                     .server_status(member.server.id)
@@ -210,13 +213,4 @@ impl UrlSelection {
             )
         }))
     }
-}
-
-fn allowed(
-    server: ServerId,
-    scope: Option<&VirtualLibraryAccessScope>,
-    required: Option<ServerId>,
-) -> bool {
-    required.is_none_or(|required| required == server)
-        && scope.is_none_or(|scope| scope.allows(server))
 }

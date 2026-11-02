@@ -3,9 +3,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::{Map, Value};
 use std::boxed::Box;
-use std::collections::HashMap;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Context provided to the processor/analyzer for each JSON field
 pub(crate) struct JsonProcessingContext {
@@ -14,7 +12,6 @@ pub(crate) struct JsonProcessingContext {
     pub(crate) parent_path: String,
     pub(crate) depth: usize,
     pub(crate) is_array_item: bool,
-    pub(crate) array_index: Option<usize>,
     pub(crate) parent_object: Option<Map<String, Value>>, // Access to parent for conditional logic
 }
 
@@ -22,19 +19,14 @@ pub(crate) struct JsonProcessingContext {
 /// Result of processing a single JSON field
 pub(crate) struct JsonProcessingResult {
     pub(crate) new_key: Option<String>,
-    pub(crate) remove: bool,
-    pub(crate) add_fields: HashMap<String, Value>,
     pub(crate) modified: bool,
     pub(crate) errors: Vec<anyhow::Error>,
 }
 
-#[allow(dead_code)]
 impl JsonProcessingResult {
     pub(crate) fn new() -> Self {
         Self {
             new_key: None,
-            remove: false,
-            add_fields: HashMap::new(),
             modified: false,
             errors: Vec::new(),
         }
@@ -46,25 +38,8 @@ impl JsonProcessingResult {
         self
     }
 
-    pub(crate) fn remove_field(mut self) -> Self {
-        self.remove = true;
-        self.modified = true;
-        self
-    }
-
-    pub(crate) fn add_field(mut self, key: String, value: Value) -> Self {
-        self.add_fields.insert(key, value);
-        self.modified = true;
-        self
-    }
-
     pub(crate) fn mark_modified(mut self) -> Self {
         self.modified = true;
-        self
-    }
-
-    pub(crate) fn add_error(mut self, error: String) -> Self {
-        self.errors.push(anyhow::Error::msg(error));
         self
     }
 
@@ -107,16 +82,26 @@ impl ProcessingErrors {
     pub(crate) fn contains_cause<E: std::error::Error + 'static>(
         error: &(dyn std::error::Error + 'static),
     ) -> bool {
-        if error.is::<E>() {
+        Self::any_cause::<E>(error, &|_| true)
+    }
+
+    /// Whether any cause of type `E` satisfies `matches`.
+    pub(crate) fn any_cause<E: std::error::Error + 'static>(
+        error: &(dyn std::error::Error + 'static),
+        matches: &dyn Fn(&E) -> bool,
+    ) -> bool {
+        if error.downcast_ref::<E>().is_some_and(matches) {
             return true;
         }
         if let Some(errors) = error.downcast_ref::<ProcessingErrors>() {
             return errors
                 .causes
                 .iter()
-                .any(|cause| Self::contains_cause::<E>(cause.as_ref()));
+                .any(|cause| Self::any_cause(cause.as_ref(), matches));
         }
-        error.source().is_some_and(Self::contains_cause::<E>)
+        error
+            .source()
+            .is_some_and(|source| Self::any_cause(source, matches))
     }
 }
 
@@ -181,7 +166,6 @@ where
                 parent_path: parent_path.to_string(),
                 depth,
                 is_array_item: false,
-                array_index: None,
                 parent_object: parent_context_object.clone(),
             };
 
@@ -231,25 +215,13 @@ where
                 was_modified = true;
             }
 
-            // Apply processing result
-            if result.remove {
+            let final_key = if let Some(new_key) = result.new_key {
                 was_modified = true;
+                new_key
             } else {
-                let final_key = if let Some(new_key) = result.new_key {
-                    was_modified = true;
-                    new_key
-                } else {
-                    key.clone()
-                };
-
-                new_map.insert(final_key, val);
-
-                // Add any additional fields
-                for (add_key, add_value) in result.add_fields {
-                    new_map.insert(add_key, add_value);
-                    was_modified = true;
-                }
-            }
+                key
+            };
+            new_map.insert(final_key, val);
         }
     }
 
@@ -335,7 +307,6 @@ where
             parent_path: parent_path.to_string(),
             depth,
             is_array_item: true,
-            array_index: Some(index),
             parent_object: parent_object.cloned(),
         };
 
@@ -423,7 +394,6 @@ where
                 parent_path: parent_path.to_string(),
                 depth,
                 is_array_item: false,
-                array_index: None,
                 parent_object: parent_context.clone(),
             };
 
@@ -524,7 +494,6 @@ where
                     parent_path: parent_path.to_owned(),
                     depth,
                     is_array_item: true,
-                    array_index: Some(index),
                     parent_object: parent_object.cloned(),
                 };
                 if let Err(error) = analyzer.analyze(&field, item, context, accumulator).await {

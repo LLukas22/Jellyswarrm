@@ -3,9 +3,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tracing::debug;
 
-use super::user_ids::BackendUserIds;
-use crate::auth::service::{AuthorizationSession, LocalUser};
-use crate::protocol::caller::JellyfinAuthorization;
+use super::{user_ids::BackendUserIds, MixedServerSelection};
+use crate::auth::service::AuthorizationSession;
 use crate::servers::storage::Server;
 use crate::translation::field_matcher::{
     ID_FIELDS, MEDIA_ID_LIST_PARENT_FIELDS, SESSION_FIELDS, USER_FIELDS,
@@ -55,14 +54,11 @@ impl RequestProcessor {
     }
 }
 
-#[allow(dead_code)]
+/// The backend an outgoing body is translated for.
 pub(crate) struct RequestProcessingContext {
-    pub(crate) user: Option<LocalUser>,
     pub(crate) server: Server,
-    pub(crate) sessions: Option<Vec<(AuthorizationSession, Server)>>,
-    pub(crate) auth: Option<JellyfinAuthorization>,
+    /// The caller's session on `server`, used to map user IDs.
     pub(crate) session: Option<AuthorizationSession>,
-    pub(crate) new_auth: Option<JellyfinAuthorization>,
 }
 
 #[async_trait]
@@ -98,7 +94,7 @@ impl JsonProcessor<RequestProcessingContext> for RequestProcessor {
                     *value = Value::String(original_media_id);
                     result = result.mark_modified();
                 } else {
-                    return result.add_error("Playlist track or entry is unavailable on the selected server; mixed-server playlists are unsupported".to_string());
+                    return result.add_cause(MixedServerSelection::Playlist.into());
                 }
             }
             return result;
@@ -256,12 +252,8 @@ mod tests {
         let (data, pool) = processor_fixture().await;
         let processors = data.translation;
         let context = RequestProcessingContext {
-            user: None,
             server: test_server(),
-            sessions: None,
-            auth: None,
             session: None,
-            new_auth: None,
         };
         pool.close().await;
         for payload in [
@@ -320,12 +312,8 @@ mod tests {
             .unwrap()
             .unwrap();
         let context = RequestProcessingContext {
-            user: None,
             server: server.clone(),
-            sessions: None,
-            auth: None,
             session: None,
-            new_auth: None,
         };
         let requests =
             RequestProcessor::new(data.media_storage.clone(), data.user_authorization.clone());
@@ -458,12 +446,8 @@ mod tests {
             .await
             .unwrap();
         let context = RequestProcessingContext {
-            user: None,
             server: server.clone(),
-            sessions: None,
-            auth: None,
             session: Some(test_session()),
-            new_auth: None,
         };
         let requests =
             RequestProcessor::new(data.media_storage.clone(), data.user_authorization.clone());
@@ -506,12 +490,8 @@ mod tests {
         let data = processor_fixture().await.0;
         let processor = RequestProcessor::new(data.media_storage, data.user_authorization);
         let context = RequestProcessingContext {
-            user: None,
             server: test_server(),
-            sessions: None,
-            auth: None,
             session: Some(test_session()),
-            new_auth: None,
         };
         let mut payload = json!({ "UserId": "proxy-user" });
 
@@ -529,12 +509,8 @@ mod tests {
         let processor =
             RequestProcessor::new(data_context.media_storage, data_context.user_authorization);
         let context = RequestProcessingContext {
-            user: None,
             server: test_server(),
-            sessions: None,
-            auth: None,
             session: None,
-            new_auth: None,
         };
         let mut payload = json!({ "ItemId": "missing-id" });
         let original = payload.clone();
@@ -632,12 +608,8 @@ mod tests {
             Arc::new(UserAuthorizationService::new(pool)),
         );
         let context = RequestProcessingContext {
-            user: None,
             server,
-            sessions: None,
-            auth: None,
             session: None,
-            new_auth: None,
         };
         let mut payload = json!({ "ItemId": aggregate_id, "Ids": [aggregate_id] });
 

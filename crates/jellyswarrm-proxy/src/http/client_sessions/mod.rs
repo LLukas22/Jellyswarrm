@@ -82,7 +82,7 @@ where
 {
     type Rejection = StatusCode;
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, StatusCode> {
-        let url = crate::http::preprocessing::request_url(&parts.uri)
+        let url = crate::http::incoming::request_url(&parts.uri)
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         SessionOperations::from_ref(state)
             .authenticate(

@@ -1,4 +1,4 @@
-//! Media capabilities shared by catalog, playback, routing, and fallback forwarding.
+//! Media capabilities shared by catalog, playback, routing, and generic forwarding.
 //! Every handle is reference counted: workflows borrow `&MediaServices`, and
 //! bounded source tasks clone it. Accounts, administration, SyncPlay, and Quick
 //! Connect keep their own state and are not reachable from here.
@@ -48,10 +48,7 @@ impl MediaServices {
     }
 
     pub(crate) fn remove_prefix<'a>(&self, path: &'a str) -> &'a str {
-        match &self.url_prefix {
-            Some(prefix) => path.trim_start_matches(&format!("/{prefix}")),
-            None => path,
-        }
+        crate::protocol::url::strip_url_prefix(path, self.url_prefix())
     }
 
     pub(crate) fn request_builder(&self) -> UpstreamRequestBuilder<'_> {

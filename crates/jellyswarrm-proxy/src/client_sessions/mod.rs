@@ -1,4 +1,6 @@
 //! Proxy-owned presence, playback metadata and bounded connection delivery.
+//!
+#![doc = include_str!("README.md")]
 pub(crate) mod connections;
 pub(crate) mod models;
 mod service;

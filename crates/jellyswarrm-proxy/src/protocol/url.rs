@@ -23,6 +23,21 @@ pub(crate) fn join_server_url(server_url: &Url, request_path: &str) -> Url {
     new_url
 }
 
+/// Strip the proxy URL prefix (stored without slashes) from a request path:
+/// once, and only at a segment boundary. Other paths are returned unchanged.
+pub(crate) fn strip_url_prefix<'a>(path: &'a str, prefix: Option<&str>) -> &'a str {
+    let Some(prefix) = prefix else {
+        return path;
+    };
+    match path
+        .strip_prefix('/')
+        .and_then(|rest| rest.strip_prefix(prefix))
+    {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => rest,
+        _ => path,
+    }
+}
+
 pub(crate) fn decoded_path_segments(path: &str) -> Vec<String> {
     let decoded = percent_encoding::percent_decode_str(path).decode_utf8_lossy();
     decoded
@@ -102,6 +117,16 @@ pub(crate) fn ensure_query_list_value(url: &mut Url, expected_key: &str, value: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn url_prefix_is_stripped_once_at_a_segment_boundary() {
+        assert_eq!(strip_url_prefix("/jf/Items", Some("jf")), "/Items");
+        assert_eq!(strip_url_prefix("/jf", Some("jf")), "");
+        assert_eq!(strip_url_prefix("/jf/jf/Items", Some("jf")), "/jf/Items");
+        assert_eq!(strip_url_prefix("/jfx/Items", Some("jf")), "/jfx/Items");
+        assert_eq!(strip_url_prefix("/Items", Some("jf")), "/Items");
+        assert_eq!(strip_url_prefix("/jf/Items", None), "/jf/Items");
+    }
 
     #[test]
     fn encoded_id_lookup_and_replacement_preserve_other_path_encoding() {

@@ -75,7 +75,13 @@ impl VirtualLibraryService {
         Ok(resolved
             .members
             .into_iter()
-            .filter(|member| server_is_allowed(member.server.id, access_scope, required_server_id))
+            .filter(|member| {
+                VirtualLibraryAccessScope::permits(
+                    member.server.id,
+                    access_scope,
+                    required_server_id,
+                )
+            })
             .max_by(|left, right| {
                 compare_routes(
                     &left.server,
@@ -123,7 +129,7 @@ impl VirtualLibraryService {
 
         let mut members = Vec::new();
         for record in records {
-            if !server_is_allowed(record.server_id, access_scope, None) {
+            if !VirtualLibraryAccessScope::permits(record.server_id, access_scope, None) {
                 continue;
             }
             // A server mapping alone does not establish access to every library

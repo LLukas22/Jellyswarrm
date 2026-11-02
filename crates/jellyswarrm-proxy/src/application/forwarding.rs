@@ -1,346 +1,385 @@
-//! Prepare authorized fallback requests and forward responses through the proxy workflow.
-use crate::application::error::FailureStage;
+//! Forward a client request that has no dedicated workflow to one backend.
+//!
+//! This is the proxy's default path. [`prepare`] decides *where* the request
+//! goes; [`forward`] sends it and translates the answer:
+//!
+//! 1. select the backend: a playback report goes to the owner of its item,
+//!    everything else through `request::routing`;
+//! 2. authorize the target: playlist/collection IDs must live on it, and the
+//!    proxy credentials are swapped for the backend session's;
+//! 3. build the upstream request: backend URL, credentials, IDs in path, query
+//!    and JSON body;
+//! 4. send it and translate a JSON response back to virtual IDs;
+//! 5. after success, update proxy state (catalog caches, client sessions,
+//!    episode preference, playback bindings).
 use hyper::{
-    header::{self, HeaderValue},
-    Method, Response,
+    body::Bytes,
+    header::{self, HeaderMap, HeaderValue},
+    Method, Response, StatusCode,
 };
 use serde_json::Value;
 use tracing::{debug, warn};
 
 use crate::{
-    application::request::remap_authorization,
     application::{
-        error::ApplicationError,
+        error::{ApplicationError, FailureStage},
         media_services::MediaServices,
-        playback::{lifecycle::PendingPlaybackSessionUpdate, reports},
-        request::{context::AuthorizedTarget, input::OperationRequest, routing},
+        playback::{
+            continuity::EpisodeContinuity, lifecycle::PendingPlaybackSessionUpdate, reports,
+        },
+        request::{
+            context::AuthorizedTarget,
+            input::{routing_error, OperationRequest},
+        },
     },
     protocol::routes::PlaybackSessionAction,
     protocol::url::{decoded_path_segments, replace_path_id},
     servers::compare_routes,
-    translation::request_processor::RequestProcessingContext,
-    translation::response_processor::ResponseProcessingProfile,
+    translation::{
+        request_processor::RequestProcessingContext, response_processor::ResponseProcessingProfile,
+    },
     upstream::headers::is_hop_by_hop_header,
 };
 
-/// Preserve the upstream-success observation point. Playback-binding commits
-/// remain separate and revision-fenced after the required response validation.
-async fn forwarded_success(
-    state: &MediaServices,
-    input: &OperationRequest,
-    mutation_viewer: Option<&str>,
-    server_id: crate::domain::ids::ServerId,
-) {
-    if let Some(viewer) = mutation_viewer {
-        state.catalog_snapshots.invalidate_viewer(viewer);
-    }
-    let context = &input.context;
-    let (Some(user), Some(token)) = (
-        context.user(),
-        context.authorization().and_then(|auth| auth.token_ref()),
-    ) else {
-        return;
-    };
-    let path = state.remove_prefix(input.original_request.url().path());
-    let action =
-        crate::protocol::routes::playback_session_action(input.original_request.method(), path);
-    if let Some(action) = action {
-        if let Some(report) = input
-            .original_request
-            .body()
-            .and_then(|body| body.as_bytes())
-            .and_then(|bytes| serde_json::from_slice(bytes).ok())
-        {
-            let id = state
-                .client_sessions
-                .ensure(user, token, context.device())
-                .await;
-            state
-                .client_sessions
-                .report(&id, action == PlaybackSessionAction::Remove, &report)
-                .await;
-            if action != PlaybackSessionAction::Remove {
-                if let Some(item) = report.as_object().and_then(|object| {
-                    object
-                        .iter()
-                        .find(|(key, _)| key.eq_ignore_ascii_case("ItemId"))
-                        .and_then(|(_, value)| value.as_str())
-                }) {
-                    match crate::application::playback::continuity::EpisodeContinuity::prepare(
-                        &state.media_storage,
-                        &state.client_sessions,
-                        context,
-                        item,
-                    )
-                    .await
-                    {
-                        Ok(Some(continuity)) => {
-                            continuity.remember(&state.client_sessions, server_id).await
-                        }
-                        Ok(None) => {}
-                        Err(_) => warn!(
-                            "Could not retain episode server preference after playback report"
-                        ),
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// A selected, validated operation whose client IDs have not yet been encoded.
-/// Retain the untouched input for local observation after successful delivery.
-pub(crate) struct PreparedFallback {
+/// A request with its backend chosen and authorized, not yet sent.
+pub(crate) struct PreparedForward {
     input: OperationRequest,
+    /// Request path without the proxy URL prefix.
+    path: String,
+    /// The client request, still addressed to the proxy with virtual IDs. Only a
+    /// playback report's `ItemId` differs from `input.original_request`.
     normalized_request: reqwest::Request,
     target: AuthorizedTarget,
+    report: Option<PlaybackReport>,
+}
+
+/// `POST /Sessions/Playing[/Progress|/Stopped]`: parsed once in `prepare`.
+struct PlaybackReport {
+    action: PlaybackSessionAction,
+    /// The body as the client sent it.
+    body: Value,
+    /// Binding change to commit once the backend accepted the report.
     pending_update: Option<PendingPlaybackSessionUpdate>,
 }
 
+/// Choose and authorize the backend. Sends nothing and changes no state.
 pub(crate) async fn prepare(
     state: &MediaServices,
     input: OperationRequest,
     action: Option<PlaybackSessionAction>,
-) -> anyhow::Result<PreparedFallback> {
-    let mut request = input
-        .original_request
-        .try_clone()
-        .ok_or_else(|| anyhow::anyhow!("failed to clone preprocessed request body"))?;
-    let context = &input.context;
-    let (server, session, _) = if action.is_some() {
-        let target = reports::resolve_server(
-            &context.backends().sessions,
-            input
-                .body_analysis
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("missing playback report"))?,
-            &state.media_storage,
-        )
-        .await?;
-        (target.server, Some(target.session), true)
-    } else {
-        routing::resolve_server(
-            &context.backends().sessions,
-            &input.body_analysis,
-            state,
-            &input.original_request,
-            context.access_scope(),
-        )
-        .await?
-    };
-    let playback_member = if action.is_some() {
-        let member = reports::resolve_member(
-            input
-                .body_analysis
-                .as_ref()
-                .expect("validated playback report"),
-            &state.media_storage,
-            &server,
-        )
-        .await?;
-        let mut body: Value = request
-            .body()
-            .and_then(|body| body.as_bytes())
-            .and_then(|bytes| serde_json::from_slice(bytes).ok())
-            .ok_or_else(|| anyhow::anyhow!("missing playback body"))?;
-        if let Some(object) = body.as_object_mut() {
-            for (key, value) in object.iter_mut() {
-                if key.eq_ignore_ascii_case("ItemId") {
-                    *value = Value::String(member.virtual_media_id.clone());
-                }
-            }
+) -> Result<PreparedForward, ApplicationError> {
+    let path = state
+        .remove_prefix(input.original_request.url().path())
+        .to_owned();
+    let mut normalized_request = input.original_request.try_clone().ok_or_else(|| {
+        ApplicationError::Internal(anyhow::anyhow!("client request body is not buffered"))
+    })?;
+    let (target, report) = match action {
+        None => (input.resolve_target(state).await?.target, None),
+        Some(action) => {
+            let (target, report) =
+                prepare_report(state, &input, action, &mut normalized_request).await?;
+            (target, Some(report))
         }
-        *request.body_mut() = Some(serde_json::to_vec(&body)?.into());
-        Some(member)
-    } else {
-        None
     };
-    let pending_update = PendingPlaybackSessionUpdate::plan(
-        action,
-        input.body_analysis.as_ref(),
-        context.user().map(|user| user.id.as_str()),
-        server.id,
-        playback_member
-            .as_ref()
-            .map(|member| member.original_media_id.as_str()),
-    );
-    state
-        .translation
-        .url_processor
-        .validate_container_request(
-            request.url(),
-            session.as_ref(),
-            context.access_scope(),
-            server.id,
-            input
-                .body_analysis
-                .as_ref()
-                .map(|analysis| analysis.found_ids.as_slice())
-                .unwrap_or_default(),
-        )
-        .await?;
-    let auth = remap_authorization(context.authorization(), session.as_ref());
-    let target = AuthorizedTarget::new(server, session, auth, context.access_scope().cloned())?;
-    Ok(PreparedFallback {
+    Ok(PreparedForward {
         input,
-        normalized_request: request,
+        path,
+        normalized_request,
         target,
-        pending_update,
+        report,
     })
 }
 
-/// Generic JSON/binary passthrough workflow. The HTTP adapter owns incoming
-/// request parsing and converts this transport-neutral response to an Axum body.
-/// This preserves the legacy buffered fallback; media delivery remains streamed
-/// through the dedicated delivery adapter.
+/// Reports never use the generic best-server fallback: a wrong destination
+/// would update another copy's playback state.
+async fn prepare_report(
+    state: &MediaServices,
+    input: &OperationRequest,
+    action: PlaybackSessionAction,
+    request: &mut reqwest::Request,
+) -> Result<(AuthorizedTarget, PlaybackReport), ApplicationError> {
+    let invalid = |reason: &str| ApplicationError::InvalidRouting(anyhow::anyhow!("{reason}"));
+    let analysis = input
+        .body_analysis
+        .as_ref()
+        .ok_or_else(|| invalid("missing playback report"))?;
+    let owner = reports::resolve_server(
+        &input.context.backends().sessions,
+        analysis,
+        &state.media_storage,
+    )
+    .await
+    .map_err(routing_error)?;
+    let member = reports::resolve_member(analysis, &state.media_storage, &owner.server)
+        .await
+        .map_err(routing_error)?;
+
+    // Point the report at the owner's member item. Body translation then maps
+    // that member ID to the backend's own item ID.
+    let body: Value = request
+        .body()
+        .and_then(|body| body.as_bytes())
+        .and_then(|bytes| serde_json::from_slice(bytes).ok())
+        .ok_or_else(|| invalid("missing playback body"))?;
+    let mut rewritten = body.clone();
+    if let Some(object) = rewritten.as_object_mut() {
+        for (key, value) in object.iter_mut() {
+            if key.eq_ignore_ascii_case("ItemId") {
+                *value = Value::String(member.virtual_media_id.clone());
+            }
+        }
+    }
+    *request.body_mut() = Some(
+        serde_json::to_vec(&rewritten)
+            .map_err(ApplicationError::Serialization)?
+            .into(),
+    );
+
+    let pending_update = PendingPlaybackSessionUpdate::plan(
+        Some(action),
+        Some(analysis),
+        input.context.user().map(|user| user.id.as_str()),
+        owner.server.id,
+        Some(member.original_media_id.as_str()),
+    );
+    let target = input
+        .authorize_target(state, owner.server, Some(owner.session))
+        .await?;
+    Ok((
+        target,
+        PlaybackReport {
+            action,
+            body,
+            pending_update,
+        },
+    ))
+}
+
+/// Send the prepared request and return the translated backend response.
+/// Bodies are buffered; streamed media delivery uses `upstream::delivery`.
 pub(crate) async fn forward(
     state: &MediaServices,
-    prepared: PreparedFallback,
+    prepared: PreparedForward,
     response_profile: ResponseProcessingProfile,
-) -> Result<Response<hyper::body::Bytes>, ApplicationError> {
-    if let Some(response) = update_aggregate(state, &prepared.input).await? {
+) -> Result<Response<Bytes>, ApplicationError> {
+    if let Some(response) = update_aggregate(state, &prepared).await? {
         let bytes = serde_json::to_vec(&response).map_err(ApplicationError::Serialization)?;
         return Response::builder()
             .header(header::CONTENT_TYPE, "application/json")
             .body(bytes.into())
             .map_err(|error| ApplicationError::Internal(error.into()));
     }
-    let PreparedFallback {
-        input,
-        normalized_request,
-        target,
-        pending_update,
-    } = prepared;
-    let context = &input.context;
-    let mut request = state
-        .request_builder()
-        .build(&target, &normalized_request)
-        .await?;
-    let request_url = request.url().clone();
-    let mutation_viewer = (!matches!(*request.method(), Method::GET | Method::HEAD))
-        .then(|| context.user().map(|user| user.id.clone()))
-        .flatten();
-    let server = target.server().clone();
-    let proxy_api_key = context
-        .authorization()
-        .and_then(|auth| auth.token_ref())
-        .map(str::to_string);
-    let processing = RequestProcessingContext {
-        user: context.user().cloned(),
-        server: server.clone(),
-        sessions: context.backends().sessions.clone(),
-        auth: context.authorization().cloned(),
-        session: target.session().cloned(),
-        new_auth: target.authorization().cloned(),
-    };
-    state
-        .translation
-        .process_request_body(&mut request, &processing, &request_url)
-        .await?;
+
+    let upstream = build_upstream_request(state, &prepared).await?;
+    let is_mutation = !matches!(*upstream.method(), Method::GET | Method::HEAD);
     let response = state
         .reqwest_client
-        .execute(request)
+        .execute(upstream)
         .await
         .map_err(|error| ApplicationError::UpstreamTransport(error.without_url()))?;
     let status = response.status();
     if status.is_success() {
-        forwarded_success(state, &input, mutation_viewer.as_deref(), server.id).await;
+        observe_success(state, &prepared, is_mutation).await;
     } else {
         warn!("Upstream server returned error status: {}", status);
     }
+
     let mut headers = response.headers().clone();
-    let mut body = response
+    let body = response
         .bytes()
         .await
         .map_err(|error| ApplicationError::UpstreamTransport(error.without_url()))?;
-    let is_json = headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.contains("application/json"));
-    if status.is_success() && response_profile.requires_json() && (!is_json || body.is_empty()) {
-        return Err(ApplicationError::InvalidUpstreamPayload(
-            "required JSON response is empty or has wrong content type",
-        ));
-    }
-    if is_json && !body.is_empty() {
-        match serde_json::from_slice::<Value>(&body) {
-            Ok(mut value) => {
-                let modified = state
-                    .process_response_json(
-                        &mut value,
-                        &server,
-                        if status.is_success() {
-                            response_profile
-                        } else {
-                            ResponseProcessingProfile::BestEffortMedia
-                        },
-                        proxy_api_key.as_deref(),
-                    )
-                    .await?;
-                if status.is_success() && response_profile != ResponseProcessingProfile::Disabled {
-                    if let Some(token) = proxy_api_key.as_deref() {
-                        state
-                            .client_sessions
-                            .cache_media_response(token, &value)
-                            .await;
-                    }
-                }
-                if modified {
-                    let processed =
-                        serde_json::to_vec(&value).map_err(ApplicationError::Serialization)?;
-                    headers.remove(header::CONTENT_LENGTH);
-                    headers.remove(header::TRANSFER_ENCODING);
-                    headers.insert(
-                        header::CONTENT_LENGTH,
-                        HeaderValue::from_str(&processed.len().to_string())
-                            .map_err(|error| ApplicationError::Internal(error.into()))?,
-                    );
-                    body = processed.into();
-                }
-            }
-            Err(error) => {
-                if status.is_success() && response_profile.requires_json() {
-                    return Err(ApplicationError::InvalidUpstreamJson(error));
-                }
-                debug!(
-                    "Skipping response JSON processing because parsing failed: {}",
-                    error
-                );
-            }
-        }
-    }
-    let mut builder = Response::builder().status(status);
-    for (name, value) in &headers {
-        if !is_hop_by_hop_header(name) {
-            builder = builder.header(name, value);
-        }
-    }
-    let response = builder
-        .body(body)
-        .map_err(|error| ApplicationError::Internal(error.into()))?;
+    let body = translate_response(
+        state,
+        &prepared,
+        status,
+        &mut headers,
+        body,
+        response_profile,
+    )
+    .await?;
+    let response = client_response(status, &headers, body)?;
+
     if status.is_success() {
-        if let Some(update) = pending_update {
+        if let Some(update) = prepared.report.and_then(|report| report.pending_update) {
             update.commit(&state.playback_registry).await;
         }
     }
     Ok(response)
 }
 
+/// Backend URL and credentials, plus virtual→backend IDs in the JSON body.
+async fn build_upstream_request(
+    state: &MediaServices,
+    prepared: &PreparedForward,
+) -> Result<reqwest::Request, ApplicationError> {
+    let target = &prepared.target;
+    let mut request = state
+        .request_builder()
+        .build(target, &prepared.normalized_request)
+        .await?;
+    let processing = RequestProcessingContext {
+        server: target.server().clone(),
+        session: target.session().cloned(),
+    };
+    let url = request.url().clone();
+    state
+        .translation
+        .process_request_body(&mut request, &processing, &url)
+        .await?;
+    Ok(request)
+}
+
+/// Backend→virtual IDs in a JSON response. Non-JSON bodies pass through.
+async fn translate_response(
+    state: &MediaServices,
+    prepared: &PreparedForward,
+    status: StatusCode,
+    headers: &mut HeaderMap,
+    body: Bytes,
+    profile: ResponseProcessingProfile,
+) -> Result<Bytes, ApplicationError> {
+    let is_json = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("application/json"));
+    if status.is_success() && profile.requires_json() && (!is_json || body.is_empty()) {
+        return Err(ApplicationError::InvalidUpstreamPayload(
+            "required JSON response is empty or has wrong content type",
+        ));
+    }
+    if !is_json || body.is_empty() {
+        return Ok(body);
+    }
+    let mut value = match serde_json::from_slice::<Value>(&body) {
+        Ok(value) => value,
+        Err(error) if status.is_success() && profile.requires_json() => {
+            return Err(ApplicationError::InvalidUpstreamJson(error));
+        }
+        Err(error) => {
+            debug!("Skipping response JSON processing because parsing failed: {error}");
+            return Ok(body);
+        }
+    };
+    let token = prepared
+        .input
+        .context
+        .authorization()
+        .and_then(|auth| auth.token_ref());
+    let modified = state
+        .process_response_json(
+            &mut value,
+            prepared.target.server(),
+            if status.is_success() {
+                profile
+            } else {
+                ResponseProcessingProfile::BestEffortMedia
+            },
+            token,
+        )
+        .await?;
+    if status.is_success() && profile != ResponseProcessingProfile::Disabled {
+        if let Some(token) = token {
+            state
+                .client_sessions
+                .cache_media_response(token, &value)
+                .await;
+        }
+    }
+    if !modified {
+        return Ok(body);
+    }
+    let processed = serde_json::to_vec(&value).map_err(ApplicationError::Serialization)?;
+    headers.remove(header::TRANSFER_ENCODING);
+    headers.insert(
+        header::CONTENT_LENGTH,
+        HeaderValue::from_str(&processed.len().to_string())
+            .map_err(|error| ApplicationError::Internal(error.into()))?,
+    );
+    Ok(processed.into())
+}
+
+fn client_response(
+    status: StatusCode,
+    headers: &HeaderMap,
+    body: Bytes,
+) -> Result<Response<Bytes>, ApplicationError> {
+    let mut builder = Response::builder().status(status);
+    for (name, value) in headers {
+        if !is_hop_by_hop_header(name) {
+            builder = builder.header(name, value);
+        }
+    }
+    builder
+        .body(body)
+        .map_err(|error| ApplicationError::Internal(error.into()))
+}
+
+/// Proxy-side effects of a request the backend accepted. Runs before the
+/// response body is read; playback-binding commits wait for response validation.
+async fn observe_success(state: &MediaServices, prepared: &PreparedForward, is_mutation: bool) {
+    let context = &prepared.input.context;
+    if is_mutation {
+        if let Some(user) = context.user() {
+            state.catalog_snapshots.invalidate_viewer(&user.id);
+        }
+    }
+    let (Some(report), Some(user), Some(token)) = (
+        prepared.report.as_ref(),
+        context.user(),
+        context.authorization().and_then(|auth| auth.token_ref()),
+    ) else {
+        return;
+    };
+    let client_session = state
+        .client_sessions
+        .ensure(user, token, context.device())
+        .await;
+    let stopped = report.action == PlaybackSessionAction::Remove;
+    state
+        .client_sessions
+        .report(&client_session, stopped, &report.body)
+        .await;
+    if stopped {
+        return;
+    }
+    let Some(item) = report.body.as_object().and_then(|object| {
+        object
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case("ItemId"))
+            .and_then(|(_, value)| value.as_str())
+    }) else {
+        return;
+    };
+    match EpisodeContinuity::prepare(&state.media_storage, &state.client_sessions, context, item)
+        .await
+    {
+        Ok(Some(continuity)) => {
+            continuity
+                .remember(&state.client_sessions, prepared.target.server().id)
+                .await
+        }
+        Ok(None) => {}
+        Err(_) => warn!("Could not retain episode server preference after playback report"),
+    }
+}
+
 /// A watched-state action on a merged item applies to every authorized copy.
 /// Preflight availability before writing; never acknowledge a partial update
 /// as success. Explicit member IDs continue through the ordinary proxy.
-pub(crate) async fn update_aggregate(
+async fn update_aggregate(
     state: &MediaServices,
-    request: &OperationRequest,
+    prepared: &PreparedForward,
 ) -> Result<Option<Value>, ApplicationError> {
+    let request = &prepared.input;
     if !matches!(
         *request.original_request.method(),
         reqwest::Method::POST | reqwest::Method::DELETE
     ) {
         return Ok(None);
     }
-    let segments =
-        decoded_path_segments(state.remove_prefix(request.original_request.url().path()));
+    let segments = decoded_path_segments(&prepared.path);
     let (tag, id) = match segments.as_slice() {
         [users, _, tag, id]
             if users.eq_ignore_ascii_case("Users") && tag.eq_ignore_ascii_case("PlayedItems") =>

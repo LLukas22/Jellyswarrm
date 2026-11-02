@@ -1,9 +1,13 @@
 //! Compose translation and wire encoding for an application-authorized target.
 use crate::{
-    application::request::context::AuthorizedTarget, auth::service::AuthorizationSession,
-    libraries::service::VirtualLibraryAccessScope, protocol::caller::JellyfinAuthorization,
-    protocol::url::join_server_url, servers::storage::Server,
-    translation::url_processor::UrlProcessor, upstream::headers::remove_hop_by_hop_headers,
+    application::request::context::AuthorizedTarget,
+    auth::service::AuthorizationSession,
+    libraries::service::VirtualLibraryAccessScope,
+    protocol::caller::JellyfinAuthorization,
+    protocol::url::{join_server_url, strip_url_prefix},
+    servers::storage::Server,
+    translation::url_processor::UrlProcessor,
+    upstream::headers::remove_hop_by_hop_headers,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -65,10 +69,7 @@ impl<'a> UpstreamRequestBuilder<'a> {
         self.urls
             .client_to_server_url(&mut url, session, access_scope, server.id)
             .await?;
-        let path = match self.proxy_prefix {
-            Some(prefix) => url.path().trim_start_matches(&format!("/{prefix}")),
-            None => url.path(),
-        };
+        let path = strip_url_prefix(url.path(), self.proxy_prefix);
         let mut destination = join_server_url(&server.url, path);
         destination.set_query(url.query());
         *request.url_mut() = destination;

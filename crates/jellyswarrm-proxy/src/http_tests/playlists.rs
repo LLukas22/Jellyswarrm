@@ -5,7 +5,7 @@ use crate::translation::response_processor::ResponseProcessingProfile;
 use crate::{
     auth::service::LocalUser,
     config::AppConfig,
-    http::{client_routes::item_detail_routes, fallback::fallback_handler},
+    http::{client_routes::item_detail_routes, forwarding},
     persistence::MIGRATOR,
     protocol::authorization::Authorization,
     servers::Server,
@@ -96,7 +96,7 @@ impl Fixture {
         state.server_storage.check_servers_health().await;
         let app = Router::new()
             .route("/Items/{item_id}", item_detail_routes())
-            .fallback(fallback_handler)
+            .fallback(forwarding::forward)
             .with_state(state.app_state().await);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());

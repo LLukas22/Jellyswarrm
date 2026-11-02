@@ -220,89 +220,6 @@ impl UrlProcessor {
             })
     }
 
-    pub(crate) async fn validate_container_request(
-        &self,
-        url: &url::Url,
-        session: Option<&AuthorizationSession>,
-        scope: Option<&VirtualLibraryAccessScope>,
-        server_id: ServerId,
-        body_media_ids: &[String],
-    ) -> Result<()> {
-        let segments = decoded_path_segments(url.path());
-        let is_playlist = segments
-            .iter()
-            .any(|part| part.eq_ignore_ascii_case("Playlists"));
-        let is_collection = segments
-            .iter()
-            .any(|part| part.eq_ignore_ascii_case("Collections"));
-        if !is_playlist && !is_collection {
-            return Ok(());
-        }
-        let unavailable = if is_playlist {
-            "Playlist track or entry is unavailable on the selected server; mixed-server playlists are unsupported"
-        } else {
-            "Collection item is unavailable on the selected server; mixed-server collections are unsupported"
-        };
-        // Check container IDs even when they are malformed, since contains_id
-        // intentionally only matches UUID-like path segments.
-        for pair in segments.windows(2) {
-            if (pair[0].eq_ignore_ascii_case("Playlists")
-                || pair[0].eq_ignore_ascii_case("Collections"))
-                && self
-                    .client_media_mapping(&pair[1], scope, Some(server_id))
-                    .await?
-                    .is_none()
-            {
-                anyhow::bail!(unavailable);
-            }
-        }
-        for tag in MEDIA_ID_PATH_TAGS {
-            if let Some(id) = contains_id(url, tag) {
-                if self
-                    .client_media_mapping(&id, scope, Some(server_id))
-                    .await?
-                    .is_none()
-                {
-                    anyhow::bail!(unavailable);
-                }
-            }
-        }
-        for (key, value) in url.query_pairs() {
-            if matches_case_insensitive(&key, USER_ID_QUERY_TAGS) {
-                self.upstream_user_id(&value, session, server_id).await?;
-            }
-            if matches_case_insensitive(&key, MEDIA_ID_QUERY_TAGS) {
-                for id in value.split(',').map(str::trim).filter(|id| !id.is_empty()) {
-                    if self
-                        .client_media_mapping(id, scope, Some(server_id))
-                        .await?
-                        .is_none()
-                    {
-                        anyhow::bail!(unavailable);
-                    }
-                }
-            }
-        }
-        for id in body_media_ids {
-            if self
-                .client_media_mapping(id, scope, Some(server_id))
-                .await?
-                .is_none()
-            {
-                anyhow::bail!(unavailable);
-            }
-        }
-        // Validate even malformed recipient IDs: contains_id deliberately skips
-        // non-UUID path values, which must not bypass sharing validation.
-        if let Some(pair) = segments
-            .windows(2)
-            .find(|pair| pair[0].eq_ignore_ascii_case("Users"))
-        {
-            self.upstream_user_id(&pair[1], session, server_id).await?;
-        }
-        Ok(())
-    }
-
     async fn replace_user_ids_in_path(
         &self,
         url: &mut url::Url,
@@ -344,7 +261,7 @@ impl UrlProcessor {
                             .get_media_version_source_route(group.id, source)
                             .await?
                         {
-                            if server_is_allowed(
+                            if VirtualLibraryAccessScope::permits(
                                 route.member_mapping.server_id,
                                 access_scope,
                                 required_server_id,
@@ -360,7 +277,7 @@ impl UrlProcessor {
                     }
                 }
                 if let Some(media_mapping) = self
-                    .client_media_mapping(&media_id, access_scope, required_server_id)
+                    .mapping_on_server(&media_id, access_scope, required_server_id)
                     .await?
                 {
                     debug!(
@@ -373,7 +290,7 @@ impl UrlProcessor {
         }
         if let Some(source_id) = source_id {
             if let Some(mapping) = self
-                .client_media_mapping(&source_id, access_scope, required_server_id)
+                .mapping_on_server(&source_id, access_scope, required_server_id)
                 .await?
             {
                 *url = replace_id(url.clone(), &source_id, &mapping.original_media_id);
@@ -462,7 +379,7 @@ impl UrlProcessor {
             }
 
             if let Some(media_mapping) = self
-                .client_media_mapping(trimmed, access_scope, required_server_id)
+                .mapping_on_server(trimmed, access_scope, required_server_id)
                 .await?
             {
                 debug!(
@@ -496,7 +413,10 @@ impl UrlProcessor {
             .await
     }
 
-    pub(crate) async fn client_media_mapping(
+    /// The mapping of `virtual_media_id` on the already-selected backend.
+    /// Unlike `UrlSelection::client_media_mapping`, this never consults server
+    /// health: a chosen target stays chosen.
+    pub(crate) async fn mapping_on_server(
         &self,
         virtual_media_id: &str,
         access_scope: Option<&VirtualLibraryAccessScope>,
@@ -513,7 +433,11 @@ impl UrlProcessor {
             .get_media_mapping_by_virtual(virtual_media_id)
             .await?
         {
-            if !server_is_allowed(mapping.server_id, access_scope, required_server_id) {
+            if !VirtualLibraryAccessScope::permits(
+                mapping.server_id,
+                access_scope,
+                required_server_id,
+            ) {
                 return Ok(None);
             }
             return Ok(Some(mapping));
@@ -549,7 +473,7 @@ impl UrlProcessor {
             .into_iter()
             .filter(|member| {
                 member.server.id == server_id
-                    && server_is_allowed(server_id, access_scope, Some(server_id))
+                    && VirtualLibraryAccessScope::permits(server_id, access_scope, Some(server_id))
             })
             // Multiple copies on the selected server keep the historical
             // stable mapping tie-break, without consulting availability.
@@ -559,15 +483,6 @@ impl UrlProcessor {
                     .cmp(&right.mapping.original_media_id)
             }))
     }
-}
-
-fn server_is_allowed(
-    server_id: ServerId,
-    access_scope: Option<&VirtualLibraryAccessScope>,
-    required_server_id: Option<ServerId>,
-) -> bool {
-    required_server_id.is_none_or(|required| required == server_id)
-        && access_scope.is_none_or(|scope| scope.allows(server_id))
 }
 
 #[cfg(test)]
@@ -592,13 +507,13 @@ mod tests {
         let id = "0123456789abcdef0123456789abcdef";
         let server = ServerId::new(1);
         assert!(processor
-            .client_media_mapping(id, None, Some(server))
+            .mapping_on_server(id, None, Some(server))
             .await
             .unwrap()
             .is_none());
         pool.close().await;
         let error = processor
-            .client_media_mapping(id, None, Some(server))
+            .mapping_on_server(id, None, Some(server))
             .await
             .unwrap_err();
         assert!(matches!(error, sqlx::Error::PoolClosed));

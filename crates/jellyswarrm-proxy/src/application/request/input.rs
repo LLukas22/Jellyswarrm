@@ -10,6 +10,8 @@ use crate::{
             selection::UrlSelection,
         },
     },
+    auth::service::AuthorizationSession,
+    servers::Server,
     translation::request_analyzer::RequestBodyAnalysisResult,
 };
 
@@ -54,6 +56,7 @@ impl OperationRequest {
         Ok(())
     }
 
+    /// Select the backend for this request, then authorize it as a target.
     pub(crate) async fn resolve_target(
         &self,
         state: &crate::application::media_services::MediaServices,
@@ -67,34 +70,44 @@ impl OperationRequest {
         )
         .await
         .map_err(ApplicationError::from)?;
-        state
-            .translation
-            .url_processor
-            .validate_container_request(
-                self.original_request.url(),
-                session.as_ref(),
-                self.context.access_scope(),
-                server.id,
-                self.body_analysis
-                    .as_ref()
-                    .map(|analysis| analysis.found_ids.as_slice())
-                    .unwrap_or_default(),
-            )
-            .await
-            .map_err(routing_error)?;
-        let auth = remap_authorization(self.context.authorization(), session.as_ref());
-        let target =
-            AuthorizedTarget::new(server, session, auth, self.context.access_scope().cloned())
-                .map_err(|error| match error {
-                    TargetError::AccessDenied | TargetError::ViewerMismatch => {
-                        ApplicationError::AccessDenied
-                    }
-                    TargetError::UnavailableOwner => ApplicationError::UnavailableOwner,
-                })?;
+        let target = self.authorize_target(state, server, session).await?;
         Ok(ResolvedTarget {
             target,
             server_matched_request,
         })
+    }
+
+    /// Check that the request's playlist/collection selections live on the
+    /// chosen backend, then swap the caller's proxy credentials for the
+    /// backend session's.
+    pub(crate) async fn authorize_target(
+        &self,
+        state: &crate::application::media_services::MediaServices,
+        server: Server,
+        session: Option<AuthorizationSession>,
+    ) -> Result<AuthorizedTarget, ApplicationError> {
+        super::containers::validate(
+            &state.translation.url_processor,
+            self.original_request.url(),
+            session.as_ref(),
+            self.context.access_scope(),
+            server.id,
+            self.body_analysis
+                .as_ref()
+                .map(|analysis| analysis.found_ids.as_slice())
+                .unwrap_or_default(),
+        )
+        .await
+        .map_err(routing_error)?;
+        let auth = remap_authorization(self.context.authorization(), session.as_ref());
+        AuthorizedTarget::new(server, session, auth, self.context.access_scope().cloned()).map_err(
+            |error| match error {
+                TargetError::AccessDenied | TargetError::ViewerMismatch => {
+                    ApplicationError::AccessDenied
+                }
+                TargetError::UnavailableOwner => ApplicationError::UnavailableOwner,
+            },
+        )
     }
 }
 

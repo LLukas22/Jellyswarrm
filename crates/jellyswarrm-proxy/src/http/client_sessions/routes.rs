@@ -27,9 +27,9 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/Sessions", get(list))
         .route("/Sessions/", get(list))
         // Playback telemetry continues through the existing media pipeline.
-        .route("/Sessions/Playing", post(crate::http::fallback::fallback_handler))
-        .route("/Sessions/Playing/Progress", post(crate::http::fallback::fallback_handler))
-        .route("/Sessions/Playing/Stopped", post(crate::http::fallback::fallback_handler))
+        .route("/Sessions/Playing", post(crate::http::forwarding::forward))
+        .route("/Sessions/Playing/Progress", post(crate::http::forwarding::forward))
+        .route("/Sessions/Playing/Stopped", post(crate::http::forwarding::forward))
         // All other session operations are local, including unsupported ones.
         .route("/Sessions/{*path}", any(dispatch))
     }

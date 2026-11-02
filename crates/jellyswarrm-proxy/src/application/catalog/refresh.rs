@@ -24,8 +24,13 @@ pub(crate) struct CatalogRefresh {
     pub(crate) sessions: Vec<AuthorizationSession>,
 }
 
-// Read by future refresh callers; no scheduler is enabled by this extraction.
-#[allow(dead_code)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "no production caller yet; exercised by catalog tests"
+    )
+)]
 pub(crate) struct RefreshResult {
     pub(crate) report: CatalogReport,
     pub(crate) response: serde_json::Value,
@@ -33,7 +38,13 @@ pub(crate) struct RefreshResult {
 
 /// Reserved service entry point for on-demand/background refresh callers.
 /// Scheduling is intentionally not enabled by this API.
-#[allow(dead_code)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "no production caller yet; exercised by catalog tests"
+    )
+)]
 pub(crate) async fn refresh(
     state: &MediaServices,
     input: CatalogRefresh,

@@ -66,7 +66,7 @@ scope but does not by itself provide a usable backend session.
 Application API keys are read-only proxy credentials, not new Jellyfin tokens.
 
 **Code:** [token resolution](src/application/accounts.rs),
-[media request collection](src/http/preprocessing/mod.rs),
+[request context collection](src/application/request/collect/mod.rs),
 [stored sessions](src/auth/service/authorization_sessions.rs),
 [outgoing credential replacement](src/application/request/builder.rs).
 
@@ -76,6 +76,47 @@ Proxy Quick Connect is an alternative client login: approval redeems existing
 mappings, registers backend sessions and returns the same proxy token
 ([workflow](src/application/quick_connect.rs)). Management-page login is separate
 under `ui/`.
+
+## Forwarding any other request
+
+Most Jellyfin endpoints have no dedicated workflow. The router's catch-all
+sends them, along with item mutations, trickplay and playback reports, to
+**one** backend and translates the answer. This is the proxy's core path; the
+sections below are specializations of it.
+
+```mermaid
+flowchart TD
+    Client[Client request] --> Guard{HTTP: proxy-owned /Sessions route or web asset?}
+    Guard -->|Yes| Local[Answer locally]
+    Guard -->|No| Collect[Collect caller, body IDs and healthy backend sessions]
+    Collect --> Select{Playback report?}
+    Select -->|Yes| Owner[Owner of the reported item]
+    Select -->|No| Route[Route by IDs in path, query and body, else first usable backend]
+    Owner --> Authorize[Check playlist/collection IDs, swap in backend credentials]
+    Route --> Authorize
+    Authorize --> Build[Rewrite URL, path/query IDs and JSON body for the backend]
+    Build --> Jellyfin[Selected Jellyfin server]
+    Jellyfin --> Translate[Translate JSON response back to virtual IDs]
+    Translate --> Observe[On success: invalidate caches, record report, commit playback binding]
+    Observe --> Response[Client response]
+```
+
+| Step | Code |
+|---|---|
+| Guard and entry point | [`http/forwarding.rs`](src/http/forwarding.rs) |
+| Buffer the request | [`http/incoming.rs`](src/http/incoming.rs) |
+| Collect caller context | [`application/request/collect/`](src/application/request/collect/mod.rs) |
+| Select the backend | [`application/request/routing.rs`](src/application/request/routing.rs), [`application/playback/reports.rs`](src/application/playback/reports.rs) |
+| Authorize the target | `OperationRequest::authorize_target` in [`application/request/input.rs`](src/application/request/input.rs), [`application/request/containers.rs`](src/application/request/containers.rs) |
+| Build the upstream request | [`application/request/builder.rs`](src/application/request/builder.rs), [`translation/`](src/translation/mod.rs) |
+| Send, translate, observe | `forward` in [`application/forwarding.rs`](src/application/forwarding.rs) |
+
+A watched-state change on a merged item (`/UserPlayedItems/{id}` or
+`/Users/{user}/PlayedItems/{id}`) is the one
+exception to "one backend": it is applied to every authorized copy before the
+client gets a response. Errors become status codes in
+[`http/error.rs`](src/http/error.rs); only mixed-server playlist/collection
+selections and unmapped users get a message body.
 
 ## Browsing the catalog
 

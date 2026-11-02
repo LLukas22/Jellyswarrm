@@ -10,8 +10,14 @@ use std::sync::Arc;
 pub(crate) enum UserIdError {
     #[error("user mapping storage failed")]
     Storage(#[from] sqlx::Error),
-    #[error("Requested user has no mapping on the selected server")]
+    #[error("{}", Self::MISSING_MAPPING_MESSAGE)]
     MissingMapping,
+}
+
+impl UserIdError {
+    /// Safe and actionable for clients.
+    pub(crate) const MISSING_MAPPING_MESSAGE: &'static str =
+        "Requested user has no mapping on the selected server";
 }
 
 #[derive(Clone)]

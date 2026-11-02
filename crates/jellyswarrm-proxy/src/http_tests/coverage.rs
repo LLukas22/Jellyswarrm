@@ -179,9 +179,9 @@ fn every_discovered_route_has_a_contract_or_explicit_scope_decision() {
 #[test]
 fn workflow_references_point_to_executable_tests() {
     let workflows = [
-        include_str!("pipeline.rs"),
+        include_str!("pipeline/mod.rs"),
         include_str!("pipeline/regressions/streaming_routing.rs"),
-        include_str!("pipeline/regressions/web_client.rs"),
+        include_str!("pipeline/regressions/web_client/mod.rs"),
         include_str!("pipeline/regressions/web_client/lifecycle.rs"),
     ]
     .join("\n");

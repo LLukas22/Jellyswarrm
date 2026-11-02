@@ -11,9 +11,28 @@ mod user_ids;
 
 pub(crate) use json_processor::ProcessingErrors;
 pub(crate) use json_processor::{analyze_json, process_json};
+pub(crate) use user_ids::UserIdError;
 
 mod pipeline;
 pub(crate) use pipeline::ProxyProcessors;
+
+/// A selection the target backend cannot serve because part of it lives on
+/// another backend. The message is safe and actionable for clients.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("{}", self.message())]
+pub(crate) enum MixedServerSelection {
+    Playlist,
+    Collection,
+}
+
+impl MixedServerSelection {
+    pub(crate) fn message(self) -> &'static str {
+        match self {
+            Self::Playlist => "Playlist track or entry is unavailable on the selected server; mixed-server playlists are unsupported",
+            Self::Collection => "Collection item is unavailable on the selected server; mixed-server collections are unsupported",
+        }
+    }
+}
 
 /// Translation failures retain causes; application owns their routing/input policy.
 #[derive(thiserror::Error)]

@@ -10,7 +10,7 @@ use crate::{
         request::input::{routing_error, OperationRequest},
     },
     auth::service::LocalUser,
-    http::preprocessing::{extract_request_infos, resolve_request_identity},
+    http::incoming::{collect_operation, resolve_request_identity},
 };
 
 pub(crate) struct RequirePrimaryUser(pub(crate) LocalUser);
@@ -52,7 +52,7 @@ async fn collect(
     req: Request,
     state: &MediaServices,
 ) -> Result<OperationRequest, ApplicationError> {
-    extract_request_infos(req, state, None)
+    collect_operation(req, state, None)
         .await
         .map_err(routing_error)
 }

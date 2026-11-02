@@ -5,16 +5,50 @@ use crate::{
         playback::target::ResolutionError,
         request::context::TargetError,
     },
-    translation::response_processor::PlaylistResponseError,
+    translation::{
+        response_processor::PlaylistResponseError, MixedServerSelection, ProcessingErrors,
+        UserIdError,
+    },
 };
 use axum::response::{IntoResponse, Response};
 use hyper::StatusCode;
 
-/// Handlers return `ApplicationError` directly; only the status code reaches the client.
+/// Handlers return `ApplicationError` directly. The client sees the status code
+/// and, for a few typed input failures, an actionable message.
 impl IntoResponse for ApplicationError {
     fn into_response(self) -> Response {
-        status(&self).into_response()
+        let status = status(&self);
+        match client_message(&self) {
+            Some(message) => (status, message).into_response(),
+            None => status.into_response(),
+        }
     }
+}
+
+/// Only typed, client-actionable causes produce a message; database and
+/// transport details stay in logs.
+pub(crate) fn client_message(error: &ApplicationError) -> Option<&'static str> {
+    let cause: &(dyn std::error::Error + 'static) = match error {
+        ApplicationError::InvalidRouting(cause) | ApplicationError::RequestBody(cause) => {
+            cause.as_ref()
+        }
+        ApplicationError::At { cause, .. } => return client_message(cause),
+        ApplicationError::Shared(cause) => return client_message(cause),
+        _ => return None,
+    };
+    for selection in [
+        MixedServerSelection::Playlist,
+        MixedServerSelection::Collection,
+    ] {
+        if ProcessingErrors::any_cause::<MixedServerSelection>(cause, &|found| *found == selection)
+        {
+            return Some(selection.message());
+        }
+    }
+    ProcessingErrors::any_cause::<UserIdError>(cause, &|found| {
+        matches!(found, UserIdError::MissingMapping)
+    })
+    .then_some(UserIdError::MISSING_MAPPING_MESSAGE)
 }
 
 fn target_status(error: &TargetError) -> StatusCode {
@@ -120,6 +154,37 @@ pub(crate) fn status(error: &ApplicationError) -> StatusCode {
 mod tests {
     use super::*;
     use std::error::Error;
+
+    #[test]
+    fn only_typed_selection_failures_reach_the_client_as_messages() {
+        use crate::translation::{MixedServerSelection, ProcessingErrors, UserIdError};
+        let nested = |cause: anyhow::Error| {
+            anyhow::Error::new(ProcessingErrors {
+                causes: vec![anyhow::anyhow!("unrelated"), cause.context("field")],
+            })
+            .context("request analysis")
+        };
+        let collection =
+            ApplicationError::InvalidRouting(nested(MixedServerSelection::Collection.into()));
+        assert_eq!(
+            client_message(&collection),
+            Some(MixedServerSelection::Collection.message())
+        );
+        let user = ApplicationError::RequestBody(nested(UserIdError::MissingMapping.into()));
+        assert_eq!(
+            client_message(&user),
+            Some(UserIdError::MISSING_MAPPING_MESSAGE)
+        );
+        let generic = ApplicationError::InvalidRouting(anyhow::anyhow!(
+            "mixed-server playlists are unsupported"
+        ));
+        assert_eq!(
+            client_message(&generic),
+            None,
+            "text alone is not a typed cause"
+        );
+        assert_eq!(client_message(&ApplicationError::AccessDenied), None);
+    }
 
     #[test]
     fn input_aggregates_with_storage_failure_are_not_bad_requests() {

@@ -50,6 +50,17 @@ impl VirtualLibraryAccessScope {
     pub(crate) fn server_ids(&self) -> &[ServerId] {
         &self.server_ids
     }
+
+    /// Whether `server_id` is inside the optional `scope` and, when a backend
+    /// was already chosen, is that backend. `None` means "unrestricted".
+    pub(crate) fn permits(
+        server_id: ServerId,
+        scope: Option<&Self>,
+        required_server_id: Option<ServerId>,
+    ) -> bool {
+        required_server_id.is_none_or(|required| required == server_id)
+            && scope.is_none_or(|scope| scope.allows(server_id))
+    }
 }
 
 #[derive(Debug, Clone)]

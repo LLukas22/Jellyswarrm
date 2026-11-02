@@ -18,7 +18,7 @@ pub(crate) async fn enforce_read_only_api_keys(
     }
 
     // Only the credential matters here; resolving the caller's user would cost a lookup.
-    let url = match crate::http::preprocessing::request_url(request.uri()) {
+    let url = match crate::http::incoming::request_url(request.uri()) {
         Ok(url) => url,
         Err(error) => {
             error!("Failed to enforce API key access: {error}");

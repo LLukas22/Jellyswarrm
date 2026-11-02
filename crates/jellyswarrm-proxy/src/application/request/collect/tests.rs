@@ -1,10 +1,16 @@
 //! Incoming request identity, body translation, authorization, and playback-report regressions.
 use super::*;
 use crate::auth::service::LocalUser;
+use crate::http::incoming::{collect_operation as extract_request_infos, resolve_request_identity};
 use crate::protocol::authorization::Authorization;
 use crate::protocol::device::Device;
 use crate::protocol::routes::{matches_case_insensitive, MEDIA_ID_PATH_TAGS, MEDIA_ID_QUERY_TAGS};
 use crate::protocol::url::contains_id;
+use axum::{
+    extract::{OriginalUri, Request},
+    http,
+};
+use http_body_util::BodyExt;
 
 async fn apply_to_request(
     request: &mut reqwest::Request,
@@ -188,7 +194,7 @@ async fn abbreviated_seasons_headers_dispatch_with_stored_credentials() {
             .body(axum::body::Body::empty())
             .unwrap();
         let response =
-            crate::http::fallback::fallback_handler(axum::extract::State(state.clone()), request)
+            crate::http::forwarding::forward(axum::extract::State(state.clone()), request)
                 .await
                 .unwrap();
         assert_eq!(

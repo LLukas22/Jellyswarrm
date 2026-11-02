@@ -19,6 +19,7 @@ each tier so you can find all of them by name:
 
 | Feature | Adapter | Workflow | Feature state |
 |---|---|---|---|
+| Forwarding (every route without a dedicated workflow) | `http/forwarding.rs` | `application/forwarding.rs` | (none) |
 | Quick Connect | `http/quick_connect.rs` | `application/quick_connect.rs` | `auth/quick_connect/` |
 | Client sessions, remote control | `http/client_sessions/` | `application/client_sessions/` | `client_sessions/` |
 | SyncPlay | `http/syncplay.rs` | `application/syncplay.rs` | `syncplay/` |
@@ -41,7 +42,7 @@ contract tests are in `http_tests/` and real-server/browser tests in `../tests/`
 | `startup/` | Starts the process: loads configuration, constructs services, assembles both routers and owns background tasks and shutdown. |
 | `http/` | Handles the client API, authentication extraction, WebSocket connections, embedded web assets and HTTP responses. `http/state.rs` holds the service handles handlers need. |
 | `ui/` | Serves the management pages, forms and UI login. It is separate from the client API because its presentation and authentication needs differ. |
-| `application/` | Coordinates catalog, playback, account and administration operations. It decides which backends a caller may use and combines the services needed to complete a request. Steps every workflow shares (caller context, backend routing, upstream request building) live in `application/request/`; the media service handles they use in `application/media_services.rs`. |
+| `application/` | Coordinates catalog, playback, account and administration operations. It decides which backends a caller may use and combines the services needed to complete a request. Steps every workflow shares (collecting the caller context, backend routing, target authorization, upstream request building) live in `application/request/`; the media service handles they use in `application/media_services.rs`. |
 
 `main.rs` supplies the Tokio runtime and calls the library's only public entry
 point, `run()`. Startup wires the modules together.
@@ -70,7 +71,7 @@ Three kinds of "session" exist and are kept apart by name:
 | `translation/` | Inspects and translates JSON, URLs and identifiers between the virtual server and a selected backend. |
 | `upstream/` | Makes backend requests and delivers JSON, streams and HLS playlists. |
 | `persistence/` | Opens SQLite, runs migrations and converts shared values to database representations. SQL also still lives in feature services. |
-| `config.rs`, `config/` | Loads configuration, provides startup and runtime settings, and serializes save/reload operations. |
+| `config/` | Loads configuration, provides startup and runtime settings, and serializes save/reload operations. |
 
 Handlers read runtime settings through `SettingsView`; configuration changes go
 through `ConfigurationService`.
@@ -83,6 +84,10 @@ through `ConfigurationService`.
 | `protocol/` | Jellyfin wire conventions: request/response DTOs (`protocol/models/`), authorization headers, caller and device identity, JSON body framing, route classification and URL conventions. |
 
 ## Following a request
+
+Most client requests have no dedicated route: the catch-all
+`http/forwarding.rs` sends them through `application/forwarding.rs` to a single
+backend. Start there to see the proxy's core path.
 
 A catalog request enters through `http/`, becomes an application operation, then
 uses feature services, translation and upstream transport to produce a response.
