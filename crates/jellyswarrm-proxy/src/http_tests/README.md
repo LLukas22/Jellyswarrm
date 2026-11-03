@@ -42,6 +42,7 @@ regressions; use `just http-test` for the complete HTTP suite.
 | `resources.rs`, `hls.rs` | Streaming, playlists, subtitles, images, ranges |
 | `preferences.rs`, `editing.rs` | Client settings and metadata edits |
 | `live_tv.rs` | Guides, channel filters, recording identities |
+| `kodi.rs` | Kodi Quick Connect → sync → placeholder-device playback; token-owner isolation, expiry, and KodiSyncQueue IDs |
 | `access.rs` | Authorization, errors, identity variants |
 | `pipeline/` | Stateful playback, library, outage, and live-stream workflows |
 | `pipeline/media_paths.rs` | Discovery → detail → negotiation → delivery → playback reports |

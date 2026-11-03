@@ -22,6 +22,26 @@ fn route_pattern(route: &str) -> regex::Regex {
 const WORKFLOWS: &[(&str, &str, &str)] = &[
     (
         "POST",
+        "/QuickConnect/Initiate",
+        "kodi_quick_connect_synced_item_plays_in_redirect_mode",
+    ),
+    (
+        "POST",
+        "/QuickConnect/Authorize",
+        "kodi_quick_connect_synced_item_plays_in_redirect_mode",
+    ),
+    (
+        "POST",
+        "/Users/AuthenticateWithQuickConnect",
+        "kodi_quick_connect_synced_item_plays_in_redirect_mode",
+    ),
+    (
+        "GET",
+        "/Jellyfin.Plugin.KodiSyncQueue/{userId}/GetItems",
+        "kodi_sync_queue_translates_user_and_changed_item_ids",
+    ),
+    (
+        "POST",
         "/Items/{id}/PlaybackInfo",
         "web_version_name_survives_playback_negotiation",
     ),
@@ -179,6 +199,7 @@ fn every_discovered_route_has_a_contract_or_explicit_scope_decision() {
 #[test]
 fn workflow_references_point_to_executable_tests() {
     let workflows = [
+        include_str!("kodi.rs"),
         include_str!("pipeline/mod.rs"),
         include_str!("pipeline/regressions/streaming_routing.rs"),
         include_str!("pipeline/regressions/web_client/mod.rs"),

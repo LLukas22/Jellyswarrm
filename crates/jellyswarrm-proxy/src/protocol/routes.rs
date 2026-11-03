@@ -49,7 +49,7 @@ pub(crate) static MEDIA_ID_QUERY_TAGS: &[&str] = &[
     "ExcludeArtistIds",
 ];
 pub(crate) static API_KEY_QUERY_TAGS: &[&str] = &["api_key", "ApiKey"];
-pub(crate) static USER_ID_PATH_TAGS: &[&str] = &["Users"];
+pub(crate) static USER_ID_PATH_TAGS: &[&str] = &["Users", "Jellyfin.Plugin.KodiSyncQueue"];
 pub(crate) static USER_ID_QUERY_TAGS: &[&str] = &["UserId"];
 
 pub(crate) fn matches_case_insensitive(value: &str, candidates: &[&str]) -> bool {

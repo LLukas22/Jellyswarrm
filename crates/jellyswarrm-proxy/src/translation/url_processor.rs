@@ -654,16 +654,23 @@ mod tests {
                         );
                     }
                 }
-                let mut url =
-                    url::Url::parse(&format!("http://localhost/Users/{id}/Views")).unwrap();
-                processor
-                    .client_to_server_url(&mut url, Some(&session), None, server.id)
-                    .await
-                    .unwrap();
-                assert_eq!(
-                    url.path(),
-                    format!("/Users/{}/Views", session.original_user_id)
-                );
+                for (resource, action) in [
+                    ("Users", "Views"),
+                    ("Jellyfin.Plugin.KodiSyncQueue", "GetItems"),
+                    ("jellyfin.plugin.kodisyncqueue", "GetItems"),
+                ] {
+                    let mut url =
+                        url::Url::parse(&format!("http://localhost/{resource}/{id}/{action}"))
+                            .unwrap();
+                    processor
+                        .client_to_server_url(&mut url, Some(&session), None, server.id)
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        url.path(),
+                        format!("/{resource}/{}/{action}", session.original_user_id)
+                    );
+                }
             }
         }
     }

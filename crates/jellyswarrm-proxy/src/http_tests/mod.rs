@@ -39,6 +39,7 @@ mod coverage;
 mod discovery;
 mod editing;
 mod hls;
+mod kodi;
 mod live_tv;
 mod mutations;
 mod pipeline;

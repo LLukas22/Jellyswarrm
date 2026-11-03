@@ -81,8 +81,16 @@ pub(crate) static DISABLED_BOOL_FIELDS: LazyLock<FieldMatcher> =
 pub(crate) static SERVER_ID_FIELDS: LazyLock<FieldMatcher> =
     LazyLock::new(|| FieldMatcher::new(&["ServerId"]));
 
-pub(crate) static MEDIA_ID_ARRAY_FIELDS: LazyLock<FieldMatcher> =
-    LazyLock::new(|| FieldMatcher::new(&["BackdropImageTags", "ParentBackdropImageTags"]));
+pub(crate) static MEDIA_ID_ARRAY_FIELDS: LazyLock<FieldMatcher> = LazyLock::new(|| {
+    FieldMatcher::new(&[
+        "BackdropImageTags",
+        "ParentBackdropImageTags",
+        // KodiSyncQueue returns bare item IDs, not BaseItemDto objects.
+        "ItemsAdded",
+        "ItemsUpdated",
+        "ItemsRemoved",
+    ])
+});
 
 /// JSON array parents whose string items are media IDs (e.g.
 /// `CreatePlaylistDto { Ids: [...] }`). Array items carry the index as key,

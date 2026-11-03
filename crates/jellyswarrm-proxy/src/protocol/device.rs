@@ -55,6 +55,7 @@ impl Device {
     pub(crate) fn has_known_device_id(device_id: &str) -> bool {
         !device_id.is_empty()
             && device_id != "unknown-device-id"
+            && device_id != "unknown device id"
             && device_id != "unknown"
             && device_id != "n/a"
     }
@@ -129,6 +130,21 @@ impl Device {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn placeholder_device_ids_are_not_known_identifiers() {
+        for id in [
+            "",
+            "unknown-device-id",
+            "unknown",
+            "n/a",
+            "Unknown Device id",
+            " UNKNOWN+DEVICE+ID ",
+        ] {
+            assert!(!Device::has_known_device_id(&normalize_device(id)), "{id}");
+        }
+        assert!(Device::has_known_device_id("kodi-device"));
+    }
 
     #[test]
     fn detects_android_tv_clients() {

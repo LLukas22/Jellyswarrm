@@ -12,7 +12,7 @@ use crate::application::{
 use crate::auth::service::{AuthorizationSession, LocalUser};
 use crate::libraries::service::VirtualLibraryAccessScope;
 use crate::protocol::caller::{request_device, JellyfinAuthorization};
-use crate::protocol::device::Device;
+use crate::protocol::device::{normalize_device, Device};
 use crate::protocol::routes::PlaybackSessionAction;
 use crate::servers::storage::Server;
 use crate::translation::analyze_json;
@@ -146,7 +146,7 @@ async fn backend_sessions(
     } else {
         state
             .user_authorization
-            .get_user_sessions(&user.id, upstream_device)
+            .get_user_sessions(&user.id, upstream_device.clone())
             .await?
     };
 
@@ -169,6 +169,23 @@ async fn backend_sessions(
                     .await?;
             }
         }
+    }
+
+    // Kodi's separate playback process sends complete headers with placeholder
+    // device metadata; X-Emby-Token can similarly yield only a User-Agent-derived
+    // device. When neither identifies a real device, use the authenticated token
+    // owner's sessions just like token-only delivery. Never relax a real device
+    // mismatch or the stricter abbreviated-header lookup above.
+    if sessions.is_empty()
+        && !partial
+        && upstream_device.as_ref().is_some_and(|device| {
+            !Device::has_known_device_id(&normalize_device(&device.device_id))
+        })
+    {
+        sessions = state
+            .user_authorization
+            .get_user_sessions(&user.id, None)
+            .await?;
     }
 
     let mapped_servers = state
