@@ -12,6 +12,7 @@ use crate::application::{media_services::MediaServices, request::input::Operatio
 mod query;
 pub(crate) mod refresh;
 
+mod episode_queue;
 mod fetch;
 mod filters;
 mod item_lookup;
@@ -84,7 +85,40 @@ pub(crate) async fn get_items_from_all_servers_if_not_restricted(
 /// collapsed show aggregate; otherwise falls back to single-server proxying.
 pub(crate) async fn get_show_children(
     state: &MediaServices,
+    mut preprocessed: OperationRequest,
+) -> Result<serde_json::Value, ApplicationError> {
+    let queue = episode_queue::WebEpisodeQueue::from_request(&preprocessed);
+    if let Some(queue) = &queue {
+        // Validate the client's anchor before removing it from the upstream URL.
+        preprocessed
+            .validate_access(preprocessed.original_request.url(), &state.url_selection)
+            .await?;
+        queue.prepare(preprocessed.original_request.url_mut());
+    }
+    let token = preprocessed
+        .context
+        .authorization()
+        .and_then(|auth| auth.token_ref())
+        .map(str::to_string);
+    let response = get_show_children_catalog(state, preprocessed, queue.is_some()).await?;
+    if let Some(queue) = queue {
+        let response = queue.apply(state, response).await?;
+        if let Some(token) = token {
+            state
+                .client_sessions
+                .cache_media_response(&token, &response)
+                .await;
+        }
+        Ok(response)
+    } else {
+        Ok(response)
+    }
+}
+
+async fn get_show_children_catalog(
+    state: &MediaServices,
     preprocessed: OperationRequest,
+    scan_queue: bool,
 ) -> Result<serde_json::Value, ApplicationError> {
     use crate::protocol::url::contains_id;
 
@@ -93,7 +127,7 @@ pub(crate) async fn get_show_children(
         return get_item_detail(state, preprocessed, false).await;
     };
     if !state.deduplicate_media_enabled().await {
-        return get_item_detail(state, preprocessed, false).await;
+        return episode_queue::single_show_children(state, preprocessed, scan_queue).await;
     }
     let Some(group) = state
         .media_storage
@@ -101,7 +135,7 @@ pub(crate) async fn get_show_children(
         .await
         .map_err(ApplicationError::Storage)?
     else {
-        return get_item_detail(state, preprocessed, false).await;
+        return episode_queue::single_show_children(state, preprocessed, scan_queue).await;
     };
     let members = state
         .media_storage
@@ -141,7 +175,7 @@ pub(crate) async fn get_show_children(
         });
     }
     if targets.is_empty() {
-        return get_item_detail(state, preprocessed, false).await;
+        return episode_queue::single_show_children(state, preprocessed, scan_queue).await;
     }
     media_reconciliation::get_aggregate_show_items(
         state,

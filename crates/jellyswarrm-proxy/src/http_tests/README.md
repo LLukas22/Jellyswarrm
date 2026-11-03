@@ -46,6 +46,7 @@ regressions; use `just http-test` for the complete HTTP suite.
 | `access.rs` | Authorization, errors, identity variants |
 | `pipeline/` | Stateful playback, library, outage, and live-stream workflows |
 | `pipeline/media_paths.rs` | Discovery → detail → negotiation → delivery → playback reports |
+| `pipeline/regressions/episode_queue.rs` | Unmodified Jellyfin Web episode navigation, bounded queue windows, alternate-version safety, and unchanged ordinary `StartItemId` semantics |
 | `coverage.rs` | Client-route inventory classifications |
 
 ## Route inventory

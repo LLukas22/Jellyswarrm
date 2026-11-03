@@ -2,6 +2,7 @@
 use super::*;
 mod catalog_correctness;
 mod episode_continuity;
+mod episode_queue;
 mod streaming_routing;
 mod web_client;
 use wiremock::matchers::query_param;
