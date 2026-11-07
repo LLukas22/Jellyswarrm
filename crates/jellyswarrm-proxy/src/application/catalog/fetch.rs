@@ -19,8 +19,9 @@ use crate::{
 
 use super::{
     library_resolution::presentable_library_collection_type,
-    library_resolution::{is_library_root_request, CatalogFetchTarget},
+    library_resolution::CatalogFetchTarget,
     postprocessing::{Pagination, ResponseShape, ServerItems},
+    query::CatalogEndpoint,
     request_policy::{
         normalize_upstream_pagination, replace_aggregate_parent_id, set_upstream_page,
         CatalogRequestPolicy, UPSTREAM_PAGE_SIZE,
@@ -321,8 +322,8 @@ async fn fetch_catalog_operation(
             *request.url_mut() =
                 replace_aggregate_parent_id(request.url(), &parent.requested, &parent.member);
         }
-        let upstream_limited = policy.upstream_limited;
-        let library_inventory = is_library_root_request(request.url(), state.url_prefix());
+        let upstream_limited = policy.endpoint().is_upstream_limited();
+        let library_inventory = policy.endpoint().is_library_root();
         let pagination = policy.pagination;
         let state = state.clone();
         join_set.spawn(async move {
@@ -645,7 +646,7 @@ async fn fetch_raw_items_from_server(
 ) -> Result<RawServerItems, ApplicationError> {
     // Library discovery must cover the whole inventory, independently of the
     // client's display page. Some upstreams cap even an unbounded request.
-    if is_library_root_request(request.url(), state.url_prefix()) {
+    if CatalogEndpoint::from_url(request.url()).is_library_root() {
         return fetch_library_inventory(index, state, request, session, server).await;
     }
     normalize_upstream_pagination(request.url_mut(), pagination);
@@ -665,8 +666,7 @@ async fn fetch_library_inventory(
     // Keep the first request unpaginated for ordinary Jellyfin user Views.
     // MediaFolders can be an administrator-wide inventory; filtered Views are
     // not evidence that omitted libraries are inaccessible to this viewer.
-    let path = request.url().path().to_ascii_lowercase();
-    let viewer_inventory = (path.ends_with("/views") || path.ends_with("/userviews"))
+    let viewer_inventory = CatalogEndpoint::from_url(request.url()) == CatalogEndpoint::UserViews
         && request.url().query_pairs().all(|(key, _)| {
             matches!(
                 key.to_ascii_lowercase().as_str(),

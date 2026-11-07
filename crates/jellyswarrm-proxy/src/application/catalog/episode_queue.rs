@@ -5,7 +5,6 @@ use super::{
     finalize_items_response,
     library_resolution::CatalogFetchTarget,
     postprocessing::{FederatedItems, ResponseShape},
-    request_policy::CatalogRequestPolicy,
 };
 use crate::{
     application::{
@@ -42,7 +41,7 @@ impl WebEpisodeQueue {
             return None;
         }
         let url = input.original_request.url();
-        let policy = CatalogRequestPolicy::from_url(url);
+        let policy = input.catalog_query().policy(false);
         let anchor = policy.episode_start_id?;
         if policy.pagination.start_index != 0 || policy.pagination.limit != Some(QUEUE_LIMIT) {
             return None;
@@ -207,7 +206,7 @@ pub(super) async fn single_show_children(
         })
         .map(|(session, _)| session.clone())
         .ok_or(ApplicationError::UnavailableOwner)?;
-    let policy = CatalogRequestPolicy::from_url(input.original_request.url());
+    let policy = input.catalog_query().policy(false);
     let fetched = fetch_show_catalog(
         state,
         &input.original_request,

@@ -14,6 +14,7 @@ use crate::{
 };
 
 use super::library_resolution::is_live_tv_user_view;
+use super::query::{CatalogEndpoint, CatalogQuery};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Pagination {
@@ -207,16 +208,16 @@ pub(super) enum SortPolicy {
 }
 
 impl SortPolicy {
-    pub(super) fn from_url(url: &url::Url) -> Self {
-        let path = url.path().trim_end_matches('/').to_ascii_lowercase();
-        if path.ends_with("/shows/nextup") {
+    pub(super) fn from_query(query: &CatalogQuery) -> Self {
+        let endpoint = query.endpoint();
+        if endpoint == CatalogEndpoint::NextUp {
             // Jellyfin ranks Next Up using the previously watched episode's date,
             // which cannot be reconstructed from the returned episode's metadata.
             return Self::PreserveUpstream;
         }
 
-        let mut fields = query_list::<ItemSortBy>(url, "SortBy");
-        let mut orders = query_list::<SortOrder>(url, "SortOrder");
+        let mut fields = query_list::<ItemSortBy>(query, "SortBy");
+        let mut orders = query_list::<SortOrder>(query, "SortOrder");
         if fields.first() == Some(&ItemSortBy::Random) {
             return Self::Random;
         }
@@ -226,24 +227,18 @@ impl SortPolicy {
             return Self::PreserveUpstream;
         }
         if fields.is_empty() {
-            if path.contains("/shows/") {
-                if path.ends_with("/seasons") {
-                    return Self::SeasonOrder;
+            match endpoint {
+                CatalogEndpoint::ShowSeasons => return Self::SeasonOrder,
+                CatalogEndpoint::ShowEpisodes => return Self::EpisodeOrder,
+                CatalogEndpoint::Latest => {
+                    fields.push(ItemSortBy::DateCreated);
+                    orders = vec![SortOrder::Descending];
                 }
-                if path.ends_with("/episodes") {
-                    return Self::EpisodeOrder;
+                CatalogEndpoint::Resume => {
+                    fields.push(ItemSortBy::DatePlayed);
+                    orders = vec![SortOrder::Descending];
                 }
-            }
-
-            let path = url.path().to_ascii_lowercase();
-            if path.ends_with("/latest") {
-                fields.push(ItemSortBy::DateCreated);
-                orders = vec![SortOrder::Descending];
-            } else if path.ends_with("/resume") {
-                fields.push(ItemSortBy::DatePlayed);
-                orders = vec![SortOrder::Descending];
-            } else {
-                fields.push(ItemSortBy::SortName);
+                _ => fields.push(ItemSortBy::SortName),
             }
         }
 
@@ -317,14 +312,14 @@ impl SortPolicy {
     }
 }
 
-fn query_list<T>(url: &url::Url, expected_key: &str) -> Vec<T>
+fn query_list<T>(query: &CatalogQuery, expected_key: &str) -> Vec<T>
 where
     T: FromStr,
 {
     // SDK clients send repeated keys; legacy clients send comma-separated
     // lists. Both encodings must preserve every criterion and its order.
     let mut values = Vec::new();
-    for (key, value) in url.query_pairs() {
+    for (key, value) in query.parameters() {
         if key.eq_ignore_ascii_case(expected_key) {
             values.extend(
                 value
@@ -511,7 +506,7 @@ mod tests {
         let url = url::Url::parse(
             "http://localhost/Items?sortBy=AlbumArtist&SortBy=DateCreated,%20SortName&sortOrder=Ascending&SortOrder=Descending,Ascending",
         ).unwrap();
-        let SortPolicy::Fields(criteria) = SortPolicy::from_url(&url) else {
+        let SortPolicy::Fields(criteria) = CatalogQuery::from_url(&url).policy(false).sort else {
             panic!("expected field sorting");
         };
         assert_eq!(
@@ -683,7 +678,10 @@ mod tests {
         ])])
         .into_response(&url, ResponseShape::Bare);
 
-        assert!(matches!(SortPolicy::from_url(&url), SortPolicy::Random));
+        assert!(matches!(
+            CatalogQuery::from_url(&url).policy(false).sort,
+            SortPolicy::Random
+        ));
         let items = response.into_items();
         let mut ids = item_ids(&items);
         ids.sort();

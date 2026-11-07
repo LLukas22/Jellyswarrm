@@ -16,7 +16,6 @@ use super::{
     finalize_items_response,
     library_resolution::CatalogFetchTarget,
     postprocessing::{FederatedItems, ResponseShape, SortPolicy},
-    request_policy::CatalogRequestPolicy,
 };
 
 struct RequestedItem {
@@ -34,14 +33,6 @@ impl RequestedItems {
         request: &OperationRequest,
     ) -> Result<Option<Self>, ApplicationError> {
         let url = request.original_request.url();
-        if !url
-            .path()
-            .trim_end_matches('/')
-            .to_ascii_lowercase()
-            .ends_with("/items")
-        {
-            return Ok(None);
-        }
         let ids = url
             .query_pairs()
             .filter(|(key, _)| key.eq_ignore_ascii_case("Ids"))
@@ -124,7 +115,7 @@ impl RequestedItems {
         state: &MediaServices,
         request: OperationRequest,
     ) -> Result<serde_json::Value, ApplicationError> {
-        let mut policy = CatalogRequestPolicy::from_url(request.original_request.url());
+        let mut policy = request.catalog_query().policy(false);
         if !request
             .original_request
             .url()

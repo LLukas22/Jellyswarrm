@@ -199,15 +199,11 @@ pub(crate) async fn get_media_folders(
             ApplicationError::MissingIdentity("media folder viewer")
                 .at(FailureStage::CallerAuthentication)
         })?;
-    let path = preprocessed.original_request.url().path().to_string();
-    let path = path
-        .strip_suffix("/Library/MediaFolders")
-        .or_else(|| path.strip_suffix("/library/mediafolders"))
-        .unwrap_or_default();
-    preprocessed
-        .original_request
-        .url_mut()
-        .set_path(&format!("{path}/Users/{user_id}/Views"));
+    let path = query::CatalogEndpoint::media_folders_views_path(
+        preprocessed.original_request.url().path(),
+        &user_id,
+    );
+    preprocessed.original_request.url_mut().set_path(&path);
 
     get_catalog(state, preprocessed).await
 }
@@ -218,7 +214,8 @@ pub(crate) async fn get_catalog(
     state: &MediaServices,
     preprocessed: OperationRequest,
 ) -> Result<serde_json::Value, ApplicationError> {
-    if preprocessed.catalog_query().kind == query::CatalogQueryKind::Batch {
+    let query = preprocessed.catalog_query();
+    if query.is_batch_lookup() {
         if let Some(lookup) = item_lookup::RequestedItems::resolve(state, &preprocessed).await? {
             return lookup.fetch(state, preprocessed).await;
         }
@@ -226,13 +223,7 @@ pub(crate) async fn get_catalog(
     let plan = resolve_catalog_plan(state, &preprocessed).await?;
     match plan {
         CatalogPlan::EmptyVirtual => {
-            let response_shape = if preprocessed
-                .original_request
-                .url()
-                .path()
-                .to_ascii_lowercase()
-                .ends_with("/latest")
-            {
+            let response_shape = if query.endpoint() == query::CatalogEndpoint::Latest {
                 ResponseShape::Bare
             } else {
                 ResponseShape::Counted
@@ -241,7 +232,7 @@ pub(crate) async fn get_catalog(
                 state,
                 &preprocessed.original_request,
                 FederatedItems::default(),
-                &preprocessed.catalog_query().policy(false),
+                &query.policy(false),
                 response_shape,
             )
             .await
@@ -342,7 +333,7 @@ pub(super) async fn finalize_items_response(
 ) -> Result<serde_json::Value, ApplicationError> {
     let response = serde_json::to_value(items.into_response_with_policy(policy, response_shape))
         .map_err(ApplicationError::Serialization)?;
-    if library_resolution::is_library_root_request(request.url(), state.url_prefix()) {
+    if policy.endpoint().is_library_root() {
         if let Some(auth) = crate::protocol::caller::JellyfinAuthorization::from_headers_url(
             request.headers(),
             request.url(),

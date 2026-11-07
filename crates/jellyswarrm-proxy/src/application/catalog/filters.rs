@@ -4,6 +4,7 @@ use serde_json::{json, Value};
 
 use super::{
     library_resolution::{resolve_catalog_plan, CatalogFetchTarget, CatalogPlan},
+    query::CatalogEndpoint,
     request_policy::replace_aggregate_parent_id,
 };
 use crate::application::media_services::MediaServices;
@@ -19,11 +20,7 @@ pub(super) async fn restrict_named_ids(
     url: &mut url::Url,
     server_id: crate::domain::ids::ServerId,
 ) -> Result<bool, ApplicationError> {
-    let guide = url
-        .path()
-        .trim_end_matches('/')
-        .to_ascii_lowercase()
-        .ends_with("/livetv/programs");
+    let guide = CatalogEndpoint::from_url(url) == CatalogEndpoint::LiveTvPrograms;
     for key in ["GenreIds", "StudioIds"]
         .into_iter()
         .chain(guide.then_some("ChannelIds"))

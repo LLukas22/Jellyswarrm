@@ -9,6 +9,7 @@ use crate::application::error::{ApplicationError, FailureStage};
 use crate::domain::ids::{BackendItemId, VirtualItemId};
 use tracing::{debug, error};
 
+use super::query::CatalogEndpoint;
 use crate::application::media_services::MediaServices;
 use crate::{
     application::request::input::OperationRequest,
@@ -141,16 +142,16 @@ pub(crate) async fn resolve_catalog_plan(
         }
     }
 
-    let grouping =
-        if is_library_root_request(preprocessed.original_request.url(), state.url_prefix()) {
-            state
-                .virtual_library_service
-                .library_grouping(state.merge_libraries_enabled().await)
-                .await
-                .map_err(ApplicationError::Storage)?
-        } else {
-            LibraryGrouping::None
-        };
+    let endpoint = preprocessed.catalog_query().endpoint();
+    let grouping = if endpoint.is_library_root() {
+        state
+            .virtual_library_service
+            .library_grouping(state.merge_libraries_enabled().await)
+            .await
+            .map_err(ApplicationError::Storage)?
+    } else {
+        LibraryGrouping::None
+    };
 
     let targets: Vec<_> = available_sessions(preprocessed)?
         .into_iter()
@@ -166,21 +167,8 @@ pub(crate) async fn resolve_catalog_plan(
         .url()
         .query_pairs()
         .any(|(key, _)| key.eq_ignore_ascii_case("SearchTerm"));
-    let is_resume = preprocessed
-        .original_request
-        .url()
-        .path()
-        .trim_end_matches('/')
-        .to_ascii_lowercase()
-        .ends_with("/resume");
-    if (is_search
-        || is_resume
-        || preprocessed
-            .original_request
-            .url()
-            .path()
-            .to_ascii_lowercase()
-            .ends_with("/latest"))
+    let is_resume = endpoint == CatalogEndpoint::Resume;
+    if (is_search || is_resume || endpoint == CatalogEndpoint::Latest)
         && state.deduplicate_media_enabled().await
     {
         let viewer = preprocessed
@@ -354,34 +342,6 @@ async fn is_single_server_parent(
         .is_some())
 }
 
-pub(super) fn is_library_root_request(url: &url::Url, url_prefix: Option<&str>) -> bool {
-    let prefixed_path;
-    let path = if let Some(url_prefix) = url_prefix {
-        prefixed_path = format!("/{url_prefix}");
-        url.path()
-            .strip_prefix(&prefixed_path)
-            .unwrap_or(url.path())
-    } else {
-        url.path()
-    };
-    let segments = path
-        .split('/')
-        .filter(|segment| !segment.is_empty())
-        .collect::<Vec<_>>();
-
-    match segments.as_slice() {
-        [user_views] => user_views.eq_ignore_ascii_case("UserViews"),
-        [library, media_folders] => {
-            library.eq_ignore_ascii_case("Library")
-                && media_folders.eq_ignore_ascii_case("MediaFolders")
-        }
-        [users, _, views] => {
-            users.eq_ignore_ascii_case("Users") && views.eq_ignore_ascii_case("Views")
-        }
-        _ => false,
-    }
-}
-
 // Library eligibility and grouping used by planning, roots, and presentation.
 pub(super) fn is_live_tv_user_view(item: &MediaItem) -> bool {
     item.collection_type == Some(CollectionType::LiveTv) && item.item_type == BaseItemKind::UserView
@@ -434,22 +394,5 @@ mod tests {
         let url = url::Url::parse("http://localhost/Items?Filter=ParentId").unwrap();
 
         assert_eq!(parent_id(&url), None);
-    }
-
-    #[test]
-    fn library_root_detection_excludes_non_inventory_catalog_requests() {
-        let views = url::Url::parse("http://localhost/Users/user/Views").unwrap();
-        let user_views = url::Url::parse("http://localhost/UserViews?userId=user").unwrap();
-        let resume = url::Url::parse("http://localhost/Users/user/Items/Resume").unwrap();
-        let suggestions = url::Url::parse("http://localhost/Items/Suggestions").unwrap();
-        let media_folders = url::Url::parse("http://localhost/Library/MediaFolders").unwrap();
-        let prefixed_views = url::Url::parse("http://localhost/jellyfin/Users/user/Views").unwrap();
-
-        assert!(is_library_root_request(&views, None));
-        assert!(is_library_root_request(&user_views, None));
-        assert!(is_library_root_request(&media_folders, None));
-        assert!(is_library_root_request(&prefixed_views, Some("jellyfin")));
-        assert!(!is_library_root_request(&resume, None));
-        assert!(!is_library_root_request(&suggestions, None));
     }
 }

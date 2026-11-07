@@ -1,16 +1,17 @@
-//! Existing query policy retained during service extraction.
+//! Catalog policy, derived from the interpretation owned by [`CatalogQuery`].
 use super::postprocessing::Pagination;
+use super::query::{CatalogEndpoint, CatalogQuery};
 use crate::media::identity::MediaKind;
 use crate::media::storage::MediaStorageService;
 use std::collections::BTreeSet;
 
 /// One interpretation of the client query, shared by fetching and finalization.
 pub(crate) struct CatalogRequestPolicy {
+    endpoint: CatalogEndpoint,
     pub(super) pagination: Pagination,
     pub(super) sort: super::postprocessing::SortPolicy,
     pub(super) episode_start_id: Option<String>,
     pub(crate) inventory_types: BTreeSet<MediaKind>,
-    pub(crate) upstream_limited: bool,
     pub(crate) reconcile_playback: bool,
     playback_filters: Vec<PlaybackFilter>,
 }
@@ -32,18 +33,19 @@ impl PlaybackFilter {
 }
 
 impl CatalogRequestPolicy {
-    pub(crate) fn from_url(url: &url::Url) -> Self {
-        let sort = super::postprocessing::SortPolicy::from_url(url);
-        let path = url.path().trim_end_matches('/').to_ascii_lowercase();
-        let episode_start_id = (path.contains("/shows/") && path.ends_with("/episodes"))
+    pub(super) fn from_query(query: &CatalogQuery, pagination: Pagination) -> Self {
+        let endpoint = query.endpoint();
+        let episode_start_id = (endpoint == CatalogEndpoint::ShowEpisodes)
             .then(|| {
-                url.query_pairs()
+                query
+                    .parameters()
+                    .iter()
                     .find(|(key, _)| key.eq_ignore_ascii_case("StartItemId"))
-                    .map(|(_, value)| MediaStorageService::normalize_uuid(&value))
+                    .map(|(_, value)| MediaStorageService::normalize_uuid(value))
             })
             .flatten();
         let mut playback_filters = Vec::new();
-        for (key, value) in url.query_pairs() {
+        for (key, value) in query.parameters() {
             if key.eq_ignore_ascii_case("Filters") {
                 playback_filters.extend(value.split(',').filter_map(PlaybackFilter::parse));
             } else if key.eq_ignore_ascii_case("IsPlayed") {
@@ -52,23 +54,27 @@ impl CatalogRequestPolicy {
                 }
             }
         }
-        if url
-            .path()
-            .trim_end_matches('/')
-            .to_ascii_lowercase()
-            .ends_with("/resume")
-        {
+        if endpoint == CatalogEndpoint::Resume {
             playback_filters.push(PlaybackFilter::Resumable);
         }
         Self {
-            pagination: Pagination::from_url(url),
-            sort,
+            endpoint,
+            pagination,
+            sort: super::postprocessing::SortPolicy::from_query(query),
             episode_start_id,
-            inventory_types: authoritative_inventory_types(url),
-            upstream_limited: is_upstream_limited_catalog_request(url),
+            inventory_types: authoritative_inventory_types(query),
             reconcile_playback: false,
             playback_filters,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_url(url: &url::Url) -> Self {
+        CatalogQuery::from_url(url).policy(false)
+    }
+
+    pub(crate) fn endpoint(&self) -> CatalogEndpoint {
+        self.endpoint
     }
 
     pub(crate) fn prepare_upstream(&self, url: &mut url::Url, include_identity: bool) {
@@ -108,14 +114,7 @@ impl CatalogRequestPolicy {
                 .clear()
                 .extend_pairs(pairs)
                 .append_pair("EnableUserData", "true");
-            let path = url.path().trim_end_matches('/');
-            if path.to_ascii_lowercase().ends_with("/resume") {
-                let base = &path[..path.len() - "/Resume".len()];
-                let path = if base.to_ascii_lowercase().ends_with("/useritems") {
-                    format!("{}/Items", &base[..base.len() - "/UserItems".len()])
-                } else {
-                    base.to_string()
-                };
+            if let Some(path) = self.endpoint.resume_listing_path(url.path()) {
                 url.set_path(&path);
                 if !has_query_key(url, &["Recursive"]) {
                     url.query_pairs_mut().append_pair("Recursive", "true");
@@ -196,32 +195,18 @@ pub(super) fn has_query_key(url: &url::Url, keys: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
-pub(super) fn is_upstream_limited_catalog_request(url: &url::Url) -> bool {
-    let path = url.path().to_ascii_lowercase();
-    path.contains("/latest") || path.contains("/suggestions")
-}
-
 #[cfg(test)]
 pub(super) fn is_authoritative_media_inventory_request(url: &url::Url) -> bool {
-    authoritative_inventory_types(url).len() == MediaKind::ALL.len()
+    authoritative_inventory_types(&CatalogQuery::from_url(url)).len() == MediaKind::ALL.len()
 }
 
-fn authoritative_inventory_types(url: &url::Url) -> BTreeSet<MediaKind> {
-    if is_upstream_limited_catalog_request(url)
-        || !url
-            .path()
-            .trim_end_matches('/')
-            .rsplit('/')
-            .next()
-            .is_some_and(|segment| segment.eq_ignore_ascii_case("Items"))
-    {
+fn authoritative_inventory_types(query: &CatalogQuery) -> BTreeSet<MediaKind> {
+    if query.endpoint() != CatalogEndpoint::Items {
         return BTreeSet::new();
     }
     const SAFE_KEYS: &[&str] = &[
         "parentid",
         "userid",
-        "startindex",
-        "limit",
         "recursive",
         "fields",
         "sortby",
@@ -237,7 +222,7 @@ fn authoritative_inventory_types(url: &url::Url) -> BTreeSet<MediaKind> {
     ];
     let mut recursive = false;
     let mut included_types = None;
-    let safe = url.query_pairs().all(|(key, value)| {
+    let safe = query.parameters().iter().all(|(key, value)| {
         if key.eq_ignore_ascii_case("recursive") {
             recursive = value.eq_ignore_ascii_case("true");
         } else if key.eq_ignore_ascii_case("includeitemtypes") {
@@ -357,17 +342,39 @@ mod tests {
     }
 
     #[test]
-    fn limited_catalog_request_detects_latest_and_suggestions() {
-        let latest =
-            url::Url::parse("http://localhost/Users/u/Items/Latest?Limit=16&ParentId=abc").unwrap();
-        let suggestions =
-            url::Url::parse("http://localhost/Users/u/Items/Suggestions?Limit=12").unwrap();
-        let browse =
-            url::Url::parse("http://localhost/Users/u/Items?Limit=100&ParentId=abc").unwrap();
+    fn a_prefix_naming_a_feed_does_not_turn_a_listing_into_that_feed() {
+        let url = url::Url::parse(
+            "http://localhost/latest/Items?Recursive=true&IncludeItemTypes=Movie&Limit=5",
+        )
+        .unwrap();
+        let policy = CatalogRequestPolicy::from_url(&url);
+        assert!(!policy.endpoint().is_upstream_limited());
+        assert_eq!(policy.inventory_types, BTreeSet::from([MediaKind::Movie]));
+        assert_eq!(policy.pagination.limit, Some(5));
+    }
 
-        assert!(is_upstream_limited_catalog_request(&latest));
-        assert!(is_upstream_limited_catalog_request(&suggestions));
-        assert!(!is_upstream_limited_catalog_request(&browse));
+    #[test]
+    fn resume_policy_lists_every_copy_and_keeps_unknown_parameters() {
+        for (path, expected) in [
+            ("/Users/u/Items/Resume", "/Users/u/Items"),
+            ("/jellyfin/UserItems/Resume", "/jellyfin/Items"),
+        ] {
+            let mut url =
+                url::Url::parse(&format!("http://localhost{path}?X-Future=a&X-Future=b")).unwrap();
+            let mut policy = CatalogRequestPolicy::from_url(&url);
+            policy.reconcile_playback = true;
+            policy.prepare_upstream(&mut url, true);
+            assert_eq!(url.path(), expected);
+            assert!(has_query_key(&url, &["Recursive"]));
+            assert_eq!(
+                url.query_pairs()
+                    .filter(|(key, _)| key == "X-Future")
+                    .count(),
+                2
+            );
+            policy.prepare_upstream(&mut url, true);
+            assert_eq!(url.path(), expected);
+        }
     }
 
     #[test]
@@ -522,7 +529,7 @@ mod tests {
             ("Recursive=false&IncludeItemTypes=Movie", vec![]),
         ] {
             let url = url::Url::parse(&format!("http://localhost/Items?{query}")).unwrap();
-            assert_eq!(authoritative_inventory_types(&url), expected.into_iter().collect(), "{query}");
+            assert_eq!(authoritative_inventory_types(&CatalogQuery::from_url(&url)), expected.into_iter().collect(), "{query}");
         }
     }
 

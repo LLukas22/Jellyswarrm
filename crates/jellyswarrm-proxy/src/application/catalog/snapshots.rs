@@ -1,8 +1,5 @@
 //! Cache and materialize catalog snapshots with query-aware pagination and refresh policy.
-use super::{
-    library_resolution::CatalogFetchTarget, postprocessing::Pagination,
-    request_policy::is_upstream_limited_catalog_request,
-};
+use super::{library_resolution::CatalogFetchTarget, postprocessing::Pagination};
 use crate::application::error::ApplicationError;
 use crate::application::media_services::MediaServices;
 use crate::{
@@ -184,17 +181,12 @@ impl SnapshotRequest {
                 .and_then(|auth| auth.token())
             });
         let query = request.catalog_query();
-        tracing::debug!(kind = ?query.kind, scope, "Planning catalog materialization");
+        let endpoint = query.endpoint();
+        tracing::debug!(?endpoint, scope, "Planning catalog materialization");
         let pagination = query.pagination;
         // Bounded endpoints define their own result window. Do not cache across
         // windows or pretend their response is an exhaustive catalog snapshot.
-        if is_upstream_limited_catalog_request(request.original_request.url())
-            || matches!(query.kind, super::query::CatalogQueryKind::Feed)
-            || super::library_resolution::is_library_root_request(
-                request.original_request.url(),
-                state.url_prefix(),
-            )
-        {
+        if endpoint.is_feed() || endpoint.is_library_root() {
             return Self {
                 key: None,
                 pagination,
