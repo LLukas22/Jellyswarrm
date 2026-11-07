@@ -1,114 +1,31 @@
-use std::{env, fs, io::Write, path::PathBuf, process::Command};
+use std::{env, fs, path::PathBuf};
+
+const PLACEHOLDER: &str = "<!doctype html><html><body><h1>Jellyswarrm development build</h1><p>The web client is not built. Run <code>just ui</code> and rebuild.</p></body></html>\n";
 
 fn main() {
     println!("cargo:rerun-if-changed=migrations");
+    println!("cargo:rerun-if-changed=static");
+    println!("cargo:rerun-if-env-changed=JELLYSWARRM_ALLOW_PLACEHOLDER_UI");
 
-    if std::env::var("JELLYSWARRM_SKIP_UI").ok().as_deref() == Some("1") {
-        println!("cargo:warning=Skipping internal UI build (JELLYSWARRM_SKIP_UI=1)");
-        return;
+    let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
+    let static_dir = manifest_dir.join("static");
+    let index = static_dir.join("index.html");
+
+    // rust-embed requires an existing directory, even for check/test builds.
+    if !index.is_file() {
+        fs::create_dir_all(&static_dir).expect("Failed to create static/");
+        fs::write(&index, PLACEHOLDER).expect("Failed to write development UI placeholder");
     }
-    // Get the path to the crate's directory
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
 
-    // Assume workspace root is two levels up from this crate (adjust if needed)
-    let workspace_root = manifest_dir.parent().unwrap().parent().unwrap();
-
-    let ui_dir = workspace_root.join("ui");
-    let dist_dir = manifest_dir.join("static"); // static/ in the crate
-
-    // Get the latest commit hash for the ui submodule
-    let output = Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(&ui_dir)
-        .output()
-        .expect("Failed to get git commit hash for ui submodule");
-    let current_hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
-
-    // Read the last built commit hash
-    let hash_file = workspace_root.join(".last_build_commit");
-    let last_hash = fs::read_to_string(&hash_file).unwrap_or_default();
-
-    if last_hash != current_hash {
-        println!("Building UI: new commit detected.");
-
-        // Install/update npm dependencies
-        println!("Installing npm dependencies...");
-        let install_status = Command::new("npm")
-            .args(["install", "--engine-strict=false"])
-            .current_dir(&ui_dir)
-            .status()
-            .expect("Failed to run npm install");
-        assert!(install_status.success(), "npm install failed");
-
-        // Build the UI
-        let status = Command::new("npm")
-            .args(["run", "build:production"])
-            .current_dir(&ui_dir)
-            .status()
-            .expect("Failed to run npm build");
-        assert!(status.success(), "UI build failed");
-
-        // Copy dist/* to static/
-        let src = ui_dir.join("dist");
-        let dst = &dist_dir;
-
-        if dst.exists() {
-            fs::remove_dir_all(dst).expect("Failed to remove old static dir");
-        }
-        fs_extra::dir::copy(
-            &src,
-            dst,
-            &fs_extra::dir::CopyOptions::new().content_only(true),
-        )
-        .expect("Failed to copy dist to static");
-
-        // Save the new commit hash
-        let mut file = fs::File::create(&hash_file).expect("Failed to write hash file");
-        file.write_all(current_hash.as_bytes())
-            .expect("Failed to write hash");
-
-        // Generate UI version file for runtime access
-        generate_ui_version_file(workspace_root);
-    } else {
-        println!("cargo:warning=UI unchanged, skipping build");
+    let contents = fs::read_to_string(&index).expect("Failed to read static/index.html");
+    let placeholder = contents == PLACEHOLDER || contents.trim().is_empty();
+    if placeholder {
+        let release = env::var("PROFILE").as_deref() == Ok("release");
+        let allow_placeholder = env::var("JELLYSWARRM_ALLOW_PLACEHOLDER_UI").as_deref() == Ok("1");
+        assert!(
+            !release || allow_placeholder,
+            "Release builds require the web client. Run `just ui` first. For deliberately UI-less checks only, set JELLYSWARRM_ALLOW_PLACEHOLDER_UI=1."
+        );
+        println!("cargo:warning=Web client not built; embedding a development placeholder. Run `just ui` to build it.");
     }
-}
-
-fn generate_ui_version_file(workspace_root: &std::path::Path) {
-    let ui_dir = workspace_root.join("ui");
-
-    // Get UI version from package.json
-    let package_json =
-        fs::read_to_string(ui_dir.join("package.json")).expect("Failed to read ui/package.json");
-    let package: serde_json::Value =
-        serde_json::from_str(&package_json).expect("Failed to parse ui/package.json");
-    let ui_version = package["version"]
-        .as_str()
-        .expect("ui/package.json has no version")
-        .trim()
-        .trim_start_matches('v')
-        .to_string();
-
-    // Get UI commit hash
-    let commit_output = Command::new("git")
-        .args(["-C", ui_dir.to_str().unwrap(), "rev-parse", "HEAD"])
-        .output()
-        .expect("Failed to get UI commit hash");
-    let ui_commit = String::from_utf8_lossy(&commit_output.stdout)
-        .trim()
-        .to_string();
-
-    // Write version file
-    let version_content = format!("UI_VERSION={}\nUI_COMMIT={}\n", ui_version, ui_commit);
-
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let dist_dir = manifest_dir.join("static");
-    let version_file_in_dist = dist_dir.join("ui-version.env");
-    fs::write(&version_file_in_dist, version_content)
-        .expect("Failed to write ui-version.env in static/");
-
-    println!(
-        "Generated ui-version.env with UI_VERSION={} UI_COMMIT={}",
-        ui_version, ui_commit
-    );
 }

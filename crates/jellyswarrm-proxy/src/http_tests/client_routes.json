@@ -1,0 +1,5105 @@
+{
+  "schema": 1,
+  "description": "Static client call sites. CONTEXT methods and dynamic sites require manual contract review; this is not a runtime coverage claim.",
+  "requests": [
+    {
+      "method": "CONTEXT",
+      "path": "LiveTv/TunerHosts/Types",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/apps/dashboard/controllers/livetvtuner.js",
+      "line": 16
+    },
+    {
+      "method": "CONTEXT",
+      "path": "LiveTv/TunerHosts",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/apps/dashboard/controllers/livetvtuner.js",
+      "line": 102
+    },
+    {
+      "method": "GET",
+      "path": "/Items/{itemId}/Images/{imageType}/{imageIndex}",
+      "query": [
+        "backgroundColor",
+        "blur",
+        "fillHeight",
+        "fillWidth",
+        "foregroundLayer",
+        "format",
+        "height",
+        "maxHeight",
+        "maxWidth",
+        "percentPlayed",
+        "quality",
+        "tag",
+        "unplayedCount",
+        "width"
+      ],
+      "body": false,
+      "operation": "getImageApi.getItemImageUrlById",
+      "source": "sdk",
+      "file": "ui/src/apps/dashboard/features/libraries/components/LibraryCard.tsx",
+      "line": 48
+    },
+    {
+      "method": "DELETE",
+      "path": "/LiveTv/ListingProviders",
+      "query": [
+        "id"
+      ],
+      "body": false,
+      "operation": "getLiveTvApi.deleteListingProvider",
+      "source": "sdk",
+      "file": "ui/src/apps/dashboard/features/livetv/api/useDeleteProvider.ts",
+      "line": 13
+    },
+    {
+      "method": "DELETE",
+      "path": "/LiveTv/TunerHosts",
+      "query": [
+        "id"
+      ],
+      "body": false,
+      "operation": "getLiveTvApi.deleteTunerHost",
+      "source": "sdk",
+      "file": "ui/src/apps/dashboard/features/livetv/api/useDeleteTuner.ts",
+      "line": 13
+    },
+    {
+      "method": "GET",
+      "path": "/Items/Counts",
+      "query": [
+        "isFavorite",
+        "userId"
+      ],
+      "body": false,
+      "operation": "getLibraryApi.getItemCounts",
+      "source": "sdk",
+      "file": "ui/src/apps/dashboard/features/metrics/api/useItemCounts.ts",
+      "line": 14
+    },
+    {
+      "method": "GET",
+      "path": "/Library/MediaFolders",
+      "query": [
+        "isHidden"
+      ],
+      "body": false,
+      "operation": "getLibraryApi.getMediaFolders",
+      "source": "sdk",
+      "file": "ui/src/apps/dashboard/features/users/api/useLibraryMediaFolders.ts",
+      "line": 9
+    },
+    {
+      "method": "CONTEXT",
+      "path": "Library/MediaFolders",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/apps/dashboard/features/users/components/Access.tsx",
+      "line": 147
+    },
+    {
+      "method": "GET",
+      "path": "/Studios",
+      "query": [
+        "enableImageTypes",
+        "enableImages",
+        "enableTotalRecordCount",
+        "enableUserData",
+        "excludeItemTypes",
+        "fields",
+        "imageTypeLimit",
+        "includeItemTypes",
+        "isFavorite",
+        "limit",
+        "nameLessThan",
+        "nameStartsWith",
+        "nameStartsWithOrGreater",
+        "parentId",
+        "searchTerm",
+        "startIndex",
+        "userId"
+      ],
+      "body": false,
+      "operation": "getStudioApi.getStudios",
+      "source": "sdk",
+      "file": "ui/src/apps/legacy/controllers/favorites.js",
+      "line": 211
+    },
+    {
+      "method": "GET",
+      "path": "Artists",
+      "operation": "getArtists",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/favorites.js",
+      "line": 224
+    },
+    {
+      "method": "GET",
+      "path": "Persons",
+      "operation": "getPeople",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/favorites.js",
+      "line": 228
+    },
+    {
+      "method": "GET",
+      "path": "Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/favorites.js",
+      "line": 232
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/favorites.js",
+      "line": 232
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 73
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 73
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/SeriesTimers/{id}",
+      "operation": "getLiveTvSeriesTimer",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 77
+    },
+    {
+      "method": "GET",
+      "path": "Genres/{this.encodeName(name)}",
+      "operation": "getGenre",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 81
+    },
+    {
+      "method": "GET",
+      "path": "MusicGenres/{this.encodeName(name)}",
+      "operation": "getMusicGenre",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 85
+    },
+    {
+      "method": "GET",
+      "path": "Artists/{this.encodeName(name)}",
+      "operation": "getArtist",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 89
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Timers",
+      "operation": "getLiveTvTimers",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 145
+    },
+    {
+      "method": "GET",
+      "path": "Shows/NextUp",
+      "operation": "getNextUpEpisodes",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 804
+    },
+    {
+      "method": "CONTEXT",
+      "path": "Audio/{item.Id}/Lyrics",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 1068
+    },
+    {
+      "method": "GET",
+      "path": "Shows/{itemId}/Episodes",
+      "operation": "getEpisodes",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 1101
+    },
+    {
+      "method": "GET",
+      "path": "Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 1160
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 1160
+    },
+    {
+      "method": "GET",
+      "path": "/Items/{itemId}/Collections",
+      "query": [
+        "fields",
+        "limit",
+        "startIndex",
+        "userId"
+      ],
+      "body": false,
+      "operation": "getLibraryApi.getItemCollections",
+      "source": "sdk",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 1208
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}/Similar",
+      "operation": "getSimilarItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 1264
+    },
+    {
+      "method": "GET",
+      "path": "Shows/{itemId}/Seasons",
+      "operation": "getSeasons",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 1372
+    },
+    {
+      "method": "GET",
+      "path": "Shows/{itemId}/Episodes",
+      "operation": "getEpisodes",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 1378
+    },
+    {
+      "method": "GET",
+      "path": "Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 1387
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 1387
+    },
+    {
+      "method": "POST",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 1609
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 1609
+    },
+    {
+      "method": "POST",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 1609
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 1609
+    },
+    {
+      "method": "POST",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 1626
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 1626
+    },
+    {
+      "method": "POST",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 1626
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 1626
+    },
+    {
+      "method": "GET",
+      "path": "Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 1786
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 1786
+    },
+    {
+      "method": "GET",
+      "path": "Videos/{itemId}/AdditionalParts",
+      "operation": "getAdditionalVideoParts",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 1799
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}/SpecialFeatures",
+      "operation": "getSpecialFeatures",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 1849
+    },
+    {
+      "method": "CONTEXT",
+      "path": "Videos/{pageParams.id}/AlternateSources",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 1951
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Channels/{id}",
+      "operation": "getLiveTvChannel",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 1988
+    },
+    {
+      "method": "GET",
+      "path": "/Items/{itemId}/Download",
+      "query": [],
+      "body": false,
+      "operation": "getLibraryApi.getDownloadUrl",
+      "source": "sdk",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 2046
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 2063
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 2063
+    },
+    {
+      "method": "GET",
+      "path": "/Items/{itemId}",
+      "query": [
+        "userId"
+      ],
+      "body": false,
+      "operation": "getLibraryApi.getItem",
+      "source": "sdk",
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 2190
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Recordings",
+      "operation": "getLiveTvRecordings",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/list.js",
+      "line": 244
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Programs/Recommended",
+      "operation": "getLiveTvRecommendedPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/list.js",
+      "line": 249
+    },
+    {
+      "method": "POST",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/list.js",
+      "line": 252
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/list.js",
+      "line": 252
+    },
+    {
+      "method": "POST",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/list.js",
+      "line": 252
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/list.js",
+      "line": 252
+    },
+    {
+      "method": "GET",
+      "path": "Shows/NextUp",
+      "operation": "getNextUpEpisodes",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/list.js",
+      "line": 256
+    },
+    {
+      "method": "GET",
+      "path": "Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/list.js",
+      "line": 323
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/list.js",
+      "line": 323
+    },
+    {
+      "method": "GET",
+      "path": "Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/list.js",
+      "line": 345
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/list.js",
+      "line": 345
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/list.js",
+      "line": 357
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/list.js",
+      "line": 357
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Channels",
+      "operation": "getLiveTvChannels",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/livetv/livetvchannels.js",
+      "line": 125
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Recordings",
+      "operation": "getLiveTvRecordings",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/livetv/livetvrecordings.js",
+      "line": 94
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Recordings/Folders",
+      "operation": "getRecordingFolders",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/livetv/livetvrecordings.js",
+      "line": 101
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Recordings",
+      "operation": "getLiveTvRecordings",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/livetv/livetvschedule.js",
+      "line": 105
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Timers",
+      "operation": "getLiveTvTimers",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/livetv/livetvschedule.js",
+      "line": 112
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/SeriesTimers",
+      "operation": "getLiveTvSeriesTimers",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/livetv/livetvseriestimers.js",
+      "line": 46
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Programs/Recommended",
+      "operation": "getLiveTvRecommendedPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/livetv/livetvsuggested.js",
+      "line": 39
+    },
+    {
+      "method": "POST",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/livetv/livetvsuggested.js",
+      "line": 63
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/livetv/livetvsuggested.js",
+      "line": 63
+    },
+    {
+      "method": "POST",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/livetv/livetvsuggested.js",
+      "line": 63
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/livetv/livetvsuggested.js",
+      "line": 63
+    },
+    {
+      "method": "POST",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/livetv/livetvsuggested.js",
+      "line": 78
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/livetv/livetvsuggested.js",
+      "line": 78
+    },
+    {
+      "method": "POST",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/livetv/livetvsuggested.js",
+      "line": 78
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/livetv/livetvsuggested.js",
+      "line": 78
+    },
+    {
+      "method": "POST",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/livetv/livetvsuggested.js",
+      "line": 93
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/livetv/livetvsuggested.js",
+      "line": 93
+    },
+    {
+      "method": "POST",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/livetv/livetvsuggested.js",
+      "line": 93
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/livetv/livetvsuggested.js",
+      "line": 93
+    },
+    {
+      "method": "POST",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/livetv/livetvsuggested.js",
+      "line": 104
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/livetv/livetvsuggested.js",
+      "line": 104
+    },
+    {
+      "method": "POST",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/livetv/livetvsuggested.js",
+      "line": 104
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/livetv/livetvsuggested.js",
+      "line": 104
+    },
+    {
+      "method": "POST",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/livetv/livetvsuggested.js",
+      "line": 115
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/livetv/livetvsuggested.js",
+      "line": 115
+    },
+    {
+      "method": "POST",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/livetv/livetvsuggested.js",
+      "line": 115
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/livetv/livetvsuggested.js",
+      "line": 115
+    },
+    {
+      "method": "GET",
+      "path": "/Audio/{itemId}/Lyrics",
+      "query": [],
+      "body": false,
+      "operation": "getLyricApi.getLyrics",
+      "source": "sdk",
+      "file": "ui/src/apps/legacy/controllers/lyrics.js",
+      "line": 140
+    },
+    {
+      "method": "GET",
+      "path": "Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/movies/moviecollections.js",
+      "line": 70
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/movies/moviecollections.js",
+      "line": 70
+    },
+    {
+      "method": "GET",
+      "path": "Genres",
+      "operation": "getGenres",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/movies/moviegenres.js",
+      "line": 48
+    },
+    {
+      "method": "GET",
+      "path": "Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/movies/moviegenres.js",
+      "line": 85
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/movies/moviegenres.js",
+      "line": 85
+    },
+    {
+      "method": "GET",
+      "path": "Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/movies/movies.js",
+      "line": 30
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/movies/movies.js",
+      "line": 30
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/movies/movies.js",
+      "line": 34
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/movies/movies.js",
+      "line": 34
+    },
+    {
+      "method": "GET",
+      "path": "Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/movies/movies.js",
+      "line": 45
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/movies/movies.js",
+      "line": 45
+    },
+    {
+      "method": "CONTEXT",
+      "path": "Users/{userId}/Items/Latest",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/apps/legacy/controllers/movies/moviesrecommended.js",
+      "line": 37
+    },
+    {
+      "method": "GET",
+      "path": "Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/movies/moviesrecommended.js",
+      "line": 72
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/movies/moviesrecommended.js",
+      "line": 72
+    },
+    {
+      "method": "CONTEXT",
+      "path": "Movies/Recommendations",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/apps/legacy/controllers/movies/moviesrecommended.js",
+      "line": 161
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/movies/moviesrecommended.js",
+      "line": 387
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/movies/moviesrecommended.js",
+      "line": 387
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/music/musicalbums.js",
+      "line": 17
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/music/musicalbums.js",
+      "line": 17
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/music/musicalbums.js",
+      "line": 25
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/music/musicalbums.js",
+      "line": 25
+    },
+    {
+      "method": "GET",
+      "path": "Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/music/musicalbums.js",
+      "line": 89
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/music/musicalbums.js",
+      "line": 89
+    },
+    {
+      "method": "GET",
+      "path": "Artists/AlbumArtists",
+      "operation": "getAlbumArtists",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/music/musicartists.js",
+      "line": 74
+    },
+    {
+      "method": "GET",
+      "path": "Artists",
+      "operation": "getArtists",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/music/musicartists.js",
+      "line": 75
+    },
+    {
+      "method": "GET",
+      "path": "Genres",
+      "operation": "getGenres",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/music/musicgenres.js",
+      "line": 40
+    },
+    {
+      "method": "GET",
+      "path": "Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/music/musicplaylists.js",
+      "line": 40
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/music/musicplaylists.js",
+      "line": 40
+    },
+    {
+      "method": "CONTEXT",
+      "path": "Users/{userId}/Items/Latest",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/apps/legacy/controllers/music/musicrecommended.js",
+      "line": 57
+    },
+    {
+      "method": "GET",
+      "path": "Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/music/musicrecommended.js",
+      "line": 96
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/music/musicrecommended.js",
+      "line": 96
+    },
+    {
+      "method": "GET",
+      "path": "Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/music/musicrecommended.js",
+      "line": 138
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/music/musicrecommended.js",
+      "line": 138
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/music/musicrecommended.js",
+      "line": 379
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/music/musicrecommended.js",
+      "line": 379
+    },
+    {
+      "method": "GET",
+      "path": "Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/music/songs.js",
+      "line": 59
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/music/songs.js",
+      "line": 59
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/music/songs.js",
+      "line": 152
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/music/songs.js",
+      "line": 152
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/playback/video/index.js",
+      "line": 45
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/playback/video/index.js",
+      "line": 45
+    },
+    {
+      "method": "CONTEXT",
+      "path": "Videos/{item.Id}/Trickplay/{trickplayInfo.Width}/{index}.jpg",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/apps/legacy/controllers/playback/video/index.js",
+      "line": 1517
+    },
+    {
+      "method": "GET",
+      "path": "Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/shows/episodes.js",
+      "line": 75
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/shows/episodes.js",
+      "line": 75
+    },
+    {
+      "method": "GET",
+      "path": "Genres",
+      "operation": "getGenres",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/shows/tvgenres.js",
+      "line": 48
+    },
+    {
+      "method": "GET",
+      "path": "Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/shows/tvgenres.js",
+      "line": 85
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/shows/tvgenres.js",
+      "line": 85
+    },
+    {
+      "method": "GET",
+      "path": "Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/shows/tvrecommended.js",
+      "line": 113
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/shows/tvrecommended.js",
+      "line": 113
+    },
+    {
+      "method": "GET",
+      "path": "Users/{this.getCurrentUserId()}/Items/Latest",
+      "operation": "getLatestItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/shows/tvrecommended.js",
+      "line": 151
+    },
+    {
+      "method": "GET",
+      "path": "Shows/NextUp",
+      "operation": "getNextUpEpisodes",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/shows/tvrecommended.js",
+      "line": 191
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/shows/tvrecommended.js",
+      "line": 363
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/shows/tvrecommended.js",
+      "line": 363
+    },
+    {
+      "method": "GET",
+      "path": "Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/shows/tvshows.js",
+      "line": 74
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/shows/tvshows.js",
+      "line": 74
+    },
+    {
+      "method": "GET",
+      "path": "Studios",
+      "operation": "getStudios",
+      "source": "legacy",
+      "file": "ui/src/apps/legacy/controllers/shows/tvstudios.js",
+      "line": 32
+    },
+    {
+      "method": "CONTEXT",
+      "path": "Shows/Upcoming",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/apps/legacy/controllers/shows/tvupcoming.js",
+      "line": 24
+    },
+    {
+      "method": "GET",
+      "path": "/Items/Latest",
+      "query": [
+        "enableImageTypes",
+        "enableImages",
+        "enableUserData",
+        "fields",
+        "groupItems",
+        "imageTypeLimit",
+        "includeItemTypes",
+        "isPlayed",
+        "limit",
+        "parentId",
+        "userId"
+      ],
+      "body": false,
+      "operation": "getLibraryApi.getLatestMedia",
+      "source": "sdk",
+      "file": "ui/src/apps/legacy/features/libraries/api/useLatestMedia.ts",
+      "line": 14
+    },
+    {
+      "method": "GET",
+      "path": "/Shows/NextUp",
+      "query": [
+        "enableImageTypes",
+        "enableImages",
+        "enableResumable",
+        "enableRewatching",
+        "enableTotalRecordCount",
+        "enableUserData",
+        "fields",
+        "imageTypeLimit",
+        "limit",
+        "nextUpDateCutoff",
+        "parentId",
+        "seriesId",
+        "startIndex",
+        "userId"
+      ],
+      "body": false,
+      "operation": "getShowApi.getNextUp",
+      "source": "sdk",
+      "file": "ui/src/apps/legacy/features/libraries/api/useNextUp.ts",
+      "line": 14
+    },
+    {
+      "method": "GET",
+      "path": "/UserItems/Resume",
+      "query": [
+        "enableImageTypes",
+        "enableImages",
+        "enableTotalRecordCount",
+        "enableUserData",
+        "excludeActiveSessions",
+        "excludeItemTypes",
+        "fields",
+        "imageTypeLimit",
+        "includeItemTypes",
+        "limit",
+        "mediaTypes",
+        "parentId",
+        "searchTerm",
+        "startIndex",
+        "userId"
+      ],
+      "body": false,
+      "operation": "getLibraryApi.getResumeItems",
+      "source": "sdk",
+      "file": "ui/src/apps/legacy/features/libraries/api/useResumeItems.ts",
+      "line": 14
+    },
+    {
+      "method": "GET",
+      "path": "/LiveTv/Programs/Recommended",
+      "query": [
+        "enableImageTypes",
+        "enableImages",
+        "enableTotalRecordCount",
+        "enableUserData",
+        "fields",
+        "genreIds",
+        "hasAired",
+        "imageTypeLimit",
+        "isAiring",
+        "isKids",
+        "isMovie",
+        "isNews",
+        "isSeries",
+        "isSports",
+        "limit",
+        "startIndex",
+        "userId"
+      ],
+      "body": false,
+      "operation": "getLiveTvApi.getRecommendedPrograms",
+      "source": "sdk",
+      "file": "ui/src/apps/legacy/features/liveTv/api/useRecommendedPrograms.ts",
+      "line": 14
+    },
+    {
+      "method": "GET",
+      "path": "/LiveTv/Recordings",
+      "query": [
+        "channelId",
+        "enableImageTypes",
+        "enableImages",
+        "enableTotalRecordCount",
+        "enableUserData",
+        "fields",
+        "imageTypeLimit",
+        "isInProgress",
+        "isKids",
+        "isLibraryItem",
+        "isMovie",
+        "isNews",
+        "isSeries",
+        "isSports",
+        "limit",
+        "seriesTimerId",
+        "startIndex",
+        "status",
+        "userId"
+      ],
+      "body": false,
+      "operation": "getLiveTvApi.getRecordings",
+      "source": "sdk",
+      "file": "ui/src/apps/legacy/features/liveTv/api/useRecordings.ts",
+      "line": 14
+    },
+    {
+      "method": "GET",
+      "path": "/MediaSegments/{itemId}",
+      "query": [
+        "includeSegmentTypes"
+      ],
+      "body": false,
+      "operation": "getMediaSegmentApi.getItemSegments",
+      "source": "sdk",
+      "file": "ui/src/apps/legacy/features/playback/utils/mediaSegmentManager.ts",
+      "line": 28
+    },
+    {
+      "method": "GET",
+      "path": "/Items",
+      "query": [
+        "adjacentTo",
+        "albumArtistIds",
+        "albumIds",
+        "albums",
+        "artistIds",
+        "artists",
+        "audioLanguages",
+        "collapseBoxSetItems",
+        "contributingArtistIds",
+        "enableImageTypes",
+        "enableImages",
+        "enableTotalRecordCount",
+        "enableUserData",
+        "excludeArtistIds",
+        "excludeItemIds",
+        "excludeItemTypes",
+        "excludeLocationTypes",
+        "fields",
+        "filters",
+        "genreIds",
+        "genres",
+        "hasImdbId",
+        "hasOfficialRating",
+        "hasOverview",
+        "hasParentalRating",
+        "hasSpecialFeature",
+        "hasSubtitles",
+        "hasThemeSong",
+        "hasThemeVideo",
+        "hasTmdbId",
+        "hasTrailer",
+        "hasTvdbId",
+        "ids",
+        "imageTypeLimit",
+        "imageTypes",
+        "includeItemTypes",
+        "indexNumber",
+        "is3D",
+        "is4K",
+        "isFavorite",
+        "isHd",
+        "isKids",
+        "isLocked",
+        "isMissing",
+        "isMovie",
+        "isNews",
+        "isPlaceHolder",
+        "isPlayed",
+        "isSeries",
+        "isSports",
+        "isUnaired",
+        "limit",
+        "locationTypes",
+        "maxHeight",
+        "maxOfficialRating",
+        "maxPremiereDate",
+        "maxWidth",
+        "mediaTypes",
+        "minCommunityRating",
+        "minCriticRating",
+        "minDateLastSaved",
+        "minDateLastSavedForUser",
+        "minHeight",
+        "minOfficialRating",
+        "minPremiereDate",
+        "minWidth",
+        "nameLessThan",
+        "nameStartsWith",
+        "nameStartsWithOrGreater",
+        "officialRatings",
+        "parentId",
+        "parentIndexNumber",
+        "person",
+        "personIds",
+        "personTypes",
+        "recursive",
+        "searchTerm",
+        "seriesStatus",
+        "sortBy",
+        "sortOrder",
+        "startIndex",
+        "studioIds",
+        "studios",
+        "subtitleLanguages",
+        "tags",
+        "userId",
+        "videoTypes",
+        "years"
+      ],
+      "body": false,
+      "operation": "getLibraryApi.getItems",
+      "source": "sdk",
+      "file": "ui/src/apps/legacy/features/search/api/fetchItemsByType.ts",
+      "line": 13
+    },
+    {
+      "method": "GET",
+      "path": "/Artists",
+      "query": [
+        "enableImageTypes",
+        "enableImages",
+        "enableTotalRecordCount",
+        "enableUserData",
+        "excludeItemTypes",
+        "fields",
+        "filters",
+        "genreIds",
+        "genres",
+        "imageTypeLimit",
+        "includeItemTypes",
+        "isFavorite",
+        "limit",
+        "mediaTypes",
+        "minCommunityRating",
+        "nameLessThan",
+        "nameStartsWith",
+        "nameStartsWithOrGreater",
+        "officialRatings",
+        "parentId",
+        "person",
+        "personIds",
+        "personTypes",
+        "searchTerm",
+        "sortBy",
+        "sortOrder",
+        "startIndex",
+        "studioIds",
+        "studios",
+        "tags",
+        "userId",
+        "years"
+      ],
+      "body": false,
+      "operation": "getArtistApi.getArtists",
+      "source": "sdk",
+      "file": "ui/src/apps/legacy/features/search/api/useArtistsSearch.ts",
+      "line": 17
+    },
+    {
+      "method": "GET",
+      "path": "/Persons",
+      "query": [
+        "appearsInItemId",
+        "enableImageTypes",
+        "enableImages",
+        "enableUserData",
+        "excludePersonTypes",
+        "fields",
+        "filters",
+        "imageTypeLimit",
+        "isFavorite",
+        "limit",
+        "nameLessThan",
+        "nameStartsWith",
+        "nameStartsWithOrGreater",
+        "parentId",
+        "personTypes",
+        "searchTerm",
+        "startIndex",
+        "userId"
+      ],
+      "body": false,
+      "operation": "getPersonApi.getPersons",
+      "source": "sdk",
+      "file": "ui/src/apps/legacy/features/search/api/usePeopleSearch.ts",
+      "line": 18
+    },
+    {
+      "method": "GET",
+      "path": "/Items",
+      "query": [
+        "adjacentTo",
+        "albumArtistIds",
+        "albumIds",
+        "albums",
+        "artistIds",
+        "artists",
+        "audioLanguages",
+        "collapseBoxSetItems",
+        "contributingArtistIds",
+        "enableImageTypes",
+        "enableImages",
+        "enableTotalRecordCount",
+        "enableUserData",
+        "excludeArtistIds",
+        "excludeItemIds",
+        "excludeItemTypes",
+        "excludeLocationTypes",
+        "fields",
+        "filters",
+        "genreIds",
+        "genres",
+        "hasImdbId",
+        "hasOfficialRating",
+        "hasOverview",
+        "hasParentalRating",
+        "hasSpecialFeature",
+        "hasSubtitles",
+        "hasThemeSong",
+        "hasThemeVideo",
+        "hasTmdbId",
+        "hasTrailer",
+        "hasTvdbId",
+        "ids",
+        "imageTypeLimit",
+        "imageTypes",
+        "includeItemTypes",
+        "indexNumber",
+        "is3D",
+        "is4K",
+        "isFavorite",
+        "isHd",
+        "isKids",
+        "isLocked",
+        "isMissing",
+        "isMovie",
+        "isNews",
+        "isPlaceHolder",
+        "isPlayed",
+        "isSeries",
+        "isSports",
+        "isUnaired",
+        "limit",
+        "locationTypes",
+        "maxHeight",
+        "maxOfficialRating",
+        "maxPremiereDate",
+        "maxWidth",
+        "mediaTypes",
+        "minCommunityRating",
+        "minCriticRating",
+        "minDateLastSaved",
+        "minDateLastSavedForUser",
+        "minHeight",
+        "minOfficialRating",
+        "minPremiereDate",
+        "minWidth",
+        "nameLessThan",
+        "nameStartsWith",
+        "nameStartsWithOrGreater",
+        "officialRatings",
+        "parentId",
+        "parentIndexNumber",
+        "person",
+        "personIds",
+        "personTypes",
+        "recursive",
+        "searchTerm",
+        "seriesStatus",
+        "sortBy",
+        "sortOrder",
+        "startIndex",
+        "studioIds",
+        "studios",
+        "subtitleLanguages",
+        "tags",
+        "userId",
+        "videoTypes",
+        "years"
+      ],
+      "body": false,
+      "operation": "getLibraryApi.getItems",
+      "source": "sdk",
+      "file": "ui/src/apps/legacy/features/search/api/useSearchSuggestions.ts",
+      "line": 16
+    },
+    {
+      "method": "GET",
+      "path": "/Studios",
+      "query": [
+        "enableImageTypes",
+        "enableImages",
+        "enableTotalRecordCount",
+        "enableUserData",
+        "excludeItemTypes",
+        "fields",
+        "imageTypeLimit",
+        "includeItemTypes",
+        "isFavorite",
+        "limit",
+        "nameLessThan",
+        "nameStartsWith",
+        "nameStartsWithOrGreater",
+        "parentId",
+        "searchTerm",
+        "startIndex",
+        "userId"
+      ],
+      "body": false,
+      "operation": "getStudioApi.getStudios",
+      "source": "sdk",
+      "file": "ui/src/apps/legacy/features/search/api/useStudiosSearch.ts",
+      "line": 17
+    },
+    {
+      "method": "GET",
+      "path": "/Items",
+      "query": [
+        "adjacentTo",
+        "albumArtistIds",
+        "albumIds",
+        "albums",
+        "artistIds",
+        "artists",
+        "audioLanguages",
+        "collapseBoxSetItems",
+        "contributingArtistIds",
+        "enableImageTypes",
+        "enableImages",
+        "enableTotalRecordCount",
+        "enableUserData",
+        "excludeArtistIds",
+        "excludeItemIds",
+        "excludeItemTypes",
+        "excludeLocationTypes",
+        "fields",
+        "filters",
+        "genreIds",
+        "genres",
+        "hasImdbId",
+        "hasOfficialRating",
+        "hasOverview",
+        "hasParentalRating",
+        "hasSpecialFeature",
+        "hasSubtitles",
+        "hasThemeSong",
+        "hasThemeVideo",
+        "hasTmdbId",
+        "hasTrailer",
+        "hasTvdbId",
+        "ids",
+        "imageTypeLimit",
+        "imageTypes",
+        "includeItemTypes",
+        "indexNumber",
+        "is3D",
+        "is4K",
+        "isFavorite",
+        "isHd",
+        "isKids",
+        "isLocked",
+        "isMissing",
+        "isMovie",
+        "isNews",
+        "isPlaceHolder",
+        "isPlayed",
+        "isSeries",
+        "isSports",
+        "isUnaired",
+        "limit",
+        "locationTypes",
+        "maxHeight",
+        "maxOfficialRating",
+        "maxPremiereDate",
+        "maxWidth",
+        "mediaTypes",
+        "minCommunityRating",
+        "minCriticRating",
+        "minDateLastSaved",
+        "minDateLastSavedForUser",
+        "minHeight",
+        "minOfficialRating",
+        "minPremiereDate",
+        "minWidth",
+        "nameLessThan",
+        "nameStartsWith",
+        "nameStartsWithOrGreater",
+        "officialRatings",
+        "parentId",
+        "parentIndexNumber",
+        "person",
+        "personIds",
+        "personTypes",
+        "recursive",
+        "searchTerm",
+        "seriesStatus",
+        "sortBy",
+        "sortOrder",
+        "startIndex",
+        "studioIds",
+        "studios",
+        "subtitleLanguages",
+        "tags",
+        "userId",
+        "videoTypes",
+        "years"
+      ],
+      "body": false,
+      "operation": "getLibraryApi.getItems",
+      "source": "sdk",
+      "file": "ui/src/apps/legacy/features/search/api/useVideoSearch.ts",
+      "line": 18
+    },
+    {
+      "method": "GET",
+      "path": "/LiveTv/Timers/{timerId}",
+      "query": [],
+      "body": false,
+      "operation": "getLiveTvApi.getTimer",
+      "source": "sdk",
+      "file": "ui/src/apps/modern/features/details/hooks/api/useGetItemByType.ts",
+      "line": 23
+    },
+    {
+      "method": "GET",
+      "path": "/LiveTv/SeriesTimers/{timerId}",
+      "query": [],
+      "body": false,
+      "operation": "getLiveTvApi.getSeriesTimer",
+      "source": "sdk",
+      "file": "ui/src/apps/modern/features/details/hooks/api/useGetItemByType.ts",
+      "line": 30
+    },
+    {
+      "method": "GET",
+      "path": "/Items/{itemId}",
+      "query": [
+        "userId"
+      ],
+      "body": false,
+      "operation": "getLibraryApi.getItem",
+      "source": "sdk",
+      "file": "ui/src/apps/modern/features/details/hooks/api/useGetItemByType.ts",
+      "line": 36
+    },
+    {
+      "method": "GET",
+      "path": "/Items/{itemId}/Ancestors",
+      "query": [
+        "userId"
+      ],
+      "body": false,
+      "operation": "getLibraryApi.getAncestors",
+      "source": "sdk",
+      "file": "ui/src/apps/modern/features/libraries/hooks/api/useAncestors.ts",
+      "line": 19
+    },
+    {
+      "method": "GET",
+      "path": "/Genres",
+      "query": [
+        "enableImageTypes",
+        "enableImages",
+        "enableTotalRecordCount",
+        "excludeItemTypes",
+        "fields",
+        "imageTypeLimit",
+        "includeItemTypes",
+        "isFavorite",
+        "limit",
+        "nameLessThan",
+        "nameStartsWith",
+        "nameStartsWithOrGreater",
+        "parentId",
+        "searchTerm",
+        "sortBy",
+        "sortOrder",
+        "startIndex",
+        "userId"
+      ],
+      "body": false,
+      "operation": "getGenreApi.getGenres",
+      "source": "sdk",
+      "file": "ui/src/apps/modern/features/libraries/hooks/api/useGenres.ts",
+      "line": 29
+    },
+    {
+      "method": "GET",
+      "path": "/Movies/Recommendations",
+      "query": [
+        "categoryLimit",
+        "fields",
+        "itemLimit",
+        "parentId",
+        "userId"
+      ],
+      "body": false,
+      "operation": "getMovieApi.getMovieRecommendations",
+      "source": "sdk",
+      "file": "ui/src/apps/modern/features/libraries/hooks/api/useMovieRecommendations.ts",
+      "line": 14
+    },
+    {
+      "method": "GET",
+      "path": "/Shows/Upcoming",
+      "query": [
+        "enableImageTypes",
+        "enableImages",
+        "enableUserData",
+        "fields",
+        "imageTypeLimit",
+        "limit",
+        "parentId",
+        "startIndex",
+        "userId"
+      ],
+      "body": false,
+      "operation": "getShowApi.getUpcomingEpisodes",
+      "source": "sdk",
+      "file": "ui/src/apps/modern/features/libraries/hooks/api/useUpcomingEpisodes.ts",
+      "line": 16
+    },
+    {
+      "method": "GET",
+      "path": "/Items/{itemId}/Images/{imageType}/{imageIndex}",
+      "query": [
+        "backgroundColor",
+        "blur",
+        "fillHeight",
+        "fillWidth",
+        "foregroundLayer",
+        "format",
+        "height",
+        "maxHeight",
+        "maxWidth",
+        "percentPlayed",
+        "quality",
+        "tag",
+        "unplayedCount",
+        "width"
+      ],
+      "body": false,
+      "operation": "getImageApi.getItemImageUrlById",
+      "source": "sdk",
+      "file": "ui/src/components/cardbuilder/Card/cardHelper.ts",
+      "line": 50
+    },
+    {
+      "method": "GET",
+      "path": "/Items/{itemId}/Images/{imageType}/{imageIndex}",
+      "query": [
+        "backgroundColor",
+        "blur",
+        "fillHeight",
+        "fillWidth",
+        "foregroundLayer",
+        "format",
+        "height",
+        "maxHeight",
+        "maxWidth",
+        "percentPlayed",
+        "quality",
+        "tag",
+        "unplayedCount",
+        "width"
+      ],
+      "body": false,
+      "operation": "getImageApi.getItemImageUrlById",
+      "source": "sdk",
+      "file": "ui/src/components/cardbuilder/utils/url.ts",
+      "line": 160
+    },
+    {
+      "method": "CONTEXT",
+      "path": "LiveTv/ChannelMappings",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/components/channelMapper/channelMapper.js",
+      "line": 22
+    },
+    {
+      "method": "CONTEXT",
+      "path": "LiveTv/ChannelMappingOptions",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/components/channelMapper/channelMapper.js",
+      "line": 64
+    },
+    {
+      "method": "CONTEXT",
+      "path": "Collections",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/components/collectionEditor/collectionEditor.js",
+      "line": 45
+    },
+    {
+      "method": "CONTEXT",
+      "path": "Collections/{id}/Items",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/components/collectionEditor/collectionEditor.js",
+      "line": 78
+    },
+    {
+      "method": "GET",
+      "path": "Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/components/collectionEditor/collectionEditor.js",
+      "line": 117
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/components/collectionEditor/collectionEditor.js",
+      "line": 117
+    },
+    {
+      "method": "GET",
+      "path": "Artists",
+      "operation": "getArtists",
+      "source": "legacy",
+      "file": "ui/src/components/favoriteitems.js",
+      "line": 127
+    },
+    {
+      "method": "GET",
+      "path": "Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/components/favoriteitems.js",
+      "line": 130
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/components/favoriteitems.js",
+      "line": 130
+    },
+    {
+      "method": "CONTEXT",
+      "path": "Items/Filters",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/components/filterdialog/filterdialog.js",
+      "line": 64
+    },
+    {
+      "method": "GET",
+      "path": "Items/Filters2",
+      "operation": "getFilters",
+      "source": "legacy",
+      "file": "ui/src/components/filtermenu/filtermenu.js",
+      "line": 205
+    },
+    {
+      "method": "CONTEXT",
+      "path": "Users/{userId}/Items/Latest",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/components/groupedcards.js",
+      "line": 22
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Channels",
+      "operation": "getLiveTvChannels",
+      "source": "legacy",
+      "file": "ui/src/components/guide/guide.js",
+      "line": 305
+    },
+    {
+      "method": "POST",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/components/guide/guide.js",
+      "line": 355
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/components/guide/guide.js",
+      "line": 355
+    },
+    {
+      "method": "POST",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/components/guide/guide.js",
+      "line": 355
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Programs",
+      "operation": "getLiveTvPrograms",
+      "source": "legacy",
+      "file": "ui/src/components/guide/guide.js",
+      "line": 355
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/GuideInfo",
+      "operation": "getLiveTvGuideInfo",
+      "source": "legacy",
+      "file": "ui/src/components/guide/guide.js",
+      "line": 886
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/imageeditor/imageeditor.js",
+      "line": 37
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/imageeditor/imageeditor.js",
+      "line": 37
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}/Images",
+      "operation": "getItemImageInfos",
+      "source": "legacy",
+      "file": "ui/src/components/imageeditor/imageeditor.js",
+      "line": 68
+    },
+    {
+      "method": "DELETE",
+      "path": "Items/{itemId}/Images",
+      "operation": "deleteItemImage",
+      "source": "legacy",
+      "file": "ui/src/components/imageeditor/imageeditor.js",
+      "line": 184
+    },
+    {
+      "method": "POST",
+      "path": "Items/{itemId}/Images/{imageType}/{imageIndex}/Index",
+      "operation": "updateItemImageIndex",
+      "source": "legacy",
+      "file": "ui/src/components/imageeditor/imageeditor.js",
+      "line": 203
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/imageeditor/imageeditor.js",
+      "line": 407
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/imageeditor/imageeditor.js",
+      "line": 407
+    },
+    {
+      "method": "POST",
+      "path": "Items/{itemId}/Images",
+      "operation": "uploadItemImage",
+      "source": "legacy",
+      "file": "ui/src/components/imageUploader/imageUploader.js",
+      "line": 106
+    },
+    {
+      "method": "GET",
+      "path": "/Items/{itemId}/Download",
+      "query": [],
+      "body": false,
+      "operation": "getLibraryApi.getDownloadUrl",
+      "source": "sdk",
+      "file": "ui/src/components/itemContextMenu.js",
+      "line": 418
+    },
+    {
+      "method": "GET",
+      "path": "/Items/{itemId}/Download",
+      "query": [],
+      "body": false,
+      "operation": "getLibraryApi.getDownloadUrl",
+      "source": "sdk",
+      "file": "ui/src/components/itemContextMenu.js",
+      "line": 436
+    },
+    {
+      "method": "GET",
+      "path": "Shows/{itemId}/Episodes",
+      "operation": "getEpisodes",
+      "source": "legacy",
+      "file": "ui/src/components/itemContextMenu.js",
+      "line": 452
+    },
+    {
+      "method": "GET",
+      "path": "Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/components/itemContextMenu.js",
+      "line": 466
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/components/itemContextMenu.js",
+      "line": 466
+    },
+    {
+      "method": "GET",
+      "path": "Shows/{itemId}/Seasons",
+      "operation": "getSeasons",
+      "source": "legacy",
+      "file": "ui/src/components/itemContextMenu.js",
+      "line": 475
+    },
+    {
+      "method": "GET",
+      "path": "/Items/{itemId}/Download",
+      "query": [],
+      "body": false,
+      "operation": "getLibraryApi.getDownloadUrl",
+      "source": "sdk",
+      "file": "ui/src/components/itemContextMenu.js",
+      "line": 485
+    },
+    {
+      "method": "CONTEXT",
+      "path": "Playlists/{options.playlistId}/Items",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/components/itemContextMenu.js",
+      "line": 618
+    },
+    {
+      "method": "CONTEXT",
+      "path": "Playlists/{options.playlistId}/Items/{item.PlaylistItemId}/Move/0",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/components/itemContextMenu.js",
+      "line": 628
+    },
+    {
+      "method": "CONTEXT",
+      "path": "Playlists/{options.playlistId}/Items/{item.PlaylistItemId}/Move/{(item.PlaylistItemCount - 1)}",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/components/itemContextMenu.js",
+      "line": 636
+    },
+    {
+      "method": "CONTEXT",
+      "path": "Collections/{options.collectionId}/Items",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/components/itemContextMenu.js",
+      "line": 645
+    },
+    {
+      "method": "GET",
+      "path": "/Playlists/{playlistId}/Users/{userId}",
+      "query": [],
+      "body": false,
+      "operation": "getPlaylistApi.getPlaylistUser",
+      "source": "sdk",
+      "file": "ui/src/components/itemHelper.js",
+      "line": 170
+    },
+    {
+      "method": "CONTEXT",
+      "path": "Items/RemoteSearch/{currentItemType}",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/components/itemidentifier/itemidentifier.js",
+      "line": 94
+    },
+    {
+      "method": "CONTEXT",
+      "path": "Items/RemoteSearch/Apply/{currentItem.Id}",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/components/itemidentifier/itemidentifier.js",
+      "line": 269
+    },
+    {
+      "method": "CONTEXT",
+      "path": "Items/{item.Id}/ExternalIdInfos",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/components/itemidentifier/itemidentifier.js",
+      "line": 288
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/itemidentifier/itemidentifier.js",
+      "line": 331
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/itemidentifier/itemidentifier.js",
+      "line": 331
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/itemMediaInfo/itemMediaInfo.js",
+      "line": 230
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/itemMediaInfo/itemMediaInfo.js",
+      "line": 230
+    },
+    {
+      "method": "GET",
+      "path": "/Items/{itemId}/Images/{imageType}/{imageIndex}",
+      "query": [
+        "backgroundColor",
+        "blur",
+        "fillHeight",
+        "fillWidth",
+        "foregroundLayer",
+        "format",
+        "height",
+        "maxHeight",
+        "maxWidth",
+        "percentPlayed",
+        "quality",
+        "tag",
+        "unplayedCount",
+        "width"
+      ],
+      "body": false,
+      "operation": "getImageApi.getItemImageUrlById",
+      "source": "sdk",
+      "file": "ui/src/components/listview/List/listHelper.ts",
+      "line": 117
+    },
+    {
+      "method": "GET",
+      "path": "/Items/{itemId}/Images/{imageType}/{imageIndex}",
+      "query": [
+        "backgroundColor",
+        "blur",
+        "fillHeight",
+        "fillWidth",
+        "foregroundLayer",
+        "format",
+        "height",
+        "maxHeight",
+        "maxWidth",
+        "percentPlayed",
+        "quality",
+        "tag",
+        "unplayedCount",
+        "width"
+      ],
+      "body": false,
+      "operation": "getImageApi.getItemImageUrlById",
+      "source": "sdk",
+      "file": "ui/src/components/listview/List/listHelper.ts",
+      "line": 153
+    },
+    {
+      "method": "POST",
+      "path": "/Audio/{itemId}/RemoteSearch/Lyrics/{lyricId}",
+      "query": [],
+      "body": false,
+      "operation": "getLyricApi.downloadRemoteLyrics",
+      "source": "sdk",
+      "file": "ui/src/components/lyricseditor/lyricseditor.js",
+      "line": 29
+    },
+    {
+      "method": "GET",
+      "path": "/Audio/{itemId}/RemoteSearch/Lyrics",
+      "query": [],
+      "body": false,
+      "operation": "getLyricApi.searchRemoteLyrics",
+      "source": "sdk",
+      "file": "ui/src/components/lyricseditor/lyricseditor.js",
+      "line": 130
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/lyricseditor/lyricseditor.js",
+      "line": 162
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/lyricseditor/lyricseditor.js",
+      "line": 162
+    },
+    {
+      "method": "GET",
+      "path": "/Audio/{itemId}/Lyrics",
+      "query": [],
+      "body": false,
+      "operation": "getLyricApi.getLyrics",
+      "source": "sdk",
+      "file": "ui/src/components/lyricseditor/lyricseditor.js",
+      "line": 297
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/lyricseditor/lyricseditor.js",
+      "line": 318
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/lyricseditor/lyricseditor.js",
+      "line": 318
+    },
+    {
+      "method": "POST",
+      "path": "/Audio/{itemId}/Lyrics",
+      "query": [
+        "fileName"
+      ],
+      "body": true,
+      "operation": "getLyricApi.uploadLyrics",
+      "source": "sdk",
+      "file": "ui/src/components/lyricsuploader/lyricsuploader.js",
+      "line": 95
+    },
+    {
+      "method": "POST",
+      "path": "Items/{item.Id}",
+      "operation": "updateItem",
+      "source": "legacy",
+      "file": "ui/src/components/metadataEditor/metadataEditor.js",
+      "line": 52
+    },
+    {
+      "method": "CONTEXT",
+      "path": "Items/{item.Id}/ContentType",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/components/metadataEditor/metadataEditor.js",
+      "line": 58
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/metadataEditor/metadataEditor.js",
+      "line": 406
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/metadataEditor/metadataEditor.js",
+      "line": 406
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/Root",
+      "operation": "getRootFolder",
+      "source": "legacy",
+      "file": "ui/src/components/metadataEditor/metadataEditor.js",
+      "line": 409
+    },
+    {
+      "method": "CONTEXT",
+      "path": "Items/{itemId}/MetadataEditor",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/components/metadataEditor/metadataEditor.js",
+      "line": 416
+    },
+    {
+      "method": "DELETE",
+      "path": "Items/{itemId}",
+      "operation": "deleteItem",
+      "source": "legacy",
+      "file": "ui/src/components/multiSelect/multiSelect.js",
+      "line": 175
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/multiSelect/multiSelect.js",
+      "line": 189
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/multiSelect/multiSelect.js",
+      "line": 189
+    },
+    {
+      "method": "POST",
+      "path": "Users/{userId}/PlayedItems/{itemId}",
+      "operation": "markPlayed",
+      "source": "legacy",
+      "file": "ui/src/components/multiSelect/multiSelect.js",
+      "line": 319
+    },
+    {
+      "method": "DELETE",
+      "path": "Users/{userId}/PlayedItems/{itemId}",
+      "operation": "markUnplayed",
+      "source": "legacy",
+      "file": "ui/src/components/multiSelect/multiSelect.js",
+      "line": 326
+    },
+    {
+      "method": "CONTEXT",
+      "path": "Videos/MergeVersions",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/components/multiSelect/multiSelect.js",
+      "line": 383
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/nowPlayingBar/nowPlayingBar.js",
+      "line": 522
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/nowPlayingBar/nowPlayingBar.js",
+      "line": 522
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/playback/playbackmanager.js",
+      "line": 140
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/playback/playbackmanager.js",
+      "line": 140
+    },
+    {
+      "method": "GET",
+      "path": "Users/{this.getCurrentUserId()}/Items/{itemId}/Intros",
+      "operation": "getIntros",
+      "source": "legacy",
+      "file": "ui/src/components/playback/playbackmanager.js",
+      "line": 272
+    },
+    {
+      "method": "POST",
+      "path": "/Items/{itemId}/PlaybackInfo",
+      "query": [
+        "allowAudioStreamCopy",
+        "allowVideoStreamCopy",
+        "audioStreamIndex",
+        "autoOpenLiveStream",
+        "enableDirectPlay",
+        "enableDirectStream",
+        "enableTranscoding",
+        "liveStreamId",
+        "maxAudioChannels",
+        "maxStreamingBitrate",
+        "mediaSourceId",
+        "startTimeTicks",
+        "subtitleStreamIndex",
+        "userId"
+      ],
+      "body": true,
+      "operation": "getMediaInfoApi.getPostedPlaybackInfo",
+      "source": "sdk",
+      "file": "ui/src/components/playback/playbackmanager.js",
+      "line": 504
+    },
+    {
+      "method": "CONTEXT",
+      "path": "LiveStreams/Open",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/components/playback/playbackmanager.js",
+      "line": 578
+    },
+    {
+      "method": "DELETE",
+      "path": "Videos/ActiveEncodings",
+      "operation": "stopActiveEncodings",
+      "source": "legacy",
+      "file": "ui/src/components/playback/playbackmanager.js",
+      "line": 1791
+    },
+    {
+      "method": "DELETE",
+      "path": "Videos/ActiveEncodings",
+      "operation": "stopActiveEncodings",
+      "source": "legacy",
+      "file": "ui/src/components/playback/playbackmanager.js",
+      "line": 1794
+    },
+    {
+      "method": "GET",
+      "path": "Shows/NextUp",
+      "operation": "getNextUpEpisodes",
+      "source": "legacy",
+      "file": "ui/src/components/playback/playbackmanager.js",
+      "line": 2009
+    },
+    {
+      "method": "GET",
+      "path": "Shows/{itemId}/Episodes",
+      "operation": "getEpisodes",
+      "source": "legacy",
+      "file": "ui/src/components/playback/playbackmanager.js",
+      "line": 2013
+    },
+    {
+      "method": "GET",
+      "path": "Shows/{itemId}/Episodes",
+      "operation": "getEpisodes",
+      "source": "legacy",
+      "file": "ui/src/components/playback/playbackmanager.js",
+      "line": 2074
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/playback/playbackmanager.js",
+      "line": 2681
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/playback/playbackmanager.js",
+      "line": 2681
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/playback/playbackmanager.js",
+      "line": 2995
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/playback/playbackmanager.js",
+      "line": 2995
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/playback/playbackmanager.js",
+      "line": 3036
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/playback/playbackmanager.js",
+      "line": 3036
+    },
+    {
+      "method": "POST",
+      "path": "LiveStreams/MediaInfo",
+      "operation": "getLiveStreamMediaInfo",
+      "source": "legacy",
+      "file": "ui/src/components/playback/playbackmanager.js",
+      "line": 3801
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/playback/playbackmanager.js",
+      "line": 3878
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/playback/playbackmanager.js",
+      "line": 3878
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}/LocalTrailers",
+      "operation": "getLocalTrailers",
+      "source": "legacy",
+      "file": "ui/src/components/playback/playbackmanager.js",
+      "line": 4036
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}/InstantMix",
+      "operation": "getInstantMixFromItem",
+      "source": "legacy",
+      "file": "ui/src/components/playback/playbackmanager.js",
+      "line": 4151
+    },
+    {
+      "method": "POST",
+      "path": "/Playlists",
+      "query": [
+        "ids",
+        "mediaType",
+        "name",
+        "userId"
+      ],
+      "body": true,
+      "operation": "getPlaylistApi.createPlaylist",
+      "source": "sdk",
+      "file": "ui/src/components/playlisteditor/playlisteditor.ts",
+      "line": 97
+    },
+    {
+      "method": "POST",
+      "path": "/Playlists/{playlistId}",
+      "query": [],
+      "body": true,
+      "operation": "getPlaylistApi.updatePlaylist",
+      "source": "sdk",
+      "file": "ui/src/components/playlisteditor/playlisteditor.ts",
+      "line": 135
+    },
+    {
+      "method": "POST",
+      "path": "/Playlists/{playlistId}/Items",
+      "query": [
+        "ids",
+        "position",
+        "userId"
+      ],
+      "body": false,
+      "operation": "getPlaylistApi.addItemToPlaylist",
+      "source": "sdk",
+      "file": "ui/src/components/playlisteditor/playlisteditor.ts",
+      "line": 168
+    },
+    {
+      "method": "GET",
+      "path": "/Items",
+      "query": [
+        "adjacentTo",
+        "albumArtistIds",
+        "albumIds",
+        "albums",
+        "artistIds",
+        "artists",
+        "audioLanguages",
+        "collapseBoxSetItems",
+        "contributingArtistIds",
+        "enableImageTypes",
+        "enableImages",
+        "enableTotalRecordCount",
+        "enableUserData",
+        "excludeArtistIds",
+        "excludeItemIds",
+        "excludeItemTypes",
+        "excludeLocationTypes",
+        "fields",
+        "filters",
+        "genreIds",
+        "genres",
+        "hasImdbId",
+        "hasOfficialRating",
+        "hasOverview",
+        "hasParentalRating",
+        "hasSpecialFeature",
+        "hasSubtitles",
+        "hasThemeSong",
+        "hasThemeVideo",
+        "hasTmdbId",
+        "hasTrailer",
+        "hasTvdbId",
+        "ids",
+        "imageTypeLimit",
+        "imageTypes",
+        "includeItemTypes",
+        "indexNumber",
+        "is3D",
+        "is4K",
+        "isFavorite",
+        "isHd",
+        "isKids",
+        "isLocked",
+        "isMissing",
+        "isMovie",
+        "isNews",
+        "isPlaceHolder",
+        "isPlayed",
+        "isSeries",
+        "isSports",
+        "isUnaired",
+        "limit",
+        "locationTypes",
+        "maxHeight",
+        "maxOfficialRating",
+        "maxPremiereDate",
+        "maxWidth",
+        "mediaTypes",
+        "minCommunityRating",
+        "minCriticRating",
+        "minDateLastSaved",
+        "minDateLastSavedForUser",
+        "minHeight",
+        "minOfficialRating",
+        "minPremiereDate",
+        "minWidth",
+        "nameLessThan",
+        "nameStartsWith",
+        "nameStartsWithOrGreater",
+        "officialRatings",
+        "parentId",
+        "parentIndexNumber",
+        "person",
+        "personIds",
+        "personTypes",
+        "recursive",
+        "searchTerm",
+        "seriesStatus",
+        "sortBy",
+        "sortOrder",
+        "startIndex",
+        "studioIds",
+        "studios",
+        "subtitleLanguages",
+        "tags",
+        "userId",
+        "videoTypes",
+        "years"
+      ],
+      "body": false,
+      "operation": "getLibraryApi.getItems",
+      "source": "sdk",
+      "file": "ui/src/components/playlisteditor/playlisteditor.ts",
+      "line": 201
+    },
+    {
+      "method": "GET",
+      "path": "/Playlists/{playlistId}/Users/{userId}",
+      "query": [],
+      "body": false,
+      "operation": "getPlaylistApi.getPlaylistUser",
+      "source": "sdk",
+      "file": "ui/src/components/playlisteditor/playlisteditor.ts",
+      "line": 219
+    },
+    {
+      "method": "GET",
+      "path": "/Items/{itemId}",
+      "query": [
+        "userId"
+      ],
+      "body": false,
+      "operation": "getLibraryApi.getItem",
+      "source": "sdk",
+      "file": "ui/src/components/playlisteditor/playlisteditor.ts",
+      "line": 354
+    },
+    {
+      "method": "GET",
+      "path": "/Playlists/{playlistId}",
+      "query": [],
+      "body": false,
+      "operation": "getPlaylistApi.getPlaylist",
+      "source": "sdk",
+      "file": "ui/src/components/playlisteditor/playlisteditor.ts",
+      "line": 356
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/recordingcreator/recordingbutton.js",
+      "line": 59
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/recordingcreator/recordingbutton.js",
+      "line": 59
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Timers/Defaults",
+      "operation": "getNewLiveTvTimerDefaults",
+      "source": "legacy",
+      "file": "ui/src/components/recordingcreator/recordingcreator.js",
+      "line": 112
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Programs/{id}",
+      "operation": "getLiveTvProgram",
+      "source": "legacy",
+      "file": "ui/src/components/recordingcreator/recordingcreator.js",
+      "line": 113
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Programs/{id}",
+      "operation": "getLiveTvProgram",
+      "source": "legacy",
+      "file": "ui/src/components/recordingcreator/recordingcreator.js",
+      "line": 127
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Timers/{id}",
+      "operation": "getLiveTvTimer",
+      "source": "legacy",
+      "file": "ui/src/components/recordingcreator/recordingeditor.js",
+      "line": 49
+    },
+    {
+      "method": "POST",
+      "path": "LiveTv/Timers/{item.Id}",
+      "operation": "updateLiveTvTimer",
+      "source": "legacy",
+      "file": "ui/src/components/recordingcreator/recordingeditor.js",
+      "line": 52
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Timers/{id}",
+      "operation": "getLiveTvTimer",
+      "source": "legacy",
+      "file": "ui/src/components/recordingcreator/recordingeditor.js",
+      "line": 82
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Programs/{id}",
+      "operation": "getLiveTvProgram",
+      "source": "legacy",
+      "file": "ui/src/components/recordingcreator/recordingfields.js",
+      "line": 52
+    },
+    {
+      "method": "DELETE",
+      "path": "LiveTv/SeriesTimers/{id}",
+      "operation": "cancelLiveTvSeriesTimer",
+      "source": "legacy",
+      "file": "ui/src/components/recordingcreator/recordingfields.js",
+      "line": 214
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/recordingcreator/recordinghelper.js",
+      "line": 11
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/recordingcreator/recordinghelper.js",
+      "line": 11
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Timers/Defaults",
+      "operation": "getNewLiveTvTimerDefaults",
+      "source": "legacy",
+      "file": "ui/src/components/recordingcreator/recordinghelper.js",
+      "line": 14
+    },
+    {
+      "method": "POST",
+      "path": "LiveTv/SeriesTimers",
+      "operation": "createLiveTvSeriesTimer",
+      "source": "legacy",
+      "file": "ui/src/components/recordingcreator/recordinghelper.js",
+      "line": 15
+    },
+    {
+      "method": "DELETE",
+      "path": "LiveTv/SeriesTimers/{id}",
+      "operation": "cancelLiveTvSeriesTimer",
+      "source": "legacy",
+      "file": "ui/src/components/recordingcreator/recordinghelper.js",
+      "line": 62
+    },
+    {
+      "method": "DELETE",
+      "path": "LiveTv/Timers/{id}",
+      "operation": "cancelLiveTvTimer",
+      "source": "legacy",
+      "file": "ui/src/components/recordingcreator/recordinghelper.js",
+      "line": 74
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Timers/Defaults",
+      "operation": "getNewLiveTvTimerDefaults",
+      "source": "legacy",
+      "file": "ui/src/components/recordingcreator/recordinghelper.js",
+      "line": 84
+    },
+    {
+      "method": "POST",
+      "path": "LiveTv/SeriesTimers",
+      "operation": "createLiveTvSeriesTimer",
+      "source": "legacy",
+      "file": "ui/src/components/recordingcreator/recordinghelper.js",
+      "line": 86
+    },
+    {
+      "method": "POST",
+      "path": "LiveTv/Timers",
+      "operation": "createLiveTvTimer",
+      "source": "legacy",
+      "file": "ui/src/components/recordingcreator/recordinghelper.js",
+      "line": 87
+    },
+    {
+      "method": "DELETE",
+      "path": "LiveTv/SeriesTimers/{id}",
+      "operation": "cancelLiveTvSeriesTimer",
+      "source": "legacy",
+      "file": "ui/src/components/recordingcreator/recordinghelper.js",
+      "line": 139
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/SeriesTimers/{id}",
+      "operation": "getLiveTvSeriesTimer",
+      "source": "legacy",
+      "file": "ui/src/components/recordingcreator/seriesrecordingeditor.js",
+      "line": 69
+    },
+    {
+      "method": "POST",
+      "path": "LiveTv/SeriesTimers/{item.Id}",
+      "operation": "updateLiveTvSeriesTimer",
+      "source": "legacy",
+      "file": "ui/src/components/recordingcreator/seriesrecordingeditor.js",
+      "line": 78
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/SeriesTimers/{id}",
+      "operation": "getLiveTvSeriesTimer",
+      "source": "legacy",
+      "file": "ui/src/components/recordingcreator/seriesrecordingeditor.js",
+      "line": 111
+    },
+    {
+      "method": "POST",
+      "path": "Items/{itemId}/Refresh",
+      "operation": "refreshItem",
+      "source": "legacy",
+      "file": "ui/src/components/refreshdialog/refreshdialog.js",
+      "line": 83
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/remotecontrol/remotecontrol.js",
+      "line": 176
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/remotecontrol/remotecontrol.js",
+      "line": 176
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/remotecontrol/remotecontrol.js",
+      "line": 190
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/remotecontrol/remotecontrol.js",
+      "line": 190
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Timers/{id}",
+      "operation": "getLiveTvTimer",
+      "source": "legacy",
+      "file": "ui/src/components/shortcuts.js",
+      "line": 91
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/SeriesTimers/{id}",
+      "operation": "getLiveTvSeriesTimer",
+      "source": "legacy",
+      "file": "ui/src/components/shortcuts.js",
+      "line": 94
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/shortcuts.js",
+      "line": 96
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/shortcuts.js",
+      "line": 96
+    },
+    {
+      "method": "GET",
+      "path": "/Playlists/{playlistId}/Users/{userId}",
+      "query": [],
+      "body": false,
+      "operation": "getPlaylistApi.getPlaylistUser",
+      "source": "sdk",
+      "file": "ui/src/components/shortcuts.js",
+      "line": 144
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}/LocalTrailers",
+      "operation": "getLocalTrailers",
+      "source": "legacy",
+      "file": "ui/src/components/shortcuts.js",
+      "line": 368
+    },
+    {
+      "method": "GET",
+      "path": "/Items/{itemId}/Download",
+      "query": [],
+      "body": false,
+      "operation": "getLibraryApi.getDownloadUrl",
+      "source": "sdk",
+      "file": "ui/src/components/slideshow/slideshow.js",
+      "line": 102
+    },
+    {
+      "method": "CONTEXT",
+      "path": "Items/{currentItem.Id}/RemoteSearch/Subtitles/{language}",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/components/subtitleeditor/subtitleeditor.js",
+      "line": 279
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/subtitleeditor/subtitleeditor.js",
+      "line": 311
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/subtitleeditor/subtitleeditor.js",
+      "line": 311
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/subtitleeditor/subtitleeditor.js",
+      "line": 410
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/components/subtitleeditor/subtitleeditor.js",
+      "line": 410
+    },
+    {
+      "method": "POST",
+      "path": "/Videos/{itemId}/Subtitles",
+      "query": [],
+      "body": true,
+      "operation": "getSubtitleApi.uploadSubtitle",
+      "source": "sdk",
+      "file": "ui/src/components/subtitleuploader/subtitleuploader.js",
+      "line": 107
+    },
+    {
+      "method": "GET",
+      "path": "/Items/{itemId}/ThemeMedia",
+      "query": [
+        "inheritFromParent",
+        "sortBy",
+        "sortOrder",
+        "userId"
+      ],
+      "body": false,
+      "operation": "getLibraryApi.getThemeMedia",
+      "source": "sdk",
+      "file": "ui/src/components/themeMediaPlayer.js",
+      "line": 102
+    },
+    {
+      "method": "CONTEXT",
+      "path": "LiveTv/Tuners/Discover",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/components/tunerPicker.js",
+      "line": 113
+    },
+    {
+      "method": "CONTEXT",
+      "path": "LiveTv/ListingProviders/SchedulesDirect/Countries",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/components/tvproviders/schedulesdirect.js",
+      "line": 85
+    },
+    {
+      "method": "CONTEXT",
+      "path": "LiveTv/ListingProviders",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/components/tvproviders/schedulesdirect.js",
+      "line": 142
+    },
+    {
+      "method": "CONTEXT",
+      "path": "LiveTv/ListingProviders",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/components/tvproviders/schedulesdirect.js",
+      "line": 186
+    },
+    {
+      "method": "CONTEXT",
+      "path": "LiveTv/ListingProviders/Lineups",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/components/tvproviders/schedulesdirect.js",
+      "line": 217
+    },
+    {
+      "method": "CONTEXT",
+      "path": "LiveTv/ListingProviders/Default",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/components/tvproviders/xmltv.js",
+      "line": 82
+    },
+    {
+      "method": "CONTEXT",
+      "path": "LiveTv/ListingProviders",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/components/tvproviders/xmltv.js",
+      "line": 143
+    },
+    {
+      "method": "POST",
+      "path": "Users/{userId}/FavoriteItems/{itemId}",
+      "operation": "updateFavoriteStatus",
+      "source": "legacy",
+      "file": "ui/src/components/userdatabuttons/userdatabuttons.js",
+      "line": 172
+    },
+    {
+      "method": "DELETE",
+      "path": "Users/{userId}/FavoriteItems/{itemId}",
+      "operation": "updateFavoriteStatus",
+      "source": "legacy",
+      "file": "ui/src/components/userdatabuttons/userdatabuttons.js",
+      "line": 172
+    },
+    {
+      "method": "CONTEXT",
+      "path": "Playlists/{playlistId}/Items/{itemId}/Move/{newIndex}",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/elements/emby-itemscontainer/emby-itemscontainer.js",
+      "line": 108
+    },
+    {
+      "method": "POST",
+      "path": "Users/{userId}/PlayedItems/{itemId}",
+      "operation": "markPlayed",
+      "source": "legacy",
+      "file": "ui/src/elements/emby-playstatebutton/emby-playstatebutton.js",
+      "line": 13
+    },
+    {
+      "method": "DELETE",
+      "path": "Users/{userId}/PlayedItems/{itemId}",
+      "operation": "markUnplayed",
+      "source": "legacy",
+      "file": "ui/src/elements/emby-playstatebutton/emby-playstatebutton.js",
+      "line": 16
+    },
+    {
+      "method": "POST",
+      "path": "Users/{userId}/FavoriteItems/{itemId}",
+      "operation": "updateFavoriteStatus",
+      "source": "legacy",
+      "file": "ui/src/elements/emby-ratingbutton/emby-ratingbutton.js",
+      "line": 17
+    },
+    {
+      "method": "DELETE",
+      "path": "Users/{userId}/FavoriteItems/{itemId}",
+      "operation": "updateFavoriteStatus",
+      "source": "legacy",
+      "file": "ui/src/elements/emby-ratingbutton/emby-ratingbutton.js",
+      "line": 17
+    },
+    {
+      "method": "GET",
+      "path": "/Items/{itemId}/Download",
+      "query": [],
+      "body": false,
+      "operation": "getLibraryApi.getDownload",
+      "source": "sdk",
+      "file": "ui/src/hooks/api/libraryHooks/useGetDownload.ts",
+      "line": 17
+    },
+    {
+      "method": "DELETE",
+      "path": "/LiveTv/SeriesTimers/{timerId}",
+      "query": [],
+      "body": false,
+      "operation": "getLiveTvApi.cancelSeriesTimer",
+      "source": "sdk",
+      "file": "ui/src/hooks/api/liveTvHooks/useCancelSeriesTimer.ts",
+      "line": 14
+    },
+    {
+      "method": "DELETE",
+      "path": "/LiveTv/Timers/{timerId}",
+      "query": [],
+      "body": false,
+      "operation": "getLiveTvApi.cancelTimer",
+      "source": "sdk",
+      "file": "ui/src/hooks/api/liveTvHooks/useCancelTimer.ts",
+      "line": 14
+    },
+    {
+      "method": "GET",
+      "path": "/LiveTv/Channels/{channelId}",
+      "query": [
+        "userId"
+      ],
+      "body": false,
+      "operation": "getLiveTvApi.getChannel",
+      "source": "sdk",
+      "file": "ui/src/hooks/api/liveTvHooks/useGetChannel.ts",
+      "line": 17
+    },
+    {
+      "method": "GET",
+      "path": "/LiveTv/SeriesTimers/{timerId}",
+      "query": [],
+      "body": false,
+      "operation": "getLiveTvApi.getSeriesTimer",
+      "source": "sdk",
+      "file": "ui/src/hooks/api/liveTvHooks/useGetSeriesTimer.ts",
+      "line": 16
+    },
+    {
+      "method": "GET",
+      "path": "/LiveTv/Timers/{timerId}",
+      "query": [],
+      "body": false,
+      "operation": "getLiveTvApi.getTimer",
+      "source": "sdk",
+      "file": "ui/src/hooks/api/liveTvHooks/useGetTimer.ts",
+      "line": 16
+    },
+    {
+      "method": "GET",
+      "path": "/DisplayPreferences/{displayPreferencesId}",
+      "query": [
+        "client",
+        "userId"
+      ],
+      "body": false,
+      "operation": "getDisplayPreferenceApi.getDisplayPreferences",
+      "source": "sdk",
+      "file": "ui/src/hooks/api/useDisplayPreferences.ts",
+      "line": 14
+    },
+    {
+      "method": "GET",
+      "path": "/UserViews",
+      "query": [
+        "includeExternalContent",
+        "includeHidden",
+        "presetViews",
+        "userId"
+      ],
+      "body": false,
+      "operation": "getUserViewApi.getUserViews",
+      "source": "sdk",
+      "file": "ui/src/hooks/api/useUserViews.ts",
+      "line": 14
+    },
+    {
+      "method": "DELETE",
+      "path": "/Videos/{itemId}/AlternateSources",
+      "query": [],
+      "body": false,
+      "operation": "getVideoApi.deleteAlternateSources",
+      "source": "sdk",
+      "file": "ui/src/hooks/api/videosHooks/useDeleteAlternateSources.ts",
+      "line": 14
+    },
+    {
+      "method": "GET",
+      "path": "/Items",
+      "query": [
+        "adjacentTo",
+        "albumArtistIds",
+        "albumIds",
+        "albums",
+        "artistIds",
+        "artists",
+        "audioLanguages",
+        "collapseBoxSetItems",
+        "contributingArtistIds",
+        "enableImageTypes",
+        "enableImages",
+        "enableTotalRecordCount",
+        "enableUserData",
+        "excludeArtistIds",
+        "excludeItemIds",
+        "excludeItemTypes",
+        "excludeLocationTypes",
+        "fields",
+        "filters",
+        "genreIds",
+        "genres",
+        "hasImdbId",
+        "hasOfficialRating",
+        "hasOverview",
+        "hasParentalRating",
+        "hasSpecialFeature",
+        "hasSubtitles",
+        "hasThemeSong",
+        "hasThemeVideo",
+        "hasTmdbId",
+        "hasTrailer",
+        "hasTvdbId",
+        "ids",
+        "imageTypeLimit",
+        "imageTypes",
+        "includeItemTypes",
+        "indexNumber",
+        "is3D",
+        "is4K",
+        "isFavorite",
+        "isHd",
+        "isKids",
+        "isLocked",
+        "isMissing",
+        "isMovie",
+        "isNews",
+        "isPlaceHolder",
+        "isPlayed",
+        "isSeries",
+        "isSports",
+        "isUnaired",
+        "limit",
+        "locationTypes",
+        "maxHeight",
+        "maxOfficialRating",
+        "maxPremiereDate",
+        "maxWidth",
+        "mediaTypes",
+        "minCommunityRating",
+        "minCriticRating",
+        "minDateLastSaved",
+        "minDateLastSavedForUser",
+        "minHeight",
+        "minOfficialRating",
+        "minPremiereDate",
+        "minWidth",
+        "nameLessThan",
+        "nameStartsWith",
+        "nameStartsWithOrGreater",
+        "officialRatings",
+        "parentId",
+        "parentIndexNumber",
+        "person",
+        "personIds",
+        "personTypes",
+        "recursive",
+        "searchTerm",
+        "seriesStatus",
+        "sortBy",
+        "sortOrder",
+        "startIndex",
+        "studioIds",
+        "studios",
+        "subtitleLanguages",
+        "tags",
+        "userId",
+        "videoTypes",
+        "years"
+      ],
+      "body": false,
+      "operation": "getLibraryApi.getItems",
+      "source": "sdk",
+      "file": "ui/src/hooks/useFetchItems.ts",
+      "line": 41
+    },
+    {
+      "method": "GET",
+      "path": "/Studios",
+      "query": [
+        "enableImageTypes",
+        "enableImages",
+        "enableTotalRecordCount",
+        "enableUserData",
+        "excludeItemTypes",
+        "fields",
+        "imageTypeLimit",
+        "includeItemTypes",
+        "isFavorite",
+        "limit",
+        "nameLessThan",
+        "nameStartsWith",
+        "nameStartsWithOrGreater",
+        "parentId",
+        "searchTerm",
+        "startIndex",
+        "userId"
+      ],
+      "body": false,
+      "operation": "getStudioApi.getStudios",
+      "source": "sdk",
+      "file": "ui/src/hooks/useFetchItems.ts",
+      "line": 82
+    },
+    {
+      "method": "GET",
+      "path": "/Items/Filters",
+      "query": [
+        "includeItemTypes",
+        "mediaTypes",
+        "parentId",
+        "userId"
+      ],
+      "body": false,
+      "operation": "getFilterApi.getQueryFiltersLegacy",
+      "source": "sdk",
+      "file": "ui/src/hooks/useFetchItems.ts",
+      "line": 121
+    },
+    {
+      "method": "GET",
+      "path": "/Items/Filters2",
+      "query": [
+        "includeItemTypes",
+        "isAiring",
+        "isKids",
+        "isMovie",
+        "isNews",
+        "isSeries",
+        "isSports",
+        "parentId",
+        "recursive",
+        "userId"
+      ],
+      "body": false,
+      "operation": "getFilterApi.getQueryFilters",
+      "source": "sdk",
+      "file": "ui/src/hooks/useFetchItems.ts",
+      "line": 143
+    },
+    {
+      "method": "GET",
+      "path": "/Artists/AlbumArtists",
+      "query": [
+        "enableImageTypes",
+        "enableImages",
+        "enableTotalRecordCount",
+        "enableUserData",
+        "excludeItemTypes",
+        "fields",
+        "filters",
+        "genreIds",
+        "genres",
+        "imageTypeLimit",
+        "includeItemTypes",
+        "isFavorite",
+        "limit",
+        "mediaTypes",
+        "minCommunityRating",
+        "nameLessThan",
+        "nameStartsWith",
+        "nameStartsWithOrGreater",
+        "officialRatings",
+        "parentId",
+        "person",
+        "personIds",
+        "personTypes",
+        "searchTerm",
+        "sortBy",
+        "sortOrder",
+        "startIndex",
+        "studioIds",
+        "studios",
+        "tags",
+        "userId",
+        "years"
+      ],
+      "body": false,
+      "operation": "getArtistApi.getAlbumArtists",
+      "source": "sdk",
+      "file": "ui/src/hooks/useFetchItems.ts",
+      "line": 203
+    },
+    {
+      "method": "GET",
+      "path": "/Artists",
+      "query": [
+        "enableImageTypes",
+        "enableImages",
+        "enableTotalRecordCount",
+        "enableUserData",
+        "excludeItemTypes",
+        "fields",
+        "filters",
+        "genreIds",
+        "genres",
+        "imageTypeLimit",
+        "includeItemTypes",
+        "isFavorite",
+        "limit",
+        "mediaTypes",
+        "minCommunityRating",
+        "nameLessThan",
+        "nameStartsWith",
+        "nameStartsWithOrGreater",
+        "officialRatings",
+        "parentId",
+        "person",
+        "personIds",
+        "personTypes",
+        "searchTerm",
+        "sortBy",
+        "sortOrder",
+        "startIndex",
+        "studioIds",
+        "studios",
+        "tags",
+        "userId",
+        "years"
+      ],
+      "body": false,
+      "operation": "getArtistApi.getArtists",
+      "source": "sdk",
+      "file": "ui/src/hooks/useFetchItems.ts",
+      "line": 224
+    },
+    {
+      "method": "GET",
+      "path": "/Persons",
+      "query": [
+        "appearsInItemId",
+        "enableImageTypes",
+        "enableImages",
+        "enableUserData",
+        "excludePersonTypes",
+        "fields",
+        "filters",
+        "imageTypeLimit",
+        "isFavorite",
+        "limit",
+        "nameLessThan",
+        "nameStartsWith",
+        "nameStartsWithOrGreater",
+        "parentId",
+        "personTypes",
+        "searchTerm",
+        "startIndex",
+        "userId"
+      ],
+      "body": false,
+      "operation": "getPersonApi.getPersons",
+      "source": "sdk",
+      "file": "ui/src/hooks/useFetchItems.ts",
+      "line": 245
+    },
+    {
+      "method": "GET",
+      "path": "/Studios",
+      "query": [
+        "enableImageTypes",
+        "enableImages",
+        "enableTotalRecordCount",
+        "enableUserData",
+        "excludeItemTypes",
+        "fields",
+        "imageTypeLimit",
+        "includeItemTypes",
+        "isFavorite",
+        "limit",
+        "nameLessThan",
+        "nameStartsWith",
+        "nameStartsWithOrGreater",
+        "parentId",
+        "searchTerm",
+        "startIndex",
+        "userId"
+      ],
+      "body": false,
+      "operation": "getStudioApi.getStudios",
+      "source": "sdk",
+      "file": "ui/src/hooks/useFetchItems.ts",
+      "line": 264
+    },
+    {
+      "method": "GET",
+      "path": "/LiveTv/Channels",
+      "query": [
+        "addCurrentProgram",
+        "enableFavoriteSorting",
+        "enableImageTypes",
+        "enableImages",
+        "enableUserData",
+        "fields",
+        "imageTypeLimit",
+        "isDisliked",
+        "isFavorite",
+        "isKids",
+        "isLiked",
+        "isMovie",
+        "isNews",
+        "isSeries",
+        "isSports",
+        "limit",
+        "sortBy",
+        "sortOrder",
+        "startIndex",
+        "type",
+        "userId"
+      ],
+      "body": false,
+      "operation": "getLiveTvApi.getLiveTvChannels",
+      "source": "sdk",
+      "file": "ui/src/hooks/useFetchItems.ts",
+      "line": 282
+    },
+    {
+      "method": "GET",
+      "path": "/Items",
+      "query": [
+        "adjacentTo",
+        "albumArtistIds",
+        "albumIds",
+        "albums",
+        "artistIds",
+        "artists",
+        "audioLanguages",
+        "collapseBoxSetItems",
+        "contributingArtistIds",
+        "enableImageTypes",
+        "enableImages",
+        "enableTotalRecordCount",
+        "enableUserData",
+        "excludeArtistIds",
+        "excludeItemIds",
+        "excludeItemTypes",
+        "excludeLocationTypes",
+        "fields",
+        "filters",
+        "genreIds",
+        "genres",
+        "hasImdbId",
+        "hasOfficialRating",
+        "hasOverview",
+        "hasParentalRating",
+        "hasSpecialFeature",
+        "hasSubtitles",
+        "hasThemeSong",
+        "hasThemeVideo",
+        "hasTmdbId",
+        "hasTrailer",
+        "hasTvdbId",
+        "ids",
+        "imageTypeLimit",
+        "imageTypes",
+        "includeItemTypes",
+        "indexNumber",
+        "is3D",
+        "is4K",
+        "isFavorite",
+        "isHd",
+        "isKids",
+        "isLocked",
+        "isMissing",
+        "isMovie",
+        "isNews",
+        "isPlaceHolder",
+        "isPlayed",
+        "isSeries",
+        "isSports",
+        "isUnaired",
+        "limit",
+        "locationTypes",
+        "maxHeight",
+        "maxOfficialRating",
+        "maxPremiereDate",
+        "maxWidth",
+        "mediaTypes",
+        "minCommunityRating",
+        "minCriticRating",
+        "minDateLastSaved",
+        "minDateLastSavedForUser",
+        "minHeight",
+        "minOfficialRating",
+        "minPremiereDate",
+        "minWidth",
+        "nameLessThan",
+        "nameStartsWith",
+        "nameStartsWithOrGreater",
+        "officialRatings",
+        "parentId",
+        "parentIndexNumber",
+        "person",
+        "personIds",
+        "personTypes",
+        "recursive",
+        "searchTerm",
+        "seriesStatus",
+        "sortBy",
+        "sortOrder",
+        "startIndex",
+        "studioIds",
+        "studios",
+        "subtitleLanguages",
+        "tags",
+        "userId",
+        "videoTypes",
+        "years"
+      ],
+      "body": false,
+      "operation": "getLibraryApi.getItems",
+      "source": "sdk",
+      "file": "ui/src/hooks/useFetchItems.ts",
+      "line": 297
+    },
+    {
+      "method": "GET",
+      "path": "/LiveTv/SeriesTimers",
+      "query": [
+        "sortBy",
+        "sortOrder"
+      ],
+      "body": false,
+      "operation": "getLiveTvApi.getSeriesTimers",
+      "source": "sdk",
+      "file": "ui/src/hooks/useFetchItems.ts",
+      "line": 320
+    },
+    {
+      "method": "GET",
+      "path": "/Items",
+      "query": [
+        "adjacentTo",
+        "albumArtistIds",
+        "albumIds",
+        "albums",
+        "artistIds",
+        "artists",
+        "audioLanguages",
+        "collapseBoxSetItems",
+        "contributingArtistIds",
+        "enableImageTypes",
+        "enableImages",
+        "enableTotalRecordCount",
+        "enableUserData",
+        "excludeArtistIds",
+        "excludeItemIds",
+        "excludeItemTypes",
+        "excludeLocationTypes",
+        "fields",
+        "filters",
+        "genreIds",
+        "genres",
+        "hasImdbId",
+        "hasOfficialRating",
+        "hasOverview",
+        "hasParentalRating",
+        "hasSpecialFeature",
+        "hasSubtitles",
+        "hasThemeSong",
+        "hasThemeVideo",
+        "hasTmdbId",
+        "hasTrailer",
+        "hasTvdbId",
+        "ids",
+        "imageTypeLimit",
+        "imageTypes",
+        "includeItemTypes",
+        "indexNumber",
+        "is3D",
+        "is4K",
+        "isFavorite",
+        "isHd",
+        "isKids",
+        "isLocked",
+        "isMissing",
+        "isMovie",
+        "isNews",
+        "isPlaceHolder",
+        "isPlayed",
+        "isSeries",
+        "isSports",
+        "isUnaired",
+        "limit",
+        "locationTypes",
+        "maxHeight",
+        "maxOfficialRating",
+        "maxPremiereDate",
+        "maxWidth",
+        "mediaTypes",
+        "minCommunityRating",
+        "minCriticRating",
+        "minDateLastSaved",
+        "minDateLastSavedForUser",
+        "minHeight",
+        "minOfficialRating",
+        "minPremiereDate",
+        "minWidth",
+        "nameLessThan",
+        "nameStartsWith",
+        "nameStartsWithOrGreater",
+        "officialRatings",
+        "parentId",
+        "parentIndexNumber",
+        "person",
+        "personIds",
+        "personTypes",
+        "recursive",
+        "searchTerm",
+        "seriesStatus",
+        "sortBy",
+        "sortOrder",
+        "startIndex",
+        "studioIds",
+        "studios",
+        "subtitleLanguages",
+        "tags",
+        "userId",
+        "videoTypes",
+        "years"
+      ],
+      "body": false,
+      "operation": "getLibraryApi.getItems",
+      "source": "sdk",
+      "file": "ui/src/hooks/useFetchItems.ts",
+      "line": 331
+    },
+    {
+      "method": "POST",
+      "path": "/Playlists/{playlistId}/Items/{itemId}/Move/{newIndex}",
+      "query": [],
+      "body": false,
+      "operation": "getPlaylistApi.moveItem",
+      "source": "sdk",
+      "file": "ui/src/hooks/useFetchItems.ts",
+      "line": 425
+    },
+    {
+      "method": "DELETE",
+      "path": "/UserFavoriteItems/{itemId}",
+      "query": [
+        "userId"
+      ],
+      "body": false,
+      "operation": "getUserDataApi.unmarkFavoriteItem",
+      "source": "sdk",
+      "file": "ui/src/hooks/useFetchItems.ts",
+      "line": 453
+    },
+    {
+      "method": "POST",
+      "path": "/UserFavoriteItems/{itemId}",
+      "query": [
+        "userId"
+      ],
+      "body": false,
+      "operation": "getUserDataApi.markFavoriteItem",
+      "source": "sdk",
+      "file": "ui/src/hooks/useFetchItems.ts",
+      "line": 459
+    },
+    {
+      "method": "DELETE",
+      "path": "/UserPlayedItems/{itemId}",
+      "query": [
+        "userId"
+      ],
+      "body": false,
+      "operation": "getUserDataApi.markUnplayedItem",
+      "source": "sdk",
+      "file": "ui/src/hooks/useFetchItems.ts",
+      "line": 489
+    },
+    {
+      "method": "POST",
+      "path": "/UserPlayedItems/{itemId}",
+      "query": [
+        "datePlayed",
+        "userId"
+      ],
+      "body": false,
+      "operation": "getUserDataApi.markPlayedItem",
+      "source": "sdk",
+      "file": "ui/src/hooks/useFetchItems.ts",
+      "line": 495
+    },
+    {
+      "method": "GET",
+      "path": "/LiveTv/Timers",
+      "query": [
+        "channelId",
+        "isActive",
+        "isScheduled",
+        "seriesTimerId"
+      ],
+      "body": false,
+      "operation": "getLiveTvApi.getTimers",
+      "source": "sdk",
+      "file": "ui/src/hooks/useFetchItems.ts",
+      "line": 573
+    },
+    {
+      "method": "GET",
+      "path": "/LiveTv/Programs/Recommended",
+      "query": [
+        "enableImageTypes",
+        "enableImages",
+        "enableTotalRecordCount",
+        "enableUserData",
+        "fields",
+        "genreIds",
+        "hasAired",
+        "imageTypeLimit",
+        "isAiring",
+        "isKids",
+        "isMovie",
+        "isNews",
+        "isSeries",
+        "isSports",
+        "limit",
+        "startIndex",
+        "userId"
+      ],
+      "body": false,
+      "operation": "getLiveTvApi.getRecommendedPrograms",
+      "source": "sdk",
+      "file": "ui/src/hooks/useFetchItems.ts",
+      "line": 610
+    },
+    {
+      "method": "GET",
+      "path": "/LiveTv/Programs",
+      "query": [
+        "channelIds",
+        "enableImageTypes",
+        "enableImages",
+        "enableTotalRecordCount",
+        "enableUserData",
+        "fields",
+        "genreIds",
+        "genres",
+        "hasAired",
+        "imageTypeLimit",
+        "isAiring",
+        "isKids",
+        "isMovie",
+        "isNews",
+        "isSeries",
+        "isSports",
+        "librarySeriesId",
+        "limit",
+        "maxEndDate",
+        "maxStartDate",
+        "minEndDate",
+        "minStartDate",
+        "seriesTimerId",
+        "sortBy",
+        "sortOrder",
+        "startIndex",
+        "userId"
+      ],
+      "body": false,
+      "operation": "getLiveTvApi.getLiveTvPrograms",
+      "source": "sdk",
+      "file": "ui/src/hooks/useFetchItems.ts",
+      "line": 633
+    },
+    {
+      "method": "GET",
+      "path": "/LiveTv/Recordings",
+      "query": [
+        "channelId",
+        "enableImageTypes",
+        "enableImages",
+        "enableTotalRecordCount",
+        "enableUserData",
+        "fields",
+        "imageTypeLimit",
+        "isInProgress",
+        "isKids",
+        "isLibraryItem",
+        "isMovie",
+        "isNews",
+        "isSeries",
+        "isSports",
+        "limit",
+        "seriesTimerId",
+        "startIndex",
+        "status",
+        "userId"
+      ],
+      "body": false,
+      "operation": "getLiveTvApi.getRecordings",
+      "source": "sdk",
+      "file": "ui/src/hooks/useFetchItems.ts",
+      "line": 655
+    },
+    {
+      "method": "GET",
+      "path": "/LiveTv/Recordings/Folders",
+      "query": [
+        "userId"
+      ],
+      "body": false,
+      "operation": "getLiveTvApi.getRecordingFolders",
+      "source": "sdk",
+      "file": "ui/src/hooks/useFetchItems.ts",
+      "line": 675
+    },
+    {
+      "method": "GET",
+      "path": "/Shows/NextUp",
+      "query": [
+        "enableImageTypes",
+        "enableImages",
+        "enableResumable",
+        "enableRewatching",
+        "enableTotalRecordCount",
+        "enableUserData",
+        "fields",
+        "imageTypeLimit",
+        "limit",
+        "nextUpDateCutoff",
+        "parentId",
+        "seriesId",
+        "startIndex",
+        "userId"
+      ],
+      "body": false,
+      "operation": "getShowApi.getNextUp",
+      "source": "sdk",
+      "file": "ui/src/hooks/useFetchItems.ts",
+      "line": 688
+    },
+    {
+      "method": "GET",
+      "path": "/UserItems/Resume",
+      "query": [
+        "enableImageTypes",
+        "enableImages",
+        "enableTotalRecordCount",
+        "enableUserData",
+        "excludeActiveSessions",
+        "excludeItemTypes",
+        "fields",
+        "imageTypeLimit",
+        "includeItemTypes",
+        "limit",
+        "mediaTypes",
+        "parentId",
+        "searchTerm",
+        "startIndex",
+        "userId"
+      ],
+      "body": false,
+      "operation": "getLibraryApi.getResumeItems",
+      "source": "sdk",
+      "file": "ui/src/hooks/useFetchItems.ts",
+      "line": 715
+    },
+    {
+      "method": "GET",
+      "path": "/Items/Latest",
+      "query": [
+        "enableImageTypes",
+        "enableImages",
+        "enableUserData",
+        "fields",
+        "groupItems",
+        "imageTypeLimit",
+        "includeItemTypes",
+        "isPlayed",
+        "limit",
+        "parentId",
+        "userId"
+      ],
+      "body": false,
+      "operation": "getLibraryApi.getLatestMedia",
+      "source": "sdk",
+      "file": "ui/src/hooks/useFetchItems.ts",
+      "line": 741
+    },
+    {
+      "method": "GET",
+      "path": "/Items",
+      "query": [
+        "adjacentTo",
+        "albumArtistIds",
+        "albumIds",
+        "albums",
+        "artistIds",
+        "artists",
+        "audioLanguages",
+        "collapseBoxSetItems",
+        "contributingArtistIds",
+        "enableImageTypes",
+        "enableImages",
+        "enableTotalRecordCount",
+        "enableUserData",
+        "excludeArtistIds",
+        "excludeItemIds",
+        "excludeItemTypes",
+        "excludeLocationTypes",
+        "fields",
+        "filters",
+        "genreIds",
+        "genres",
+        "hasImdbId",
+        "hasOfficialRating",
+        "hasOverview",
+        "hasParentalRating",
+        "hasSpecialFeature",
+        "hasSubtitles",
+        "hasThemeSong",
+        "hasThemeVideo",
+        "hasTmdbId",
+        "hasTrailer",
+        "hasTvdbId",
+        "ids",
+        "imageTypeLimit",
+        "imageTypes",
+        "includeItemTypes",
+        "indexNumber",
+        "is3D",
+        "is4K",
+        "isFavorite",
+        "isHd",
+        "isKids",
+        "isLocked",
+        "isMissing",
+        "isMovie",
+        "isNews",
+        "isPlaceHolder",
+        "isPlayed",
+        "isSeries",
+        "isSports",
+        "isUnaired",
+        "limit",
+        "locationTypes",
+        "maxHeight",
+        "maxOfficialRating",
+        "maxPremiereDate",
+        "maxWidth",
+        "mediaTypes",
+        "minCommunityRating",
+        "minCriticRating",
+        "minDateLastSaved",
+        "minDateLastSavedForUser",
+        "minHeight",
+        "minOfficialRating",
+        "minPremiereDate",
+        "minWidth",
+        "nameLessThan",
+        "nameStartsWith",
+        "nameStartsWithOrGreater",
+        "officialRatings",
+        "parentId",
+        "parentIndexNumber",
+        "person",
+        "personIds",
+        "personTypes",
+        "recursive",
+        "searchTerm",
+        "seriesStatus",
+        "sortBy",
+        "sortOrder",
+        "startIndex",
+        "studioIds",
+        "studios",
+        "subtitleLanguages",
+        "tags",
+        "userId",
+        "videoTypes",
+        "years"
+      ],
+      "body": false,
+      "operation": "getLibraryApi.getItems",
+      "source": "sdk",
+      "file": "ui/src/hooks/useFetchItems.ts",
+      "line": 762
+    },
+    {
+      "method": "GET",
+      "path": "/Items/{itemId}",
+      "query": [
+        "userId"
+      ],
+      "body": false,
+      "operation": "getLibraryApi.getItem",
+      "source": "sdk",
+      "file": "ui/src/hooks/useItem.ts",
+      "line": 15
+    },
+    {
+      "method": "GET",
+      "path": "Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/plugins/backdropScreensaver/plugin.js",
+      "line": 26
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/plugins/backdropScreensaver/plugin.js",
+      "line": 26
+    },
+    {
+      "method": "GET",
+      "path": "/Items/{itemId}/Download",
+      "query": [],
+      "body": false,
+      "operation": "getLibraryApi.getDownloadUrl",
+      "source": "sdk",
+      "file": "ui/src/plugins/bookPlayer/plugin.js",
+      "line": 338
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/plugins/chromecastPlayer/plugin.js",
+      "line": 491
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/plugins/chromecastPlayer/plugin.js",
+      "line": 491
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/plugins/chromecastPlayer/plugin.js",
+      "line": 709
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/plugins/chromecastPlayer/plugin.js",
+      "line": 709
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/plugins/chromecastPlayer/plugin.js",
+      "line": 1014
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/plugins/chromecastPlayer/plugin.js",
+      "line": 1014
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/plugins/chromecastPlayer/plugin.js",
+      "line": 1027
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/plugins/chromecastPlayer/plugin.js",
+      "line": 1027
+    },
+    {
+      "method": "GET",
+      "path": "/Items/{itemId}/Download",
+      "query": [],
+      "body": false,
+      "operation": "getLibraryApi.getDownloadUrl",
+      "source": "sdk",
+      "file": "ui/src/plugins/comicsPlayer/plugin.js",
+      "line": 269
+    },
+    {
+      "method": "CONTEXT",
+      "path": "/FallbackFont/Fonts",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/plugins/htmlVideoPlayer/plugin.js",
+      "line": 1407
+    },
+    {
+      "method": "CONTEXT",
+      "path": "/FallbackFont/Fonts/{encodeURIComponent(font.Name)}",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/plugins/htmlVideoPlayer/plugin.js",
+      "line": 1457
+    },
+    {
+      "method": "GET",
+      "path": "/Items/{itemId}/Download",
+      "query": [],
+      "body": false,
+      "operation": "getLibraryApi.getDownloadUrl",
+      "source": "sdk",
+      "file": "ui/src/plugins/pdfPlayer/plugin.js",
+      "line": 212
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/plugins/syncPlay/core/Helper.js",
+      "line": 80
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/plugins/syncPlay/core/Helper.js",
+      "line": 80
+    },
+    {
+      "method": "GET",
+      "path": "Shows/{itemId}/Episodes",
+      "operation": "getEpisodes",
+      "source": "legacy",
+      "file": "ui/src/plugins/syncPlay/core/Helper.js",
+      "line": 199
+    },
+    {
+      "method": "GET",
+      "path": "Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/scripts/autoBackdrops.js",
+      "line": 36
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/scripts/autoBackdrops.js",
+      "line": 36
+    },
+    {
+      "method": "DELETE",
+      "path": "Items/{itemId}",
+      "operation": "deleteItem",
+      "source": "legacy",
+      "file": "ui/src/scripts/deleteHelper.js",
+      "line": 58
+    },
+    {
+      "method": "CONTEXT",
+      "path": "Audio/{item.Id}/Lyrics",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/scripts/deleteHelper.js",
+      "line": 85
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Channels",
+      "operation": "getLiveTvChannels",
+      "source": "legacy",
+      "file": "ui/src/scripts/editorsidebar.js",
+      "line": 74
+    },
+    {
+      "method": "GET",
+      "path": "LiveTv/Channels",
+      "operation": "getLiveTvChannels",
+      "source": "legacy",
+      "file": "ui/src/scripts/editorsidebar.js",
+      "line": 113
+    },
+    {
+      "method": "CONTEXT",
+      "path": "Library/MediaFolders",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/scripts/editorsidebar.js",
+      "line": 126
+    },
+    {
+      "method": "GET",
+      "path": "Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/scripts/editorsidebar.js",
+      "line": 167
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/scripts/editorsidebar.js",
+      "line": 167
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}/Ancestors",
+      "operation": "getAncestorItems",
+      "source": "legacy",
+      "file": "ui/src/scripts/editorsidebar.js",
+      "line": 313
+    },
+    {
+      "method": "GET",
+      "path": "Artists/AlbumArtists",
+      "operation": "getAlbumArtists",
+      "source": "legacy",
+      "file": "ui/src/scripts/itemsByName.js",
+      "line": 426
+    },
+    {
+      "method": "GET",
+      "path": "Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/scripts/itemsByName.js",
+      "line": 429
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/scripts/itemsByName.js",
+      "line": 429
+    },
+    {
+      "method": "CONTEXT",
+      "path": "Playlists/{itemId}/Items",
+      "operation": "getUrl",
+      "source": "literal",
+      "file": "ui/src/scripts/playlistViewer.js",
+      "line": 13
+    },
+    {
+      "method": "GET",
+      "path": "/Playlists/{playlistId}/Users/{userId}",
+      "query": [],
+      "body": false,
+      "operation": "getPlaylistApi.getPlaylistUser",
+      "source": "sdk",
+      "file": "ui/src/scripts/playlistViewer.js",
+      "line": 42
+    },
+    {
+      "method": "GET",
+      "path": "Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/scripts/serverNotifications.js",
+      "line": 36
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items/{itemId}",
+      "operation": "getItem",
+      "source": "legacy",
+      "file": "ui/src/scripts/serverNotifications.js",
+      "line": 36
+    },
+    {
+      "method": "POST",
+      "path": "DisplayPreferences/{id}",
+      "operation": "updateDisplayPreferences",
+      "source": "legacy",
+      "file": "ui/src/scripts/settings/userSettings.js",
+      "line": 20
+    },
+    {
+      "method": "GET",
+      "path": "Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/utils/jellyfin-apiclient/getItems.ts",
+      "line": 25
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/utils/jellyfin-apiclient/getItems.ts",
+      "line": 25
+    },
+    {
+      "method": "GET",
+      "path": "Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/utils/jellyfin-apiclient/getItems.ts",
+      "line": 70
+    },
+    {
+      "method": "GET",
+      "path": "Users/{userId}/Items",
+      "operation": "getItems",
+      "source": "legacy",
+      "file": "ui/src/utils/jellyfin-apiclient/getItems.ts",
+      "line": 70
+    }
+  ],
+  "dynamic": [
+    {
+      "file": "ui/src/apps/dashboard/features/sessions/utils/getNowPlayingImageUrl.ts",
+      "line": 18,
+      "expression": "apiClient.getScaledImageUrl(item.Id, {\n            maxWidth: Math.round(dom.getScreenWidth() * 0.20),\n            type: ImageType.Backdrop,\n            tag: item.BackdropImageTags[0]\n        })",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/apps/dashboard/features/sessions/utils/getNowPlayingImageUrl.ts",
+      "line": 26,
+      "expression": "apiClient.getScaledImageUrl(item.ParentBackdropItemId, {\n            maxWidth: Math.round(dom.getScreenWidth() * 0.20),\n            type: ImageType.Backdrop,\n            tag: item.ParentBackdropImageTags[0]\n        })",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/apps/dashboard/features/sessions/utils/getNowPlayingImageUrl.ts",
+      "line": 36,
+      "expression": "apiClient.getScaledImageUrl(item.Id, {\n            maxWidth: Math.round(dom.getScreenWidth() * 0.20),\n            type: ImageType.Thumb,\n            tag: imageTags.Thumb\n        })",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/apps/dashboard/features/sessions/utils/getNowPlayingImageUrl.ts",
+      "line": 44,
+      "expression": "apiClient.getScaledImageUrl(item.ParentThumbItemId, {\n            maxWidth: Math.round(dom.getScreenWidth() * 0.20),\n            type: ImageType.Thumb,\n            tag: item.ParentThumbImageTag\n        })",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/apps/dashboard/features/sessions/utils/getNowPlayingImageUrl.ts",
+      "line": 52,
+      "expression": "apiClient.getScaledImageUrl(item.Id, {\n            maxWidth: Math.round(dom.getScreenWidth() * 0.20),\n            type: ImageType.Primary,\n            tag: imageTags.Primary\n        })",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/apps/dashboard/features/sessions/utils/getNowPlayingImageUrl.ts",
+      "line": 60,
+      "expression": "apiClient.getScaledImageUrl(item.AlbumId, {\n            maxWidth: Math.round(dom.getScreenWidth() * 0.20),\n            type: ImageType.Primary,\n            tag: item.AlbumPrimaryImageTag\n        })",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/apps/dashboard/features/sessions/utils/getNowPlayingName.ts",
+      "line": 41,
+      "expression": "apiClient.getScaledImageUrl(nowPlayingItem.Id!, {\n                tag: nowPlayingItem.ImageTags.Logo,\n                maxHeight: 24,\n                maxWidth: 130,\n                type: 'Logo'\n            })",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/apps/dashboard/features/sessions/utils/getNowPlayingName.ts",
+      "line": 48,
+      "expression": "apiClient.getScaledImageUrl(nowPlayingItem.ParentLogoItemId!, {\n                tag: nowPlayingItem.ParentLogoImageTag,\n                maxHeight: 24,\n                maxWidth: 130,\n                type: 'Logo'\n            })",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 682,
+      "expression": "apiClient.getScaledImageUrl(item.Id, options)",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/apps/legacy/controllers/itemDetails/index.js",
+      "line": 687,
+      "expression": "apiClient.getScaledImageUrl(item.ParentLogoItemId, options)",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/apps/legacy/controllers/list.js",
+      "line": 278,
+      "expression": "apiClient[method]",
+      "reason": "dynamic method dispatch"
+    },
+    {
+      "file": "ui/src/apps/legacy/controllers/playback/video/index.js",
+      "line": 1541,
+      "expression": "apiClient.getScaledImageUrl(chapterItemId, {\n                maxWidth: maxWidth,\n                tag: chapter.ImageTag,\n                type: 'Chapter',\n                index: index\n            })",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/apps/legacy/controllers/session/login/index.js",
+      "line": 169,
+      "expression": "apiClient.getUserImageUrl(user.Id, {\n                width: 300,\n                tag: user.PrimaryImageTag,\n                type: 'Primary'\n            })",
+      "reason": "legacy getUserImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/apps/legacy/features/playback/utils/image.ts",
+      "line": 26,
+      "expression": "apiClient.getScaledImageUrl(item.SeriesId, options)",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/apps/legacy/features/playback/utils/image.ts",
+      "line": 33,
+      "expression": "apiClient.getScaledImageUrl(item.SeriesId, options)",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/apps/legacy/features/playback/utils/image.ts",
+      "line": 39,
+      "expression": "apiClient.getScaledImageUrl(item.ParentThumbItemId, options)",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/apps/legacy/features/playback/utils/image.ts",
+      "line": 63,
+      "expression": "apiClient.getScaledImageUrl(itemId, options)",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/apps/legacy/features/playback/utils/image.ts",
+      "line": 68,
+      "expression": "apiClient.getScaledImageUrl(item.AlbumId, options)",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/apps/legacy/routes/user/userprofile.tsx",
+      "line": 43,
+      "expression": "window.ApiClient.getUserImageUrl(user.Id, {\n                tag: user.PrimaryImageTag,\n                type: 'Primary'\n            })",
+      "reason": "legacy getUserImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/apps/wizard/controllers/library.js",
+      "line": 59,
+      "expression": "ServerConnections.currentApiClient()\n            .removeVirtualFolder(virtualFolder.Name, refreshAfterChange)",
+      "reason": "legacy removeVirtualFolder: computed URL"
+    },
+    {
+      "file": "ui/src/apps/wizard/controllers/library.js",
+      "line": 86,
+      "expression": "ServerConnections.currentApiClient()\n                    .renameVirtualFolder(virtualFolder.Name, newName, refreshAfterChange)",
+      "reason": "legacy renameVirtualFolder: computed URL"
+    },
+    {
+      "file": "ui/src/apps/wizard/controllers/library.js",
+      "line": 159,
+      "expression": "ServerConnections.currentApiClient()\n        .getVirtualFolders()",
+      "reason": "legacy getVirtualFolders: computed URL"
+    },
+    {
+      "file": "ui/src/apps/wizard/controllers/library.js",
+      "line": 278,
+      "expression": "ServerConnections.currentApiClient()\n            .getScaledImageUrl(virtualFolder.PrimaryImageItemId, {\n                maxWidth: Math.round(dom.getScreenWidth() * 0.40),\n                type: 'Primary'\n            })",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/components/backdrop/backdrop.js",
+      "line": 163,
+      "expression": "apiClient.getScaledImageUrl(item.BackdropItemId || item.Id, Object.assign(imageOptions, {\n                type: 'Backdrop',\n                tag: imgTag,\n                maxWidth: dom.getScreenWidth(),\n                index: index\n            }))",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/components/backdrop/backdrop.js",
+      "line": 174,
+      "expression": "apiClient.getScaledImageUrl(item.ParentBackdropItemId, Object.assign(imageOptions, {\n                type: 'Backdrop',\n                tag: imgTag,\n                maxWidth: dom.getScreenWidth(),\n                index: index\n            }))",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/components/cardbuilder/cardBuilder.js",
+      "line": 775,
+      "expression": "apiClient.getScaledImageUrl(item.ChannelId, {\n            type: 'Primary',\n            height: logoHeight,\n            tag: item.ChannelPrimaryImageTag\n        })",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/components/cardbuilder/cardBuilder.js",
+      "line": 781,
+      "expression": "apiClient.getScaledImageUrl(item.ParentLogoItemId, {\n            type: 'Logo',\n            height: logoHeight,\n            tag: item.ParentLogoImageTag\n        })",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/components/cardbuilder/chaptercardbuilder.js",
+      "line": 73,
+      "expression": "apiClient.getScaledImageUrl(Id, {\n\n            maxWidth: maxWidth,\n            tag: ImageTag,\n            type: 'Chapter',\n            index\n        })",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/components/dashboard/users/UserCardBox.tsx",
+      "line": 32,
+      "expression": "window.ApiClient.getUserImageUrl(user.Id, {\n            width: 300,\n            tag: user.PrimaryImageTag,\n            type: 'Primary'\n        })",
+      "reason": "legacy getUserImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/components/guide/guide.js",
+      "line": 621,
+      "expression": "apiClient.getScaledImageUrl(channel.Id, {\n                    maxHeight: 220,\n                    tag: channel.ImageTags.Primary,\n                    type: 'Primary'\n                })",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/components/imageDownloader/imageDownloader.js",
+      "line": 63,
+      "expression": "apiClient.getAvailableRemoteImages(options)",
+      "reason": "legacy getAvailableRemoteImages: computed URL"
+    },
+    {
+      "file": "ui/src/components/imageDownloader/imageDownloader.js",
+      "line": 154,
+      "expression": "apiClient.downloadRemoteImage(options)",
+      "reason": "legacy downloadRemoteImage: computed URL"
+    },
+    {
+      "file": "ui/src/components/imageeditor/imageeditor.js",
+      "line": 58,
+      "expression": "apiClient.getRemoteImageProviders(getBaseRemoteOptions())",
+      "reason": "legacy getRemoteImageProviders: computed URL"
+    },
+    {
+      "file": "ui/src/components/imageeditor/imageeditor.js",
+      "line": 94,
+      "expression": "apiClient.getScaledImageUrl(item.Id || item.ItemId, options)",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/components/listview/listview.js",
+      "line": 111,
+      "expression": "apiClient.getScaledImageUrl(itemId, options)",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/components/listview/listview.js",
+      "line": 129,
+      "expression": "apiClient.getScaledImageUrl(item.ChannelId, options)",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/components/mediaLibraryCreator/mediaLibraryCreator.js",
+      "line": 67,
+      "expression": "ApiClient.addVirtualFolder(name, type, currentOptions.refresh, libraryOptions)",
+      "reason": "legacy addVirtualFolder: computed URL"
+    },
+    {
+      "file": "ui/src/components/mediaLibraryEditor/mediaLibraryEditor.js",
+      "line": 45,
+      "expression": "ApiClient.updateVirtualFolderOptions(currentOptions.library.ItemId, libraryOptions)",
+      "reason": "legacy updateVirtualFolderOptions: computed URL"
+    },
+    {
+      "file": "ui/src/components/mediaLibraryEditor/mediaLibraryEditor.js",
+      "line": 66,
+      "expression": "ApiClient.addMediaPath(virtualFolder.Name, path, null, refreshAfterChange)",
+      "reason": "legacy addMediaPath: computed URL"
+    },
+    {
+      "file": "ui/src/components/mediaLibraryEditor/mediaLibraryEditor.js",
+      "line": 76,
+      "expression": "ApiClient.updateMediaPath(virtualFolder.Name, {\n        Path: path\n    })",
+      "reason": "legacy updateMediaPath: computed URL"
+    },
+    {
+      "file": "ui/src/components/mediaLibraryEditor/mediaLibraryEditor.js",
+      "line": 97,
+      "expression": "ApiClient.removeMediaPath(virtualFolder.Name, location, refreshAfterChange)",
+      "reason": "legacy removeMediaPath: computed URL"
+    },
+    {
+      "file": "ui/src/components/mediaLibraryEditor/mediaLibraryEditor.js",
+      "line": 144,
+      "expression": "ApiClient.getVirtualFolders()",
+      "reason": "legacy getVirtualFolders: computed URL"
+    },
+    {
+      "file": "ui/src/components/notifications/notifications.js",
+      "line": 131,
+      "expression": "apiClient.getScaledImageUrl(item.Id, {\n            width: 80,\n            tag: imageTags.Primary,\n            type: 'Primary'\n        })",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/components/playback/playbackmanager.js",
+      "line": 99,
+      "expression": "apiClient[method]",
+      "reason": "dynamic method dispatch"
+    },
+    {
+      "file": "ui/src/components/playback/playbackmanager.js",
+      "line": 313,
+      "expression": "apiClient.getUrl(url, {\n        UserId: apiClient.getCurrentUserId(),\n        DeviceId: apiClient.deviceId(),\n        MaxStreamingBitrate: maxValues.maxAudioBitrate || maxValues.maxBitrate,\n        Container: directPlayContainers,\n        TranscodingContainer: transcodingProfile.Container || null,\n        TranscodingProtocol: transcodingProfile.Protocol || null,\n        AudioCodec: transcodingProfile.AudioCodec,\n        MaxAudioSampleRate: maxValues.maxAudioSampleRate,\n        MaxAudioBitDepth: maxValues.maxAudioBitDepth,\n        ApiKey: apiClient.accessToken(),\n        PlaySessionId: startingPlaySession,\n        StartTimeTicks: startPosition || 0,\n        EnableRedirection: true,\n        EnableRemoteMedia: appHost.supports(AppFeature.RemoteAudio),\n        EnableAudioVbrEncoding: transcodingProfile.EnableAudioVbrEncoding\n    })",
+      "reason": "computed or server-supplied URL"
+    },
+    {
+      "file": "ui/src/components/playback/playbackmanager.js",
+      "line": 2868,
+      "expression": "apiClient.getUrl(stream.DeliveryUrl)",
+      "reason": "computed or server-supplied URL"
+    },
+    {
+      "file": "ui/src/components/playback/playbackmanager.js",
+      "line": 2901,
+      "expression": "apiClient.getUrl(prefix + '/' + item.Id + '/stream.' + mediaSourceContainer, directOptions)",
+      "reason": "computed or server-supplied URL"
+    },
+    {
+      "file": "ui/src/components/playback/playbackmanager.js",
+      "line": 2905,
+      "expression": "apiClient.getUrl(mediaSource.TranscodingUrl)",
+      "reason": "computed or server-supplied URL"
+    },
+    {
+      "file": "ui/src/components/playback/playbackmanager.js",
+      "line": 2972,
+      "expression": "apiClient.getUrl(textStream.DeliveryUrl)",
+      "reason": "computed or server-supplied URL"
+    },
+    {
+      "file": "ui/src/components/playback/playbackmanager.js",
+      "line": 4063,
+      "expression": "apiClient.getUrl(textStream.DeliveryUrl)",
+      "reason": "computed or server-supplied URL"
+    },
+    {
+      "file": "ui/src/components/recordingcreator/recordingcreator.js",
+      "line": 54,
+      "expression": "apiClient.getScaledImageUrl(item.Id, {\n            type: 'Primary',\n            maxHeight: imageHeight,\n            tag: item.ImageTags.Primary\n        })",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/components/recordingcreator/recordingcreator.js",
+      "line": 60,
+      "expression": "apiClient.getScaledImageUrl(item.Id, {\n            type: 'Thumb',\n            maxHeight: imageHeight,\n            tag: item.ImageTags.Thumb\n        })",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/components/ServerContentPage.tsx",
+      "line": 38,
+      "expression": "apiClient.getUrl(view + location.search)",
+      "reason": "computed or server-supplied URL"
+    },
+    {
+      "file": "ui/src/components/slideshow/slideshow.js",
+      "line": 47,
+      "expression": "apiClient.getScaledImageUrl(item, options)",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/components/slideshow/slideshow.js",
+      "line": 52,
+      "expression": "apiClient.getScaledImageUrl(item.Id, options)",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/components/slideshow/slideshow.js",
+      "line": 57,
+      "expression": "apiClient.getScaledImageUrl(item.AlbumId, options)",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/components/slideshow/slideshow.js",
+      "line": 82,
+      "expression": "apiClient.getScaledImageUrl(item.Id, options)",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/components/subtitleeditor/subtitleeditor.js",
+      "line": 36,
+      "expression": "apiClient.getUrl(url)",
+      "reason": "computed or server-supplied URL"
+    },
+    {
+      "file": "ui/src/components/subtitleeditor/subtitleeditor.js",
+      "line": 68,
+      "expression": "apiClient.getUrl(url)",
+      "reason": "computed or server-supplied URL"
+    },
+    {
+      "file": "ui/src/components/userdatabuttons/userdatabuttons.js",
+      "line": 166,
+      "expression": "apiClient[method]",
+      "reason": "dynamic method dispatch"
+    },
+    {
+      "file": "ui/src/lib/jellyfin-apiclient/connectionManager.js",
+      "line": 250,
+      "expression": "apiClient.getUserImageUrl(localUser.Id, {\n                    tag: localUser.PrimaryImageTag,\n                    type: 'Primary'\n                })",
+      "reason": "legacy getUserImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/plugins/htmlVideoPlayer/plugin.js",
+      "line": 1404,
+      "expression": "apiClient.getUrl(i.DeliveryUrl)",
+      "reason": "computed or server-supplied URL"
+    },
+    {
+      "file": "ui/src/utils/jellyfin-apiclient/backdropImage.ts",
+      "line": 30,
+      "expression": "apiClient.getScaledImageUrl(item.Id, {\n            type: ImageType.Backdrop,\n            index: backdropImgIndex,\n            tag: item.BackdropImageTags[backdropImgIndex],\n            ...options\n        })",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/utils/jellyfin-apiclient/backdropImage.ts",
+      "line": 38,
+      "expression": "apiClient.getScaledImageUrl(item.ParentBackdropItemId, {\n            type: ImageType.Backdrop,\n            index: backdropImgIndex,\n            tag: item.ParentBackdropImageTags[backdropImgIndex],\n            ...options\n        })",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    },
+    {
+      "file": "ui/src/utils/jellyfin-apiclient/backdropImage.ts",
+      "line": 45,
+      "expression": "apiClient.getScaledImageUrl(item.Id, {\n            type: ImageType.Primary,\n            tag: item.ImageTags.Primary,\n            ...options\n        })",
+      "reason": "legacy getScaledImageUrl: computed URL"
+    }
+  ]
+}

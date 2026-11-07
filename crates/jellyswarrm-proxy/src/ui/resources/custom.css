@@ -610,6 +610,13 @@
   font-weight: 700;
 }
 
+.library-assignment-block-reason {
+  display: block;
+  margin-top: 0.35rem;
+  color: var(--pico-muted-color);
+  font-size: 0.73rem;
+}
+
 .library-assignment-state.is-assigned {
   color: var(--pico-ins-color, #2e7d32);
 }

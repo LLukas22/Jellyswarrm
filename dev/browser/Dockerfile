@@ -1,8 +1,8 @@
 FROM node:24-bookworm-slim
 
-# Match the driver bundled by playwright-rs 0.18.0. Keep these versions together.
+# Match the driver bundled by playwright-rs 0.20.1. Keep these versions together.
 WORKDIR /opt/browser
-RUN npm install --omit=dev --save-exact playwright@1.63.0 \
+RUN npm install --omit=dev --save-exact playwright@1.64.0 \
     && npx playwright install --with-deps chrome \
     && rm -rf /var/lib/apt/lists/* /root/.npm
 RUN apt-get update && apt-get install -y --no-install-recommends tini \

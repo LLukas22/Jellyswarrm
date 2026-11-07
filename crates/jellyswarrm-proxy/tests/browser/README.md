@@ -5,6 +5,8 @@ through Jellyfin Web: create/join a group, play, pause, seek, switch media acros
 
 The Rust Playwright tests share the server integration fixture and browser setup. Each Chrome
 instance runs in its own container; Testcontainers manages startup and cleanup.
+Readiness probes the Playwright server's loopback HTTP endpoint, so startup does
+not depend on the Docker logging driver exposing a particular stdout line.
 
 A lightweight login regression test also covers an already-visible manual form,
 opening it through the button, and the automatic transition after public-user

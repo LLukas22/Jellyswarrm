@@ -1,145 +1,93 @@
-use std::sync::Arc;
-
+//! Shared HTTP transport factory, not an authenticated-identity cache.
+//!
+//! Every handle has independent token state. Neither eviction nor dropping the
+//! factory/handle revokes credentials; callers explicitly own `logout`. The
+//! historical name and constructor remain source-compatible, but capacity/TTL
+//! no longer imply ownership of a remote session. A future session cache must
+//! key immutable sessions by stable mapping identity and credential revision.
 use crate::{error::Error, ClientInfo, JellyfinClient};
-use moka::future::Cache;
-use tracing::info;
-use url::Url;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct JellyfinClientStorage {
-    cache: Cache<(String, ClientInfo, String), Arc<JellyfinClient>>,
+    transport: reqwest::Client,
 }
 
 impl JellyfinClientStorage {
-    pub fn new(capacity: u64, ttl: std::time::Duration) -> Self {
-        let cache = Cache::builder()
-            .max_capacity(capacity)
-            .time_to_idle(ttl)
-            .async_eviction_listener(|_key, value: Arc<JellyfinClient>, _cause| {
-                Box::pin(async move {
-                    if value.get_token().await.is_some() {
-                        if let Err(e) = value.logout().await {
-                            tracing::error!("Failed to logout evicted client: {:?}", e);
-                        }
-                    }
-                })
-            })
-            .build();
-
-        Self { cache }
+    /// Compatibility constructor. Capacity/TTL are ignored: this factory caches
+    /// no authenticated clients. Connection pooling belongs to the transport.
+    pub fn new(_capacity: u64, _ttl: std::time::Duration) -> Self {
+        Self::with_transport(reqwest::Client::new())
     }
 
+    pub fn with_transport(transport: reqwest::Client) -> Self {
+        Self { transport }
+    }
+
+    /// `id` is retained for compatibility only, never used as an identity key.
+    /// Two calls with identical URL, metadata and id still return independent
+    /// credentials over the same connection pool.
     pub async fn get(
         &self,
         base_url: &str,
         client_info: ClientInfo,
-        id: Option<&str>,
+        _id: Option<&str>,
     ) -> Result<Arc<JellyfinClient>, Error> {
-        info!("Requesting JellyfinClient for URL: {}", base_url);
-        let mut url = Url::parse(base_url)?;
-        if url.path().ends_with('/') {
-            url.path_segments_mut()
-                .map_err(|_| Error::UrlParse(url::ParseError::EmptyHost))?
-                .pop_if_empty();
-        }
-        let normalized_url = url.to_string();
-        let id = id.unwrap_or_default().to_string();
-        let key = (normalized_url.clone(), client_info.clone(), id);
-
-        if let Some(client) = self.cache.get(&key).await {
-            return Ok(client);
-        }
-
-        info!("Creating new JellyfinClient for URL: {}", normalized_url);
-
-        let client = Arc::new(JellyfinClient::new(&normalized_url, client_info)?);
-        self.cache.insert(key, client.clone()).await;
-
-        Ok(client)
+        Ok(Arc::new(JellyfinClient::new_with_client(
+            base_url,
+            client_info,
+            self.transport.clone(),
+        )?))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::{
+        matchers::{method, path},
+        Mock, MockServer, ResponseTemplate,
+    };
 
     #[tokio::test]
-    async fn test_client_eviction_logout() {
-        let mock_server = MockServer::start().await;
-
-        // Mock the logout endpoint
-        Mock::given(method("POST"))
-            .and(path("/Sessions/Logout"))
-            .respond_with(ResponseTemplate::new(204))
-            .expect(1) // Expect exactly one call
-            .mount(&mock_server)
-            .await;
-
-        // Create storage with capacity 1
-        let storage = JellyfinClientStorage::new(1, Duration::from_secs(60));
-        let client_info = ClientInfo::default();
-
-        // 1. Get first client
-        let client1 = storage
-            .get(&mock_server.uri(), client_info.clone(), None)
+    async fn identical_identity_metadata_does_not_share_mutable_credentials() {
+        let backend = MockServer::start().await;
+        let factory = JellyfinClientStorage::new(1, std::time::Duration::ZERO);
+        let first = factory
+            .get(&backend.uri(), ClientInfo::default(), Some("same-user"))
             .await
             .unwrap();
-
-        // Simulate authentication (this updates the shared Arc<RwLock>)
-        let _ = client1.with_token("test_token".to_string()).await;
-
-        // 2. Manually invalidate the client to force eviction
-        // We need to reconstruct the key used in storage
-        let mut url = Url::parse(&mock_server.uri()).unwrap();
-        if url.path().ends_with('/') {
-            url.path_segments_mut().unwrap().pop_if_empty();
-        }
-        let normalized_url = url.to_string();
-        let key = (normalized_url, client_info, "".to_string());
-
-        storage.cache.invalidate(&key).await;
-
-        // Force maintenance to ensure eviction happens (invalidate might be lazy or listener might be async)
-        storage.cache.run_pending_tasks().await;
-
-        // We need to wait for the background task to complete.
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        // The expectation on the Mock will verify that the request was received.
+        let second = factory
+            .get(&backend.uri(), ClientInfo::default(), Some("same-user"))
+            .await
+            .unwrap();
+        first.with_token("first-token".into()).await;
+        assert_eq!(second.get_token().await, None);
+        second.with_token("second-token".into()).await;
+        assert_eq!(first.get_token().await.as_deref(), Some("first-token"));
+        drop(first);
+        drop(factory);
+        assert_eq!(second.get_token().await.as_deref(), Some("second-token"));
+        assert!(backend.received_requests().await.unwrap().is_empty());
     }
 
     #[tokio::test]
-    async fn test_client_ttl_eviction() {
-        let mock_server = MockServer::start().await;
-
+    async fn only_explicit_logout_revokes_the_owned_session() {
+        let backend = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/Sessions/Logout"))
             .respond_with(ResponseTemplate::new(204))
             .expect(1)
-            .mount(&mock_server)
+            .mount(&backend)
             .await;
-
-        // Create storage with short TTL
-        let storage = JellyfinClientStorage::new(10, Duration::from_millis(100));
-        let client_info = ClientInfo::default();
-
-        let client = storage
-            .get(&mock_server.uri(), client_info, None)
+        let factory = JellyfinClientStorage::with_transport(reqwest::Client::new());
+        let client = factory
+            .get(&backend.uri(), ClientInfo::default(), None)
             .await
             .unwrap();
-
-        let _ = client.with_token("test_token".to_string()).await;
-
-        // Wait for TTL to expire + some buffer
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        // Trigger maintenance/eviction check
-        storage.cache.run_pending_tasks().await;
-
-        // Wait for the eviction listener to run
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        client.with_token("owned-token".into()).await;
+        client.logout().await.unwrap();
+        assert_eq!(client.get_token().await, None);
+        backend.verify().await;
     }
 }

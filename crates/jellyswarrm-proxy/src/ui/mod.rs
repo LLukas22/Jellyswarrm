@@ -1,3 +1,4 @@
+//! Serve the management UI, composing administrative and authenticated-user routes.
 use axum::{
     body::Body,
     extract::Path,
@@ -9,21 +10,19 @@ use axum::{
 use axum_login::login_required;
 use hyper::StatusCode;
 use rust_embed::RustEmbed;
-use std::{default, sync::LazyLock};
-use tracing::error;
 
 use crate::{
+    http::state::AppState,
     ui::auth::{AuthenticatedUser, UserRole},
-    AppState, Asset,
 };
 
-pub mod admin;
-pub mod auth;
-pub mod release_status;
-pub mod root;
-pub mod server_status;
-pub mod user;
-pub use auth::Backend;
+pub(crate) mod admin;
+pub(crate) mod auth;
+pub(crate) mod release_status;
+pub(crate) mod root;
+pub(crate) mod server_status;
+pub(crate) mod user;
+pub(crate) use auth::Backend;
 
 #[derive(RustEmbed)]
 #[folder = "src/ui/resources/"]
@@ -53,47 +52,7 @@ async fn resource_handler(Path(path): Path<String>) -> impl IntoResponse {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct JellyfinUiVersion {
-    pub version: String,
-    pub commit: String,
-}
-
-impl default::Default for JellyfinUiVersion {
-    fn default() -> Self {
-        JellyfinUiVersion {
-            version: "unknown".to_string(),
-            commit: "unknown".to_string(),
-        }
-    }
-}
-
-fn get_jellyfin_ui_version() -> Option<JellyfinUiVersion> {
-    if let Some(file) = Asset::get("ui-version.env") {
-        let content = String::from_utf8_lossy(&file.data);
-        let mut version = "unknown";
-        let mut commit = "unknown";
-        for line in content.lines() {
-            if line.starts_with("UI_VERSION=") {
-                version = line.trim_start_matches("UI_VERSION=");
-            } else if line.starts_with("UI_COMMIT=") {
-                commit = line.trim_start_matches("UI_COMMIT=");
-            }
-        }
-        Some(JellyfinUiVersion {
-            version: version.to_string(),
-            commit: commit.to_string(),
-        })
-    } else {
-        error!("Failed to load Jellyfin UI version info from embedded resources");
-        None
-    }
-}
-
-pub static JELLYFIN_UI_VERSION: LazyLock<Option<JellyfinUiVersion>> =
-    LazyLock::new(get_jellyfin_ui_version);
-
-pub fn ui_routes() -> axum::Router<AppState> {
+pub(crate) fn ui_routes() -> axum::Router<AppState> {
     let admin_routes = Router::new()
         // Users
         .route("/users", get(admin::users::users_page))

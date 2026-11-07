@@ -1,3 +1,4 @@
+//! Manage local users and backend federation from the administrative UI.
 use askama::Template;
 use axum::{
     extract::{Path, State},
@@ -11,61 +12,61 @@ use std::collections::HashMap;
 use tracing::{error, info};
 
 use crate::{
-    encryption::Password,
-    federated_users::ServerSyncResult,
-    server_id::ServerId,
-    server_storage::Server,
-    user_authorization_service::{ServerMapping, User},
-    AppState,
+    auth::federation::ServerSyncResult,
+    auth::service::{LocalUser, ServerMapping},
+    domain::ids::ServerId,
+    domain::security::Password,
+    http::state::ManagementState,
+    servers::storage::Server,
 };
 
 #[derive(Template)]
 #[template(path = "admin/users.html")]
-pub struct UsersPageTemplate {
-    pub ui_route: String,
+pub(crate) struct UsersPageTemplate {
+    pub(crate) ui_route: String,
 }
 
-pub struct UserWithMappings {
-    pub user: User,
-    pub mappings: Vec<(ServerMapping, Server, i64)>, // per mapping session count
-    pub available_servers: Vec<Server>,              // servers not yet mapped
-    pub total_sessions: i64,
+pub(crate) struct UserWithMappings {
+    pub(crate) user: LocalUser,
+    pub(crate) mappings: Vec<(ServerMapping, Server, i64)>, // per mapping session count
+    pub(crate) available_servers: Vec<Server>,              // servers not yet mapped
+    pub(crate) total_sessions: i64,
 }
 
 #[derive(Template)]
 #[template(path = "admin/user_list.html")]
-pub struct UserListTemplate {
-    pub users: Vec<UserWithMappings>,
-    pub ui_route: String,
-    pub sync_report: Option<Vec<ServerSyncResult>>,
+pub(crate) struct UserListTemplate {
+    pub(crate) users: Vec<UserWithMappings>,
+    pub(crate) ui_route: String,
+    pub(crate) sync_report: Option<Vec<ServerSyncResult>>,
 }
 
 #[derive(Template)]
 #[template(path = "admin/user_item.html")]
-pub struct UserItemTemplate {
-    pub uwm: UserWithMappings,
-    pub ui_route: String,
+pub(crate) struct UserItemTemplate {
+    pub(crate) uwm: UserWithMappings,
+    pub(crate) ui_route: String,
 }
 
 #[derive(Deserialize)]
-pub struct AddUserForm {
-    pub username: String,
-    pub password: Password,
+pub(crate) struct AddUserForm {
+    pub(crate) username: String,
+    pub(crate) password: Password,
     #[serde(default)]
-    pub enable_federation: bool,
+    pub(crate) enable_federation: bool,
 }
 
 #[derive(Deserialize)]
-pub struct AddMappingForm {
-    pub user_id: String,
-    pub server_id: ServerId,
-    pub mapped_username: String,
-    pub mapped_password: Password,
+pub(crate) struct AddMappingForm {
+    pub(crate) user_id: String,
+    pub(crate) server_id: ServerId,
+    pub(crate) mapped_username: String,
+    pub(crate) mapped_password: Password,
 }
 
-pub async fn create_user_with_mappings(
-    state: &AppState,
-    user: User,
+pub(crate) async fn create_user_with_mappings(
+    state: &ManagementState,
+    user: LocalUser,
     servers: &[Server],
 ) -> UserWithMappings {
     // Session counts keyed by canonical server URL for template display.
@@ -118,9 +119,9 @@ pub async fn create_user_with_mappings(
 }
 
 /// Main users page
-pub async fn users_page(State(state): State<AppState>) -> impl IntoResponse {
+pub(crate) async fn users_page(State(state): State<ManagementState>) -> impl IntoResponse {
     let template = UsersPageTemplate {
-        ui_route: state.get_ui_route().await,
+        ui_route: state.paths.ui_route(),
     };
     match template.render() {
         Ok(html) => Html(html).into_response(),
@@ -131,7 +132,7 @@ pub async fn users_page(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
-pub async fn get_user_item(state: &AppState, user_id: &str) -> impl IntoResponse {
+pub(crate) async fn get_user_item(state: &ManagementState, user_id: &str) -> impl IntoResponse {
     let servers = match state.server_storage.list_servers().await {
         Ok(s) => s,
         Err(e) => {
@@ -159,7 +160,7 @@ pub async fn get_user_item(state: &AppState, user_id: &str) -> impl IntoResponse
     let uwm = create_user_with_mappings(state, user, &servers).await;
     let template = UserItemTemplate {
         uwm,
-        ui_route: state.get_ui_route().await,
+        ui_route: state.paths.ui_route(),
     };
     match template.render() {
         Ok(html) => Html(html).into_response(),
@@ -190,13 +191,13 @@ fn with_popup(mut response: Response, message: String) -> Response {
     response
 }
 
-async fn user_item_with_popup(state: &AppState, user_id: &str, message: String) -> Response {
+async fn user_item_with_popup(state: &ManagementState, user_id: &str, message: String) -> Response {
     let response = get_user_item(state, user_id).await.into_response();
     with_popup(response, message)
 }
 
 async fn get_user_list_impl(
-    state: &AppState,
+    state: &ManagementState,
     report: Option<Vec<ServerSyncResult>>,
 ) -> impl IntoResponse {
     // Fetch servers once for mapping lookup
@@ -217,7 +218,7 @@ async fn get_user_list_impl(
 
             let template = UserListTemplate {
                 users: result,
-                ui_route: state.get_ui_route().await,
+                ui_route: state.paths.ui_route(),
                 sync_report: report,
             };
             match template.render() {
@@ -236,12 +237,15 @@ async fn get_user_list_impl(
 }
 
 /// List users with mappings
-pub async fn get_user_list(State(state): State<AppState>) -> impl IntoResponse {
+pub(crate) async fn get_user_list(State(state): State<ManagementState>) -> impl IntoResponse {
     get_user_list_impl(&state, None).await
 }
 
 /// Add user
-pub async fn add_user(State(state): State<AppState>, Form(form): Form<AddUserForm>) -> Response {
+pub(crate) async fn add_user(
+    State(state): State<ManagementState>,
+    Form(form): Form<AddUserForm>,
+) -> Response {
     if form.username.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -288,14 +292,14 @@ pub async fn add_user(State(state): State<AppState>, Form(form): Form<AddUserFor
 }
 
 #[derive(Deserialize)]
-pub struct DeleteUserForm {
+pub(crate) struct DeleteUserForm {
     #[serde(default)]
-    pub delete_federated: bool,
+    pub(crate) delete_federated: bool,
 }
 
 /// Delete user
-pub async fn delete_user(
-    State(state): State<AppState>,
+pub(crate) async fn delete_user(
+    State(state): State<ManagementState>,
     Path(user_id): Path<String>,
     Form(form): Form<DeleteUserForm>,
 ) -> Response {
@@ -334,7 +338,7 @@ pub async fn delete_user(
     // 3. Delete locally
     match state.user_authorization.delete_user(&user_id).await {
         Ok(true) => {
-            crate::sessions::end_user_sessions(&state, &user_id).await;
+            state.sessions.end_user_sessions(&user_id).await;
             get_user_list_impl(&state, report).await.into_response()
         }
         Ok(false) => (
@@ -354,8 +358,8 @@ pub async fn delete_user(
 }
 
 /// Add mapping
-pub async fn add_mapping(
-    State(state): State<AppState>,
+pub(crate) async fn add_mapping(
+    State(state): State<ManagementState>,
     Form(form): Form<AddMappingForm>,
 ) -> Response {
     if form.mapped_username.trim().is_empty() {
@@ -456,10 +460,7 @@ pub async fn add_mapping(
         }
     }
 
-    let admin_password = {
-        let config = state.config.read().await;
-        (&config.password).into()
-    };
+    let admin_password = { (&state.credentials.password()).into() };
 
     match state
         .user_authorization
@@ -494,8 +495,8 @@ pub async fn add_mapping(
 }
 
 /// Delete mapping
-pub async fn delete_mapping(
-    State(state): State<AppState>,
+pub(crate) async fn delete_mapping(
+    State(state): State<ManagementState>,
     Path((user_id, mapping_id)): Path<(String, i64)>,
 ) -> Response {
     match state
@@ -521,8 +522,8 @@ pub async fn delete_mapping(
 }
 
 /// Delete sessions
-pub async fn delete_sessions(
-    State(state): State<AppState>,
+pub(crate) async fn delete_sessions(
+    State(state): State<ManagementState>,
     Path(user_id): Path<String>,
 ) -> Response {
     match state
@@ -531,7 +532,7 @@ pub async fn delete_sessions(
         .await
     {
         Ok(_) => {
-            crate::sessions::end_user_sessions(&state, &user_id).await;
+            state.sessions.end_user_sessions(&user_id).await;
             get_user_item(&state, &user_id).await.into_response()
         }
         Err(e) => {

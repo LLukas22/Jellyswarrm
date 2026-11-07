@@ -6,19 +6,19 @@
     <li>
       {{ result.server_name }}:
       {% match result.status %}
-        {% when crate::federated_users::SyncStatus::Created %}
+        {% when crate::auth::federation::SyncStatus::Created %}
           <span class="badge success">Created</span>
-        {% when crate::federated_users::SyncStatus::AlreadyExists %}
+        {% when crate::auth::federation::SyncStatus::AlreadyExists %}
           <span class="badge warning">Exists</span>
-        {% when crate::federated_users::SyncStatus::ExistsWithDifferentPassword %}
+        {% when crate::auth::federation::SyncStatus::ExistsWithDifferentPassword %}
           <span class="badge danger">Exists (Password Mismatch)</span>
-        {% when crate::federated_users::SyncStatus::Failed %}
+        {% when crate::auth::federation::SyncStatus::Failed %}
           <span class="badge danger">Failed</span>
-        {% when crate::federated_users::SyncStatus::Skipped %}
+        {% when crate::auth::federation::SyncStatus::Skipped %}
           <span class="badge secondary">Skipped</span>
-        {% when crate::federated_users::SyncStatus::Deleted %}
+        {% when crate::auth::federation::SyncStatus::Deleted %}
           <span class="badge danger">Deleted</span>
-        {% when crate::federated_users::SyncStatus::NotFound %}
+        {% when crate::auth::federation::SyncStatus::NotFound %}
           <span class="badge secondary">Not Found</span>
       {% endmatch %}
       {% if let Some(msg) = result.message %}
