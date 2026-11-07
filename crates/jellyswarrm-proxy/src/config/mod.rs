@@ -1,0 +1,552 @@
+//! Load and validate process configuration and persisted secrets at explicit paths.
+mod paths;
+pub(crate) mod service;
+pub(crate) use paths::Paths;
+mod snapshots;
+use serde::{Deserialize, Serialize};
+pub(crate) use snapshots::AdminCredentials;
+pub(crate) use snapshots::SettingsView;
+pub(crate) use snapshots::StartupConfig;
+
+use std::fmt;
+use std::fs;
+use std::io::Write;
+use std::ops::Deref;
+
+use std::sync::LazyLock;
+use tower_sessions::cookie::Key;
+use tracing::info;
+use uuid::Uuid;
+
+use jellyfin_api::ClientInfo;
+
+use base64::prelude::*;
+
+use crate::domain::security::Password;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub(crate) enum MediaStreamingMode {
+    Redirect,
+    Proxy,
+}
+
+impl std::str::FromStr for MediaStreamingMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "redirect" => Ok(MediaStreamingMode::Redirect),
+            "proxy" => Ok(MediaStreamingMode::Proxy),
+            _ => Err(format!("Invalid media streaming mode: {}", s)),
+        }
+    }
+}
+
+impl fmt::Display for MediaStreamingMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MediaStreamingMode::Redirect => write!(f, "Redirect"),
+            MediaStreamingMode::Proxy => write!(f, "Proxy"),
+        }
+    }
+}
+
+pub(crate) static CLIENT_INFO: LazyLock<ClientInfo> = LazyLock::new(|| ClientInfo {
+    client: "Jellyswarrm Proxy".to_string(),
+    device: "Server".to_string(),
+    device_id: "jellyswarrm-proxy".to_string(),
+    version: env!("CARGO_PKG_VERSION").to_string(),
+});
+
+fn default_server_id() -> String {
+    Uuid::new_v4().simple().to_string()
+}
+
+fn default_public_address() -> String {
+    "localhost:3000".to_string()
+}
+
+fn default_server_name() -> String {
+    "Jellyswarrm Proxy".to_string()
+}
+
+fn default_host() -> String {
+    "0.0.0.0".to_string()
+}
+
+fn default_port() -> u16 {
+    3000
+}
+
+fn default_include_server_name_in_media() -> bool {
+    true
+}
+
+fn default_username() -> String {
+    "admin".to_string()
+}
+
+fn default_password() -> Password {
+    "jellyswarrm".to_string().into()
+}
+
+fn default_session_key() -> Vec<u8> {
+    Key::generate().master().to_vec()
+}
+
+fn default_timeout() -> u64 {
+    20
+}
+
+fn default_ui_route() -> UrlSegment {
+    UrlSegment("ui".to_string())
+}
+
+fn default_media_streaming_mode() -> MediaStreamingMode {
+    MediaStreamingMode::Proxy
+}
+
+fn default_server_background_check_interval_secs() -> u64 {
+    30
+}
+
+fn default_auto_create_users_on_login() -> bool {
+    true
+}
+
+fn default_merge_libraries() -> bool {
+    true
+}
+
+fn default_deduplicate_media() -> bool {
+    false
+}
+
+mod base64_serde {
+    use super::*;
+    use serde::de::Error as DeError;
+    use serde::{Deserializer, Serializer};
+
+    pub(crate) fn serialize<S>(bytes: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let s = BASE64_STANDARD.encode(bytes);
+        serializer.serialize_str(&s)
+    }
+
+    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        BASE64_STANDARD.decode(&s).map_err(D::Error::custom)
+    }
+}
+
+macro_rules! define_fallback_deserializer {
+    ($name:ident, $type:ty, $fallback_fn:path) => {
+        fn $name<'de, D>(deserializer: D) -> Result<$type, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            use serde::Deserialize;
+            let v: Result<serde_json::Value, _> = Deserialize::deserialize(deserializer);
+            match v {
+                Ok(val) => {
+                    // First try direct deserialization (handles numbers, booleans, etc.)
+                    if let Ok(t) = serde_json::from_value::<$type>(val.clone()) {
+                        return Ok(t);
+                    }
+
+                    // If that fails, try parsing from string if it is a string
+                    if let serde_json::Value::String(s) = &val {
+                        match s.parse::<$type>() {
+                            Ok(parsed) => return Ok(parsed),
+                            Err(_) => tracing::info!(
+                                "Ignoring invalid value for {}: '{}', falling back to default",
+                                stringify!($name),
+                                s
+                            ),
+                        }
+                    } else {
+                        tracing::info!(
+                            "Ignoring invalid value for {}, falling back to default",
+                            stringify!($name)
+                        );
+                    }
+
+                    Ok($fallback_fn())
+                }
+                Err(_) => {
+                    tracing::info!(
+                        "Ignoring invalid configuration structure for {}, falling back to default",
+                        stringify!($name)
+                    );
+                    Ok($fallback_fn())
+                }
+            }
+        }
+    };
+}
+
+define_fallback_deserializer!(deserialize_port, u16, default_port);
+define_fallback_deserializer!(deserialize_host, String, default_host);
+define_fallback_deserializer!(
+    deserialize_include_server_name_in_media,
+    bool,
+    default_include_server_name_in_media
+);
+define_fallback_deserializer!(deserialize_timeout, u64, default_timeout);
+define_fallback_deserializer!(deserialize_ui_route, UrlSegment, default_ui_route);
+define_fallback_deserializer!(
+    deserialize_media_streaming_mode,
+    MediaStreamingMode,
+    default_media_streaming_mode
+);
+define_fallback_deserializer!(
+    deserialize_server_background_check_interval_secs,
+    u64,
+    default_server_background_check_interval_secs
+);
+define_fallback_deserializer!(
+    deserialize_auto_create_users_on_login,
+    bool,
+    default_auto_create_users_on_login
+);
+define_fallback_deserializer!(deserialize_merge_libraries, bool, default_merge_libraries);
+define_fallback_deserializer!(
+    deserialize_deduplicate_media,
+    bool,
+    default_deduplicate_media
+);
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub(crate) struct PreconfiguredServer {
+    pub(crate) url: String,
+    pub(crate) name: String,
+    pub(crate) priority: i32,
+    #[serde(default = "default_media_streaming_mode")]
+    pub(crate) media_streaming_mode: MediaStreamingMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub(crate) struct DebugUser {
+    pub(crate) username: String,
+    pub(crate) password: Password,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub(crate) struct AppConfig {
+    #[serde(default = "default_server_id")]
+    pub(crate) server_id: String,
+    #[serde(default = "default_public_address")]
+    pub(crate) public_address: String,
+    #[serde(default = "default_server_name")]
+    pub(crate) server_name: String,
+    #[serde(default = "default_host", deserialize_with = "deserialize_host")]
+    pub(crate) host: String,
+    #[serde(default = "default_port", deserialize_with = "deserialize_port")]
+    pub(crate) port: u16,
+    #[serde(
+        default = "default_include_server_name_in_media",
+        deserialize_with = "deserialize_include_server_name_in_media"
+    )]
+    pub(crate) include_server_name_in_media: bool,
+
+    #[serde(default = "default_username")]
+    pub(crate) username: String,
+    #[serde(default = "default_password")]
+    pub(crate) password: Password,
+
+    #[serde(default)]
+    pub(crate) preconfigured_servers: Vec<PreconfiguredServer>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) debug_user: Option<DebugUser>,
+
+    #[serde(default = "default_session_key", with = "base64_serde")]
+    pub(crate) session_key: Vec<u8>,
+
+    #[serde(default = "default_timeout", deserialize_with = "deserialize_timeout")]
+    pub(crate) timeout: u64, // in seconds
+
+    #[serde(
+        default = "default_ui_route",
+        deserialize_with = "deserialize_ui_route"
+    )]
+    pub(crate) ui_route: UrlSegment,
+
+    #[serde(default)]
+    pub(crate) url_prefix: Option<UrlSegment>,
+
+    #[serde(
+        default = "default_media_streaming_mode",
+        deserialize_with = "deserialize_media_streaming_mode"
+    )]
+    pub(crate) media_streaming_mode: MediaStreamingMode,
+
+    #[serde(
+        default = "default_server_background_check_interval_secs",
+        deserialize_with = "deserialize_server_background_check_interval_secs"
+    )]
+    pub(crate) server_background_check_interval_secs: u64,
+
+    #[serde(
+        default = "default_auto_create_users_on_login",
+        deserialize_with = "deserialize_auto_create_users_on_login"
+    )]
+    pub(crate) auto_create_users_on_login: bool,
+
+    #[serde(
+        default = "default_merge_libraries",
+        deserialize_with = "deserialize_merge_libraries"
+    )]
+    pub(crate) merge_libraries: bool,
+
+    /// Collapse duplicate movies and shows across backend servers into a
+    /// single item whose media sources carry one entry per server.
+    /// Covers movies as well as series/seasons/episodes (Jellyfin v12 adds
+    /// multi-versions for episodes).
+    #[serde(
+        default = "default_deduplicate_media",
+        deserialize_with = "deserialize_deduplicate_media",
+        alias = "deduplicate_movies"
+    )]
+    pub(crate) deduplicate_media: bool,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            server_id: default_server_id(),
+            public_address: default_public_address(),
+            server_name: default_server_name(),
+            host: default_host(),
+            port: default_port(),
+            include_server_name_in_media: default_include_server_name_in_media(),
+            username: default_username(),
+            password: default_password(),
+            preconfigured_servers: Vec::new(),
+            debug_user: None,
+            session_key: default_session_key(),
+            timeout: default_timeout(),
+            ui_route: default_ui_route(),
+            url_prefix: None,
+            media_streaming_mode: default_media_streaming_mode(),
+            server_background_check_interval_secs: default_server_background_check_interval_secs(),
+            auto_create_users_on_login: default_auto_create_users_on_login(),
+            merge_libraries: default_merge_libraries(),
+            deduplicate_media: default_deduplicate_media(),
+        }
+    }
+}
+
+impl fmt::Debug for AppConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let session_key = format!("<{} bytes>", self.session_key.len());
+        f.debug_struct("AppConfig")
+            .field("server_id", &self.server_id)
+            .field("public_address", &self.public_address)
+            .field("server_name", &self.server_name)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field(
+                "include_server_name_in_media",
+                &self.include_server_name_in_media,
+            )
+            .field("username", &self.username)
+            .field("password", &self.password)
+            .field("preconfigured_servers", &self.preconfigured_servers)
+            .field("debug_user", &self.debug_user)
+            .field("session_key", &session_key)
+            .field("timeout", &self.timeout)
+            .field("ui_route", &self.ui_route)
+            .field("url_prefix", &self.url_prefix)
+            .field("media_streaming_mode", &self.media_streaming_mode)
+            .field(
+                "server_background_check_interval_secs",
+                &self.server_background_check_interval_secs,
+            )
+            .field(
+                "auto_create_users_on_login",
+                &self.auto_create_users_on_login,
+            )
+            .field("deduplicate_media", &self.deduplicate_media)
+            .finish()
+    }
+}
+
+pub(crate) const DEFAULT_CONFIG_FILENAME: &str = "jellyswarrm.toml";
+
+/// Load configuration from known files and environment. Falls back to defaults.
+pub(crate) fn load_config(paths: &Paths) -> anyhow::Result<AppConfig> {
+    load_config_with_session_key(paths, None)
+}
+
+/// On hot reload, preserve the key held by the active session middleware if
+/// an old config omitted it. Do not persist a different key and orphan data.
+pub(crate) fn load_config_with_session_key(
+    paths: &Paths,
+    existing_key: Option<&[u8]>,
+) -> anyhow::Result<AppConfig> {
+    let path = &paths.config;
+    let builder = if cfg!(debug_assertions) {
+        // In debug mode, also load a dev-specific config file if it exists.
+        info!(
+            "Loading config from {path:?} and dev config from {dev_config_path:?}",
+            dev_config_path = paths.dev_config
+        );
+        config::Config::builder()
+            .add_source(config::File::with_name(path.to_string_lossy().as_ref()).required(false))
+            .add_source(
+                config::File::with_name(paths.dev_config.to_string_lossy().as_ref())
+                    .required(false),
+            )
+            .add_source(config::Environment::with_prefix("JELLYSWARRM").separator("_"))
+    } else {
+        config::Config::builder()
+            .add_source(config::File::with_name(path.to_string_lossy().as_ref()).required(false))
+            .add_source(config::Environment::with_prefix("JELLYSWARRM").separator("_"))
+    };
+
+    let source = builder.build()?;
+    let had_session_key = source.get_string("session_key").is_ok();
+    let mut config: AppConfig = source.try_deserialize()?;
+    if let Some(existing_key) = existing_key {
+        if had_session_key {
+            anyhow::ensure!(
+                config.session_key == existing_key,
+                "session_key cannot be changed while running"
+            );
+        } else {
+            config.session_key = existing_key.to_vec();
+        }
+    }
+    anyhow::ensure!(
+        config.session_key.len() >= 64,
+        "session_key must contain at least 64 bytes"
+    );
+
+    // An older config may omit this field. Never use a freshly generated
+    // key for durable credentials without persisting it first.
+    if !path.exists() || !had_session_key {
+        save_config(paths, &config)?;
+    }
+
+    Ok(config)
+}
+
+/// Persist configuration to the first existing file or the primary default file.
+pub(crate) fn save_config(paths: &Paths, cfg: &AppConfig) -> std::io::Result<()> {
+    let toml_str = toml::to_string_pretty(cfg).map_err(std::io::Error::other)?;
+    let path = &paths.config;
+    let temp_path = path.with_extension(format!("toml.tmp-{}", std::process::id()));
+    let write_result = (|| {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temp_path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
+        file.write_all(toml_str.as_bytes())?;
+        file.sync_all()?;
+        fs::rename(&temp_path, path)
+    })();
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(temp_path);
+        return Err(error);
+    }
+    info!("Configuration saved to {path:?}");
+    Ok(())
+}
+
+// A normalized URL path segment (no leading/trailing slashes, non-empty).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct UrlSegment(String);
+
+impl UrlSegment {
+    pub(crate) fn new<S: Into<String>>(s: S) -> Result<Self, &'static str> {
+        let t = s
+            .into()
+            .trim_start_matches('/')
+            .trim_end_matches('/')
+            .to_string();
+        if t.is_empty() {
+            Err("empty UrlSegment")
+        } else {
+            Ok(UrlSegment(t))
+        }
+    }
+}
+
+impl Deref for UrlSegment {
+    type Target = str;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl AsRef<str> for UrlSegment {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for UrlSegment {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl From<String> for UrlSegment {
+    fn from(s: String) -> Self {
+        // best-effort: create without returning error (used for programmatic conversions)
+        UrlSegment(s.trim_start_matches('/').trim_end_matches('/').to_string())
+    }
+}
+
+impl From<&str> for UrlSegment {
+    fn from(s: &str) -> Self {
+        UrlSegment::from(s.to_string())
+    }
+}
+
+impl std::str::FromStr for UrlSegment {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        UrlSegment::new(s)
+    }
+}
+
+impl serde::Serialize for UrlSegment {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for UrlSegment {
+    fn deserialize<D>(deserializer: D) -> Result<UrlSegment, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        let t = s.trim_start_matches('/').trim_end_matches('/').to_string();
+        if t.is_empty() {
+            Err(serde::de::Error::custom("url segment must not be empty"))
+        } else {
+            Ok(UrlSegment(t))
+        }
+    }
+}

@@ -1,39 +1,40 @@
+//! Management UI authentication backend, user roles, and authenticated route context.
 use std::sync::Arc;
 
+use crate::domain::user_id::UserId;
 use axum::{
     extract::FromRequestParts,
     http::{request::Parts, StatusCode},
 };
 use axum_login::{AuthUser, AuthnBackend, UserId as AuthUserId};
 use serde::{Deserialize, Serialize};
-use tokio::{sync::RwLock, task};
+use tokio::task;
 use tracing::info;
 
 use crate::{
-    config::AppConfig,
-    user_authorization_service::{LocalCredential, UserAuthorizationService},
-    user_id::UserId,
+    auth::service::{LocalCredential, UserAuthorizationService},
+    config::AdminCredentials,
 };
 
 mod routes;
 
-pub use routes::router;
+pub(crate) use routes::router;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum UserRole {
+pub(crate) enum UserRole {
     Admin,
     User,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct User {
-    pub id: UserId,
-    pub username: String,
-    pub local_credential: LocalCredential,
-    pub role: UserRole,
+pub(crate) struct UiUser {
+    pub(crate) id: UserId,
+    pub(crate) username: String,
+    pub(crate) local_credential: LocalCredential,
+    pub(crate) role: UserRole,
 }
 
-pub struct AuthenticatedUser(pub User);
+pub(crate) struct AuthenticatedUser(pub(crate) UiUser);
 
 impl<S> FromRequestParts<S> for AuthenticatedUser
 where
@@ -55,9 +56,9 @@ where
 
 // Here we've implemented `Debug` manually to avoid accidentally logging the
 // password hash.
-impl std::fmt::Debug for User {
+impl std::fmt::Debug for UiUser {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("User")
+        f.debug_struct("UiUser")
             .field("id", &self.id)
             .field("username", &self.username)
             .field("password", &"[redacted]")
@@ -66,7 +67,7 @@ impl std::fmt::Debug for User {
     }
 }
 
-impl AuthUser for User {
+impl AuthUser for UiUser {
     type Id = UserId;
 
     fn id(&self) -> Self::Id {
@@ -81,26 +82,32 @@ impl AuthUser for User {
 // This allows us to extract the authentication fields from forms. We use this
 // to authenticate requests with the backend.
 #[derive(Debug, Clone, Deserialize)]
-pub struct Credentials {
-    pub username: String,
-    pub password: String,
-    pub next: Option<String>,
+pub(crate) struct Credentials {
+    pub(crate) username: String,
+    pub(crate) password: String,
+    pub(crate) next: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-pub struct Backend {
-    config: Arc<RwLock<AppConfig>>,
+#[derive(Clone)]
+pub(crate) struct Backend {
+    credentials: AdminCredentials,
     user_auth: Arc<UserAuthorizationService>,
 }
 
 impl Backend {
-    pub fn new(config: Arc<RwLock<AppConfig>>, user_auth: Arc<UserAuthorizationService>) -> Self {
-        Self { config, user_auth }
+    pub(crate) fn new(
+        credentials: AdminCredentials,
+        user_auth: Arc<UserAuthorizationService>,
+    ) -> Self {
+        Self {
+            credentials,
+            user_auth,
+        }
     }
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
+pub(crate) enum Error {
     #[error(transparent)]
     TaskJoin(#[from] task::JoinError),
     #[error(transparent)]
@@ -108,7 +115,7 @@ pub enum Error {
 }
 
 impl AuthnBackend for Backend {
-    type User = User;
+    type User = UiUser;
     type Credentials = Credentials;
     type Error = Error;
 
@@ -117,15 +124,15 @@ impl AuthnBackend for Backend {
         creds: Self::Credentials,
     ) -> Result<Option<Self::User>, Self::Error> {
         let password = creds.password.into();
-        let config = self.config.read().await;
         info!("Authenticating user: {}", creds.username);
-        if creds.username == config.username && password == config.password {
+        if creds.username == self.credentials.username() && password == self.credentials.password()
+        {
             info!("Admin authentication successful");
             // If the password is correct, we return the default user.
-            let user = User {
+            let user = UiUser {
                 id: "admin".into(),
                 username: creds.username,
-                local_credential: LocalCredential::Password(config.password.clone().into()),
+                local_credential: LocalCredential::Password(self.credentials.password().into()),
                 role: UserRole::Admin,
             };
             return Ok(Some(user));
@@ -137,7 +144,7 @@ impl AuthnBackend for Backend {
             .await?
         {
             info!("User authentication successful: {}", user.original_username);
-            let user = User {
+            let user = UiUser {
                 id: user.id,
                 username: user.original_username,
                 local_credential: user.local_credential,
@@ -155,17 +162,16 @@ impl AuthnBackend for Backend {
         user_id: &AuthUserId<Self>,
     ) -> Result<Option<Self::User>, Self::Error> {
         if user_id.as_str() == "admin" {
-            let config = self.config.read().await;
-            return Ok(Some(User {
+            return Ok(Some(UiUser {
                 id: "admin".into(),
-                username: config.username.clone(),
-                local_credential: LocalCredential::Password(config.password.clone().into()),
+                username: self.credentials.username().to_owned(),
+                local_credential: LocalCredential::Password(self.credentials.password().into()),
                 role: UserRole::Admin,
             }));
         }
 
         if let Some(user) = self.user_auth.get_user_by_id(user_id).await? {
-            let user = User {
+            let user = UiUser {
                 id: user.id,
                 username: user.original_username,
                 local_credential: user.local_credential,
@@ -181,7 +187,7 @@ impl AuthnBackend for Backend {
 // We use a type alias for convenience.
 //
 // Note that we've supplied our concrete backend here.
-pub type AuthSession = axum_login::AuthSession<Backend>;
+pub(crate) type AuthSession = axum_login::AuthSession<Backend>;
 
 #[cfg(test)]
 mod tests {
@@ -194,14 +200,9 @@ mod tests {
             ("admin", UserRole::Admin),
             ("550e8400e29b41d4a716446655440000", UserRole::User),
         ] {
-            // Shape written before UserId replaced String in the UI session.
-            let legacy = json!({
-                "id": id,
-                "username": "viewer",
-                "local_credential": {"Password": "existing-password-hash"},
-                "role": role,
-            });
-            let user: User = serde_json::from_value(legacy.clone()).unwrap();
+            let legacy = json!({"id": id, "username": "viewer",
+                "local_credential": {"Password": "existing-password-hash"}, "role": role});
+            let user: UiUser = serde_json::from_value(legacy.clone()).unwrap();
             assert_eq!(user.id.as_str(), id);
             assert_eq!(user.session_auth_hash(), b"existing-password-hash");
             assert_eq!(serde_json::to_value(user).unwrap(), legacy);

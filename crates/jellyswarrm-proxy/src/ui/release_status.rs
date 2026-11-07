@@ -1,3 +1,4 @@
+//! Resolve and cache release/version information displayed by the management UI.
 use askama::Template;
 use axum::{
     extract::State,
@@ -10,8 +11,6 @@ use std::{
     time::{Duration, Instant},
 };
 use tracing::{error, warn};
-
-use crate::AppState;
 
 const RELEASE_STATUS_CACHE_TTL: Duration = Duration::from_secs(60 * 60 * 3);
 const JELLYSWARRM_LATEST_RELEASE_URL: &str =
@@ -78,7 +77,9 @@ struct ReleaseStatusTemplate {
     title: String,
 }
 
-pub async fn jellyswarrm_release_status(State(state): State<AppState>) -> impl IntoResponse {
+pub(crate) async fn jellyswarrm_release_status(
+    State(state): State<reqwest::Client>,
+) -> impl IntoResponse {
     let status = get_jellyswarrm_release_status(&state).await;
     let template = ReleaseStatusTemplate {
         css_variant: status.css_variant,
@@ -96,7 +97,7 @@ pub async fn jellyswarrm_release_status(State(state): State<AppState>) -> impl I
     }
 }
 
-async fn get_jellyswarrm_release_status(state: &AppState) -> JellyswarrmReleaseStatus {
+async fn get_jellyswarrm_release_status(state: &reqwest::Client) -> JellyswarrmReleaseStatus {
     {
         let cache = JELLYSWARRM_RELEASE_STATUS_CACHE.read().await;
         if let Some(entry) = cache.as_ref() {
@@ -106,7 +107,7 @@ async fn get_jellyswarrm_release_status(state: &AppState) -> JellyswarrmReleaseS
         }
     }
 
-    let status = fetch_jellyswarrm_release_status(&state.reqwest_client).await;
+    let status = fetch_jellyswarrm_release_status(state).await;
 
     let mut cache = JELLYSWARRM_RELEASE_STATUS_CACHE.write().await;
     *cache = Some(ReleaseStatusCacheEntry {

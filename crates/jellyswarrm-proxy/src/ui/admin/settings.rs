@@ -1,3 +1,4 @@
+//! Render and save proxy settings from the administrative UI.
 use askama::Template;
 use axum::{
     extract::State,
@@ -8,29 +9,32 @@ use axum::{
 use serde::Deserialize;
 use tracing::error;
 
-use crate::{config::save_config, AppState};
+use crate::{
+    config::service::{ConfigurationError, SettingsUpdate},
+    http::state::SettingsState,
+};
 
 #[derive(Template)]
 #[template(path = "admin/settings.html")]
-pub struct SettingsPageTemplate {
-    pub ui_route: String,
+pub(crate) struct SettingsPageTemplate {
+    pub(crate) ui_route: String,
 }
 
 #[derive(Template)]
 #[template(path = "admin/settings_form.html")]
-pub struct SettingsFormTemplate {
-    pub server_id: String,
-    pub public_address: String,
-    pub server_name: String,
-    pub include_server_name_in_media: bool,
-    pub auto_create_users_on_login: bool,
-    pub deduplicate_media: bool,
-    pub ui_route: String,
+pub(crate) struct SettingsFormTemplate {
+    pub(crate) server_id: String,
+    pub(crate) public_address: String,
+    pub(crate) server_name: String,
+    pub(crate) include_server_name_in_media: bool,
+    pub(crate) auto_create_users_on_login: bool,
+    pub(crate) deduplicate_media: bool,
+    pub(crate) ui_route: String,
 }
 
-pub async fn settings_page(State(state): State<AppState>) -> impl IntoResponse {
+pub(crate) async fn settings_page(State(state): State<SettingsState>) -> impl IntoResponse {
     let template = SettingsPageTemplate {
-        ui_route: state.get_ui_route().await,
+        ui_route: state.paths.ui_route(),
     };
     match template.render() {
         Ok(html) => Html(html).into_response(),
@@ -41,16 +45,16 @@ pub async fn settings_page(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
-pub async fn settings_form(State(state): State<AppState>) -> impl IntoResponse {
-    let cfg = state.config.read().await.clone();
+pub(crate) async fn settings_form(State(state): State<SettingsState>) -> impl IntoResponse {
+    let cfg = state.settings.read().await;
     let form = SettingsFormTemplate {
-        server_id: cfg.server_id,
-        public_address: cfg.public_address,
-        server_name: cfg.server_name,
+        server_id: cfg.server_id.clone(),
+        public_address: cfg.public_address.clone(),
+        server_name: cfg.server_name.clone(),
         include_server_name_in_media: cfg.include_server_name_in_media,
         auto_create_users_on_login: cfg.auto_create_users_on_login,
         deduplicate_media: cfg.deduplicate_media,
-        ui_route: state.get_ui_route().await,
+        ui_route: state.paths.ui_route(),
     };
     match form.render() {
         Ok(html) => Html(html).into_response(),
@@ -62,43 +66,36 @@ pub async fn settings_form(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 #[derive(Deserialize)]
-pub struct SaveForm {
-    pub public_address: String,
-    pub server_name: String,
+pub(crate) struct SaveForm {
+    pub(crate) public_address: String,
+    pub(crate) server_name: String,
     // When the checkbox is unchecked the field is absent; default to false.
     #[serde(default)]
-    pub include_server_name_in_media: bool,
+    pub(crate) include_server_name_in_media: bool,
     #[serde(default)]
-    pub auto_create_users_on_login: bool,
+    pub(crate) auto_create_users_on_login: bool,
     #[serde(default)]
-    pub deduplicate_media: bool,
+    pub(crate) deduplicate_media: bool,
 }
 
-pub async fn save_settings(State(state): State<AppState>, Form(form): Form<SaveForm>) -> Response {
-    if form.public_address.trim().is_empty() || form.server_name.trim().is_empty() {
-        return Html(
-            "<div id=\"settings-messages\" class=\"alert alert-error\">All fields required</div>",
-        )
-        .into_response();
-    }
-
-    let save_result = {
-        let mut cfg = state.config.write().await;
-        let mut updated = cfg.clone();
-        updated.public_address = form.public_address.trim().to_string();
-        updated.server_name = form.server_name.trim().to_string();
-        updated.include_server_name_in_media = form.include_server_name_in_media;
-        updated.auto_create_users_on_login = form.auto_create_users_on_login;
-        updated.deduplicate_media = form.deduplicate_media;
-        match save_config(&updated) {
-            Ok(()) => {
-                *cfg = updated;
-                Ok(())
-            }
-            Err(error) => Err(error),
-        }
-    };
+pub(crate) async fn save_settings(
+    State(state): State<SettingsState>,
+    Form(form): Form<SaveForm>,
+) -> Response {
+    let save_result = state
+        .configuration
+        .save(SettingsUpdate {
+            public_address: form.public_address,
+            server_name: form.server_name,
+            include_server_name_in_media: form.include_server_name_in_media,
+            auto_create_users_on_login: form.auto_create_users_on_login,
+            deduplicate_media: form.deduplicate_media,
+        })
+        .await;
     if let Err(error) = save_result {
+        if matches!(error, ConfigurationError::MissingFields) {
+            return Html("<div id=\"settings-messages\" class=\"alert alert-error\">All fields required</div>").into_response();
+        }
         error!("Failed to save settings: {error}");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -110,27 +107,24 @@ pub async fn save_settings(State(state): State<AppState>, Form(form): Form<SaveF
     settings_form(State(state)).await.into_response()
 }
 
-pub async fn reload_config(State(state): State<AppState>) -> impl IntoResponse {
-    let current_key = state.config.read().await.session_key.clone();
-    let new_cfg = match crate::config::load_config_with_session_key(Some(&current_key)) {
-        Ok(cfg) => cfg,
+pub(crate) async fn reload_config(State(state): State<SettingsState>) -> impl IntoResponse {
+    match state.configuration.reload().await {
+        Ok(()) => Html("<div class=\"alert\">Configuration reloaded</div>").into_response(),
+        Err(ConfigurationError::SessionKeyChanged) => {
+            (StatusCode::CONFLICT, Html("<div class=\"alert alert-error\">session_key cannot be changed while running</div>")).into_response()
+        }
+        Err(ConfigurationError::StartupChanged) => {
+            (StatusCode::CONFLICT, Html("<div class=\"alert alert-error\">Startup settings changed; restart the application to apply them. The previous configuration is still active.</div>")).into_response()
+        }
         Err(error) => {
             error!("Failed to reload config: {error}");
-            return (
+            (
                 StatusCode::BAD_REQUEST,
                 Html("<div class=\"alert alert-error\">Invalid configuration</div>"),
             )
-                .into_response();
+                .into_response()
         }
-    };
-    {
-        let mut cfg = state.config.write().await;
-        if cfg.session_key != new_cfg.session_key {
-            return (StatusCode::CONFLICT, Html("<div class=\"alert alert-error\">session_key cannot be changed while running</div>")).into_response();
-        }
-        *cfg = new_cfg;
     }
-    Html("<div class=\"alert\">Configuration reloaded</div>").into_response()
 }
 
 #[cfg(test)]

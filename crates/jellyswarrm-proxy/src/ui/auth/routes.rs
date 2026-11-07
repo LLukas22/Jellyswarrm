@@ -1,3 +1,4 @@
+//! Handle management UI login/logout and authenticated-session redirects.
 use askama::Template;
 use axum::{
     extract::Query,
@@ -10,13 +11,13 @@ use axum_messages::{Message, Messages};
 use serde::Deserialize;
 
 use crate::{
+    http::state::{AdapterPaths, AppState},
     ui::auth::{AuthSession, Credentials},
-    AppState,
 };
 
 #[derive(Template)]
 #[template(path = "login.html")]
-pub struct LoginTemplate {
+pub(crate) struct LoginTemplate {
     messages: Vec<Message>,
     next: Option<String>,
     ui_route: String,
@@ -25,11 +26,11 @@ pub struct LoginTemplate {
 // This allows us to extract the "next" field from the query string. We use this
 // to redirect after log in.
 #[derive(Debug, Deserialize)]
-pub struct NextUrl {
+pub(crate) struct NextUrl {
     next: Option<String>,
 }
 
-pub fn router() -> axum::Router<AppState> {
+pub(crate) fn router() -> axum::Router<AppState> {
     Router::new()
         .route("/login", post(self::post::login))
         .route("/login", get(self::get::login))
@@ -42,8 +43,8 @@ mod post {
 
     use super::*;
 
-    pub async fn login(
-        State(state): axum::extract::State<AppState>,
+    pub(crate) async fn login(
+        State(state): axum::extract::State<AdapterPaths>,
         mut auth_session: AuthSession,
         messages: Messages,
         Form(creds): Form<Credentials>,
@@ -53,11 +54,11 @@ mod post {
             Ok(None) => {
                 messages.error("Invalid credentials");
 
-                let mut login_url = format!("/{}/login", state.get_ui_route().await);
+                let mut login_url = format!("/{}/login", state.ui_route());
                 if let Some(next) = creds.next {
                     login_url = format!("{login_url}?next={next}");
                 } else {
-                    login_url = format!("{login_url}?next=/{}", state.get_ui_route().await);
+                    login_url = format!("{login_url}?next=/{}", state.ui_route());
                 }
 
                 return Redirect::to(&login_url).into_response();
@@ -74,7 +75,7 @@ mod post {
         if let Some(ref next) = creds.next {
             Redirect::to(next)
         } else {
-            Redirect::to(&format!("/{}", state.get_ui_route().await))
+            Redirect::to(&format!("/{}", state.ui_route()))
         }
         .into_response()
     }
@@ -86,34 +87,29 @@ mod get {
 
     use super::*;
 
-    pub async fn login(
-        State(state): axum::extract::State<AppState>,
+    pub(crate) async fn login(
+        State(state): axum::extract::State<AdapterPaths>,
         messages: Messages,
         Query(NextUrl { next }): Query<NextUrl>,
     ) -> Html<String> {
-        info!(
-            "Rendering login page, base={:?}",
-            state.get_ui_route().await
-        );
+        info!("Rendering login page, base={:?}", state.ui_route());
         Html(
             LoginTemplate {
                 messages: messages.into_iter().collect(),
                 next,
-                ui_route: state.get_ui_route().await,
+                ui_route: state.ui_route(),
             }
             .render()
             .unwrap(),
         )
     }
 
-    pub async fn logout(
-        State(state): axum::extract::State<AppState>,
+    pub(crate) async fn logout(
+        State(state): axum::extract::State<AdapterPaths>,
         mut auth_session: AuthSession,
     ) -> impl IntoResponse {
         match auth_session.logout().await {
-            Ok(_) => {
-                Redirect::to(&format!("/{}/login", state.get_ui_route().await)).into_response()
-            }
+            Ok(_) => Redirect::to(&format!("/{}/login", state.ui_route())).into_response(),
             Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         }
     }
