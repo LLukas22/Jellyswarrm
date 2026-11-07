@@ -1,4 +1,5 @@
 use super::*;
+use playwright_rs::protocol::{ClickOptions, WaitForOptions, WaitForState};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires Docker, Git LFS media, embedded Jellyfin Web, and Chrome"]
@@ -157,6 +158,19 @@ pub(super) async fn run(
             .with_context(|| format!("{role} did not resume after rejoining"))?;
     }
 
+    eprintln!("Opening the menu after the controls hide again");
+    hide_controls_and_ignore_next_pointer_moves(member).await?;
+    open_menu(member).await?;
+    anyhow::ensure!(
+        member
+            .evaluate_value("window.jellyswarrmIgnoredPointerMoves")
+            .await?
+            == "2",
+        "the first attempt to show the controls was not ignored"
+    );
+    member.locator("body").press("Escape", None).await?;
+    wait_for_menu_closed(member).await?;
+
     eprintln!("Leaving SyncPlay from both clients");
     leave_group(member).await?;
     wait_for_groups(fixture, token, 1).await?;
@@ -225,13 +239,77 @@ async fn wait_for_menu_closed(page: &Page) -> Result<()> {
     Ok(())
 }
 
+/// Jellyfin Web can hide the video controls at any moment, including whenever
+/// SyncPlay schedules playback, and only pointer movement shows them again. Show
+/// them for each short attempt, because a click alone would wait for a button
+/// that nothing reveals.
 async fn open_menu(page: &Page) -> Result<()> {
-    if page.locator("video").is_visible().await? {
-        show_controls(page).await?;
+    const ATTEMPT_TIMEOUT_MS: f64 = 2_000.0;
+    wait_for_menu_closed(page).await?;
+    let button = page.locator("button[aria-controls=app-sync-play-menu]:visible");
+    let menu = page.locator("#app-sync-play-menu");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        // A slow menu can open after its attempt timed out. Clicking again
+        // would only wait on the menu's backdrop.
+        if menu.is_visible().await? {
+            return Ok(());
+        }
+        if page.locator("video").is_visible().await? {
+            show_controls(page).await?;
+        }
+        let attempt = async {
+            button
+                .click(ClickOptions::builder().timeout(ATTEMPT_TIMEOUT_MS).build())
+                .await?;
+            menu.wait_for(
+                WaitForOptions::builder()
+                    .timeout(ATTEMPT_TIMEOUT_MS)
+                    .build(),
+            )
+            .await
+        }
+        .await;
+        match attempt {
+            Ok(()) => return Ok(()),
+            Err(playwright_rs::Error::Timeout(_)) if Instant::now() < deadline => {}
+            Err(error) => {
+                let page_url = page
+                    .evaluate_value("location.href")
+                    .await
+                    .unwrap_or_else(|error| format!("unavailable: {error}"));
+                return Err(anyhow::Error::from(error)
+                    .context(format!("SyncPlay menu did not open on {page_url}")));
+            }
+        }
     }
-    page.locator("button[aria-controls=app-sync-play-menu]:visible")
-        .click(None)
+}
+
+/// Deterministically leave the controls hidden after the next show attempt, as
+/// when SyncPlay hides them between a pointer move and the click.
+async fn hide_controls_and_ignore_next_pointer_moves(page: &Page) -> Result<()> {
+    page.locator("body").press("Escape", None).await?;
+    page.locator("button[aria-controls=app-sync-play-menu]")
+        .wait_for(
+            WaitForOptions::builder()
+                .state(WaitForState::Hidden)
+                .build(),
+        )
         .await?;
+    page.evaluate_value(
+        r#"(() => {
+            window.jellyswarrmIgnoredPointerMoves = 0;
+            const ignore = event => {
+                event.stopImmediatePropagation();
+                if (++window.jellyswarrmIgnoredPointerMoves === 2) {
+                    window.removeEventListener('pointermove', ignore, true);
+                }
+            };
+            window.addEventListener('pointermove', ignore, true);
+            return true;
+        })()"#,
+    )
+    .await?;
     Ok(())
 }
 

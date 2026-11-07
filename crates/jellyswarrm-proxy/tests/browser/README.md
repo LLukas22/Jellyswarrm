@@ -19,6 +19,12 @@ exercise the UI playback manager and SyncPlay, rather than directly controlling
 the video element. Failed playback waits report the expected condition and each
 video's position, duration, buffering, and error state alongside the saved trace.
 
+Opening the SyncPlay menu during playback does depend on those controls. Jellyfin
+Web hides them whenever SyncPlay schedules playback, as well as on its idle timer,
+and only pointer movement shows them again. The menu helper therefore moves the
+pointer and clicks in short attempts until the menu is open. The scenario also
+ignores one attempt's pointer moves, so a helper that stops retrying fails every run.
+
 Run on Linux x86-64 with Docker, Git LFS, and the usual Rust/UI build prerequisites:
 
 ```sh
