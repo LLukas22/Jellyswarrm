@@ -78,7 +78,7 @@ impl RequestedItems {
             }
             let group = state
                 .media_storage
-                .get_media_version_group(&id)
+                .get_media_version_group(&id.as_str().into())
                 .await
                 .map_err(ApplicationError::Storage)?;
             let aggregate = group.is_some();
@@ -94,7 +94,7 @@ impl RequestedItems {
             } else {
                 state
                     .media_storage
-                    .get_media_mapping_by_virtual(&id)
+                    .get_media_mapping_by_virtual(&id.as_str().into())
                     .await
                     .map_err(ApplicationError::Storage)?
                     .into_iter()
@@ -158,7 +158,7 @@ impl RequestedItems {
                 .iter()
                 .flat_map(|entry| &entry.members)
                 .filter(|member| member.server_id == server.id)
-                .map(|member| member.virtual_media_id.clone())
+                .map(|member| member.virtual_media_id.as_str())
                 .collect::<HashSet<_>>();
             if ids.is_empty() {
                 continue;
@@ -236,7 +236,7 @@ impl RequestedItems {
             let mut members = entry
                 .members
                 .iter()
-                .filter_map(|member| fetched.get(&member.virtual_media_id).cloned())
+                .filter_map(|member| fetched.get(member.virtual_media_id.as_str()).cloned())
                 .collect::<Vec<_>>();
             if members.is_empty() {
                 continue;
@@ -254,11 +254,11 @@ impl RequestedItems {
                         let mapping = entry
                             .members
                             .iter()
-                            .find(|mapping| mapping.virtual_media_id == member.item.id)
+                            .find(|mapping| mapping.virtual_media_id.as_str() == member.item.id)
                             .expect("fetched member belongs to requested item");
                         crate::application::playback::lifecycle::record_playback_sources(
                             &state.media_storage,
-                            &entry.id,
+                            &entry.id.as_str().into(),
                             &member.server,
                             &mapping.original_media_id,
                             source_generation,

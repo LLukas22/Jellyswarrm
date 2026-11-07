@@ -26,7 +26,7 @@ async fn playback_fixture() -> (Fixture, String, Vec<String>) {
         let (_, server) = f
             .state
             .media_storage
-            .get_media_mapping_with_server(id)
+            .get_media_mapping_with_server(&id.as_str().into())
             .await
             .unwrap()
             .unwrap();
@@ -34,13 +34,14 @@ async fn playback_fixture() -> (Fixture, String, Vec<String>) {
             f.state
                 .media_storage
                 .get_media_mapping_by_original(
-                    if index == 0 { SOURCE_A } else { SOURCE_B },
+                    &if index == 0 { SOURCE_A } else { SOURCE_B }.into(),
                     server.id,
                 )
                 .await
                 .unwrap()
                 .unwrap()
-                .virtual_media_id,
+                .virtual_media_id
+                .into_string(),
         );
     }
     (f, aggregate, sources)
@@ -109,7 +110,7 @@ async fn offline_explicit_sources_keep_route_specific_errors_without_sibling_tra
     assert!(f
         .state
         .playback_registry
-        .get_sessions_by_item_id(&aggregate)
+        .get_sessions_by_item_id(&aggregate.as_str().into())
         .await
         .is_empty());
 }
@@ -120,7 +121,7 @@ async fn ambiguous_implicit_delivery_preserves_deterministic_mapping_default() {
     let members = f
         .state
         .media_storage
-        .get_media_version_members_by_virtual_id(&aggregate)
+        .get_media_version_members_by_virtual_id(&aggregate.as_str().into())
         .await
         .unwrap();
     let default = members
@@ -128,9 +129,9 @@ async fn ambiguous_implicit_delivery_preserves_deterministic_mapping_default() {
         .max_by(|left, right| {
             crate::servers::compare_routes(
                 &left.server,
-                &left.mapping.original_media_id,
+                left.mapping.original_media_id.as_str(),
                 &right.server,
-                &right.mapping.original_media_id,
+                right.mapping.original_media_id.as_str(),
             )
         })
         .unwrap();
@@ -157,7 +158,7 @@ async fn ambiguous_implicit_delivery_preserves_deterministic_mapping_default() {
         assert_eq!(
             f.state
                 .playback_registry
-                .get_sessions_by_item_id(&aggregate)
+                .get_sessions_by_item_id(&aggregate.as_str().into())
                 .await
                 .len(),
             2
@@ -210,18 +211,19 @@ async fn anonymous_and_backend_token_delivery_do_not_borrow_proxy_credentials() 
         let (_, server) = f
             .state
             .media_storage
-            .get_media_mapping_with_server(source)
+            .get_media_mapping_with_server(&source.as_str().into())
             .await
             .unwrap()
             .unwrap();
         let item = f
             .state
             .media_storage
-            .get_media_mapping_by_original(MOVIE, server.id)
+            .get_media_mapping_by_original(&MOVIE.into(), server.id)
             .await
             .unwrap()
             .unwrap()
-            .virtual_media_id;
+            .virtual_media_id
+            .into_string();
         Mock::given(path(format!("/Videos/{MOVIE}/master.m3u8")))
             .respond_with(ResponseTemplate::new(200).set_body_string("#EXTM3U\n#EXT-X-ENDLIST\n"))
             .mount(&f.upstreams[owner])
@@ -249,7 +251,9 @@ async fn anonymous_and_backend_token_delivery_do_not_borrow_proxy_credentials() 
             for resource in ["stream.mp4", "master.m3u8"] {
                 let mut request = reqwest::Client::new().get(format!(
                     "{}/Videos/{}/{resource}?MediaSourceId={}",
-                    f.url, item, source
+                    f.url,
+                    item.as_str(),
+                    source
                 ));
                 if let Some(token) = token {
                     request = request.query(&[("ApiKey", token)]);
@@ -316,7 +320,7 @@ async fn raw_upstream_id_passthrough_uses_stream_default_but_not_hls_resource_fa
     assert!(f
         .state
         .media_storage
-        .get_media_mapping_by_virtual(MOVIE)
+        .get_media_mapping_by_virtual(&MOVIE.into())
         .await
         .unwrap()
         .is_none());
@@ -399,7 +403,7 @@ async fn explicit_source_without_session_is_not_overridden_by_another_playback()
     let original = f
         .state
         .playback_registry
-        .get_session_for_user("play-0", &f.user.id)
+        .get_session_for_user(&"play-0".into(), &f.user.id.as_str().into())
         .await
         .unwrap();
     for resource in ["stream.mp4", "master.m3u8"] {
@@ -438,7 +442,7 @@ async fn explicit_source_without_session_is_not_overridden_by_another_playback()
     assert_eq!(
         f.state
             .playback_registry
-            .get_session_for_user("play-0", &f.user.id)
+            .get_session_for_user(&"play-0".into(), &f.user.id.as_str().into())
             .await
             .unwrap()
             .server_id,
@@ -512,7 +516,7 @@ async fn stop_transcoding_uses_play_session_backend() {
     assert!(f
         .state
         .playback_registry
-        .get_session_for_user("play-1", &f.user.id)
+        .get_session_for_user(&"play-1".into(), &f.user.id.as_str().into())
         .await
         .is_some());
 }
@@ -554,7 +558,7 @@ async fn equivalent_aggregate_uuids_keep_negotiated_backend_and_binding() {
     let original = f
         .state
         .playback_registry
-        .get_session_for_user("play-1", &f.user.id)
+        .get_session_for_user(&"play-1".into(), &f.user.id.as_str().into())
         .await
         .unwrap();
     for id in [
@@ -598,7 +602,7 @@ async fn equivalent_aggregate_uuids_keep_negotiated_backend_and_binding() {
     assert_eq!(
         f.state
             .playback_registry
-            .get_session_for_user("play-1", &f.user.id)
+            .get_session_for_user(&"play-1".into(), &f.user.id.as_str().into())
             .await
             .unwrap()
             .server_id,
@@ -646,11 +650,12 @@ async fn conflicting_stream_authorities_are_rejected_before_forwarding() {
     assert_eq!(
         f.state
             .playback_registry
-            .get_session_for_user("play-0", &f.user.id)
+            .get_session_for_user(&"play-0".into(), &f.user.id.as_str().into())
             .await
             .unwrap()
             .original_item_id
-            .as_deref(),
+            .as_ref()
+            .map(|id| id.as_str()),
         Some(MOVIE)
     );
 }
@@ -662,7 +667,7 @@ async fn cancellation_rejects_unknown_foreign_and_unavailable_sessions() {
     let (_, server) = f
         .state
         .media_storage
-        .get_media_mapping_with_server(&sources[1])
+        .get_media_mapping_with_server(&sources[1].as_str().into())
         .await
         .unwrap()
         .unwrap();
@@ -670,7 +675,7 @@ async fn cancellation_rejects_unknown_foreign_and_unavailable_sessions() {
         .playback_registry
         .add_session(crate::playback::PlaybackSession {
             session_id: "foreign".into(),
-            item_id: aggregate.clone(),
+            item_id: aggregate.clone().into(),
             user_id: f.other.id.clone(),
             server_id: server.id,
             original_item_id: Some(MOVIE.into()),

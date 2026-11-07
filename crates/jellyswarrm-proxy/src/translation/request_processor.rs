@@ -5,6 +5,7 @@ use tracing::debug;
 
 use super::{user_ids::BackendUserIds, MixedServerSelection};
 use crate::auth::service::AuthorizationSession;
+use crate::domain::ids::VirtualItemId;
 use crate::servers::storage::Server;
 use crate::translation::field_matcher::{
     ID_FIELDS, MEDIA_ID_LIST_PARENT_FIELDS, SESSION_FIELDS, USER_FIELDS,
@@ -36,21 +37,24 @@ impl RequestProcessor {
         virtual_id: &str,
         server: &Server,
     ) -> Result<Option<String>, sqlx::Error> {
+        let virtual_id = VirtualItemId::from(virtual_id);
         if let Some(mapping) = self
             .media_storage
-            .get_media_mapping_by_virtual(virtual_id)
+            .get_media_mapping_by_virtual(&virtual_id)
             .await?
         {
-            return Ok((mapping.server_id == server.id).then_some(mapping.original_media_id));
+            return Ok(
+                (mapping.server_id == server.id).then(|| mapping.original_media_id.into_string())
+            );
         }
 
         Ok(self
             .media_storage
-            .get_media_version_members_by_virtual_id(virtual_id)
+            .get_media_version_members_by_virtual_id(&virtual_id)
             .await?
             .into_iter()
             .find(|member| member.mapping.server_id == server.id)
-            .map(|member| member.mapping.original_media_id))
+            .map(|member| member.mapping.original_media_id.into_string()))
     }
 }
 
@@ -323,10 +327,11 @@ mod tests {
         for original in ["song", "entry-1", "entry-2"] {
             ids.push(
                 data.media_storage
-                    .get_or_create_media_mapping(original, &server)
+                    .get_or_create_media_mapping(&original.into(), &server)
                     .await
                     .unwrap()
-                    .virtual_media_id,
+                    .virtual_media_id
+                    .into_string(),
             );
         }
         let mut create = json!({"Ids":[ids[0], ids[0]]});
@@ -378,7 +383,7 @@ mod tests {
             .unwrap();
         let foreign_id = data
             .media_storage
-            .get_or_create_media_mapping("foreign-song", &foreign_server)
+            .get_or_create_media_mapping(&"foreign-song".into(), &foreign_server)
             .await
             .unwrap()
             .virtual_media_id;
@@ -573,7 +578,7 @@ mod tests {
             .unwrap();
         let media_storage = MediaStorageService::new(pool.clone());
         let mapping = media_storage
-            .get_or_create_media_mapping("upstream-item", &server)
+            .get_or_create_media_mapping(&"upstream-item".into(), &server)
             .await
             .unwrap();
         let alias = MediaAlias {
@@ -602,7 +607,8 @@ mod tests {
             .unwrap()
             .remove(&mapping.virtual_media_id)
             .unwrap()
-            .virtual_media_id;
+            .virtual_media_id
+            .into_string();
         let processor = RequestProcessor::new(
             Arc::new(media_storage),
             Arc::new(UserAuthorizationService::new(pool)),

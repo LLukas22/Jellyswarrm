@@ -44,7 +44,7 @@ pub(crate) async fn validate(
         if (pair[0].eq_ignore_ascii_case("Playlists")
             || pair[0].eq_ignore_ascii_case("Collections"))
             && urls
-                .mapping_on_server(&pair[1], scope, Some(server_id))
+                .mapping_on_server(&pair[1].as_str().into(), scope, Some(server_id))
                 .await?
                 .is_none()
         {
@@ -54,7 +54,7 @@ pub(crate) async fn validate(
     for tag in MEDIA_ID_PATH_TAGS {
         if let Some(id) = contains_id(url, tag) {
             if urls
-                .mapping_on_server(&id, scope, Some(server_id))
+                .mapping_on_server(&id.into(), scope, Some(server_id))
                 .await?
                 .is_none()
             {
@@ -69,7 +69,7 @@ pub(crate) async fn validate(
         if matches_case_insensitive(&key, MEDIA_ID_QUERY_TAGS) {
             for id in value.split(',').map(str::trim).filter(|id| !id.is_empty()) {
                 if urls
-                    .mapping_on_server(id, scope, Some(server_id))
+                    .mapping_on_server(&id.into(), scope, Some(server_id))
                     .await?
                     .is_none()
                 {
@@ -80,7 +80,7 @@ pub(crate) async fn validate(
     }
     for id in body_media_ids {
         if urls
-            .mapping_on_server(id, scope, Some(server_id))
+            .mapping_on_server(&id.as_str().into(), scope, Some(server_id))
             .await?
             .is_none()
         {

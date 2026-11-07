@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 use crate::application::media_services::MediaServices;
 use crate::{
     application::request::input::OperationRequest,
+    domain::ids::VirtualItemId,
     media::grouping::{MediaDedupPlan, TaggedMediaItem},
     media::identity::{MediaAlias, MediaKind, MediaObservation},
     media::scope::{MediaCatalogScope, MediaScopeKind},
@@ -45,10 +46,14 @@ async fn show_catalog_aliases(
                 if !parents.contains_key(parent) {
                     let group = state
                         .media_storage
-                        .get_media_parent_group_id_for_scope(parent, viewer, Some(catalog_scope))
+                        .get_media_parent_group_id_for_scope(
+                            &parent.as_str().into(),
+                            viewer,
+                            Some(catalog_scope),
+                        )
                         .await
                         .map_err(ApplicationError::Storage)?;
-                    parents.insert(parent.clone(), group);
+                    parents.insert(parent.clone(), group.map(VirtualItemId::into_string));
                 }
                 parents[parent].clone()
             } else {
@@ -197,11 +202,15 @@ async fn get_reconciled_catalog_uncached(
         // this viewer's freshly reconciled catalog to locate the queue anchor.
         if let Some(aggregate) = state
             .media_storage
-            .get_media_parent_group_id_for_scope(start_id, &viewer, Some(&catalog_scope_key))
+            .get_media_parent_group_id_for_scope(
+                &start_id.into(),
+                &viewer,
+                Some(&catalog_scope_key),
+            )
             .await
             .map_err(ApplicationError::Storage)?
         {
-            policy.episode_start_id = Some(aggregate);
+            policy.episode_start_id = Some(aggregate.into_string());
         }
     }
     Ok(super::snapshots::SnapshotResponse {
@@ -302,7 +311,7 @@ pub(super) async fn reconcile_fetched_catalog(
                     .iter()
                     .filter(|item| item.item_type == BaseItemKind::Series)
                     .map(|item| MediaObservation {
-                        virtual_media_id: item.id.clone(),
+                        virtual_media_id: item.id.as_str().into(),
                         kind: MediaKind::Series,
                         aliases: MediaAlias::from_item(item),
                     })
@@ -351,7 +360,7 @@ pub(super) async fn reconcile_fetched_catalog(
                     .zip(&aliases)
                     .filter(|(item, _)| MediaKind::from_item_kind(&item.item_type).is_some())
                     .map(|(item, aliases)| MediaObservation {
-                        virtual_media_id: item.id.clone(),
+                        virtual_media_id: item.id.as_str().into(),
                         kind: MediaKind::from_item_kind(&item.item_type)
                             .expect("deduplicated type"),
                         aliases: aliases.clone(),
@@ -473,12 +482,12 @@ mod tests {
             ("episode", "Episode"),
         ] {
             let mapping = storage
-                .get_or_create_media_mapping(id, &server)
+                .get_or_create_media_mapping(&id.into(), &server)
                 .await
                 .unwrap();
             let item: crate::protocol::models::MediaItem =
                 serde_json::from_value(serde_json::json!({
-                    "Id": mapping.virtual_media_id, "Type": kind, "ProviderIds": {"Tmdb": "42"}
+                    "Id": mapping.virtual_media_id.as_str(), "Type": kind, "ProviderIds": {"Tmdb": "42"}
                 }))
                 .unwrap();
             observations.push(MediaObservation {

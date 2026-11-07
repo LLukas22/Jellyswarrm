@@ -174,7 +174,7 @@ impl VirtualLibraryService {
             };
             let Some((mapping, server)) = self
                 .media_storage
-                .get_media_mapping_with_server(&virtual_library_id)
+                .get_media_mapping_with_server(&virtual_library_id.into())
                 .await?
             else {
                 continue;

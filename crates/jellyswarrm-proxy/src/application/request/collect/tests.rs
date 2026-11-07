@@ -147,7 +147,7 @@ async fn abbreviated_seasons_headers_dispatch_with_stored_credentials() {
     assert!(state.server_storage.server_status(id).await.is_healthy());
     let show = state
         .media_storage
-        .get_or_create_media_mapping("upstream-show", &server)
+        .get_or_create_media_mapping(&"upstream-show".into(), &server)
         .await
         .unwrap();
     let expected_auth = stored.to_header_value();
@@ -184,7 +184,7 @@ async fn abbreviated_seasons_headers_dispatch_with_stored_credentials() {
             ),
         ),
     ] {
-        let uri: http::Uri = format!("/Shows/{}/Seasons", show.virtual_media_id)
+        let uri: http::Uri = format!("/Shows/{}/Seasons", show.virtual_media_id.as_str())
             .parse()
             .unwrap();
         let request = Request::builder()
@@ -595,12 +595,12 @@ async fn playback_reports_route_without_cached_session_authority() {
     let server = playback_server(&state).await;
     let item = state
         .media_storage
-        .get_or_create_media_mapping("item", &server)
+        .get_or_create_media_mapping(&"item".into(), &server)
         .await
         .unwrap();
     let source = state
         .media_storage
-        .get_or_create_media_mapping("source", &server)
+        .get_or_create_media_mapping(&"source".into(), &server)
         .await
         .unwrap();
     let sessions = Some(vec![(
@@ -643,7 +643,7 @@ async fn playback_reports_route_without_cached_session_authority() {
             ),
         ] {
             let mut body = serde_json::json!({
-                "ItemId": item.virtual_media_id,
+                "ItemId": item.virtual_media_id.as_str(),
                 "MediaSourceId": source_id,
                 "NowPlayingQueue": [{"Id": "unrelated-queue-item"}]
             });
@@ -699,7 +699,7 @@ async fn playback_report_rejects_unavailable_or_conflicting_routes() {
     let server = playback_server(&state).await;
     let item = state
         .media_storage
-        .get_or_create_media_mapping("item", &server)
+        .get_or_create_media_mapping(&"item".into(), &server)
         .await
         .unwrap();
     let sessions = Some(vec![(
@@ -798,7 +798,7 @@ async fn playback_report_rejects_ambiguous_aggregate_without_session_or_source()
             .unwrap();
         let mapping = state
             .media_storage
-            .get_or_create_media_mapping("item", &server)
+            .get_or_create_media_mapping(&"item".into(), &server)
             .await
             .unwrap();
         snapshots.push(MediaCatalogSnapshot {
@@ -854,7 +854,7 @@ async fn playback_report_rejects_ambiguous_aggregate_without_session_or_source()
         .unwrap();
     let source = state
         .media_storage
-        .get_or_create_media_mapping("source", &sessions[1].1)
+        .get_or_create_media_mapping(&"source".into(), &sessions[1].1)
         .await
         .unwrap();
     state
@@ -968,7 +968,10 @@ async fn blank_session_alias_does_not_clear_known_authority() {
             .body_analysis
             .unwrap();
         assert_eq!(
-            analysis.requested_play_session_id.as_deref(),
+            analysis
+                .requested_play_session_id
+                .as_ref()
+                .map(|id| id.as_str()),
             Some("known-session")
         );
         assert_eq!(
@@ -977,7 +980,8 @@ async fn blank_session_alias_does_not_clear_known_authority() {
                 .as_ref()
                 .unwrap()
                 .session()
-                .session_id,
+                .session_id
+                .as_str(),
             "known-session"
         );
         assert!(analysis.authoritative_play_session.is_some());
@@ -991,8 +995,8 @@ async fn progress_rejects_a_session_owned_by_another_user() {
     state
         .playback_registry
         .add_session(PlaybackSession {
-            session_id: "victim-session".to_string(),
-            item_id: "item".to_string(),
+            session_id: "victim-session".into(),
+            item_id: "item".into(),
             user_id: "victim".into(),
             server_id: ServerId::new(1),
             original_item_id: None,

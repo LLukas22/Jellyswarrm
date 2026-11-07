@@ -31,19 +31,19 @@ async fn web_fixture() -> (Fixture, String, String) {
     let (_, server) = f
         .state
         .media_storage
-        .get_media_mapping_with_server(&f.items[1])
+        .get_media_mapping_with_server(&f.items[1].as_str().into())
         .await
         .unwrap()
         .unwrap();
     let source = f
         .state
         .media_storage
-        .get_media_mapping_by_original(SOURCE_B, server.id)
+        .get_media_mapping_by_original(&SOURCE_B.into(), server.id)
         .await
         .unwrap()
         .unwrap()
         .virtual_media_id;
-    (f, aggregate, source)
+    (f, aggregate, source.into_string())
 }
 
 #[tokio::test]
@@ -128,11 +128,11 @@ async fn web_track_fallback_pins_native_or_default_source_among_versions() {
         let mapping = f
             .state
             .media_storage
-            .get_media_mapping_by_virtual(id)
+            .get_media_mapping_by_virtual(&id.into())
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(mapping.original_media_id, expected);
+        assert_eq!(mapping.original_media_id.as_str(), expected);
     }
 }
 

@@ -23,7 +23,7 @@ async fn quick_connect(f: &Fixture) -> (String, String) {
     let (_, server) = f
         .state
         .media_storage
-        .get_media_mapping_with_server(&f.items[1])
+        .get_media_mapping_with_server(&f.items[1].as_str().into())
         .await
         .unwrap()
         .unwrap();
@@ -386,11 +386,11 @@ async fn kodi_sync_queue_translates_user_and_changed_item_ids() {
         let (mapping, server) = f
             .state
             .media_storage
-            .get_media_mapping_with_server(result[field][0].as_str().unwrap())
+            .get_media_mapping_with_server(&result[field][0].as_str().unwrap().into())
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(mapping.original_media_id, original);
+        assert_eq!(mapping.original_media_id.as_str(), original);
         assert_eq!(
             server.url.as_str().trim_end_matches('/'),
             f.upstreams[1].uri()

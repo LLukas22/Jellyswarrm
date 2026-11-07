@@ -38,7 +38,7 @@ async fn target_bound_translation_does_not_repeat_backend_availability_selection
     let members = fixture
         .state
         .media_storage
-        .get_media_version_members_by_virtual_id(&fixture.aggregate)
+        .get_media_version_members_by_virtual_id(&fixture.aggregate.as_str().into())
         .await
         .unwrap();
     let member = &members[0];
@@ -138,12 +138,12 @@ async fn fixture() -> Fixture {
         } {
             let owner = state
                 .media_storage
-                .get_or_create_media_mapping(&format!("{number:032x}"), &server)
+                .get_or_create_media_mapping(&format!("{number:032x}").into(), &server)
                 .await
                 .unwrap();
             let source = state
                 .media_storage
-                .get_or_create_media_mapping(&format!("{:032x}", number + 1000), &server)
+                .get_or_create_media_mapping(&format!("{:032x}", number + 1000).into(), &server)
                 .await
                 .unwrap();
             observations.push(MediaObservation {
@@ -155,8 +155,8 @@ async fn fixture() -> Fixture {
                     provider_id: "matched-series:season:1:episode:1".into(),
                 }]),
             });
-            owners.push(owner.virtual_media_id);
-            sources.push(source.virtual_media_id);
+            owners.push(owner.virtual_media_id.into_string());
+            sources.push(source.virtual_media_id.into_string());
         }
         snapshots.push(MediaCatalogSnapshot {
             source_key: upstream.uri(),
@@ -177,7 +177,9 @@ async fn fixture() -> Fixture {
         .reconcile_media_catalog("automatic:library:viewer", generation, &snapshots, true)
         .await
         .unwrap();
-    let aggregate = assignments[&owners[0]].virtual_media_id.clone();
+    let aggregate = assignments[&owners[0].as_str().into()]
+        .virtual_media_id
+        .clone();
     let group = state
         .media_storage
         .get_media_version_group(&aggregate)
@@ -195,11 +197,11 @@ async fn fixture() -> Fixture {
         .map(|(owner, source)| MediaVersionSourceObservation {
             member_mapping_id: members
                 .iter()
-                .find(|member| &member.mapping.virtual_media_id == owner)
+                .find(|member| member.mapping.virtual_media_id.as_str() == owner)
                 .unwrap()
                 .mapping
                 .id,
-            source_virtual_id: source.clone(),
+            source_virtual_id: source.as_str().into(),
         })
         .collect::<Vec<_>>();
     state
@@ -220,7 +222,7 @@ async fn fixture() -> Fixture {
         state,
         upstreams,
         sessions,
-        aggregate,
+        aggregate: aggregate.into_string(),
         sources,
     }
 }
@@ -285,7 +287,7 @@ async fn first_negotiation_selects_exact_member_before_binding() {
         assert!(fixture
             .state
             .playback_registry
-            .get_session_for_user("first-play", "viewer")
+            .get_session_for_user(&"first-play".into(), &"viewer".into())
             .await
             .is_none());
         let response = post_playback_info(&fixture.state, input).await.unwrap();
@@ -314,11 +316,14 @@ async fn first_negotiation_selects_exact_member_before_binding() {
         let binding = fixture
             .state
             .playback_registry
-            .get_session_for_user("first-play", "viewer")
+            .get_session_for_user(&"first-play".into(), &"viewer".into())
             .await
             .unwrap();
         assert_eq!(binding.server_id, fixture.sessions[backend].1.id);
-        assert_eq!(binding.original_item_id.as_deref(), Some(owner.as_str()));
+        assert_eq!(
+            binding.original_item_id.as_ref().map(|id| id.as_str()),
+            Some(owner.as_str())
+        );
     }
 }
 
@@ -337,7 +342,9 @@ fn source_query_precedes_body_including_empty_query() {
                 .unwrap(),
         );
         assert_eq!(
-            selected_source(&request, &payload).as_deref(),
+            selected_source(&request, &payload)
+                .as_ref()
+                .map(|id| id.as_str()),
             Some(expected)
         );
     }
@@ -468,8 +475,8 @@ async fn selection_plan_distinguishes_invalid_source_and_unavailable_owner() {
                 &input.context,
                 input.context.target(fixture.sessions[0].1.id).unwrap(),
                 PlaybackIntent {
-                    item: &fixture.aggregate,
-                    source: Some("unknown"),
+                    item: &fixture.aggregate.as_str().into(),
+                    source: Some(&"unknown".into()),
                     binding: None
                 },
                 &fixture.state.server_storage,
@@ -491,8 +498,8 @@ async fn selection_plan_distinguishes_invalid_source_and_unavailable_owner() {
                 &input.context,
                 input.context.target(fixture.sessions[0].1.id).unwrap(),
                 PlaybackIntent {
-                    item: &fixture.aggregate,
-                    source: Some(&fixture.sources[2]),
+                    item: &fixture.aggregate.as_str().into(),
+                    source: Some(&fixture.sources[2].as_str().into()),
                     binding: None
                 },
                 &fixture.state.server_storage,
@@ -519,8 +526,8 @@ async fn selection_plan_distinguishes_invalid_source_and_unavailable_owner() {
                 &input.context,
                 input.context.target(fixture.sessions[0].1.id).unwrap(),
                 PlaybackIntent {
-                    item: &fixture.aggregate,
-                    source: Some(&fixture.sources[2]),
+                    item: &fixture.aggregate.as_str().into(),
+                    source: Some(&fixture.sources[2].as_str().into()),
                     binding: None
                 },
                 &fixture.state.server_storage,
@@ -558,7 +565,7 @@ async fn failed_negotiation_does_not_commit_playback_binding() {
     assert!(fixture
         .state
         .playback_registry
-        .get_sessions_by_item_id(&fixture.aggregate)
+        .get_sessions_by_item_id(&fixture.aggregate.as_str().into())
         .await
         .is_empty());
 }
@@ -577,11 +584,11 @@ async fn shared_resolution_keeps_implicit_ambiguity_and_explicit_binding_conflic
             .state
             .playback_registry
             .add_session(PlaybackSession {
-                session_id: format!("player-{index}"),
-                item_id: fixture.aggregate.clone(),
+                session_id: format!("player-{index}").into(),
+                item_id: fixture.aggregate.clone().into(),
                 user_id: "viewer".into(),
                 server_id: fixture.sessions[index].1.id,
-                original_item_id: Some(format!("{original:032x}")),
+                original_item_id: Some(format!("{original:032x}").into()),
             })
             .await;
     }
@@ -589,9 +596,9 @@ async fn shared_resolution_keeps_implicit_ambiguity_and_explicit_binding_conflic
     assert!(resolver
         .session(
             &fixture.state.playback_registry,
-            &fixture.aggregate,
+            &fixture.aggregate.as_str().into(),
             None,
-            "viewer",
+            &"viewer".into(),
             false
         )
         .await
@@ -601,9 +608,9 @@ async fn shared_resolution_keeps_implicit_ambiguity_and_explicit_binding_conflic
     assert!(resolver
         .session(
             &fixture.state.playback_registry,
-            &fixture.aggregate,
+            &fixture.aggregate.as_str().into(),
             None,
-            "viewer",
+            &"viewer".into(),
             true
         )
         .await
@@ -612,9 +619,9 @@ async fn shared_resolution_keeps_implicit_ambiguity_and_explicit_binding_conflic
     let binding = resolver
         .session(
             &fixture.state.playback_registry,
-            &fixture.aggregate,
-            Some("player-0"),
-            "viewer",
+            &fixture.aggregate.as_str().into(),
+            Some(&"player-0".into()),
+            &"viewer".into(),
             true,
         )
         .await
@@ -626,8 +633,8 @@ async fn shared_resolution_keeps_implicit_ambiguity_and_explicit_binding_conflic
             &input.context,
             input.context.target(fixture.sessions[0].1.id).unwrap(),
             PlaybackIntent {
-                item: &fixture.aggregate,
-                source: Some(&fixture.sources[1]),
+                item: &fixture.aggregate.as_str().into(),
+                source: Some(&fixture.sources[1].as_str().into()),
                 binding: Some(&binding),
             },
             &fixture.state.server_storage,
@@ -640,7 +647,7 @@ async fn shared_resolution_keeps_implicit_ambiguity_and_explicit_binding_conflic
             &input.context,
             input.context.target(fixture.sessions[0].1.id).unwrap(),
             PlaybackIntent {
-                item: &fixture.aggregate,
+                item: &fixture.aggregate.as_str().into(),
                 source: None,
                 binding: Some(&binding),
             },
@@ -651,16 +658,16 @@ async fn shared_resolution_keeps_implicit_ambiguity_and_explicit_binding_conflic
         .unwrap();
     assert!(matches!(plan.reason, SelectionReason::KnownBinding));
     assert_eq!(
-        plan.target.member.unwrap().original_media_id,
+        plan.target.member.unwrap().original_media_id.as_str(),
         format!("{:032x}", 100)
     );
     assert!(matches!(
         resolver
             .session(
                 &fixture.state.playback_registry,
-                "another-item",
-                Some("player-0"),
-                "viewer",
+                &"another-item".into(),
+                Some(&"player-0".into()),
+                &"viewer".into(),
                 false
             )
             .await,
@@ -670,9 +677,9 @@ async fn shared_resolution_keeps_implicit_ambiguity_and_explicit_binding_conflic
         resolver
             .session(
                 &fixture.state.playback_registry,
-                &fixture.aggregate,
-                Some("player-0"),
-                "another-viewer",
+                &fixture.aggregate.as_str().into(),
+                Some(&"player-0".into()),
+                &"another-viewer".into(),
                 false
             )
             .await,
@@ -699,8 +706,8 @@ async fn shared_explicit_source_plan_never_falls_back_from_offline_owner() {
                 &input.context,
                 input.context.target(fixture.sessions[0].1.id).unwrap(),
                 PlaybackIntent {
-                    item: &fixture.aggregate,
-                    source: Some(&fixture.sources[2]),
+                    item: &fixture.aggregate.as_str().into(),
+                    source: Some(&fixture.sources[2].as_str().into()),
                     binding: None,
                 },
                 &fixture.state.server_storage,
@@ -712,7 +719,7 @@ async fn shared_explicit_source_plan_never_falls_back_from_offline_owner() {
     assert!(fixture
         .state
         .playback_registry
-        .sessions_for_user("viewer")
+        .sessions_for_user(&"viewer".into())
         .await
         .is_empty());
     for upstream in &fixture.upstreams {
@@ -734,10 +741,10 @@ async fn invalid_live_open_and_failed_refresh_do_not_commit_playback_transitions
     PlaybackLifecycle::new(&fixture.state.playback_registry)
         .establish(PlaybackSession {
             session_id: "live-player".into(),
-            item_id: fixture.aggregate.clone(),
+            item_id: fixture.aggregate.clone().into(),
             user_id: "viewer".into(),
             server_id: owner.id,
-            original_item_id: Some(format!("{:032x}", 100)),
+            original_item_id: Some(format!("{:032x}", 100).into()),
         })
         .await;
     let (_, revision) = fixture
@@ -822,7 +829,7 @@ async fn invalid_live_open_and_failed_refresh_do_not_commit_playback_transitions
         .into_parts();
     assert_eq!(current_revision, revision);
     assert_eq!(
-        binding.original_item_id.as_deref(),
+        binding.original_item_id.as_ref().map(|id| id.as_str()),
         Some(format!("{:032x}", 100).as_str())
     );
 }
@@ -833,7 +840,7 @@ async fn live_open_input(fixture: &Fixture, original: &str) -> OperationRequest 
         .playback_registry
         .add_session(crate::playback::PlaybackSession {
             session_id: "live-player".into(),
-            item_id: fixture.aggregate.clone(),
+            item_id: fixture.aggregate.clone().into(),
             user_id: "viewer".into(),
             server_id: fixture.sessions[0].1.id,
             original_item_id: Some(original.into()),
@@ -985,7 +992,7 @@ async fn valid_live_sources_do_not_publish_when_translation_or_reconciliation_fa
                 assert!(fixture
                     .state
                     .playback_registry
-                    .get_session_for_user("failed-live", "viewer")
+                    .get_session_for_user(&"failed-live".into(), &"viewer".into())
                     .await
                     .is_none());
                 assert!(fixture
@@ -1096,17 +1103,17 @@ async fn live_open_query_translates_owner_once_even_when_original_is_another_vir
     let other = fixture
         .state
         .media_storage
-        .get_or_create_media_mapping("other-backend-item", server)
+        .get_or_create_media_mapping(&"other-backend-item".into(), server)
         .await
         .unwrap();
-    let owner_original = other.virtual_media_id.clone();
+    let owner_original = other.virtual_media_id.as_str().to_owned();
     fixture
         .state
         .media_storage
-        .get_or_create_media_mapping(&owner_original, server)
+        .get_or_create_media_mapping(&owner_original.as_str().into(), server)
         .await
         .unwrap();
-    let input = live_open_input(&fixture, &owner_original).await;
+    let input = live_open_input(&fixture, owner_original.as_str()).await;
     Mock::given(method("POST"))
         .and(path("/LiveStreams/Open"))
         .respond_with(ResponseTemplate::new(200).set_body_json(
@@ -1151,11 +1158,12 @@ async fn live_open_query_translates_owner_once_even_when_original_is_another_vir
         fixture
             .state
             .playback_registry
-            .get_session_for_user("live-player", "viewer")
+            .get_session_for_user(&"live-player".into(), &"viewer".into())
             .await
             .unwrap()
             .original_item_id
-            .as_deref(),
+            .as_ref()
+            .map(|id| id.as_str()),
         Some(owner_original.as_str())
     );
     assert!(!fixture.upstreams[1]

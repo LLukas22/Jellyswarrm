@@ -7,7 +7,7 @@ use crate::{
     auth::service::AuthorizationSession,
     auth::UserAuthorizationService,
     config::SettingsView,
-    domain::ids::ServerId,
+    domain::ids::{ServerId, VirtualItemId},
     libraries::service::VirtualLibraryAccessScope,
     libraries::VirtualLibraryService,
     media::storage::{MediaMapping, MediaVersionMember},
@@ -253,12 +253,12 @@ impl UrlProcessor {
                 if let Some(source) = selected_source.as_deref() {
                     if let Some(group) = self
                         .media_storage
-                        .get_media_version_group(&media_id)
+                        .get_media_version_group(&media_id.as_str().into())
                         .await?
                     {
                         if let Some(route) = self
                             .media_storage
-                            .get_media_version_source_route(group.id, source)
+                            .get_media_version_source_route(group.id, &source.into())
                             .await?
                         {
                             if VirtualLibraryAccessScope::permits(
@@ -269,7 +269,7 @@ impl UrlProcessor {
                                 *url = replace_id(
                                     url.clone(),
                                     &media_id,
-                                    &route.member_mapping.original_media_id,
+                                    route.member_mapping.original_media_id.as_str(),
                                 );
                                 continue;
                             }
@@ -277,23 +277,28 @@ impl UrlProcessor {
                     }
                 }
                 if let Some(media_mapping) = self
-                    .mapping_on_server(&media_id, access_scope, required_server_id)
+                    .mapping_on_server(&media_id.as_str().into(), access_scope, required_server_id)
                     .await?
                 {
                     debug!(
                         "Replacing media ID in path: {} -> {}",
-                        media_id, media_mapping.original_media_id
+                        media_id,
+                        media_mapping.original_media_id.as_str()
                     );
-                    *url = replace_id(url.clone(), &media_id, &media_mapping.original_media_id);
+                    *url = replace_id(
+                        url.clone(),
+                        &media_id,
+                        media_mapping.original_media_id.as_str(),
+                    );
                 }
             }
         }
         if let Some(source_id) = source_id {
             if let Some(mapping) = self
-                .mapping_on_server(&source_id, access_scope, required_server_id)
+                .mapping_on_server(&source_id.as_str().into(), access_scope, required_server_id)
                 .await?
             {
-                *url = replace_id(url.clone(), &source_id, &mapping.original_media_id);
+                *url = replace_id(url.clone(), &source_id, mapping.original_media_id.as_str());
             }
         }
         Ok(())
@@ -379,14 +384,15 @@ impl UrlProcessor {
             }
 
             if let Some(media_mapping) = self
-                .mapping_on_server(trimmed, access_scope, required_server_id)
+                .mapping_on_server(&trimmed.into(), access_scope, required_server_id)
                 .await?
             {
                 debug!(
                     "Replacing media ID in query: {} -> {}",
-                    trimmed, media_mapping.original_media_id
+                    trimmed,
+                    media_mapping.original_media_id.as_str()
                 );
-                resolved_ids.push(media_mapping.original_media_id);
+                resolved_ids.push(media_mapping.original_media_id.into_string());
                 changed = true;
             } else {
                 resolved_ids.push(trimmed.to_string());
@@ -418,7 +424,7 @@ impl UrlProcessor {
     /// health: a chosen target stays chosen.
     pub(crate) async fn mapping_on_server(
         &self,
-        virtual_media_id: &str,
+        virtual_media_id: &VirtualItemId,
         access_scope: Option<&VirtualLibraryAccessScope>,
         required_server_id: Option<ServerId>,
     ) -> std::result::Result<Option<MediaMapping>, sqlx::Error> {
@@ -452,14 +458,14 @@ impl UrlProcessor {
 
         Ok(self
             .virtual_library_service
-            .routing_target(virtual_media_id, access_scope, required_server_id)
+            .routing_target(virtual_media_id.as_str(), access_scope, required_server_id)
             .await?
             .map(|target| target.mapping))
     }
 
     async fn media_version_member(
         &self,
-        group_virtual_id: &str,
+        group_virtual_id: &VirtualItemId,
         access_scope: Option<&VirtualLibraryAccessScope>,
         required_server_id: Option<ServerId>,
     ) -> std::result::Result<Option<MediaVersionMember>, sqlx::Error> {
@@ -480,7 +486,8 @@ impl UrlProcessor {
             .max_by(|left, right| {
                 left.mapping
                     .original_media_id
-                    .cmp(&right.mapping.original_media_id)
+                    .as_str()
+                    .cmp(right.mapping.original_media_id.as_str())
             }))
     }
 }
@@ -507,13 +514,13 @@ mod tests {
         let id = "0123456789abcdef0123456789abcdef";
         let server = ServerId::new(1);
         assert!(processor
-            .mapping_on_server(id, None, Some(server))
+            .mapping_on_server(&id.into(), None, Some(server))
             .await
             .unwrap()
             .is_none());
         pool.close().await;
         let error = processor
-            .mapping_on_server(id, None, Some(server))
+            .mapping_on_server(&id.into(), None, Some(server))
             .await
             .unwrap_err();
         assert!(matches!(error, sqlx::Error::PoolClosed));
@@ -798,7 +805,7 @@ mod tests {
             .unwrap();
         let media_storage = MediaStorageService::new(pool.clone());
         let mapping = media_storage
-            .get_or_create_media_mapping("upstream-id", &server)
+            .get_or_create_media_mapping(&"upstream-id".into(), &server)
             .await
             .unwrap();
         let virtual_libraries =
@@ -812,7 +819,8 @@ mod tests {
         );
         let mut url = url::Url::parse(&format!(
             "http://localhost/Items/{}/Images/Primary?tag={}",
-            mapping.virtual_media_id, mapping.virtual_media_id
+            mapping.virtual_media_id.as_str(),
+            mapping.virtual_media_id.as_str()
         ))
         .unwrap();
 
@@ -826,7 +834,7 @@ mod tests {
             url.query_pairs()
                 .find(|(key, _)| key.eq_ignore_ascii_case("tag"))
                 .map(|(_, value)| value.into_owned()),
-            Some(mapping.virtual_media_id)
+            Some(mapping.virtual_media_id.into_string())
         );
     }
 
@@ -851,7 +859,7 @@ mod tests {
             .unwrap();
         let media_storage = MediaStorageService::new(pool.clone());
         let mapping = media_storage
-            .get_or_create_media_mapping("upstream-id", &server)
+            .get_or_create_media_mapping(&"upstream-id".into(), &server)
             .await
             .unwrap();
         let virtual_libraries =
@@ -865,7 +873,7 @@ mod tests {
         );
         let mut url = url::Url::parse(&format!(
             "http://localhost/Items?ContributingArtistIds={}",
-            mapping.virtual_media_id
+            mapping.virtual_media_id.as_str()
         ))
         .unwrap();
 
@@ -878,7 +886,7 @@ mod tests {
             url.query_pairs()
                 .find(|(key, _)| key.eq_ignore_ascii_case("ContributingArtistIds"))
                 .map(|(_, value)| value.into_owned()),
-            Some(mapping.original_media_id)
+            Some(mapping.original_media_id.into_string())
         );
     }
 
@@ -917,11 +925,11 @@ mod tests {
             .unwrap();
         let media_storage = MediaStorageService::new(pool.clone());
         let item = media_storage
-            .get_or_create_media_mapping("item", &first)
+            .get_or_create_media_mapping(&"item".into(), &first)
             .await
             .unwrap();
         let source = media_storage
-            .get_or_create_media_mapping("source", &second)
+            .get_or_create_media_mapping(&"source".into(), &second)
             .await
             .unwrap();
         let virtual_libraries =
@@ -933,7 +941,8 @@ mod tests {
         );
         let url = url::Url::parse(&format!(
             "http://localhost/Videos/{}/stream?MediaSourceId={}",
-            item.virtual_media_id, source.virtual_media_id
+            item.virtual_media_id.as_str(),
+            source.virtual_media_id.as_str()
         ))
         .unwrap();
 
@@ -967,11 +976,11 @@ mod tests {
             .unwrap();
         let media_storage = MediaStorageService::new(pool.clone());
         let playlist = media_storage
-            .get_or_create_media_mapping("upstream-playlist", &server)
+            .get_or_create_media_mapping(&"upstream-playlist".into(), &server)
             .await
             .unwrap();
         let entry = media_storage
-            .get_or_create_media_mapping("upstream-entry", &server)
+            .get_or_create_media_mapping(&"upstream-entry".into(), &server)
             .await
             .unwrap();
         let virtual_libraries =
@@ -992,7 +1001,7 @@ mod tests {
         // Routing must find the owning server from the playlist path ID.
         let url = url::Url::parse(&format!(
             "http://localhost/Playlists/{}/Items?UserId=user",
-            playlist.virtual_media_id
+            playlist.virtual_media_id.as_str()
         ))
         .unwrap();
         let selected = selection
@@ -1005,7 +1014,8 @@ mod tests {
         // Path and EntryIds query values must be rewritten to upstream IDs.
         let mut url = url::Url::parse(&format!(
             "http://localhost/Playlists/{}/Items?EntryIds={}",
-            playlist.virtual_media_id, entry.virtual_media_id
+            playlist.virtual_media_id.as_str(),
+            entry.virtual_media_id.as_str()
         ))
         .unwrap();
         processor

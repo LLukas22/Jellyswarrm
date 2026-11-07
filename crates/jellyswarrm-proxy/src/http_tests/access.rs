@@ -92,7 +92,7 @@ async fn partially_mapped_user_cannot_access_another_backend() {
     let (_, allowed) = f
         .state
         .media_storage
-        .get_media_mapping_with_server(&f.items[0])
+        .get_media_mapping_with_server(&f.items[0].as_str().into())
         .await
         .unwrap()
         .unwrap();

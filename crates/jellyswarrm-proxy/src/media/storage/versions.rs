@@ -7,7 +7,7 @@ impl MediaStorageService {
     /// identities cannot establish a preference.
     pub(crate) async fn get_episode_series_id(
         &self,
-        virtual_media_id: &str,
+        virtual_media_id: &VirtualItemId,
         viewer: &str,
     ) -> Result<Option<String>, sqlx::Error> {
         let rows = sqlx::query(
@@ -23,8 +23,8 @@ impl MediaStorageService {
                 AND (mapping.virtual_media_id = ? OR ids.virtual_media_id = ?)
             "#,
         )
-        .bind(Self::normalize_uuid(virtual_media_id))
-        .bind(Self::normalize_uuid(virtual_media_id))
+        .bind(virtual_media_id.normalized())
+        .bind(virtual_media_id.normalized())
         .fetch_all(&self.pool)
         .await?;
         let mut series = BTreeSet::new();
@@ -45,7 +45,7 @@ impl MediaStorageService {
 
     pub(crate) async fn get_media_version_group(
         &self,
-        virtual_media_id: &str,
+        virtual_media_id: &VirtualItemId,
     ) -> Result<Option<MediaVersionGroup>, sqlx::Error> {
         let row = sqlx::query(
             r#"
@@ -60,7 +60,7 @@ impl MediaStorageService {
             WHERE group_id.virtual_media_id = ?
             "#,
         )
-        .bind(Self::normalize_uuid(virtual_media_id))
+        .bind(virtual_media_id.normalized())
         .fetch_optional(&self.pool)
         .await?;
         row.as_ref()
@@ -73,7 +73,7 @@ impl MediaStorageService {
     /// on the owner and exact active membership; use only the oldest group.
     pub(crate) async fn get_media_version_detail_route(
         &self,
-        virtual_media_id: &str,
+        virtual_media_id: &VirtualItemId,
         viewer: &str,
     ) -> Result<Option<(MediaVersionGroup, MediaMapping)>, sqlx::Error> {
         let rows = sqlx::query(
@@ -95,8 +95,8 @@ impl MediaStorageService {
             ORDER BY group_row.id
             "#,
         )
-        .bind(Self::normalize_uuid(virtual_media_id))
-        .bind(Self::normalize_uuid(virtual_media_id))
+        .bind(virtual_media_id.normalized())
+        .bind(virtual_media_id.normalized())
         .fetch_all(&self.pool)
         .await?;
         let mut result: Option<(MediaVersionGroup, MediaMapping)> = None;
@@ -129,9 +129,9 @@ impl MediaStorageService {
     /// Incomparable groups still cannot establish a unique parent identity.
     pub(crate) async fn get_media_parent_group_id(
         &self,
-        virtual_media_id: &str,
+        virtual_media_id: &VirtualItemId,
         viewer: &str,
-    ) -> Result<Option<String>, sqlx::Error> {
+    ) -> Result<Option<VirtualItemId>, sqlx::Error> {
         self.get_media_parent_group_id_for_scope(virtual_media_id, viewer, None)
             .await
     }
@@ -140,10 +140,10 @@ impl MediaStorageService {
     /// observe fewer copies; they must not veto that catalog's parent identity.
     pub(crate) async fn get_media_parent_group_id_for_scope(
         &self,
-        virtual_media_id: &str,
+        virtual_media_id: &VirtualItemId,
         viewer: &str,
         preferred_scope: Option<&str>,
-    ) -> Result<Option<String>, sqlx::Error> {
+    ) -> Result<Option<VirtualItemId>, sqlx::Error> {
         let rows = sqlx::query(
             r#"
             SELECT DISTINCT g.id, ids.virtual_media_id, scope.scope_key
@@ -156,19 +156,21 @@ impl MediaStorageService {
             ORDER BY g.id
             "#,
         )
-        .bind(Self::normalize_uuid(virtual_media_id))
+        .bind(virtual_media_id.normalized())
         .fetch_all(&self.pool)
         .await?;
-        let mut candidates = Vec::<(String, HashSet<i64>)>::new();
+        let requested = virtual_media_id.normalized();
+        let mut candidates = Vec::<(VirtualItemId, HashSet<i64>)>::new();
         if let Some(scope) =
             preferred_scope.filter(|scope| MediaCatalogScope::belongs_to(scope, viewer))
         {
             for row in &rows {
                 if row.try_get::<String, _>("scope_key")? == scope {
                     let members = self.get_media_version_members(row.try_get("id")?).await?;
-                    if members.iter().any(|member| {
-                        member.mapping.virtual_media_id == Self::normalize_uuid(virtual_media_id)
-                    }) {
+                    if members
+                        .iter()
+                        .any(|member| member.mapping.virtual_media_id == requested)
+                    {
                         return Ok(Some(row.try_get("virtual_media_id")?));
                     }
                 }
@@ -180,9 +182,10 @@ impl MediaStorageService {
                 continue;
             }
             let members = self.get_media_version_members(row.try_get("id")?).await?;
-            if !members.iter().any(|member| {
-                member.mapping.virtual_media_id == Self::normalize_uuid(virtual_media_id)
-            }) {
+            if !members
+                .iter()
+                .any(|member| member.mapping.virtual_media_id == requested)
+            {
                 continue;
             }
             let ids = members.iter().map(|member| member.mapping.id).collect();
@@ -262,7 +265,7 @@ impl MediaStorageService {
 
     pub(crate) async fn get_media_version_members_by_virtual_id(
         &self,
-        group_virtual_id: &str,
+        group_virtual_id: &VirtualItemId,
     ) -> Result<Vec<MediaVersionMember>, sqlx::Error> {
         let Some(group) = self.get_media_version_group(group_virtual_id).await? else {
             return Ok(Vec::new());
@@ -405,11 +408,11 @@ impl MediaStorageService {
         scope_id: i64,
         group_id: i64,
         member_mapping_id: i64,
-        source_virtual_id: &str,
+        source_virtual_id: &VirtualItemId,
     ) -> Result<(), sqlx::Error> {
         let source_mapping_id: Option<(i64,)> =
             sqlx::query_as("SELECT id FROM media_mappings WHERE virtual_media_id = ?")
-                .bind(Self::normalize_uuid(source_virtual_id))
+                .bind(source_virtual_id.normalized())
                 .fetch_optional(&mut **transaction)
                 .await?;
         let Some((source_mapping_id,)) = source_mapping_id else {
@@ -456,7 +459,7 @@ impl MediaStorageService {
     pub(crate) async fn get_media_version_source_route(
         &self,
         group_id: i64,
-        source_virtual_id: &str,
+        source_virtual_id: &VirtualItemId,
     ) -> Result<Option<MediaVersionSourceRoute>, sqlx::Error> {
         let row = sqlx::query(
             r#"
@@ -493,7 +496,7 @@ impl MediaStorageService {
             "#,
         )
         .bind(group_id)
-        .bind(Self::normalize_uuid(source_virtual_id))
+        .bind(source_virtual_id.normalized())
         .fetch_optional(&self.pool)
         .await?;
 

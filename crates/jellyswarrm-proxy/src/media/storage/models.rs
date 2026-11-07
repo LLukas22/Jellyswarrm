@@ -3,8 +3,8 @@ use super::*;
 #[derive(Debug, Clone)]
 pub(crate) struct MediaMapping {
     pub(crate) id: i64,
-    pub(crate) virtual_media_id: String,
-    pub(crate) original_media_id: String,
+    pub(crate) virtual_media_id: VirtualItemId,
+    pub(crate) original_media_id: BackendItemId,
     pub(crate) server_id: ServerId,
     #[cfg_attr(
         not(test),
@@ -21,7 +21,7 @@ pub(crate) struct MediaMapping {
 #[derive(Debug, Clone)]
 pub(crate) struct MediaVersionGroup {
     pub(crate) id: i64,
-    pub(crate) virtual_media_id: String,
+    pub(crate) virtual_media_id: VirtualItemId,
     #[cfg_attr(
         not(test),
         expect(
@@ -54,7 +54,7 @@ pub(crate) struct MediaVersionMember {
 #[derive(Debug, Clone)]
 pub(crate) struct MediaVersionSourceObservation {
     pub(crate) member_mapping_id: i64,
-    pub(crate) source_virtual_id: String,
+    pub(crate) source_virtual_id: VirtualItemId,
 }
 
 #[derive(Debug, Clone)]

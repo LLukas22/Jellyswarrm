@@ -5,12 +5,12 @@ impl MediaStorageService {
     /// Create or get a media mapping
     pub(crate) async fn get_or_create_media_mapping(
         &self,
-        original_media_id: &str,
+        original_media_id: &BackendItemId,
         server: &Server,
     ) -> Result<MediaMapping, sqlx::Error> {
-        let original_media_id = Self::normalize_uuid(original_media_id);
+        let original_media_id = original_media_id.normalized();
         let server_id = server.id;
-        let key = format!("{}|{}", original_media_id, server_id);
+        let key = format!("{}|{}", original_media_id.as_str(), server_id);
         if let Some(cached) = self.original_mapping_cache.get(&key).await {
             trace!("Cache hit for media mapping: {}", key);
             return Ok(cached);
@@ -26,10 +26,10 @@ impl MediaStorageService {
 
     pub(super) async fn _get_or_create_media_mapping(
         &self,
-        original_media_id: &str,
+        original_media_id: &BackendItemId,
         server: &Server,
     ) -> Result<MediaMapping, sqlx::Error> {
-        let original_media_id = Self::normalize_uuid(original_media_id);
+        let original_media_id = original_media_id.normalized();
 
         // Try to find existing mapping
         if let Some(mapping) = self
@@ -62,8 +62,8 @@ impl MediaStorageService {
         if let Some(row) = inserted {
             debug!(
                 "Created new media mapping: {} -> {} ({})",
-                &original_media_id,
-                row.virtual_media_id,
+                original_media_id.as_str(),
+                row.virtual_media_id.as_str(),
                 server.url.as_str()
             );
             return Ok(row);
@@ -81,19 +81,17 @@ impl MediaStorageService {
         Err(sqlx::Error::RowNotFound)
     }
 
+    /// Canonical form of a wire ID that has not entered a typed namespace yet.
     pub(crate) fn normalize_uuid(s: &str) -> String {
-        match Uuid::parse_str(s) {
-            Ok(uuid) => uuid.simple().to_string(),
-            Err(_) => s.to_string(),
-        }
+        crate::domain::ids::normalize_media_id(s)
     }
 
     /// Get media mapping by virtual media ID
     pub(crate) async fn get_media_mapping_by_virtual(
         &self,
-        virtual_media_id: &str,
+        virtual_media_id: &VirtualItemId,
     ) -> Result<Option<MediaMapping>, sqlx::Error> {
-        let virtual_media_id = Self::normalize_uuid(virtual_media_id);
+        let virtual_media_id = virtual_media_id.normalized();
 
         let mapping = sqlx::query_as::<_, MediaMapping>(
             r#"
@@ -112,10 +110,10 @@ impl MediaStorageService {
     /// Get media mapping by original media ID and server
     pub(crate) async fn get_media_mapping_by_original(
         &self,
-        original_media_id: &str,
+        original_media_id: &BackendItemId,
         server_id: ServerId,
     ) -> Result<Option<MediaMapping>, sqlx::Error> {
-        let original_media_id = Self::normalize_uuid(original_media_id);
+        let original_media_id = original_media_id.normalized();
 
         let mapping = sqlx::query_as::<_, MediaMapping>(
             r#"
@@ -138,9 +136,9 @@ impl MediaStorageService {
     /// reads see the committed settings/deletion without invalidation races.
     pub(crate) async fn get_media_mapping_with_server(
         &self,
-        virtual_media_id: &str,
+        virtual_media_id: &VirtualItemId,
     ) -> Result<Option<(MediaMapping, Server)>, sqlx::Error> {
-        let virtual_media_id = Self::normalize_uuid(virtual_media_id);
+        let virtual_media_id = virtual_media_id.normalized();
 
         let row = sqlx::query(
             r#"
@@ -190,7 +188,7 @@ impl MediaStorageService {
     #[cfg(test)]
     pub(crate) async fn delete_media_mapping(
         &self,
-        virtual_media_id: &str,
+        virtual_media_id: &VirtualItemId,
     ) -> Result<bool, sqlx::Error> {
         let result = sqlx::query(
             r#"
@@ -203,7 +201,7 @@ impl MediaStorageService {
 
         if result.rows_affected() > 0 {
             {
-                let id_to_invalidate = virtual_media_id.to_string();
+                let id_to_invalidate = virtual_media_id.clone();
                 if let Err(e) =
                     self.original_mapping_cache
                         .invalidate_entries_if(move |_, value| {
@@ -214,7 +212,7 @@ impl MediaStorageService {
                     self.original_mapping_cache.invalidate_all();
                 }
             }
-            tracing::info!("Deleted media mapping: {}", virtual_media_id);
+            tracing::info!("Deleted media mapping: {}", virtual_media_id.as_str());
             Ok(true)
         } else {
             Ok(false)

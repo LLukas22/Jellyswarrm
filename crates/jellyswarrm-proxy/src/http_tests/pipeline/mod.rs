@@ -57,14 +57,14 @@ async fn same_server_episode_selection_survives_streams_and_all_playback_reports
         members.push(
             f.state
                 .media_storage
-                .get_or_create_media_mapping(&format!("{number:032x}"), &server)
+                .get_or_create_media_mapping(&format!("{number:032x}").into(), &server)
                 .await
                 .unwrap(),
         );
         sources.push(
             f.state
                 .media_storage
-                .get_or_create_media_mapping(&format!("{:032x}", number + 1000), &server)
+                .get_or_create_media_mapping(&format!("{:032x}", number + 1000).into(), &server)
                 .await
                 .unwrap(),
         );
@@ -106,11 +106,13 @@ async fn same_server_episode_selection_survives_streams_and_all_playback_reports
         )
         .await
         .unwrap();
-    let aggregate = &groups[&members[0].virtual_media_id].virtual_media_id;
+    let aggregate = groups[&members[0].virtual_media_id]
+        .virtual_media_id
+        .as_str();
     let group = f
         .state
         .media_storage
-        .get_media_version_group(aggregate)
+        .get_media_version_group(&aggregate.into())
         .await
         .unwrap()
         .unwrap();
@@ -135,10 +137,10 @@ async fn same_server_episode_selection_survives_streams_and_all_playback_reports
     // Exercise both copies: neither SQL row order nor the canonical item wins.
     for (index, (member, source)) in members.iter().zip(&sources).enumerate() {
         let play_session = format!("playback-{index}");
-        Mock::given(method("POST")).and(path(format!("/Items/{}/PlaybackInfo", member.original_media_id)))
+        Mock::given(method("POST")).and(path(format!("/Items/{}/PlaybackInfo", member.original_media_id.as_str())))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "PlaySessionId": play_session,
-                "MediaSources": [{"Id": source.original_media_id, "Type": "Default", "SupportsDirectPlay": true}]
+                "MediaSources": [{"Id": source.original_media_id.as_str(), "Type": "Default", "SupportsDirectPlay": true}]
             }))).expect(1).mount(upstream).await;
         let response = f
             .request(
@@ -147,7 +149,7 @@ async fn same_server_episode_selection_survives_streams_and_all_playback_reports
                 &f.user,
                 "tv",
             )
-            .json(&json!({"MediaSourceId": source.virtual_media_id, "DeviceProfile": {}}))
+            .json(&json!({"MediaSourceId": source.virtual_media_id.as_str(), "DeviceProfile": {}}))
             .send()
             .await
             .unwrap();
@@ -155,21 +157,21 @@ async fn same_server_episode_selection_survives_streams_and_all_playback_reports
         let playback: Value = response.json().await.unwrap();
         assert_eq!(playback["PlaySessionId"], play_session);
         let conflicting = f.request(reqwest::Method::POST, "/Sessions/Playing/Progress", &f.user, "tv")
-            .json(&json!({"ItemId": aggregate, "PlaySessionId": play_session, "MediaSourceId": sources[1 - index].virtual_media_id}))
+            .json(&json!({"ItemId": aggregate, "PlaySessionId": play_session, "MediaSourceId": sources[1 - index].virtual_media_id.as_str()}))
             .send().await.unwrap();
         assert_eq!(conflicting.status(), StatusCode::BAD_REQUEST);
 
         Mock::given(method("GET"))
             .and(path(format!(
                 "/Videos/{}/stream.mp4",
-                member.original_media_id
+                member.original_media_id.as_str()
             )))
             .respond_with(ResponseTemplate::new(200).set_body_string("video"))
             .mount(upstream)
             .await;
         // With explicit selection, and with only the session's exact binding.
         for query in [
-            format!("MediaSourceId={}", source.virtual_media_id),
+            format!("MediaSourceId={}", source.virtual_media_id.as_str()),
             format!("PlaySessionId={play_session}"),
         ] {
             let response = f
@@ -190,8 +192,8 @@ async fn same_server_episode_selection_survives_streams_and_all_playback_reports
             ("/Sessions/Playing/Progress", false),
             ("/Sessions/Playing/Stopped", false),
         ] {
-            let expected_item = member.original_media_id.clone();
-            let expected_source = source.original_media_id.clone();
+            let expected_item = member.original_media_id.as_str().to_owned();
+            let expected_source = source.original_media_id.as_str().to_owned();
             Mock::given(method("POST"))
                 .and(path(endpoint))
                 .respond_with(move |request: &wiremock::Request| {
@@ -209,7 +211,7 @@ async fn same_server_episode_selection_survives_streams_and_all_playback_reports
             let mut body =
                 json!({"ItemId": aggregate, "PlaySessionId": play_session, "PositionTicks": 123});
             if include_source {
-                body["MediaSourceId"] = json!(source.virtual_media_id);
+                body["MediaSourceId"] = json!(source.virtual_media_id.as_str());
             }
             let response = f
                 .request(reqwest::Method::POST, endpoint, &f.user, "tv")
@@ -222,18 +224,18 @@ async fn same_server_episode_selection_survives_streams_and_all_playback_reports
         assert!(f
             .state
             .playback_registry
-            .get_session_for_user(&play_session, &f.user.id)
+            .get_session_for_user(&play_session.as_str().into(), &f.user.id.as_str().into())
             .await
             .is_none());
         // Direct stream clients can establish the same exact member binding
         // without a preceding PlaybackInfo negotiation.
         let direct_session = format!("direct-{index}");
         let direct = f.request(reqwest::Method::GET,
-            &format!("/Videos/{aggregate}/stream.mp4?MediaSourceId={}&PlaySessionId={direct_session}", source.virtual_media_id),
+            &format!("/Videos/{aggregate}/stream.mp4?MediaSourceId={}&PlaySessionId={direct_session}", source.virtual_media_id.as_str()),
             &f.user, "tv").send().await.unwrap();
         assert_eq!(direct.status(), StatusCode::OK);
         assert_eq!(direct.text().await.unwrap(), "video");
-        let expected_item = member.original_media_id.clone();
+        let expected_item = member.original_media_id.as_str().to_owned();
         Mock::given(method("POST"))
             .and(path("/Sessions/Playing/Stopped"))
             .respond_with(move |request: &wiremock::Request| {
@@ -373,7 +375,7 @@ async fn offline_authorized_sources_retain_sightings_and_recover_without_identit
     assert_eq!(
         f.state
             .media_storage
-            .get_media_version_members_by_virtual_id(id)
+            .get_media_version_members_by_virtual_id(&id.into())
             .await
             .unwrap()
             .len(),
@@ -418,7 +420,7 @@ async fn offline_authorized_sources_retain_sightings_and_recover_without_identit
     assert_eq!(
         f.state
             .media_storage
-            .get_media_version_members_by_virtual_id(id)
+            .get_media_version_members_by_virtual_id(&id.into())
             .await
             .unwrap()
             .len(),

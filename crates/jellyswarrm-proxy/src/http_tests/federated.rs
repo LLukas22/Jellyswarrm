@@ -139,7 +139,7 @@ async fn http_catalog_input_validates_offline_ids_without_initial_backend_select
         facets.push(
             state
                 .media_storage
-                .get_or_create_media_mapping("genre", server)
+                .get_or_create_media_mapping(&"genre".into(), server)
                 .await
                 .unwrap()
                 .virtual_media_id,
@@ -166,7 +166,12 @@ async fn http_catalog_input_validates_offline_ids_without_initial_backend_select
             .unwrap()
         }
     };
-    let response = send(format!("/Items?GenreIds={},{}", facets[0], facets[1])).await;
+    let response = send(format!(
+        "/Items?GenreIds={},{}",
+        facets[0].as_str(),
+        facets[1].as_str()
+    ))
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
     let online = upstreams[1].received_requests().await.unwrap();
     let catalog_requests = online
@@ -183,7 +188,7 @@ async fn http_catalog_input_validates_offline_ids_without_initial_backend_select
     // A concrete offline owner still has the legacy FORBIDDEN contract,
     // rather than being redirected to the healthy source.
     assert_eq!(
-        send(format!("/Items?SeriesId={}", facets[0]))
+        send(format!("/Items?SeriesId={}", facets[0].as_str()))
             .await
             .status(),
         StatusCode::FORBIDDEN
@@ -206,9 +211,13 @@ async fn http_catalog_input_validates_offline_ids_without_initial_backend_select
         .await
         .unwrap();
     assert_eq!(
-        send(format!("/Items?GenreIds={},{}", facets[0], facets[1]))
-            .await
-            .status(),
+        send(format!(
+            "/Items?GenreIds={},{}",
+            facets[0].as_str(),
+            facets[1].as_str()
+        ))
+        .await
+        .status(),
         StatusCode::FORBIDDEN
     );
     assert_eq!(
@@ -222,7 +231,7 @@ async fn http_catalog_input_validates_offline_ids_without_initial_backend_select
     let before = upstreams[1].received_requests().await.unwrap().len();
     for uri in [
         "/Items".to_string(),
-        format!("/Items?SeriesId={}", facets[1]),
+        format!("/Items?SeriesId={}", facets[1].as_str()),
     ] {
         assert_eq!(send(uri).await.status(), StatusCode::SERVICE_UNAVAILABLE);
     }

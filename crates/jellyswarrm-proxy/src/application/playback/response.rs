@@ -6,6 +6,7 @@ use tracing::info;
 use crate::{
     application::request::response::response_json_to_payload,
     auth::service::AuthorizationSession,
+    domain::ids::{PlaybackSessionId, ViewerId, VirtualItemId},
     protocol::models::{MediaSource, PlaybackRequest, PlaybackResponse},
     servers::storage::Server,
     translation::response_processor::ResponseProcessingProfile,
@@ -38,11 +39,11 @@ pub(crate) async fn remap_playback_request(
     if let Some(media_source_id) = &payload.media_source_id {
         if let Some(media_mapping) = state
             .media_storage
-            .get_media_mapping_by_virtual(media_source_id)
+            .get_media_mapping_by_virtual(&media_source_id.as_str().into())
             .await
             .map_err(ApplicationError::Storage)?
         {
-            payload.media_source_id = Some(media_mapping.original_media_id);
+            payload.media_source_id = Some(media_mapping.original_media_id.into_string());
         }
     }
 
@@ -105,13 +106,13 @@ pub(crate) async fn process_playback_response(
 
 pub(crate) async fn track_play_session(
     item: &MediaSource,
-    session_id: &str,
-    user_id: &str,
+    session_id: &PlaybackSessionId,
+    user_id: &ViewerId,
     server: &Server,
     state: &MediaServices,
 ) {
-    let mut session_ids = vec![session_id.to_string()];
-    let mut item_ids = vec![item.id.clone()];
+    let mut session_ids = vec![session_id.clone()];
+    let mut item_ids = vec![VirtualItemId::from(item.id.as_str())];
 
     collect_delivery_url_tracking_values(
         item.transcoding_url.as_deref(),
@@ -155,8 +156,8 @@ pub(crate) async fn track_play_session(
 
 fn collect_delivery_url_tracking_values(
     value: Option<&str>,
-    session_ids: &mut Vec<String>,
-    item_ids: &mut Vec<String>,
+    session_ids: &mut Vec<PlaybackSessionId>,
+    item_ids: &mut Vec<VirtualItemId>,
 ) {
     let Some(value) = value else {
         return;
@@ -171,22 +172,23 @@ fn collect_delivery_url_tracking_values(
     }
 }
 
-fn push_unique(values: &mut Vec<String>, value: String) {
-    if !values.iter().any(|existing| existing == &value) {
+fn push_unique<T: PartialEq>(values: &mut Vec<T>, value: T) {
+    if !values.contains(&value) {
         values.push(value);
     }
 }
 
 async fn add_tracked_play_session(
-    item_id: &str,
-    session_id: &str,
-    user_id: &str,
+    item_id: &VirtualItemId,
+    session_id: &PlaybackSessionId,
+    user_id: &ViewerId,
     server: &Server,
     state: &MediaServices,
 ) {
     info!(
         "Tracking play session for item: {}, server: {}",
-        item_id, server.name
+        item_id.as_str(),
+        server.name
     );
     super::lifecycle::PlaybackLifecycle::new(&state.playback_registry)
         .alias(item_id, session_id, user_id, server.id)
@@ -198,16 +200,16 @@ async fn add_tracked_play_session(
 /// can then route by `(PlaySessionId, aggregate item id)` even though the
 /// aggregate ID does not exist on any backend.
 pub(crate) async fn track_playback_alias(
-    item_id: &str,
-    session_id: &str,
-    user_id: &str,
+    item_id: &VirtualItemId,
+    session_id: &PlaybackSessionId,
+    user_id: &ViewerId,
     server: &Server,
     state: &MediaServices,
 ) {
     add_tracked_play_session(item_id, session_id, user_id, server, state).await;
 }
 
-fn extract_media_id_from_delivery_url(value: &str) -> Option<String> {
+fn extract_media_id_from_delivery_url(value: &str) -> Option<VirtualItemId> {
     let url = parse_delivery_url(value)?;
     let mut segments = url.path_segments()?;
 
@@ -216,19 +218,19 @@ fn extract_media_id_from_delivery_url(value: &str) -> Option<String> {
             return segments
                 .next()
                 .filter(|segment| !segment.is_empty())
-                .map(str::to_string);
+                .map(VirtualItemId::from);
         }
     }
 
     None
 }
 
-fn extract_play_session_id_from_delivery_url(value: &str) -> Option<String> {
+fn extract_play_session_id_from_delivery_url(value: &str) -> Option<PlaybackSessionId> {
     let url = parse_delivery_url(value)?;
     url.query_pairs().find_map(|(key, value)| {
         (key.eq_ignore_ascii_case("PlaySessionId") || key.eq_ignore_ascii_case("SessionId"))
-            .then(|| value.to_string())
-            .filter(|value| !value.is_empty())
+            .then(|| value.as_ref().into())
+            .filter(|value: &PlaybackSessionId| !value.as_str().is_empty())
     })
 }
 
@@ -408,11 +410,11 @@ mod tests {
         assert_ne!(virtual_album_id, original_album_id);
         let album_mapping = state
             .media_storage
-            .get_media_mapping_by_virtual(virtual_album_id)
+            .get_media_mapping_by_virtual(&virtual_album_id.into())
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(album_mapping.original_media_id, original_album_id);
+        assert_eq!(album_mapping.original_media_id.as_str(), original_album_id);
         assert_eq!(album_mapping.server_id, server.id);
         assert_ne!(
             media_item["People"][0]["Id"].as_str(),
@@ -641,7 +643,14 @@ mod tests {
         }))
         .unwrap();
 
-        track_play_session(&source, "session-1", "user-1", &server, &state).await;
+        track_play_session(
+            &source,
+            &"session-1".into(),
+            &"user-1".into(),
+            &server,
+            &state,
+        )
+        .await;
 
         let source_session = state
             .playback_registry
@@ -679,7 +688,14 @@ mod tests {
         }))
         .unwrap();
 
-        track_play_session(&source, "response-session", "user-1", &server, &state).await;
+        track_play_session(
+            &source,
+            &"response-session".into(),
+            &"user-1".into(),
+            &server,
+            &state,
+        )
+        .await;
 
         for session_id in [
             "response-session",

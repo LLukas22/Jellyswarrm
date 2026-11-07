@@ -2,7 +2,7 @@
 //! availability/status policy; this module never falls back from an explicit owner.
 use crate::{
     application::request::context::{AuthorizedTarget, RequestContext, TargetError},
-    domain::ids::ServerId,
+    domain::ids::{PlaybackSessionId, ServerId, ViewerId, VirtualItemId},
     media::storage::{MediaMapping, MediaStorageService},
     playback::{LiveStreamBinding, PlaybackRegistry, PlaybackSession, RevisionedPlaybackSession},
     servers::storage::ServerStorageService,
@@ -57,8 +57,8 @@ pub(crate) struct PlaybackSelectionPlan {
 /// Normalized identity intent; endpoint query/body precedence is resolved by
 /// the caller before selection, while a known binding retains its authority.
 pub(crate) struct PlaybackIntent<'a> {
-    pub(crate) item: &'a str,
-    pub(crate) source: Option<&'a str>,
+    pub(crate) item: &'a VirtualItemId,
+    pub(crate) source: Option<&'a VirtualItemId>,
     pub(crate) binding: Option<&'a PlaybackSession>,
 }
 
@@ -91,7 +91,7 @@ impl MediaTargetResolver<'_> {
             binding,
         } = intent;
         let group = self.media.get_media_version_group(item).await?;
-        let explicit = source.filter(|source| !source.trim().is_empty());
+        let explicit = source.filter(|source| !source.as_str().trim().is_empty());
         let backend = if let Some(binding) = binding {
             if servers.get_server_by_id(binding.server_id).await?.is_none() {
                 return Err(ResolutionError::MissingOwner);
@@ -155,9 +155,9 @@ impl MediaTargetResolver<'_> {
                     .max_by(|left, right| {
                         crate::servers::compare_routes(
                             &left.server,
-                            &left.mapping.original_media_id,
+                            left.mapping.original_media_id.as_str(),
                             &right.server,
-                            &right.mapping.original_media_id,
+                            right.mapping.original_media_id.as_str(),
                         )
                     })
                     .map(|member| member.mapping)
@@ -181,8 +181,8 @@ impl MediaTargetResolver<'_> {
     /// require one available owner; default negotiation uses its ordered policy.
     pub(crate) async fn owners(
         &self,
-        item: &str,
-        source: Option<&str>,
+        item: &VirtualItemId,
+        source: Option<&VirtualItemId>,
         binding: Option<&PlaybackSession>,
     ) -> Result<Vec<ServerId>, ResolutionError> {
         let mut owners = if let Some(group) = self.media.get_media_version_group(item).await? {
@@ -233,8 +233,8 @@ impl MediaTargetResolver<'_> {
     /// Resolve an exact member without conflating upstream source and item IDs.
     pub(crate) async fn member(
         &self,
-        item: &str,
-        source: Option<&str>,
+        item: &VirtualItemId,
+        source: Option<&VirtualItemId>,
         binding: Option<&PlaybackSession>,
         server: ServerId,
     ) -> Result<MediaMapping, ResolutionError> {
@@ -246,7 +246,7 @@ impl MediaTargetResolver<'_> {
                     .ok_or(ResolutionError::InvalidSource)?
                     .member_mapping
             } else {
-                let bound_item = binding.and_then(|b| b.original_item_id.as_deref());
+                let bound_item = binding.and_then(|b| b.original_item_id.as_ref());
                 let mut members = self
                     .media
                     .get_media_version_members(group.id)
@@ -254,7 +254,7 @@ impl MediaTargetResolver<'_> {
                     .into_iter()
                     .filter(|member| {
                         member.mapping.server_id == server
-                            && bound_item.is_none_or(|id| member.mapping.original_media_id == id)
+                            && bound_item.is_none_or(|id| &member.mapping.original_media_id == id)
                     });
                 let member = members.next().ok_or(ResolutionError::AmbiguousMember)?;
                 if members.next().is_some() {
@@ -290,14 +290,14 @@ impl MediaTargetResolver<'_> {
     pub(crate) async fn session(
         &self,
         sessions: &PlaybackRegistry,
-        item: &str,
-        session: Option<&str>,
-        viewer: &str,
+        item: &VirtualItemId,
+        session: Option<&PlaybackSessionId>,
+        viewer: &ViewerId,
         explicit_source: bool,
     ) -> Result<Option<PlaybackSession>, ResolutionError> {
         let candidates = sessions.get_sessions_by_item_id(item).await;
         if let Some(session) = session {
-            let known = owned_session(sessions, &session.into(), &viewer.into()).await?;
+            let known = owned_session(sessions, session, viewer).await?;
             let matching = matching_session(candidates, Some(session), Some(viewer)).ok();
             if known.is_some() && matching.is_none() {
                 return Err(ResolutionError::BindingConflict);
@@ -314,8 +314,8 @@ impl MediaTargetResolver<'_> {
 /// Shared viewer authority for delivery, live-open and transcoder cancellation.
 pub(crate) async fn owned_session(
     sessions: &PlaybackRegistry,
-    id: &crate::domain::ids::PlaybackSessionId,
-    viewer: &crate::domain::ids::ViewerId,
+    id: &PlaybackSessionId,
+    viewer: &ViewerId,
 ) -> Result<Option<RevisionedPlaybackSession>, ResolutionError> {
     sessions
         .resolve_report_binding(id, viewer)
@@ -341,13 +341,12 @@ pub(crate) async fn live_target(
 
 pub(crate) fn matching_session(
     mut candidates: Vec<PlaybackSession>,
-    session: Option<&str>,
-    viewer: Option<&str>,
+    session: Option<&PlaybackSessionId>,
+    viewer: Option<&ViewerId>,
 ) -> Result<PlaybackSession, usize> {
-    let viewer = viewer.map(crate::domain::user_id::UserId::new);
     candidates.retain(|candidate| {
-        session.is_none_or(|id| candidate.session_id == id)
-            && viewer.as_ref().is_none_or(|id| &candidate.user_id == id)
+        session.is_none_or(|id| &candidate.session_id == id)
+            && viewer.is_none_or(|id| candidate.user_id.as_str() == id.as_str())
     });
     match candidates.len() {
         1 => Ok(candidates.remove(0)),

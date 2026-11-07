@@ -2,6 +2,7 @@
 //! Start with `post_playback_info`; delivery is handled separately in `resources`.
 use crate::application::error::FailureStage;
 use crate::application::media_services::MediaServices;
+use crate::domain::ids::{BackendItemId, PlaybackSessionId, ViewerId, VirtualItemId};
 use crate::media::storage::MediaStorageService;
 use tracing::{debug, error, warn};
 
@@ -56,7 +57,7 @@ pub(crate) async fn post_playback_info(
         {
             state
                 .media_storage
-                .get_media_version_group(&item)
+                .get_media_version_group(&item.into())
                 .await
                 .map_err(ApplicationError::Storage)?
                 .is_some()
@@ -79,8 +80,10 @@ pub(crate) async fn post_playback_info(
         .and_then(|auth| auth.token_ref())
         .map(str::to_string);
     let payload: PlaybackRequest = payload_from_request(&input.original_request)?;
-    let requested_item_id = contains_id(input.original_request.url(), "Items")
-        .ok_or(ApplicationError::InvalidInput("missing playback item"))?;
+    let requested_item_id = VirtualItemId::from(
+        contains_id(input.original_request.url(), "Items")
+            .ok_or(ApplicationError::InvalidInput("missing playback item"))?,
+    );
     let source_generation = state
         .media_storage
         .begin_media_reconciliation()
@@ -97,15 +100,15 @@ pub(crate) async fn post_playback_info(
     // preferences into the next queued item. An aggregate has no source of
     // its own: let the already selected member negotiate its default sources.
     let default_aggregate_source = default_aggregate_query
-        || selected_source.as_deref().is_some_and(|source| {
-            MediaStorageService::normalize_uuid(source)
-                == MediaStorageService::normalize_uuid(&requested_item_id)
-        }) && state
-            .media_storage
-            .get_media_version_group(&requested_item_id)
-            .await
-            .map_err(ApplicationError::Storage)?
-            .is_some();
+        || selected_source
+            .as_ref()
+            .is_some_and(|source| source.normalized() == requested_item_id.normalized())
+            && state
+                .media_storage
+                .get_media_version_group(&requested_item_id)
+                .await
+                .map_err(ApplicationError::Storage)?
+                .is_some();
     if default_aggregate_source {
         payload.media_source_id = None;
     }
@@ -120,8 +123,8 @@ pub(crate) async fn post_playback_info(
     let mut initial_target = initial.target;
     if default_aggregate_source
         || selected_source
-            .as_deref()
-            .is_none_or(|source| source.trim().is_empty())
+            .as_ref()
+            .is_none_or(|source| source.as_str().trim().is_empty())
     {
         if let Some(continuity) = &continuity {
             if let Some(preferred) = continuity
@@ -152,7 +155,7 @@ pub(crate) async fn post_playback_info(
         PlaybackIntent {
             item: &requested_item_id,
             source: selected_source
-                .as_deref()
+                .as_ref()
                 .filter(|_| !default_aggregate_source),
             binding: None,
         },
@@ -166,8 +169,9 @@ pub(crate) async fn post_playback_info(
     let mut request = input.original_request;
     debug!(reason = ?plan.reason, "Playback selection planned");
     if let Some(member) = plan.target.member {
-        *request.url_mut() = replace_path_id(request.url(), "Items", &member.virtual_media_id)
-            .ok_or(ApplicationError::InvalidInput("missing playback item path"))?;
+        *request.url_mut() =
+            replace_path_id(request.url(), "Items", member.virtual_media_id.as_str())
+                .ok_or(ApplicationError::InvalidInput("missing playback item path"))?;
     }
     let target = plan.target.backend;
     if default_aggregate_source {
@@ -184,9 +188,9 @@ pub(crate) async fn post_playback_info(
 
     let request = state.request_builder().build(&target, &request).await?;
 
-    let original_item_id = contains_id(request.url(), "Items").ok_or(
+    let original_item_id = BackendItemId::from(contains_id(request.url(), "Items").ok_or(
         ApplicationError::InvalidInput("missing upstream playback item"),
-    )?;
+    )?);
     match crate::application::request::response::execute_json_request::<PlaybackResponse>(
         &state.reqwest_client,
         request,
@@ -202,7 +206,7 @@ pub(crate) async fn post_playback_info(
                     .iter()
                     .position(|source| {
                         MediaStorageService::normalize_uuid(&source.id)
-                            == MediaStorageService::normalize_uuid(&original_item_id)
+                            == original_item_id.normalized().as_str()
                     })
                     .unwrap_or(0);
                 let source = response.media_sources.remove(index);
@@ -252,31 +256,14 @@ pub(crate) async fn post_playback_info(
                 })?;
             // Register routable identities before publishing playback bindings.
             // A stale reconciliation may have removed unadvertisable sources.
+            let play_session = PlaybackSessionId::from(response.play_session_id.as_str());
+            let viewer = ViewerId::from(session.user_id.as_str());
             for source in &response.media_sources {
-                track_play_session(
-                    source,
-                    &response.play_session_id,
-                    &session.user_id,
-                    server,
-                    state,
-                )
-                .await;
+                track_play_session(source, &play_session, &viewer, server, state).await;
             }
-            track_playback_alias(
-                &requested_item_id,
-                &response.play_session_id,
-                &session.user_id,
-                server,
-                state,
-            )
-            .await;
+            track_playback_alias(&requested_item_id, &play_session, &viewer, server, state).await;
             super::lifecycle::PlaybackLifecycle::new(&state.playback_registry)
-                .bind_original(
-                    &response.play_session_id,
-                    &session.user_id,
-                    server.id,
-                    &original_item_id,
-                )
+                .bind_original(&play_session, &viewer, server.id, &original_item_id)
                 .await;
             if is_playback && !response.media_sources.is_empty() {
                 if let Some(continuity) = &continuity {
@@ -300,13 +287,14 @@ pub(crate) async fn post_playback_info(
 }
 
 // Jellyfin binds the query parameter before the corresponding request DTO field.
-fn selected_source(request: &reqwest::Request, payload: &PlaybackRequest) -> Option<String> {
+fn selected_source(request: &reqwest::Request, payload: &PlaybackRequest) -> Option<VirtualItemId> {
     request
         .url()
         .query_pairs()
         .find(|(key, _)| key.eq_ignore_ascii_case("MediaSourceId"))
         .map(|(_, value)| value.into_owned())
         .or_else(|| payload.media_source_id.clone())
+        .map(VirtualItemId::from)
 }
 
 fn remove_source_query(request: &mut reqwest::Request) {

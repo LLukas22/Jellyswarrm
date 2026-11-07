@@ -1,5 +1,6 @@
 //! SQLite representations of shared domain values.
 use crate::domain::{
+    ids::{BackendItemId, VirtualItemId},
     security::{EncryptedPassword, HashedPassword, Password},
     user_id::UserId,
 };
@@ -40,6 +41,10 @@ text_value!(UserId, UserId::from);
 text_value!(Password, Password::from);
 text_value!(HashedPassword, HashedPassword::from_hashed);
 text_value!(EncryptedPassword, EncryptedPassword::from_raw);
+// Media IDs round-trip verbatim: rows keep whatever form they were stored in, and
+// lookups normalize explicitly, so the codec must not add normalization of its own.
+text_value!(VirtualItemId, VirtualItemId::from);
+text_value!(BackendItemId, BackendItemId::from);
 
 #[cfg(test)]
 mod tests {
@@ -77,5 +82,27 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(wrapped.as_str(), raw);
+    }
+
+    #[tokio::test]
+    async fn media_id_codecs_round_trip_text_verbatim() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        // Dashed and uppercase: the codec must not normalize on the way through.
+        const RAW: &str = "550E8400-E29B-41D4-A716-446655440000";
+        let (virtual_id, backend_id): (VirtualItemId, BackendItemId) =
+            sqlx::query_as("SELECT ?, ?")
+                .bind(VirtualItemId::from(RAW))
+                .bind(BackendItemId::from(RAW))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(virtual_id.as_str(), RAW);
+        assert_eq!(backend_id.as_str(), RAW);
+        let text: String = sqlx::query_scalar("SELECT ?")
+            .bind(&virtual_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(text, RAW);
     }
 }

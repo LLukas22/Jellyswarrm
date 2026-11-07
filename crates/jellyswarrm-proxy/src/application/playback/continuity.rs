@@ -6,7 +6,7 @@ use crate::{
         request::context::{AuthorizedTarget, RequestContext},
     },
     client_sessions::ClientSessionService,
-    domain::ids::ServerId,
+    domain::ids::{ServerId, VirtualItemId},
     media::storage::MediaStorageService,
 };
 
@@ -20,7 +20,7 @@ impl EpisodeContinuity {
         media: &MediaStorageService,
         clients: &ClientSessionService,
         context: &RequestContext,
-        item: &str,
+        item: &VirtualItemId,
     ) -> Result<Option<Self>, ApplicationError> {
         let (Some(user), Some(token), Some(device)) = (
             context.user(),
@@ -48,7 +48,7 @@ impl EpisodeContinuity {
         &self,
         state: &crate::application::media_services::MediaServices,
         context: &RequestContext,
-        item: &str,
+        item: &VirtualItemId,
     ) -> Result<Option<AuthorizedTarget>, ApplicationError> {
         let Some(server_id) = state
             .client_sessions

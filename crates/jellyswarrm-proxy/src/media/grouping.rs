@@ -2,6 +2,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
+    domain::ids::VirtualItemId,
     media::identity::{MediaAlias, MediaKind, StableMediaGroup},
     media::presentation::{CatalogItem, ItemPresentation},
     protocol::models::{enums::BaseItemKind, MediaItem},
@@ -82,7 +83,7 @@ impl MediaDedupPlan {
 
     pub(crate) fn collapse(
         self,
-        stable_groups: &HashMap<String, StableMediaGroup>,
+        stable_groups: &HashMap<VirtualItemId, StableMediaGroup>,
     ) -> Vec<CatalogItem> {
         let mut groups: Vec<CatalogGroup> = Vec::new();
         let mut stable_indexes = HashMap::new();
@@ -90,7 +91,7 @@ impl MediaDedupPlan {
             let stable_group = group
                 .members
                 .iter()
-                .map(|member| stable_groups.get(&member.item.id))
+                .map(|member| stable_groups.get(&VirtualItemId::from(member.item.id.as_str())))
                 .collect::<Option<Vec<_>>>()
                 .and_then(|groups| {
                     let first = groups.first().copied()?;
@@ -133,7 +134,7 @@ impl MediaDedupPlan {
                 let stable_group = group
                     .members
                     .iter()
-                    .map(|member| stable_groups.get(&member.item.id))
+                    .map(|member| stable_groups.get(&VirtualItemId::from(member.item.id.as_str())))
                     .collect::<Option<Vec<_>>>()
                     .and_then(|groups| {
                         let first = groups.first().copied()?;
@@ -143,9 +144,11 @@ impl MediaDedupPlan {
                     (true, Some(stable_group))
                         if stable_group.published && !stable_group.ambiguous =>
                     {
-                        vec![
-                            merge_media_group(group.members, &stable_group.virtual_media_id).into(),
-                        ]
+                        vec![merge_media_group(
+                            group.members,
+                            stable_group.virtual_media_id.as_str(),
+                        )
+                        .into()]
                     }
                     _ => label_duplicate_group(group.members),
                 }
@@ -434,16 +437,16 @@ mod tests {
 
     fn stable_group(member_count: usize) -> StableMediaGroup {
         StableMediaGroup {
-            virtual_media_id: "aggregate-id".to_string(),
+            virtual_media_id: "aggregate-id".into(),
             active_member_count: member_count,
             ambiguous: false,
             published: member_count > 1,
         }
     }
 
-    fn assignments(ids: &[&str], member_count: usize) -> HashMap<String, StableMediaGroup> {
+    fn assignments(ids: &[&str], member_count: usize) -> HashMap<VirtualItemId, StableMediaGroup> {
         ids.iter()
-            .map(|id| ((*id).to_string(), stable_group(member_count)))
+            .map(|id| ((*id).into(), stable_group(member_count)))
             .collect()
     }
 
@@ -664,9 +667,9 @@ mod tests {
         ]);
         let mut stable_groups = assignments(&["1-Same Movie", "2-Same Movie"], 2);
         stable_groups
-            .get_mut("2-Same Movie")
+            .get_mut(&"2-Same Movie".into())
             .unwrap()
-            .virtual_media_id = "different-aggregate".to_string();
+            .virtual_media_id = "different-aggregate".into();
 
         let visible = plan.collapse(&stable_groups);
 
@@ -677,7 +680,7 @@ mod tests {
             tagged(1, 100, "Same Movie", "same"),
             tagged(2, 100, "Same Movie", "same"),
         ]);
-        stable_groups.remove("2-Same Movie");
+        stable_groups.remove(&"2-Same Movie".into());
         assert_eq!(plan.collapse(&stable_groups).len(), 2);
     }
 

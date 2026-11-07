@@ -7,7 +7,8 @@ use std::{
 use tokio::sync::{RwLock, RwLockWriteGuard};
 
 use crate::domain::ids::{
-    BackendLiveStreamId, PlaybackSessionId, ServerId, ViewerId, VirtualLiveStreamId,
+    BackendItemId, BackendLiveStreamId, PlaybackSessionId, ServerId, ViewerId, VirtualItemId,
+    VirtualLiveStreamId,
 };
 use crate::domain::user_id::UserId;
 
@@ -18,12 +19,13 @@ pub(crate) struct PlaybackRevision(uuid::Uuid);
 
 #[derive(Debug, Clone)]
 pub(crate) struct PlaybackSession {
-    pub(crate) session_id: String, // Unique identifier for the session
-    pub(crate) item_id: String,    // ID of the media item being played
+    pub(crate) session_id: PlaybackSessionId,
+    /// Client-facing item being played: a member, source, or aggregate alias.
+    pub(crate) item_id: VirtualItemId,
     pub(crate) user_id: UserId,
     pub(crate) server_id: ServerId,
     /// Exact backend item selected by PlaybackInfo, shared by its item aliases.
-    pub(crate) original_item_id: Option<String>,
+    pub(crate) original_item_id: Option<BackendItemId>,
 }
 
 /// A snapshot of one binding and its fencing token. Only storage can pair them;
@@ -117,8 +119,7 @@ impl PlaybackRegistry {
     }
 
     pub(crate) async fn add_session(&self, mut session: PlaybackSession) {
-        session.item_id =
-            crate::media::storage::MediaStorageService::normalize_uuid(&session.item_id);
+        session.item_id = session.item_id.normalized();
         let mut sessions = self.live_sessions().await;
         if session.original_item_id.is_none() {
             session.original_item_id = sessions
@@ -154,12 +155,11 @@ impl PlaybackRegistry {
         });
     }
 
-    pub(crate) async fn sessions_for_user(&self, user_id: &str) -> Vec<PlaybackSession> {
-        let user_id = UserId::new(user_id);
+    pub(crate) async fn sessions_for_user(&self, user_id: &ViewerId) -> Vec<PlaybackSession> {
         self.live_sessions()
             .await
             .iter()
-            .filter(|tracked| tracked.session.user_id == user_id)
+            .filter(|tracked| tracked.session.user_id.as_str() == user_id.as_str())
             .map(|tracked| tracked.session.clone())
             .collect()
     }
@@ -287,37 +287,36 @@ impl PlaybackRegistry {
 
     pub(crate) async fn bind_original_item(
         &self,
-        session_id: &str,
-        user_id: &str,
+        session_id: &PlaybackSessionId,
+        user_id: &ViewerId,
         server_id: ServerId,
-        original_item_id: &str,
+        original_item_id: &BackendItemId,
     ) {
-        let user_id = UserId::new(user_id);
         let mut sessions = self.live_sessions().await;
         let revision = PlaybackRevision(uuid::Uuid::new_v4());
         for tracked in sessions.iter_mut().filter(|tracked| {
-            tracked.session.session_id == session_id
-                && tracked.session.user_id == user_id
+            &tracked.session.session_id == session_id
+                && tracked.session.user_id.as_str() == user_id.as_str()
                 && tracked.session.server_id == server_id
         }) {
-            tracked.session.original_item_id = Some(original_item_id.to_string());
+            tracked.session.original_item_id = Some(original_item_id.clone());
             tracked.revision = revision;
         }
     }
 
     pub(crate) async fn get_session_for_user(
         &self,
-        session_id: &str,
-        user_id: &str,
+        session_id: &PlaybackSessionId,
+        user_id: &ViewerId,
     ) -> Option<PlaybackSession> {
-        let user_id = UserId::new(user_id);
         let sessions = self.live_sessions().await;
 
         sessions
             .iter()
             .rev()
             .find(|tracked| {
-                tracked.session.session_id == session_id && tracked.session.user_id == user_id
+                &tracked.session.session_id == session_id
+                    && tracked.session.user_id.as_str() == user_id.as_str()
             })
             .map(|tracked| tracked.session.clone())
     }
@@ -331,7 +330,7 @@ impl PlaybackRegistry {
         let matching = sessions
             .iter()
             .rev()
-            .filter(|tracked| tracked.session.session_id == session_id.as_str());
+            .filter(|tracked| &tracked.session.session_id == session_id);
         if let Some(tracked) = matching
             .clone()
             .find(|tracked| tracked.session.user_id.as_str() == user_id.as_str())
@@ -361,17 +360,16 @@ impl PlaybackRegistry {
 
     async fn refresh_session_for_user(
         &self,
-        session_id: &str,
-        user_id: &str,
+        session_id: &PlaybackSessionId,
+        user_id: &UserId,
         revision: PlaybackRevision,
     ) -> bool {
-        let user_id = UserId::new(user_id);
         let mut sessions = self.live_sessions().await;
         let now = Instant::now();
         let mut refreshed = false;
         for tracked in sessions.iter_mut().filter(|tracked| {
-            tracked.session.session_id == session_id
-                && tracked.session.user_id == user_id
+            &tracked.session.session_id == session_id
+                && &tracked.session.user_id == user_id
                 && tracked.revision == revision
         }) {
             tracked.updated_at = now;
@@ -380,8 +378,11 @@ impl PlaybackRegistry {
         refreshed
     }
 
-    pub(crate) async fn get_sessions_by_item_id(&self, item_id: &str) -> Vec<PlaybackSession> {
-        let item_id = crate::media::storage::MediaStorageService::normalize_uuid(item_id);
+    pub(crate) async fn get_sessions_by_item_id(
+        &self,
+        item_id: &VirtualItemId,
+    ) -> Vec<PlaybackSession> {
+        let item_id = item_id.normalized();
         let sessions = self.live_sessions().await;
 
         sessions
@@ -403,15 +404,14 @@ impl PlaybackRegistry {
 
     async fn remove_session_for_user(
         &self,
-        session_id: &str,
-        user_id: &str,
+        session_id: &PlaybackSessionId,
+        user_id: &UserId,
         revision: PlaybackRevision,
     ) {
-        let user_id = UserId::new(user_id);
         let mut sessions = self.sessions.write().await;
         sessions.retain(|tracked| {
-            tracked.session.session_id != session_id
-                || tracked.session.user_id != user_id
+            &tracked.session.session_id != session_id
+                || &tracked.session.user_id != user_id
                 || tracked.revision != revision
         });
     }
@@ -446,7 +446,7 @@ impl PlaybackRegistry {
         sessions
             .iter()
             .rev()
-            .find(|tracked| tracked.session.session_id == session_id)
+            .find(|tracked| tracked.session.session_id.as_str() == session_id)
             .map(|tracked| tracked.session.clone())
     }
     pub(crate) async fn get_session_by_session_and_item_id(
@@ -461,13 +461,14 @@ impl PlaybackRegistry {
             .iter()
             .rev()
             .find(|tracked| {
-                tracked.session.session_id == session_id && tracked.session.item_id == item_id
+                tracked.session.session_id.as_str() == session_id
+                    && tracked.session.item_id.as_str() == item_id
             })
             .map(|tracked| tracked.session.clone())
     }
     pub(crate) async fn remove_session(&self, session_id: &str) {
         let mut sessions = self.sessions.write().await;
-        sessions.retain(|tracked| tracked.session.session_id != session_id);
+        sessions.retain(|tracked| tracked.session.session_id.as_str() != session_id);
     }
 }
 
@@ -492,12 +493,23 @@ mod tests {
             })
             .await;
         assert!(storage
-            .get_session_for_user("play", &alternate)
+            .get_session_for_user(&"play".into(), &alternate.as_str().into())
             .await
             .is_some());
-        assert_eq!(storage.sessions_for_user(&alternate).await.len(), 1);
+        assert_eq!(
+            storage
+                .sessions_for_user(&alternate.as_str().into())
+                .await
+                .len(),
+            1
+        );
         storage
-            .bind_original_item("play", &alternate, server, "backend-item")
+            .bind_original_item(
+                &"play".into(),
+                &alternate.as_str().into(),
+                server,
+                &"backend-item".into(),
+            )
             .await;
         let binding = storage
             .resolve_report_binding(&"play".into(), &alternate.as_str().into())
@@ -505,7 +517,11 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(
-            binding.session().original_item_id.as_deref(),
+            binding
+                .session()
+                .original_item_id
+                .as_ref()
+                .map(|id| id.as_str()),
             Some("backend-item")
         );
         assert!(storage.refresh_revisioned_session(&binding).await);
@@ -758,12 +774,12 @@ mod tests {
                 .await;
             assert!(
                 !storage
-                    .refresh_session_for_user("session", "user", old_revision)
+                    .refresh_session_for_user(&"session".into(), &"user".into(), old_revision)
                     .await,
                 "{case}: stale refresh before alias"
             );
             storage
-                .remove_session_for_user("session", "user", old_revision)
+                .remove_session_for_user(&"session".into(), &"user".into(), old_revision)
                 .await;
             let (replacement, replacement_revision) = storage
                 .resolve_report_session("session", "user")
@@ -773,7 +789,7 @@ mod tests {
                 .into_parts();
             assert_ne!(old_revision, replacement_revision, "{case}");
             assert_eq!(replacement.server_id, server_id, "{case}");
-            assert_eq!(replacement.item_id, item_id, "{case}");
+            assert_eq!(replacement.item_id.as_str(), item_id, "{case}");
             storage
                 .add_session(playback_session(
                     "session",
@@ -799,12 +815,12 @@ mod tests {
 
             assert!(
                 !storage
-                    .refresh_session_for_user("session", "user", old_revision)
+                    .refresh_session_for_user(&"session".into(), &"user".into(), old_revision)
                     .await,
                 "{case}: stale refresh after alias"
             );
             storage
-                .remove_session_for_user("session", "user", old_revision)
+                .remove_session_for_user(&"session".into(), &"user".into(), old_revision)
                 .await;
             let sessions = storage.sessions.read().await;
             assert_eq!(
@@ -824,20 +840,20 @@ mod tests {
             assert!(
                 sessions
                     .iter()
-                    .any(|tracked| tracked.session.item_id == item_id),
+                    .any(|tracked| tracked.session.item_id == item_id.into()),
                 "{case}: replacement retained"
             );
             assert!(
                 sessions
                     .iter()
-                    .any(|tracked| tracked.session.item_id == "alias"),
+                    .any(|tracked| tracked.session.item_id == "alias".into()),
                 "{case}: alias retained"
             );
             drop(sessions);
 
             assert!(
                 storage
-                    .refresh_session_for_user("session", "user", revision)
+                    .refresh_session_for_user(&"session".into(), &"user".into(), revision)
                     .await,
                 "{case}: current refresh"
             );
@@ -850,7 +866,7 @@ mod tests {
             );
             drop(sessions);
             storage
-                .remove_session_for_user("session", "user", revision)
+                .remove_session_for_user(&"session".into(), &"user".into(), revision)
                 .await;
             assert!(
                 storage.sessions.read().await.is_empty(),
@@ -920,7 +936,7 @@ mod tests {
             .is_none());
         assert_eq!(
             storage
-                .get_session_for_user("session-1", "user-1")
+                .get_session_for_user(&"session-1".into(), &"user-1".into())
                 .await
                 .unwrap()
                 .server_id,
@@ -1020,9 +1036,9 @@ mod tests {
             .add_session(playback_session("session-2", "shared-item", "user-2", 2))
             .await;
 
-        let sessions = storage.get_sessions_by_item_id("shared-item").await;
+        let sessions = storage.get_sessions_by_item_id(&"shared-item".into()).await;
         assert_eq!(sessions.len(), 2);
-        assert_eq!(sessions[0].session_id, "session-2");
-        assert_eq!(sessions[1].session_id, "session-1");
+        assert_eq!(sessions[0].session_id.as_str(), "session-2");
+        assert_eq!(sessions[1].session_id.as_str(), "session-1");
     }
 }

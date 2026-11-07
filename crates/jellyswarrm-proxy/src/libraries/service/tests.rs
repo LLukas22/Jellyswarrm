@@ -189,10 +189,10 @@ impl Fixture {
         let mapping = self
             .service
             .media_storage
-            .get_or_create_media_mapping(original_id, &server)
+            .get_or_create_media_mapping(&original_id.into(), &server)
             .await
             .unwrap();
-        (server_id, mapping.virtual_media_id)
+        (server_id, mapping.virtual_media_id.into_string())
     }
 
     async fn automatic_library(&self) -> AutomaticVirtualLibrary {
@@ -716,7 +716,7 @@ async fn automatic_virtual_library_routes_to_member() {
 
     let target = fixture.route(&library.virtual_id, &scope, None).await;
 
-    assert_eq!(target.mapping.virtual_media_id, member.1);
+    assert_eq!(target.mapping.virtual_media_id.as_str(), member.1);
 }
 
 #[tokio::test]
@@ -773,7 +773,10 @@ async fn configured_virtual_library_routes_to_member() {
 
     let target = fixture.route(&group.virtual_id, &scope, None).await;
 
-    assert_eq!(target.mapping.original_media_id, original_library_id);
+    assert_eq!(
+        target.mapping.original_media_id.as_str(),
+        original_library_id
+    );
 }
 
 #[tokio::test]
@@ -1146,7 +1149,7 @@ fn assert_resolved_members(resolution: VirtualLibraryResolution, expected: &[&st
     let mut actual = resolved
         .members
         .into_iter()
-        .map(|member| member.mapping.virtual_media_id)
+        .map(|member| member.mapping.virtual_media_id.into_string())
         .collect::<Vec<_>>();
     let mut expected = expected.iter().map(|id| id.to_string()).collect::<Vec<_>>();
     actual.sort_unstable();

@@ -297,7 +297,7 @@ async fn incomplete_sources_are_discarded_without_caching_degraded_results_or_pr
             state
                 .media_storage
                 .get_media_version_members_by_virtual_id(
-                    original["Items"][0]["Id"].as_str().unwrap()
+                    &original["Items"][0]["Id"].as_str().unwrap().into()
                 )
                 .await
                 .unwrap()
@@ -458,7 +458,7 @@ async fn numbered_episode_versions_keep_ranges_distinct_and_route_same_server_co
     let single_id = single["Id"].as_str().unwrap();
     let group = state
         .media_storage
-        .get_media_version_group(single_id)
+        .get_media_version_group(&single_id.into())
         .await
         .unwrap()
         .unwrap();
@@ -472,18 +472,18 @@ async fn numbered_episode_versions_keep_ranges_distinct_and_route_same_server_co
         .iter()
         .find(|member| {
             member.mapping.server_id == sessions[0].1.id
-                && member.mapping.original_media_id == owner(100)
+                && member.mapping.original_media_id == owner(100).into()
         })
         .unwrap();
     let mut detail_request = request(&format!("/Items/{single_id}"), &sessions);
-    let mut payload = json!({"Id": base.mapping.virtual_media_id, "Type": "Episode", "Name": "Pilot", "MediaSources": []});
+    let mut payload = json!({"Id": base.mapping.virtual_media_id.as_str(), "Type": "Episode", "Name": "Pilot", "MediaSources": []});
     // Use translated source IDs for the base item, as the real detail handler does.
     let source = state
         .media_storage
-        .get_or_create_media_mapping(&owner(1100), &sessions[0].1)
+        .get_or_create_media_mapping(&owner(1100).as_str().into(), &sessions[0].1)
         .await
         .unwrap();
-    payload["MediaSources"] = json!([{"Id": source.virtual_media_id, "Type": "Default"}]);
+    payload["MediaSources"] = json!([{"Id": source.virtual_media_id.as_str(), "Type": "Default"}]);
     let generation = state
         .media_storage
         .begin_media_reconciliation()
@@ -509,11 +509,11 @@ async fn numbered_episode_versions_keep_ranges_distinct_and_route_same_server_co
     assert_eq!(payload["MediaSourceCount"], 4);
     let sibling = members
         .iter()
-        .find(|member| member.mapping.original_media_id == owner(101))
+        .find(|member| member.mapping.original_media_id == owner(101).into())
         .unwrap();
     let selected = state
         .media_storage
-        .get_media_mapping_by_original(&owner(1101), sessions[0].1.id)
+        .get_media_mapping_by_original(&owner(1101).as_str().into(), sessions[0].1.id)
         .await
         .unwrap()
         .unwrap();
@@ -539,7 +539,7 @@ async fn numbered_episode_versions_keep_ranges_distinct_and_route_same_server_co
         &detail_request.context,
         detail_request.context.target(sessions[0].1.id).unwrap(),
         PlaybackIntent {
-            item: single_id,
+            item: &single_id.into(),
             source: Some(&selected.virtual_media_id),
             binding: None,
         },
@@ -553,9 +553,12 @@ async fn numbered_episode_versions_keep_ranges_distinct_and_route_same_server_co
     let member_virtual_id = &route.target.member.as_ref().unwrap().virtual_media_id;
     assert_eq!(member_virtual_id, &sibling.mapping.virtual_media_id);
     let mut normalized = detail_request.original_request.try_clone().unwrap();
-    *normalized.url_mut() =
-        crate::protocol::url::replace_path_id(normalized.url(), "Items", member_virtual_id)
-            .unwrap();
+    *normalized.url_mut() = crate::protocol::url::replace_path_id(
+        normalized.url(),
+        "Items",
+        member_virtual_id.as_str(),
+    )
+    .unwrap();
     let built = state
         .request_builder()
         .build(&route.target.backend, &normalized)
@@ -565,9 +568,10 @@ async fn numbered_episode_versions_keep_ranges_distinct_and_route_same_server_co
         built.url().path(),
         format!("/Items/{}/PlaybackInfo", owner(101))
     );
-    let mut sources: Vec<MediaSource> =
-        serde_json::from_value(json!([{"Id": selected.virtual_media_id, "Type": "Default"}]))
-            .unwrap();
+    let mut sources: Vec<MediaSource> = serde_json::from_value(
+        json!([{"Id": selected.virtual_media_id.as_str(), "Type": "Default"}]),
+    )
+    .unwrap();
     let generation = state
         .media_storage
         .begin_media_reconciliation()
@@ -575,9 +579,9 @@ async fn numbered_episode_versions_keep_ranges_distinct_and_route_same_server_co
         .unwrap();
     record_playback_sources(
         &state.media_storage,
-        single_id,
+        &single_id.into(),
         route.target.backend.server(),
-        &owner(101),
+        &owner(101).as_str().into(),
         generation,
         &mut sources,
     )

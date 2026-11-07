@@ -85,9 +85,9 @@ impl VirtualLibraryService {
             .max_by(|left, right| {
                 compare_routes(
                     &left.server,
-                    &left.mapping.original_media_id,
+                    left.mapping.original_media_id.as_str(),
                     &right.server,
-                    &right.mapping.original_media_id,
+                    right.mapping.original_media_id.as_str(),
                 )
             }))
     }
@@ -175,7 +175,7 @@ impl VirtualLibraryService {
 
             let mapping = self
                 .media_storage
-                .get_or_create_media_mapping(&record.original_library_id, &server)
+                .get_or_create_media_mapping(&record.original_library_id.as_str().into(), &server)
                 .await?;
 
             members.push(VirtualLibraryMember { mapping, server });

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use crate::{
     auth::service::LocalUser,
     auth::UserAuthorizationService,
+    domain::ids::{PlaybackSessionId, VirtualItemId},
     media::MediaStorageService,
     playback::{PlaybackRegistry, RevisionedPlaybackSession},
     protocol::routes::PlaybackSessionAction,
@@ -41,7 +42,7 @@ impl RequestAnalyzer {
         }
     }
 
-    async fn media_version_server(&self, aggregate_id: &str) -> Result<Option<Server>> {
+    async fn media_version_server(&self, aggregate_id: &VirtualItemId) -> Result<Option<Server>> {
         let members = self
             .media_storage
             .get_media_version_members_by_virtual_id(aggregate_id)
@@ -62,9 +63,9 @@ impl RequestAnalyzer {
             .max_by(|left, right| {
                 compare_routes(
                     &left.server,
-                    &left.mapping.original_media_id,
+                    left.mapping.original_media_id.as_str(),
                     &right.server,
-                    &right.mapping.original_media_id,
+                    right.mapping.original_media_id.as_str(),
                 )
             })
             .map(|member| member.server))
@@ -79,9 +80,9 @@ pub(crate) struct RequestBodyAnalysisResult {
     pub(crate) servers: Vec<Server>,
     pub(crate) users: Vec<LocalUser>,
     pub(crate) authoritative_play_session: Option<RevisionedPlaybackSession>,
-    pub(crate) requested_play_session_id: Option<String>,
-    pub(crate) requested_play_item_id: Option<String>,
-    pub(crate) requested_play_source_id: Option<String>,
+    pub(crate) requested_play_session_id: Option<PlaybackSessionId>,
+    pub(crate) requested_play_item_id: Option<VirtualItemId>,
+    pub(crate) requested_play_source_id: Option<VirtualItemId>,
 }
 
 impl RequestBodyAnalysisResult {
@@ -130,31 +131,26 @@ impl JsonAnalyzer<RequestAnalysisContext, RequestBodyAnalysisResult> for Request
             && json_context.depth == 0
             && json_context.parent_path.is_empty()
         {
-            let field = if json_context.key.eq_ignore_ascii_case("ItemId") {
-                Some(&mut accumulator.requested_play_item_id)
-            } else if json_context.key.eq_ignore_ascii_case("MediaSourceId") {
-                Some(&mut accumulator.requested_play_source_id)
-            } else if json_context.key.eq_ignore_ascii_case("PlaySessionId") {
-                Some(&mut accumulator.requested_play_session_id)
-            } else {
-                None
-            };
-            if let Some(field) = field {
-                if !value.is_null() {
-                    let id = value
-                        .as_str()
-                        .ok_or_else(|| anyhow::anyhow!("invalid playback authority field"))?;
-                    if id.trim().is_empty() {
-                        if json_context.key.eq_ignore_ascii_case("ItemId") {
-                            anyhow::bail!("playback report requires a nonempty item ID");
-                        }
-                        // Clients may send blank optional IDs instead of omitting them.
-                        return Ok(());
+            let is_item = json_context.key.eq_ignore_ascii_case("ItemId");
+            let is_source = json_context.key.eq_ignore_ascii_case("MediaSourceId");
+            let is_session = json_context.key.eq_ignore_ascii_case("PlaySessionId");
+            if (is_item || is_source || is_session) && !value.is_null() {
+                let id = value
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("invalid playback authority field"))?;
+                if id.trim().is_empty() {
+                    if is_item {
+                        anyhow::bail!("playback report requires a nonempty item ID");
                     }
-                    if field.as_deref().is_some_and(|previous| previous != id) {
-                        anyhow::bail!("conflicting playback authority fields");
-                    }
-                    *field = Some(id.to_string());
+                    // Clients may send blank optional IDs instead of omitting them.
+                    return Ok(());
+                }
+                if is_item {
+                    record_authority(&mut accumulator.requested_play_item_id, id)?;
+                } else if is_source {
+                    record_authority(&mut accumulator.requested_play_source_id, id)?;
+                } else {
+                    record_authority(&mut accumulator.requested_play_session_id, id)?;
                 }
             }
         }
@@ -165,19 +161,20 @@ impl JsonAnalyzer<RequestAnalysisContext, RequestBodyAnalysisResult> for Request
             || (json_context.is_array_item
                 && MEDIA_ID_LIST_PARENT_FIELDS.contains(last_segment(&json_context.parent_path)))
         {
-            if let serde_json::Value::String(ref virtual_id) = value {
+            if let serde_json::Value::String(ref wire_id) = value {
+                let virtual_id = VirtualItemId::from(wire_id.as_str());
                 let server = self
                     .media_storage
-                    .get_media_mapping_with_server(virtual_id)
+                    .get_media_mapping_with_server(&virtual_id)
                     .await?
                     .map(|(_, server)| server);
                 if let Some(server) = match server {
                     Some(server) => Some(server),
-                    None => self.media_version_server(virtual_id).await?,
+                    None => self.media_version_server(&virtual_id).await?,
                 } {
                     accumulator.servers.push(server);
                 }
-                accumulator.found_ids.push(virtual_id.clone());
+                accumulator.found_ids.push(wire_id.clone());
             }
         }
 
@@ -200,7 +197,7 @@ impl JsonAnalyzer<RequestAnalysisContext, RequestBodyAnalysisResult> for Request
                     if let Some(play_session) = match context.authenticated_user_id.as_deref() {
                         Some(user_id) => {
                             self.playback_registry
-                                .get_session_for_user(session_id, user_id)
+                                .get_session_for_user(&session_id.as_str().into(), &user_id.into())
                                 .await
                         }
                         None => None,
@@ -233,6 +230,19 @@ impl JsonAnalyzer<RequestAnalysisContext, RequestBodyAnalysisResult> for Request
         }
         Ok(())
     }
+}
+
+/// A report may repeat an authority field only with the same identity.
+fn record_authority<T>(field: &mut Option<T>, id: &str) -> Result<()>
+where
+    T: PartialEq + for<'a> From<&'a str>,
+{
+    let id = T::from(id);
+    if field.as_ref().is_some_and(|previous| *previous != id) {
+        anyhow::bail!("conflicting playback authority fields");
+    }
+    *field = Some(id);
+    Ok(())
 }
 
 fn last_segment(path: &str) -> &str {

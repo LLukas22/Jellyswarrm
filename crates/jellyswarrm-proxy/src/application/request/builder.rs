@@ -188,23 +188,23 @@ mod tests {
         // Deliberately make the upstream item ID another valid virtual ID. A
         // second translation would incorrectly turn it into "translated-twice".
         let decoy = media
-            .get_or_create_media_mapping("translated-twice", &chosen)
+            .get_or_create_media_mapping(&"translated-twice".into(), &chosen)
             .await
             .unwrap();
         let item = media
-            .get_or_create_media_mapping(&decoy.virtual_media_id, &chosen)
+            .get_or_create_media_mapping(&decoy.virtual_media_id.as_str().into(), &chosen)
             .await
             .unwrap();
         let source_decoy = media
-            .get_or_create_media_mapping("source-translated-twice", &chosen)
+            .get_or_create_media_mapping(&"source-translated-twice".into(), &chosen)
             .await
             .unwrap();
         let source = media
-            .get_or_create_media_mapping(&source_decoy.virtual_media_id, &chosen)
+            .get_or_create_media_mapping(&source_decoy.virtual_media_id.as_str().into(), &chosen)
             .await
             .unwrap();
         let foreign = media
-            .get_or_create_media_mapping("sibling-only", &sibling)
+            .get_or_create_media_mapping(&"sibling-only".into(), &sibling)
             .await
             .unwrap();
         let target = AuthorizedTarget::new(
@@ -219,10 +219,10 @@ mod tests {
         .unwrap();
         let raw_url = format!(
             "http://proxy.example/jelly/Videos/{}/stream?MediaSourceId={}&ItemId={}&Extension=one%2Ftwo&Extension=three&IDs={}",
-            item.virtual_media_id, source.virtual_media_id, item.virtual_media_id, foreign.virtual_media_id);
+            item.virtual_media_id.as_str(), source.virtual_media_id.as_str(), item.virtual_media_id.as_str(), foreign.virtual_media_id.as_str());
         let body = format!(
             r#"{{"ItemId":"{}","Extension":{{"opaque":[1,2,3]}}}}"#,
-            item.virtual_media_id
+            item.virtual_media_id.as_str()
         );
         #[derive(Clone, Debug, PartialEq)]
         struct ExtensionMarker(&'static str);
@@ -258,7 +258,10 @@ mod tests {
             assert_eq!(built.url().host_str(), Some("chosen.example"));
             assert_eq!(
                 built.url().path(),
-                format!("/backend/jellyfin/Videos/{}/stream", decoy.virtual_media_id)
+                format!(
+                    "/backend/jellyfin/Videos/{}/stream",
+                    decoy.virtual_media_id.as_str()
+                )
             );
             let pairs: Vec<_> = built.url().query_pairs().collect();
             assert_eq!(
@@ -267,11 +270,11 @@ mod tests {
                     .find(|(key, _)| key == "MediaSourceId")
                     .unwrap()
                     .1,
-                source_decoy.virtual_media_id
+                source_decoy.virtual_media_id.as_str()
             );
             assert_eq!(
                 pairs.iter().find(|(key, _)| key == "ItemId").unwrap().1,
-                decoy.virtual_media_id
+                decoy.virtual_media_id.as_str()
             );
             assert_eq!(
                 pairs
@@ -285,7 +288,7 @@ mod tests {
             // silently be rewritten using that sibling's mapping.
             assert_eq!(
                 pairs.iter().find(|(key, _)| key == "IDs").unwrap().1,
-                foreign.virtual_media_id
+                foreign.virtual_media_id.as_str()
             );
             assert_eq!(built.method(), reqwest::Method::POST);
             assert_eq!(built.version(), reqwest::Version::HTTP_11);

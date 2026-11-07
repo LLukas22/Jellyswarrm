@@ -20,7 +20,7 @@ impl MediaStorageService {
         generation: ReconciliationGeneration,
         snapshots: &[MediaCatalogSnapshot],
         prune_missing_sources: bool,
-    ) -> Result<HashMap<String, StableMediaGroup>, sqlx::Error> {
+    ) -> Result<HashMap<VirtualItemId, StableMediaGroup>, sqlx::Error> {
         self.reconcile_media_catalog_with_coverage(
             scope_key,
             generation,
@@ -41,7 +41,7 @@ impl MediaStorageService {
         snapshots: &[MediaCatalogSnapshot],
         prune_missing_sources: bool,
         complete_types: &BTreeSet<MediaKind>,
-    ) -> Result<HashMap<String, StableMediaGroup>, sqlx::Error> {
+    ) -> Result<HashMap<VirtualItemId, StableMediaGroup>, sqlx::Error> {
         self.reconcile_inventory(
             scope_key,
             generation,
@@ -57,7 +57,7 @@ impl MediaStorageService {
         scope_key: &str,
         generation: ReconciliationGeneration,
         update: InventoryUpdate,
-    ) -> Result<HashMap<String, StableMediaGroup>, sqlx::Error> {
+    ) -> Result<HashMap<VirtualItemId, StableMediaGroup>, sqlx::Error> {
         match update {
             InventoryUpdate::Observations(mut snapshots) => {
                 for snapshot in &mut snapshots {
@@ -86,7 +86,7 @@ impl MediaStorageService {
         snapshots: &[MediaCatalogSnapshot],
         prune_missing_sources: bool,
         complete_types: &BTreeSet<MediaKind>,
-    ) -> Result<HashMap<String, StableMediaGroup>, sqlx::Error> {
+    ) -> Result<HashMap<VirtualItemId, StableMediaGroup>, sqlx::Error> {
         let generation = generation.0;
         let _guard = self.media_version_reconciliation.lock().await;
         let mut transaction = self.pool.begin().await?;
@@ -140,7 +140,7 @@ impl MediaStorageService {
                 let mapping: Option<(i64,)> = sqlx::query_as(
                     "SELECT id FROM media_mappings WHERE virtual_media_id = ? AND server_id = ?",
                 )
-                .bind(Self::normalize_uuid(&observation.virtual_media_id))
+                .bind(observation.virtual_media_id.normalized())
                 .bind(snapshot.server_id.as_i64())
                 .fetch_optional(&mut *transaction)
                 .await?;
@@ -363,7 +363,7 @@ impl MediaStorageService {
     pub(super) async fn rebuild_media_groups(
         transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         scope_id: i64,
-    ) -> Result<HashMap<String, StableMediaGroup>, sqlx::Error> {
+    ) -> Result<HashMap<VirtualItemId, StableMediaGroup>, sqlx::Error> {
         let rows = sqlx::query(
             r#"
             SELECT DISTINCT
@@ -682,7 +682,7 @@ impl MediaStorageService {
             .bind(group_id)
             .execute(&mut **transaction)
             .await?;
-            let (virtual_media_id, published): (String, bool) = sqlx::query_as(
+            let (virtual_media_id, published): (VirtualItemId, bool) = sqlx::query_as(
                 r#"
                 SELECT id.virtual_media_id, group_row.published
                 FROM movie_version_group_ids id

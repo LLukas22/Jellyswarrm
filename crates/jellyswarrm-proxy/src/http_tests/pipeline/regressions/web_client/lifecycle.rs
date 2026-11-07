@@ -89,14 +89,14 @@ async fn active_opened_source_survives_detail_refresh_and_stop_releases_it() {
     let group = f
         .state
         .media_storage
-        .get_media_version_group(&aggregate)
+        .get_media_version_group(&aggregate.as_str().into())
         .await
         .unwrap()
         .unwrap();
     assert!(f
         .state
         .media_storage
-        .get_media_version_source_route(group.id, source_id)
+        .get_media_version_source_route(group.id, &source_id.into())
         .await
         .unwrap()
         .is_none());

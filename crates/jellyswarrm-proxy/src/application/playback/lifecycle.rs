@@ -2,7 +2,7 @@
 //! callers commit only after upstream success and response construction.
 use crate::{
     application::{details::sources::version_name, error::ApplicationError},
-    domain::ids::ServerId,
+    domain::ids::{BackendItemId, PlaybackSessionId, ServerId, ViewerId, VirtualItemId},
     media::storage::{MediaStorageService, MediaVersionSourceObservation},
     playback::{PlaybackRegistry, PlaybackSession, PreparedLiveStream, RevisionedPlaybackSession},
     protocol::models::MediaSource,
@@ -30,11 +30,17 @@ impl<'a> PlaybackLifecycle<'a> {
         self.sessions.add_session(session).await;
     }
 
-    pub(crate) async fn alias(&self, item: &str, session: &str, viewer: &str, server: ServerId) {
+    pub(crate) async fn alias(
+        &self,
+        item: &VirtualItemId,
+        session: &PlaybackSessionId,
+        viewer: &ViewerId,
+        server: ServerId,
+    ) {
         self.establish(PlaybackSession {
-            session_id: session.into(),
-            item_id: item.into(),
-            user_id: viewer.into(),
+            session_id: session.clone(),
+            item_id: item.clone(),
+            user_id: viewer.as_str().into(),
             server_id: server,
             original_item_id: None,
         })
@@ -46,18 +52,18 @@ impl<'a> PlaybackLifecycle<'a> {
     pub(crate) async fn direct_stream(
         &self,
         status: hyper::StatusCode,
-        session: Option<&str>,
-        item: Option<&str>,
-        viewer: Option<&str>,
+        session: Option<&PlaybackSessionId>,
+        item: Option<&VirtualItemId>,
+        viewer: Option<&ViewerId>,
         server: ServerId,
-        original_item: Option<String>,
+        original_item: Option<BackendItemId>,
     ) {
         if status.is_success() || status.is_redirection() {
             if let (Some(session), Some(item), Some(viewer)) = (session, item, viewer) {
                 self.establish(PlaybackSession {
-                    session_id: session.into(),
-                    item_id: item.into(),
-                    user_id: viewer.into(),
+                    session_id: session.clone(),
+                    item_id: item.clone(),
+                    user_id: viewer.as_str().into(),
                     server_id: server,
                     original_item_id: original_item,
                 })
@@ -68,10 +74,10 @@ impl<'a> PlaybackLifecycle<'a> {
 
     pub(crate) async fn bind_original(
         &self,
-        session: &str,
-        viewer: &str,
+        session: &PlaybackSessionId,
+        viewer: &ViewerId,
         server: ServerId,
-        item: &str,
+        item: &BackendItemId,
     ) {
         self.sessions
             .bind_original_item(session, viewer, server, item)
@@ -164,7 +170,7 @@ impl PendingPlaybackSessionUpdate {
         analysis: Option<&RequestBodyAnalysisResult>,
         user_id: Option<&str>,
         server_id: ServerId,
-        original_item_id: Option<&str>,
+        original_item_id: Option<&BackendItemId>,
     ) -> Option<Self> {
         let result = analysis?;
         match action? {
@@ -173,7 +179,7 @@ impl PendingPlaybackSessionUpdate {
                 item_id: result.requested_play_item_id.clone()?,
                 user_id: user_id?.into(),
                 server_id,
-                original_item_id: original_item_id.map(str::to_string),
+                original_item_id: original_item_id.cloned(),
             })),
             PlaybackSessionAction::Refresh => {
                 Some(Self::Refresh(result.authoritative_play_session.clone()?))
@@ -204,9 +210,9 @@ impl PendingPlaybackSessionUpdate {
 /// Record negotiated playback sources and retain revision-fenced routability.
 pub(crate) async fn record_playback_sources(
     media: &MediaStorageService,
-    aggregate_id: &str,
+    aggregate_id: &VirtualItemId,
     server: &Server,
-    original_item_id: &str,
+    original_item_id: &BackendItemId,
     source_generation: crate::media::storage::ReconciliationGeneration,
     sources: &mut Vec<MediaSource>,
 ) -> Result<(), ApplicationError> {
@@ -224,7 +230,7 @@ pub(crate) async fn record_playback_sources(
         .into_iter()
         .find(|member| {
             member.mapping.server_id == server.id
-                && member.mapping.original_media_id == original_item_id
+                && &member.mapping.original_media_id == original_item_id
         })
     else {
         return Ok(());
@@ -233,7 +239,7 @@ pub(crate) async fn record_playback_sources(
         .iter()
         .map(|source| MediaVersionSourceObservation {
             member_mapping_id: member.mapping.id,
-            source_virtual_id: source.id.clone(),
+            source_virtual_id: source.id.as_str().into(),
         })
         .collect::<Vec<_>>();
     // Keep negotiated names identical to the versions advertised by details.
@@ -253,7 +259,7 @@ pub(crate) async fn record_playback_sources(
         let mut routable_sources = Vec::new();
         for source in sources.drain(..) {
             if media
-                .get_media_version_source_route(group.id, &source.id)
+                .get_media_version_source_route(group.id, &source.id.as_str().into())
                 .await
                 .map_err(ApplicationError::Storage)?
                 .is_some()
@@ -276,7 +282,7 @@ mod tests {
             item_id: item_id.into(),
             user_id: "viewer".into(),
             server_id: ServerId::new(1),
-            original_item_id: Some(format!("upstream-{item_id}")),
+            original_item_id: Some(format!("upstream-{item_id}").into()),
         }
     }
 
@@ -379,7 +385,7 @@ mod tests {
             .unwrap()
             .unwrap()
             .into_parts();
-        assert_eq!(current.item_id, "replacement");
+        assert_eq!(current.item_id.as_str(), "replacement");
         assert_ne!(current_revision, revision);
     }
 
@@ -408,7 +414,7 @@ mod tests {
             .unwrap()
             .unwrap()
             .into_parts();
-        assert_eq!(current.item_id, "replacement");
+        assert_eq!(current.item_id.as_str(), "replacement");
         assert_eq!(current_revision, replacement_revision);
         assert_ne!(current_revision, revision);
     }
@@ -426,7 +432,7 @@ mod tests {
             Some(&analysis),
             Some("viewer"),
             ServerId::new(1),
-            Some("upstream-item"),
+            Some(&"upstream-item".into()),
         )
         .unwrap();
         assert!(storage
@@ -441,6 +447,9 @@ mod tests {
             .unwrap()
             .unwrap()
             .into_parts();
-        assert_eq!(current.original_item_id.as_deref(), Some("upstream-item"));
+        assert_eq!(
+            current.original_item_id.as_ref().map(|id| id.as_str()),
+            Some("upstream-item")
+        );
     }
 }

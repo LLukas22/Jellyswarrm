@@ -252,14 +252,14 @@ impl MediaAlias {
 
 #[derive(Debug, Clone)]
 pub(crate) struct MediaObservation {
-    pub(crate) virtual_media_id: String,
+    pub(crate) virtual_media_id: crate::domain::ids::VirtualItemId,
     pub(crate) kind: MediaKind,
     pub(crate) aliases: BTreeSet<MediaAlias>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StableMediaGroup {
-    pub(crate) virtual_media_id: String,
+    pub(crate) virtual_media_id: crate::domain::ids::VirtualItemId,
     pub(crate) active_member_count: usize,
     pub(crate) ambiguous: bool,
     pub(crate) published: bool,

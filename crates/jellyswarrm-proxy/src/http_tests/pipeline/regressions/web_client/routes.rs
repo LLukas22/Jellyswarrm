@@ -50,7 +50,7 @@ async fn filter_routes_union_options_and_translate_filter_ids() {
         assert!(f
             .state
             .media_storage
-            .get_media_mapping_by_virtual(genre["Id"].as_str().unwrap())
+            .get_media_mapping_by_virtual(&genre["Id"].as_str().unwrap().into())
             .await
             .unwrap()
             .is_some());
@@ -349,14 +349,14 @@ async fn watched_actions_propagate_partial_failures_and_keep_member_actions_loca
         let (_, server) = f
             .state
             .media_storage
-            .get_media_mapping_with_server(&f.items[0])
+            .get_media_mapping_with_server(&f.items[0].as_str().into())
             .await
             .unwrap()
             .unwrap();
         let member = f
             .state
             .media_storage
-            .get_media_mapping_by_original(MOVIE, server.id)
+            .get_media_mapping_by_original(&MOVIE.into(), server.id)
             .await
             .unwrap()
             .unwrap();
@@ -373,9 +373,9 @@ async fn watched_actions_propagate_partial_failures_and_keep_member_actions_loca
             .mount(&f.upstreams[1])
             .await;
         let id = if explicit_member {
-            &member.virtual_media_id
+            member.virtual_media_id.as_str()
         } else {
-            &aggregate
+            aggregate.as_str()
         };
         let response = f
             .request(

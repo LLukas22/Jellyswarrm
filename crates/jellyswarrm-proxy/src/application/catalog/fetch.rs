@@ -9,7 +9,7 @@ use crate::application::media_services::MediaServices;
 use crate::{
     application::request::response::response_json_to_payload,
     auth::service::AuthorizationSession,
-    domain::ids::ServerId,
+    domain::ids::{ServerId, VirtualItemId},
     libraries::service::DiscoveredLibrary,
     protocol::caller::JellyfinAuthorization,
     protocol::models::{ItemsResponseVariants, ItemsResponseWithCount},
@@ -82,8 +82,8 @@ pub(super) async fn fetch_show_catalog(
         .url()
         .query_pairs()
         .find(|(key, _)| key.eq_ignore_ascii_case("SeasonId"))
-        .map(|(_, id)| id.into_owned());
-    let season_mappings = if let Some(id) = season_id.as_deref() {
+        .map(|(_, id)| VirtualItemId::from(id.as_ref()));
+    let season_mappings = if let Some(id) = season_id.as_ref() {
         if let Some(group) = state
             .media_storage
             .get_media_version_group(id)
@@ -138,7 +138,7 @@ pub(super) async fn fetch_show_catalog(
                 .query_pairs()
                 .map(|(key, value)| {
                     let value = if key.eq_ignore_ascii_case("SeasonId") {
-                        mapping.virtual_media_id.clone()
+                        mapping.virtual_media_id.as_str().to_owned()
                     } else {
                         value.into_owned()
                     };
@@ -889,19 +889,19 @@ mod tests {
         let server = servers.get_server_by_id(id).await.unwrap().unwrap();
         let media = MediaStorageService::new(pool.clone());
         let decoy = media
-            .get_or_create_media_mapping("wrong-parent", &server)
+            .get_or_create_media_mapping(&"wrong-parent".into(), &server)
             .await
             .unwrap();
         let parent = media
-            .get_or_create_media_mapping(&decoy.virtual_media_id, &server)
+            .get_or_create_media_mapping(&decoy.virtual_media_id.as_str().into(), &server)
             .await
             .unwrap();
         let season_decoy = media
-            .get_or_create_media_mapping("wrong-season", &server)
+            .get_or_create_media_mapping(&"wrong-season".into(), &server)
             .await
             .unwrap();
         let season = media
-            .get_or_create_media_mapping(&season_decoy.virtual_media_id, &server)
+            .get_or_create_media_mapping(&season_decoy.virtual_media_id.as_str().into(), &server)
             .await
             .unwrap();
         let state = MediaFixture::new(pool, AppConfig::default());
@@ -928,8 +928,8 @@ mod tests {
                 session,
                 server,
                 parent: Some(super::super::library_resolution::ResolvedCatalogParent {
-                    backend: parent.original_media_id.into(),
-                    member: parent.virtual_media_id.into(),
+                    backend: parent.original_media_id,
+                    member: parent.virtual_media_id,
                     requested: "aggregate".into(),
                 }),
             },
@@ -1067,7 +1067,7 @@ mod tests {
             let original_parent = target.parent.as_ref().unwrap().backend.as_str().to_owned();
             Mock::given(method("GET"))
                 .and(path(format!("/Shows/{original_parent}/{endpoint}")))
-                .and(query_param("sEaSoNiD", &season.original_media_id))
+                .and(query_param("sEaSoNiD", season.original_media_id.as_str()))
                 .and(query_param("Extension", "kept"))
                 .respond_with(
                     ResponseTemplate::new(200)
@@ -1080,7 +1080,7 @@ mod tests {
                 reqwest::Method::GET,
                 format!(
                     "http://proxy/Shows/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/{endpoint}?sEaSoNiD={}&Extension=kept",
-                    season.virtual_media_id
+                    season.virtual_media_id.as_str()
                 )
                 .parse()
                 .unwrap(),

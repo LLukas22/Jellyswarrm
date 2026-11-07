@@ -31,7 +31,7 @@ pub(crate) async fn resolve_server(
         .ok_or_else(|| anyhow!("no authorization sessions available"))?;
     let item_id = analysis
         .requested_play_item_id
-        .as_deref()
+        .as_ref()
         .ok_or_else(|| anyhow!("playback report requires an item"))?;
     let resolver = MediaTargetResolver {
         media: media_storage,
@@ -39,7 +39,7 @@ pub(crate) async fn resolve_server(
     let mut candidates = resolver
         .owners(
             item_id,
-            analysis.requested_play_source_id.as_deref(),
+            analysis.requested_play_source_id.as_ref(),
             analysis
                 .authoritative_play_session
                 .as_ref()
@@ -71,14 +71,14 @@ pub(crate) async fn resolve_member(
 ) -> Result<MediaMapping> {
     let item_id = analysis
         .requested_play_item_id
-        .as_deref()
+        .as_ref()
         .ok_or_else(|| anyhow!("playback report requires an item"))?;
     Ok(MediaTargetResolver {
         media: media_storage,
     }
     .member(
         item_id,
-        analysis.requested_play_source_id.as_deref(),
+        analysis.requested_play_source_id.as_ref(),
         analysis
             .authoritative_play_session
             .as_ref()
@@ -209,7 +209,7 @@ mod tests {
             .unwrap();
         let server = servers.get_server_by_id(id).await.unwrap().unwrap();
         let item = media
-            .get_or_create_media_mapping("item", &server)
+            .get_or_create_media_mapping(&"item".into(), &server)
             .await
             .unwrap();
         let mut analysis = RequestBodyAnalysisResult {
@@ -256,7 +256,7 @@ mod tests {
             .unwrap();
         let other = servers.get_server_by_id(other_id).await.unwrap().unwrap();
         let source = media
-            .get_or_create_media_mapping("source", &other)
+            .get_or_create_media_mapping(&"source".into(), &other)
             .await
             .unwrap();
         analysis.requested_play_source_id = Some(source.virtual_media_id);

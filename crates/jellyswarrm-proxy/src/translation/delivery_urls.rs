@@ -109,9 +109,10 @@ impl DeliveryUrlTranslator {
     async fn virtual_media_id(&self, id: &str, server: &Server) -> Result<String> {
         Ok(self
             .media
-            .get_or_create_media_mapping(id, server)
+            .get_or_create_media_mapping(&id.into(), server)
             .await?
-            .virtual_media_id)
+            .virtual_media_id
+            .into_string())
     }
 }
 
@@ -185,10 +186,11 @@ mod tests {
         let media = Arc::new(MediaStorageService::new(pool));
         let original = "11111111111111111111111111111111";
         let mapped = media
-            .get_or_create_media_mapping(original, &server)
+            .get_or_create_media_mapping(&original.into(), &server)
             .await
             .unwrap()
-            .virtual_media_id;
+            .virtual_media_id
+            .into_string();
         let translator = DeliveryUrlTranslator::new(media);
         let source = format!("/Videos/{original}/stream?MediaSourceId={original}&ApiKey=backend-secret&Tag=opaque#part");
         let translated = translator

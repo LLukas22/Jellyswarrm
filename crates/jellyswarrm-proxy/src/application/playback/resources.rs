@@ -11,6 +11,7 @@ use crate::{
         input::OperationRequest,
     },
     config::MediaStreamingMode,
+    domain::ids::{BackendItemId, PlaybackSessionId, ViewerId, VirtualItemId},
     playback::PlaybackSession,
     protocol::caller::JellyfinAuthorization,
     servers::storage::Server,
@@ -32,16 +33,17 @@ fn extract_stream_item_id(path: &str) -> Option<&str> {
     None
 }
 
-fn extract_play_session_id(url: &url::Url) -> Result<Option<String>, ApplicationError> {
+fn extract_play_session_id(url: &url::Url) -> Result<Option<PlaybackSessionId>, ApplicationError> {
     crate::translation::url_processor::play_session_id(url)
+        .map(|id| id.map(PlaybackSessionId::from))
         .map_err(ApplicationError::InvalidRouting)
 }
 
 async fn selected_play_session(
     state: &MediaServices,
     operation: &OperationRequest,
-    item_id: &str,
-    session_id: Option<&str>,
+    item_id: &VirtualItemId,
+    session_id: Option<&PlaybackSessionId>,
 ) -> Result<Option<PlaybackSession>, ApplicationError> {
     let Some(user_id) = request_user_id(&operation.context) else {
         return Ok(None);
@@ -57,7 +59,7 @@ async fn selected_play_session(
         &state.playback_registry,
         item_id,
         session_id,
-        user_id,
+        &user_id.into(),
         explicit_source,
     )
     .await
@@ -72,13 +74,14 @@ async fn delivery_target(
     state: &MediaServices,
     operation: &mut OperationRequest,
     initial: AuthorizedTarget,
-    item: &str,
+    item: &VirtualItemId,
     binding: Option<&PlaybackSession>,
     policy: SelectionPolicy,
 ) -> Result<AuthorizedTarget, ApplicationError> {
     let source =
         crate::translation::url_processor::selected_media_source(operation.original_request.url())
-            .map_err(ApplicationError::InvalidRouting)?;
+            .map_err(ApplicationError::InvalidRouting)?
+            .map(VirtualItemId::from);
     let plan = (MediaTargetResolver {
         media: &state.media_storage,
     })
@@ -87,7 +90,7 @@ async fn delivery_target(
         initial,
         PlaybackIntent {
             item,
-            source: source.as_deref(),
+            source: source.as_ref(),
             binding,
         },
         &state.server_storage,
@@ -108,7 +111,7 @@ async fn delivery_target(
             if let Some(url) = crate::protocol::url::replace_path_id(
                 operation.original_request.url(),
                 tag,
-                &member.virtual_media_id,
+                member.virtual_media_id.as_str(),
             ) {
                 *operation.original_request.url_mut() = url;
                 break;
@@ -229,9 +232,9 @@ pub(crate) async fn get_video_resource(
         .ok_or_else(|| {
             ApplicationError::InvalidInput("missing stream item").at(FailureStage::ResourceLookup)
         })?
-        .to_string();
+        .into();
     let session_id = extract_play_session_id(operation.original_request.url())?;
-    let binding = selected_play_session(state, &operation, &id, session_id.as_deref()).await?;
+    let binding = selected_play_session(state, &operation, &id, session_id.as_ref()).await?;
     if binding.is_none() && !resolved.server_matched_request {
         return Err(
             ApplicationError::MissingIdentity("resource owner").at(FailureStage::ResourceLookup)
@@ -269,11 +272,12 @@ pub(crate) async fn get_stream(
     let resolved = operation.resolve_target(state).await?;
     let proxy_api_key = proxy_api_key(&operation.context);
     let item_id =
-        extract_stream_item_id(operation.original_request.url().path()).map(str::to_string);
+        extract_stream_item_id(operation.original_request.url().path()).map(VirtualItemId::from);
     let session_id = extract_play_session_id(operation.original_request.url())?;
-    let user_id = request_user_id(&operation.context).map(str::to_string);
-    let play_session = if let Some(item_id) = item_id.as_deref() {
-        selected_play_session(state, &operation, item_id, session_id.as_deref()).await?
+    let user_id = request_user_id(&operation.context).map(ViewerId::from);
+    let delivery_item = item_id.clone().unwrap_or_else(|| "".into());
+    let play_session = if let Some(item_id) = item_id.as_ref() {
+        selected_play_session(state, &operation, item_id, session_id.as_ref()).await?
     } else {
         None
     };
@@ -283,14 +287,15 @@ pub(crate) async fn get_stream(
             state,
             &mut operation,
             resolved.target,
-            item_id.as_deref().unwrap_or_default(),
+            &delivery_item,
             None,
             SelectionPolicy::Direct,
         )
         .await?;
         let server = target.server().clone();
         let request = build_request(state, &target, &operation.original_request).await?;
-        let original_item_id = extract_stream_item_id(request.url().path()).map(str::to_string);
+        let original_item_id =
+            extract_stream_item_id(request.url().path()).map(BackendItemId::from);
         let response = forward_media_request(
             state,
             &server,
@@ -307,9 +312,9 @@ pub(crate) async fn get_stream(
         super::lifecycle::PlaybackLifecycle::new(&state.playback_registry)
             .direct_stream(
                 response.status,
-                session_id.as_deref(),
-                item_id.as_deref(),
-                user_id.as_deref(),
+                session_id.as_ref(),
+                item_id.as_ref(),
+                user_id.as_ref(),
                 server.id,
                 original_item_id,
             )
@@ -320,7 +325,7 @@ pub(crate) async fn get_stream(
         state,
         &mut operation,
         resolved.target,
-        item_id.as_deref().unwrap_or_default(),
+        &delivery_item,
         Some(&play_session),
         SelectionPolicy::Direct,
     )
@@ -385,7 +390,7 @@ mod tests {
         upstream.reset().await;
         let media = MediaStorageService::new(pool.clone());
         let item = media
-            .get_or_create_media_mapping("upstream-item", &server)
+            .get_or_create_media_mapping(&"upstream-item".into(), &server)
             .await
             .unwrap();
         let state = MediaFixture::new(pool, AppConfig::default());
@@ -407,7 +412,13 @@ mod tests {
             None,
             None,
         );
-        (state, server, context, item.virtual_media_id, upstream)
+        (
+            state,
+            server,
+            context,
+            item.virtual_media_id.into_string(),
+            upstream,
+        )
     }
 
     #[tokio::test]
@@ -500,8 +511,11 @@ mod tests {
             .unwrap()
             .into_parts();
         assert_eq!(binding.server_id, server.id);
-        assert_eq!(binding.item_id, item);
-        assert_eq!(binding.original_item_id.as_deref(), Some("upstream-item"));
+        assert_eq!(binding.item_id.as_str(), item);
+        assert_eq!(
+            binding.original_item_id.as_ref().map(|id| id.as_str()),
+            Some("upstream-item")
+        );
     }
 
     #[tokio::test]
@@ -527,14 +541,17 @@ mod tests {
             .unwrap()
             .into_parts();
         assert_eq!(binding.server_id, server.id);
-        assert_eq!(binding.original_item_id.as_deref(), Some("upstream-item"));
+        assert_eq!(
+            binding.original_item_id.as_ref().map(|id| id.as_str()),
+            Some("upstream-item")
+        );
         assert!(upstream.received_requests().await.unwrap().is_empty());
     }
 
     fn playback_session(session_id: &str, user_id: &str, server_id: i64) -> PlaybackSession {
         PlaybackSession {
-            session_id: session_id.to_string(),
-            item_id: "item-1".to_string(),
+            session_id: session_id.into(),
+            item_id: "item-1".into(),
             user_id: user_id.into(),
             server_id: ServerId::new(server_id),
             original_item_id: None,
@@ -563,11 +580,11 @@ mod tests {
         let session = matching_play_session(
             vec![playback_session("session-1", "user-1", 1)],
             None,
-            Some("user-1"),
+            Some(&"user-1".into()),
         )
         .unwrap();
 
-        assert_eq!(session.session_id, "session-1");
+        assert_eq!(session.session_id.as_str(), "session-1");
         assert_eq!(session.server_id, ServerId::new(1));
     }
 
@@ -579,11 +596,11 @@ mod tests {
                 playback_session("session-2", "user-2", 2),
             ],
             None,
-            Some("user-2"),
+            Some(&"user-2".into()),
         )
         .unwrap();
 
-        assert_eq!(session.session_id, "session-2");
+        assert_eq!(session.session_id.as_str(), "session-2");
         assert_eq!(session.server_id, ServerId::new(2));
     }
 
@@ -595,7 +612,7 @@ mod tests {
                 playback_session("session-2", "user-1", 2),
             ],
             None,
-            Some("user-1"),
+            Some(&"user-1".into()),
         );
 
         assert!(matches!(result, Err(2)));
@@ -606,7 +623,7 @@ mod tests {
         let result = matching_play_session(
             vec![playback_session("session-1", "user-1", 1)],
             None,
-            Some("user-2"),
+            Some(&"user-2".into()),
         );
 
         assert!(matches!(result, Err(0)));
@@ -616,8 +633,8 @@ mod tests {
     fn matching_play_session_does_not_replace_unknown_session() {
         let result = matching_play_session(
             vec![playback_session("session-1", "user-1", 1)],
-            Some("unknown"),
-            Some("user-1"),
+            Some(&"unknown".into()),
+            Some(&"user-1".into()),
         );
 
         assert!(matches!(result, Err(0)));

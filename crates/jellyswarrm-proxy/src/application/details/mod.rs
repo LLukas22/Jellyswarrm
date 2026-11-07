@@ -30,9 +30,9 @@ impl VirtualLibraryFallbackPolicy {
         members.sort_by(|left, right| {
             crate::servers::compare_routes(
                 &right.server,
-                &right.mapping.original_media_id,
+                right.mapping.original_media_id.as_str(),
                 &left.server,
-                &left.mapping.original_media_id,
+                left.mapping.original_media_id.as_str(),
             )
         });
     }
@@ -63,7 +63,7 @@ pub(crate) async fn get_item_detail(
     ) {
         if let Some((group, owner)) = state
             .media_storage
-            .get_media_version_detail_route(item_id, scope.user_id())
+            .get_media_version_detail_route(&item_id.into(), scope.user_id())
             .await
             .map_err(ApplicationError::Storage)?
         {
@@ -132,7 +132,7 @@ pub(crate) async fn get_item_detail(
             let mut fallback = None;
             for member in library.members {
                 if member.server.id == server.id
-                    && failed_id.as_deref() == Some(&member.mapping.original_media_id)
+                    && failed_id.as_deref() == Some(member.mapping.original_media_id.as_str())
                 {
                     continue;
                 }

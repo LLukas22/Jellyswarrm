@@ -38,7 +38,7 @@ impl PreserveActiveNegotiatedSources {
         refreshed_members: &[i64],
     ) -> bool {
         route.member_mapping.server_id == session.server_id
-            && session.original_item_id.as_deref() == Some(&route.member_mapping.original_media_id)
+            && session.original_item_id.as_ref() == Some(&route.member_mapping.original_media_id)
             && refreshed_members.contains(&route.member_mapping.id)
     }
 }
@@ -49,7 +49,7 @@ pub(super) fn normalize_detail_member(
     request: &mut reqwest::Request,
     mapping: &MediaMapping,
 ) -> Result<(), ApplicationError> {
-    *request.url_mut() = replace_path_id(request.url(), "Items", &mapping.virtual_media_id)
+    *request.url_mut() = replace_path_id(request.url(), "Items", mapping.virtual_media_id.as_str())
         .ok_or(ApplicationError::InvalidInput("missing item path"))?;
     Ok(())
 }
@@ -96,7 +96,7 @@ pub(crate) async fn merge_media_detail(
     }
     let aggregate_group = state
         .media_storage
-        .get_media_version_group(context.requested_item_id)
+        .get_media_version_group(&context.requested_item_id.into())
         .await
         .map_err(storage_error)?;
     let is_aggregate = aggregate_group.is_some();
@@ -107,7 +107,7 @@ pub(crate) async fn merge_media_detail(
     let mut item: MediaItem = response_json_to_payload(payload.clone())?;
     let Some(base_mapping) = state
         .media_storage
-        .get_media_mapping_by_virtual(&item.id)
+        .get_media_mapping_by_virtual(&item.id.as_str().into())
         .await
         .map_err(storage_error)?
     else {
@@ -148,7 +148,7 @@ pub(crate) async fn merge_media_detail(
         item.media_sources = Some(sources);
     }
     if is_aggregate {
-        item.id = group.virtual_media_id.clone();
+        item.id = group.virtual_media_id.as_str().to_owned();
         if crate::media::identity::MediaKind::from_item_kind(&item.item_type)
             .is_some_and(|kind| kind.has_media_sources())
         {
@@ -169,7 +169,7 @@ pub(crate) async fn merge_media_detail(
     if let Some(scope) = context.access_scope {
         for session in state
             .playback_registry
-            .sessions_for_user(scope.user_id())
+            .sessions_for_user(&scope.user_id().into())
             .await
         {
             let Some(route) = state
@@ -207,7 +207,7 @@ pub(crate) async fn merge_media_detail(
         for source in item.media_sources.take().unwrap_or_default() {
             if state
                 .media_storage
-                .get_media_version_source_route(group.id, &source.id)
+                .get_media_version_source_route(group.id, &source.id.as_str().into())
                 .await
                 .map_err(storage_error)?
                 .is_some()
@@ -238,18 +238,19 @@ pub(crate) async fn preserve_media_parent_groups(
                 Some(scope) => {
                     state
                         .media_storage
-                        .get_media_parent_group_id_for_scope(id, viewer, Some(scope))
+                        .get_media_parent_group_id_for_scope(&id.into(), viewer, Some(scope))
                         .await
                 }
                 None => {
                     state
                         .media_storage
-                        .get_media_parent_group_id(id, viewer)
+                        .get_media_parent_group_id(&id.into(), viewer)
                         .await
                 }
             }
             .map_err(storage_error)?;
             if let Some(aggregate) = aggregate {
+                let aggregate = aggregate.into_string();
                 if item.parent_id.as_deref() == Some(id) {
                     item.parent_id = Some(aggregate.clone());
                 }
@@ -286,9 +287,9 @@ fn authorized_hosts(
 fn compare_hosts(left: &VersionHost, right: &VersionHost) -> std::cmp::Ordering {
     compare_routes(
         &left.server,
-        &left.member.mapping.original_media_id,
+        left.member.mapping.original_media_id.as_str(),
         &right.server,
-        &right.member.mapping.original_media_id,
+        right.member.mapping.original_media_id.as_str(),
     )
     .reverse()
 }
@@ -299,9 +300,9 @@ fn compare_hosted_sources(
 ) -> std::cmp::Ordering {
     compare_routes(
         &left.server,
-        &left.member_mapping.original_media_id,
+        left.member_mapping.original_media_id.as_str(),
         &right.server,
-        &right.member_mapping.original_media_id,
+        right.member_mapping.original_media_id.as_str(),
     )
     .reverse()
 }
@@ -421,7 +422,7 @@ fn merge_sources(
             }
             observations.push(MediaVersionSourceObservation {
                 member_mapping_id: hosted.member_mapping.id,
-                source_virtual_id: source.id.clone(),
+                source_virtual_id: source.id.as_str().into(),
             });
             sources.push(source);
         }
@@ -496,8 +497,8 @@ mod tests {
     fn mapping(id: i64, server_id: i64) -> MediaMapping {
         MediaMapping {
             id,
-            virtual_media_id: format!("virtual-{id}"),
-            original_media_id: format!("original-{id}"),
+            virtual_media_id: format!("virtual-{id}").into(),
+            original_media_id: format!("original-{id}").into(),
             server_id: crate::domain::ids::ServerId::new(server_id),
             server_url: "http://example:8096".to_string(),
             created_at: chrono::Utc::now(),
@@ -605,7 +606,7 @@ mod tests {
             ]
         );
         for (index, (source, route)) in sources.iter().zip(&routes).enumerate() {
-            assert_eq!(route.source_virtual_id, source.id);
+            assert_eq!(route.source_virtual_id.as_str(), source.id);
             assert_eq!(route.member_mapping_id, (index / 2 + 1) as i64);
         }
     }
@@ -703,9 +704,9 @@ mod tests {
         assert_eq!(sources[0].source_type.as_deref(), None);
         assert_eq!(sources[1].source_type.as_deref(), Some("Grouping"));
         assert_eq!(observations[0].member_mapping_id, 1);
-        assert_eq!(observations[0].source_virtual_id, "source-a");
+        assert_eq!(observations[0].source_virtual_id.as_str(), "source-a");
         assert_eq!(observations[1].member_mapping_id, 2);
-        assert_eq!(observations[1].source_virtual_id, "source-b");
+        assert_eq!(observations[1].source_virtual_id.as_str(), "source-b");
     }
 
     #[test]
@@ -753,7 +754,7 @@ mod tests {
         assert_eq!(sources[1].id, "original-source");
         assert_eq!(sources[1].source_type.as_deref(), Some("Grouping"));
         assert_eq!(routes[0].member_mapping_id, 2);
-        assert_eq!(routes[0].source_virtual_id, "selected-source");
+        assert_eq!(routes[0].source_virtual_id.as_str(), "selected-source");
     }
 
     #[test]

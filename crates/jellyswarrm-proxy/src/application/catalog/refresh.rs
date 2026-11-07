@@ -93,8 +93,8 @@ pub(crate) async fn refresh(
             session: session.clone(),
             server: member.server,
             parent: Some(ResolvedCatalogParent {
-                backend: member.mapping.original_media_id.into(),
-                member: member.mapping.virtual_media_id.into(),
+                backend: member.mapping.original_media_id,
+                member: member.mapping.virtual_media_id,
                 requested: input.library_id.clone().into(),
             }),
         });

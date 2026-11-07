@@ -120,7 +120,7 @@ impl RequestContext {
         if let Some(scope) = &self.access_scope {
             for tag in MEDIA_ID_PATH_TAGS {
                 if let Some(id) = crate::protocol::url::contains_id(url, tag) {
-                    urls.validate_media_access(&id, scope).await?;
+                    urls.validate_media_access(&id.into(), scope).await?;
                 }
             }
             for (key, value) in url.query_pairs() {
@@ -129,13 +129,14 @@ impl RequestContext {
                     .any(|tag| key.eq_ignore_ascii_case(tag))
                 {
                     for id in value.split(',') {
-                        urls.validate_media_access(id, scope).await?;
+                        urls.validate_media_access(&id.into(), scope).await?;
                     }
                 }
             }
             if let Some(analysis) = analysis {
                 for id in &analysis.found_ids {
-                    urls.validate_media_access(id, scope).await?;
+                    urls.validate_media_access(&id.as_str().into(), scope)
+                        .await?;
                 }
             }
         }

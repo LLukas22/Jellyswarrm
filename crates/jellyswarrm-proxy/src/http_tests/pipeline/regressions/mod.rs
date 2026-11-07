@@ -48,10 +48,10 @@ async fn regression_play_queue_lookup_preserves_requested_aggregate_ids() {
     let members = f
         .state
         .media_storage
-        .get_media_version_members_by_virtual_id(&aggregate)
+        .get_media_version_members_by_virtual_id(&aggregate.as_str().into())
         .await
         .unwrap();
-    let member = &members[0].mapping.virtual_media_id;
+    let member = members[0].mapping.virtual_media_id.as_str();
     let result = catalog(
         &f,
         &format!("/Items?Ids={aggregate}&ids={member}&StartIndex=1&Limit=1"),
@@ -88,7 +88,7 @@ async fn regression_filtered_playback_keeps_sibling_versions_playable() {
     let (_, server) = f
         .state
         .media_storage
-        .get_media_mapping_with_server(&f.items[0])
+        .get_media_mapping_with_server(&f.items[0].as_str().into())
         .await
         .unwrap()
         .unwrap();
@@ -97,11 +97,12 @@ async fn regression_filtered_playback_keeps_sibling_versions_playable() {
         sources.push(
             f.state
                 .media_storage
-                .get_media_mapping_by_original(original, server.id)
+                .get_media_mapping_by_original(&original.into(), server.id)
                 .await
                 .unwrap()
                 .unwrap()
-                .virtual_media_id,
+                .virtual_media_id
+                .into_string(),
         );
     }
     // Jellyfin's ResolvePlaybackMediaSources filters the response to MediaSourceId.
@@ -154,7 +155,7 @@ async fn regression_redirect_authenticates_at_the_backend() {
     let (mapping, server) = f
         .state
         .media_storage
-        .get_media_mapping_with_server(&f.items[0])
+        .get_media_mapping_with_server(&f.items[0].as_str().into())
         .await
         .unwrap()
         .unwrap();
@@ -163,7 +164,7 @@ async fn regression_redirect_authenticates_at_the_backend() {
         .update_server_media_streaming_mode(server.id, MediaStreamingMode::Redirect)
         .await
         .unwrap();
-    let upstream_path = format!("/Videos/{}/master.m3u8", mapping.original_media_id);
+    let upstream_path = format!("/Videos/{}/master.m3u8", mapping.original_media_id.as_str());
     Mock::given(path(&upstream_path))
         .respond_with(ResponseTemplate::new(401))
         .with_priority(10)
@@ -212,19 +213,19 @@ async fn regression_playback_delivery_urls_reach_exact_subtitle_and_attachment()
     let (mapping, _) = f
         .state
         .media_storage
-        .get_media_mapping_with_server(&f.items[0])
+        .get_media_mapping_with_server(&f.items[0].as_str().into())
         .await
         .unwrap()
         .unwrap();
     let subtitle = format!(
         "/Videos/{}/{SOURCE_A}/Subtitles/3/123456789/Stream.ass",
-        mapping.original_media_id
+        mapping.original_media_id.as_str()
     );
     let attachment = format!(
         "/Videos/{}/{SOURCE_A}/Attachments/5",
-        mapping.original_media_id
+        mapping.original_media_id.as_str()
     );
-    Mock::given(method("POST")).and(path(format!("/Items/{}/PlaybackInfo", mapping.original_media_id)))
+    Mock::given(method("POST")).and(path(format!("/Items/{}/PlaybackInfo", mapping.original_media_id.as_str())))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"PlaySessionId": "subtitle-play", "MediaSources": [{
             "Id": SOURCE_A, "MediaStreams": [{"Index": 3, "Type": "Subtitle", "DeliveryUrl": format!("{subtitle}?api_key=backend-token-0&Tag=opaque")}],
             "MediaAttachments": [{"DeliveryUrl": format!("{attachment}?api_key=backend-token-0&MediaSourceId={SOURCE_A}")}]
@@ -316,13 +317,18 @@ async fn regression_guide_sort_is_chronological_before_pagination() {
         programs.push(
             f.state
                 .media_storage
-                .get_media_mapping_with_server(item)
+                .get_media_mapping_with_server(&item.as_str().into())
                 .await
                 .unwrap()
                 .unwrap(),
         );
     }
-    programs.sort_by(|left, right| left.0.virtual_media_id.cmp(&right.0.virtual_media_id));
+    programs.sort_by(|left, right| {
+        left.0
+            .virtual_media_id
+            .as_str()
+            .cmp(right.0.virtual_media_id.as_str())
+    });
     for (index, (mapping, server)) in programs.iter().enumerate() {
         let upstream = f
             .upstreams
@@ -335,7 +341,7 @@ async fn regression_guide_sort_is_chronological_before_pagination() {
             "2026-10-10T10:00:00Z"
         };
         Mock::given(path("/LiveTv/Programs")).respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "Items": [{"Id": mapping.original_media_id, "Type": "Program", "StartDate": date}], "TotalRecordCount": 1, "StartIndex": 0
+            "Items": [{"Id": mapping.original_media_id.as_str(), "Type": "Program", "StartDate": date}], "TotalRecordCount": 1, "StartIndex": 0
         }))).mount(upstream).await;
     }
     let result = catalog(&f, "/LiveTv/Programs?SortBy=StartDate&Limit=1").await;

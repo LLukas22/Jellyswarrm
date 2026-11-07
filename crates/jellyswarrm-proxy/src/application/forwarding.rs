@@ -126,7 +126,7 @@ async fn prepare_report(
     if let Some(object) = rewritten.as_object_mut() {
         for (key, value) in object.iter_mut() {
             if key.eq_ignore_ascii_case("ItemId") {
-                *value = Value::String(member.virtual_media_id.clone());
+                *value = Value::String(member.virtual_media_id.as_str().to_owned());
             }
         }
     }
@@ -141,7 +141,7 @@ async fn prepare_report(
         Some(analysis),
         input.context.user().map(|user| user.id.as_str()),
         owner.server.id,
-        Some(member.original_media_id.as_str()),
+        Some(&member.original_media_id),
     );
     let target = input
         .authorize_target(state, owner.server, Some(owner.session))
@@ -352,8 +352,13 @@ async fn observe_success(state: &MediaServices, prepared: &PreparedForward, is_m
     }) else {
         return;
     };
-    match EpisodeContinuity::prepare(&state.media_storage, &state.client_sessions, context, item)
-        .await
+    match EpisodeContinuity::prepare(
+        &state.media_storage,
+        &state.client_sessions,
+        context,
+        &item.into(),
+    )
+    .await
     {
         Ok(Some(continuity)) => {
             continuity
@@ -391,7 +396,7 @@ async fn update_aggregate(
     };
     let Some(group) = state
         .media_storage
-        .get_media_version_group(id)
+        .get_media_version_group(&id.as_str().into())
         .await
         .map_err(ApplicationError::Storage)?
     else {
@@ -415,9 +420,9 @@ async fn update_aggregate(
     members.sort_by(|left, right| {
         compare_routes(
             &right.server,
-            &right.mapping.original_media_id,
+            right.mapping.original_media_id.as_str(),
             &left.server,
-            &left.mapping.original_media_id,
+            left.mapping.original_media_id.as_str(),
         )
     });
     let mut targets = Vec::new();
@@ -433,9 +438,12 @@ async fn update_aggregate(
                 .ok_or(ApplicationError::MissingIdentity(
                     "buffered aggregate request",
                 ))?;
-        *upstream.url_mut() =
-            replace_path_id(upstream.url(), tag, &member.mapping.virtual_media_id)
-                .ok_or(ApplicationError::InvalidInput("aggregate path identity"))?;
+        *upstream.url_mut() = replace_path_id(
+            upstream.url(),
+            tag,
+            member.mapping.virtual_media_id.as_str(),
+        )
+        .ok_or(ApplicationError::InvalidInput("aggregate path identity"))?;
         let upstream = state.request_builder().build(&target, &upstream).await?;
         targets.push((upstream, member.server));
     }
@@ -466,7 +474,7 @@ async fn update_aggregate(
                 ))?
                 .insert(
                     "ItemId".into(),
-                    Value::String(group.virtual_media_id.clone()),
+                    Value::String(group.virtual_media_id.as_str().to_owned()),
                 );
             result = Some(data);
         }
@@ -509,7 +517,7 @@ mod tests {
         let server = servers.get_server_by_id(id).await.unwrap().unwrap();
         let media = MediaStorageService::new(pool.clone());
         let item = media
-            .get_or_create_media_mapping("upstream-item", &server)
+            .get_or_create_media_mapping(&"upstream-item".into(), &server)
             .await
             .unwrap();
         let state = MediaFixture::new(pool, AppConfig::default());
@@ -523,7 +531,7 @@ mod tests {
         );
         *original.body_mut() = Some(
             serde_json::to_vec(&serde_json::json!({
-                "ItemId": item.virtual_media_id, "PlaySessionId": "report-session",
+                "ItemId": item.virtual_media_id.as_str(), "PlaySessionId": "report-session",
                 "Extension": {"opaque":true},
             }))
             .unwrap()
@@ -565,7 +573,7 @@ mod tests {
             original_request: original,
             context,
             body_analysis: Some(RequestBodyAnalysisResult {
-                found_ids: vec![item.virtual_media_id.clone()],
+                found_ids: vec![item.virtual_media_id.as_str().to_owned()],
                 requested_play_item_id: Some(item.virtual_media_id),
                 requested_play_session_id: Some("report-session".into()),
                 ..Default::default()
@@ -668,6 +676,9 @@ mod tests {
             .unwrap()
             .into_parts();
         assert_eq!(binding.item_id, item);
-        assert_eq!(binding.original_item_id.as_deref(), Some("upstream-item"));
+        assert_eq!(
+            binding.original_item_id.as_ref().map(|id| id.as_str()),
+            Some("upstream-item")
+        );
     }
 }

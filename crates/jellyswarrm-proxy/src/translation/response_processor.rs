@@ -50,9 +50,9 @@ impl ResponseProcessor {
 
     async fn virtual_media_id(&self, id: &str, server: &Server) -> anyhow::Result<String> {
         self.media_storage
-            .get_or_create_media_mapping(id, server)
+            .get_or_create_media_mapping(&id.into(), server)
             .await
-            .map(|mapping| mapping.virtual_media_id)
+            .map(|mapping| mapping.virtual_media_id.into_string())
             .map_err(anyhow::Error::from)
     }
 

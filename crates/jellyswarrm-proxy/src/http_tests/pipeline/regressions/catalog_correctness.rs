@@ -123,7 +123,7 @@ async fn movie_inventory_removes_deleted_member_and_preserves_other_types() {
     assert_eq!(
         f.state
             .media_storage
-            .get_media_version_members_by_virtual_id(series)
+            .get_media_version_members_by_virtual_id(&series.into())
             .await
             .unwrap()
             .len(),
@@ -169,13 +169,13 @@ async fn offline_id_does_not_block_other_lookup_results() {
     let (mapping, _) = f
         .state
         .media_storage
-        .get_media_mapping_with_server(&f.items[0])
+        .get_media_mapping_with_server(&f.items[0].as_str().into())
         .await
         .unwrap()
         .unwrap();
-    Mock::given(path("/Items")).and(query_param("Ids", mapping.original_media_id.clone()))
+    Mock::given(path("/Items")).and(query_param("Ids", mapping.original_media_id.as_str()))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "Items": [{"Id": mapping.original_media_id, "Type": "Movie", "Name": "Online movie"}], "TotalRecordCount": 1, "StartIndex": 0
+            "Items": [{"Id": mapping.original_media_id.as_str(), "Type": "Movie", "Name": "Online movie"}], "TotalRecordCount": 1, "StartIndex": 0
         }))).mount(&f.upstreams[0]).await;
     f.upstreams[1].reset().await;
     Mock::given(method("GET"))
@@ -216,14 +216,14 @@ async fn batch_lookup_does_not_forward_unauthorized_ids() {
     let (online, _) = f
         .state
         .media_storage
-        .get_media_mapping_with_server(&f.items[0])
+        .get_media_mapping_with_server(&f.items[0].as_str().into())
         .await
         .unwrap()
         .unwrap();
     let (_, foreign_server) = f
         .state
         .media_storage
-        .get_media_mapping_with_server(&f.items[1])
+        .get_media_mapping_with_server(&f.items[1].as_str().into())
         .await
         .unwrap()
         .unwrap();
@@ -239,9 +239,9 @@ async fn batch_lookup_does_not_forward_unauthorized_ids() {
         .delete_server_mapping(mapping.id)
         .await
         .unwrap();
-    Mock::given(path("/Items")).and(query_param("Ids", online.original_media_id.clone()))
+    Mock::given(path("/Items")).and(query_param("Ids", online.original_media_id.as_str()))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "Items": [{"Id": online.original_media_id, "Type": "Movie"}], "TotalRecordCount": 1, "StartIndex": 0
+            "Items": [{"Id": online.original_media_id.as_str(), "Type": "Movie"}], "TotalRecordCount": 1, "StartIndex": 0
         }))).expect(1).mount(&f.upstreams[0]).await;
     let before = f.upstreams[1].received_requests().await.unwrap().len();
     let response = catalog(&f, &format!("/Items?Ids={},{}", f.items[1], f.items[0])).await;

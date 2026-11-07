@@ -97,7 +97,10 @@ pub(crate) async fn resolve_server(
     // fall back to an allowed server when their IDs belong to a forbidden one.
     if let (Some(scope), Some(analysis)) = (access_scope, request_body_result) {
         for id in &analysis.found_ids {
-            state.url_selection.validate_media_access(id, scope).await?;
+            state
+                .url_selection
+                .validate_media_access(&id.as_str().into(), scope)
+                .await?;
         }
     }
 
@@ -165,7 +168,7 @@ pub(crate) async fn server_from_body_media_aggregate_ids(
     for media_id in &analysis.found_ids {
         let members = state
             .media_storage
-            .get_media_version_members_by_virtual_id(media_id)
+            .get_media_version_members_by_virtual_id(&media_id.as_str().into())
             .await?;
         let mut healthy_members = Vec::new();
         for member in members {
@@ -182,9 +185,9 @@ pub(crate) async fn server_from_body_media_aggregate_ids(
         if let Some(member) = healthy_members.into_iter().max_by(|left, right| {
             compare_routes(
                 &left.server,
-                &left.mapping.original_media_id,
+                left.mapping.original_media_id.as_str(),
                 &right.server,
-                &right.mapping.original_media_id,
+                right.mapping.original_media_id.as_str(),
             )
         }) {
             return Ok(Some(member.server));
@@ -216,7 +219,7 @@ mod tests {
         let unknown = "0123456789abcdef0123456789abcdef";
         assert!(state
             .url_selection
-            .client_media_mapping(unknown, None, None)
+            .client_media_mapping(&unknown.into(), None, None)
             .await
             .unwrap()
             .is_none());
@@ -225,7 +228,7 @@ mod tests {
         assert!(matches!(
             state
                 .url_selection
-                .client_media_mapping(unknown, None, None)
+                .client_media_mapping(&unknown.into(), None, None)
                 .await,
             Err(sqlx::Error::PoolClosed)
         ));

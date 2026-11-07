@@ -47,7 +47,7 @@ pub(super) async fn restrict_named_ids(
         for id in ids {
             if state
                 .media_storage
-                .get_media_mapping_by_virtual(&id)
+                .get_media_mapping_by_virtual(&id.as_str().into())
                 .await
                 .map_err(ApplicationError::Storage)?
                 .is_some_and(|mapping| mapping.server_id == server_id)

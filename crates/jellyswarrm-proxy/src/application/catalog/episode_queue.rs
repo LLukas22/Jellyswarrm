@@ -14,6 +14,7 @@ use crate::{
         media_services::MediaServices,
         request::{context::Principal, input::OperationRequest},
     },
+    domain::ids::VirtualItemId,
     media::{
         presentation::ItemNamePolicy,
         scope::{MediaCatalogScope, MediaScopeKind},
@@ -121,11 +122,12 @@ impl WebEpisodeQueue {
             .position(|item| item["Id"].as_str() == Some(&self.anchor));
         let mut selected = exact;
         if selected.is_none() {
-            let mut members = vec![self.anchor.clone()];
+            let anchor = VirtualItemId::from(self.anchor.as_str());
+            let mut members = vec![anchor.clone()];
             members.extend(
                 state
                     .media_storage
-                    .get_media_version_members_by_virtual_id(&self.anchor)
+                    .get_media_version_members_by_virtual_id(&anchor)
                     .await
                     .map_err(ApplicationError::Storage)?
                     .into_iter()
@@ -133,7 +135,7 @@ impl WebEpisodeQueue {
             );
             if let Some((_, owner)) = state
                 .media_storage
-                .get_media_version_detail_route(&self.anchor, &self.viewer)
+                .get_media_version_detail_route(&anchor, &self.viewer)
                 .await
                 .map_err(ApplicationError::Storage)?
             {
@@ -148,7 +150,7 @@ impl WebEpisodeQueue {
                 {
                     selected = items
                         .iter()
-                        .position(|item| item["Id"].as_str() == Some(&group));
+                        .position(|item| item["Id"].as_str() == Some(group.as_str()));
                     if selected.is_some() {
                         break;
                     }

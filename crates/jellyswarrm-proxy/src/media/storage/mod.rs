@@ -7,9 +7,8 @@ use std::{
 
 use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 use tracing::{debug, trace};
-use uuid::Uuid;
 
-use crate::domain::ids::ServerId;
+use crate::domain::ids::{BackendItemId, ServerId, VirtualItemId};
 use crate::servers::storage::Server;
 use crate::{
     domain::security::generate_token,
@@ -28,7 +27,7 @@ pub(crate) use models::{
 #[derive(Debug)]
 struct ActiveMediaMember {
     mapping_id: i64,
-    virtual_media_id: String,
+    virtual_media_id: VirtualItemId,
     server_id: ServerId,
     group_id: Option<i64>,
     aliases: BTreeSet<MediaAlias>,

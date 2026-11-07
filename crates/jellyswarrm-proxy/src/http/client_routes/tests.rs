@@ -91,12 +91,12 @@ async fn check_selected_source_detail(catalog_scopes: &[&str]) {
             .unwrap();
         let owner = state
             .media_storage
-            .get_or_create_media_mapping(&owner_id, &server)
+            .get_or_create_media_mapping(&owner_id.as_str().into(), &server)
             .await
             .unwrap();
         let source = state
             .media_storage
-            .get_or_create_media_mapping(&source_id, &server)
+            .get_or_create_media_mapping(&source_id.as_str().into(), &server)
             .await
             .unwrap();
         snapshots.push(MediaCatalogSnapshot {
@@ -181,9 +181,12 @@ async fn check_selected_source_detail(catalog_scopes: &[&str]) {
     for (case, requested_id, selected, expected_id) in cases {
         let original_request = reqwest::Request::new(
             reqwest::Method::GET,
-            format!("http://localhost/Items/{requested_id}?userId=viewer")
-                .parse()
-                .unwrap(),
+            format!(
+                "http://localhost/Items/{}?userId=viewer",
+                requested_id.as_str()
+            )
+            .parse()
+            .unwrap(),
         );
         let context = RequestContext::new(
             &original_request,
@@ -202,7 +205,7 @@ async fn check_selected_source_detail(catalog_scopes: &[&str]) {
         )
         .await
         .unwrap_or_else(|status| panic!("{case}: detail returned {status}"));
-        assert_eq!(response["Id"], *expected_id, "{case}");
+        assert_eq!(response["Id"], expected_id.as_str(), "{case}");
         // This suffix is part of the upstream title, not proxy decoration.
         assert_eq!(
             response["Name"],
@@ -218,7 +221,8 @@ async fn check_selected_source_detail(catalog_scopes: &[&str]) {
         let merged = response["MediaSources"].as_array().unwrap();
         assert_eq!(merged.len(), 2, "{case}");
         assert_eq!(
-            merged[0]["Id"], sources[selected].virtual_media_id,
+            merged[0]["Id"],
+            sources[selected].virtual_media_id.as_str(),
             "{case}"
         );
         assert_eq!(merged[0]["Type"], "Default");
@@ -235,7 +239,7 @@ async fn check_selected_source_detail(catalog_scopes: &[&str]) {
         assert_eq!(merged[0]["SupportsDirectPlay"], true);
         assert_eq!(
             merged[1]["Id"],
-            sources[1 - selected].virtual_media_id,
+            sources[1 - selected].virtual_media_id.as_str(),
             "{case}"
         );
         assert_eq!(merged[1]["Type"], "Grouping");

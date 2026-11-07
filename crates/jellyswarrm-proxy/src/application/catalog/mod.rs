@@ -60,7 +60,7 @@ async fn is_aggregate_id(state: &MediaServices, url: &url::Url) -> Result<bool, 
     };
     Ok(state
         .media_storage
-        .get_media_version_group(&series_id)
+        .get_media_version_group(&series_id.into())
         .await
         .map_err(ApplicationError::Storage)?
         .is_some())
@@ -131,7 +131,7 @@ async fn get_show_children_catalog(
     }
     let Some(group) = state
         .media_storage
-        .get_media_version_group(&aggregate_id)
+        .get_media_version_group(&aggregate_id.as_str().into())
         .await
         .map_err(ApplicationError::Storage)?
     else {
@@ -168,8 +168,8 @@ async fn get_show_children_catalog(
             session,
             server,
             parent: Some(ResolvedCatalogParent {
-                backend: member.mapping.original_media_id.into(),
-                member: member.mapping.virtual_media_id.into(),
+                backend: member.mapping.original_media_id,
+                member: member.mapping.virtual_media_id,
                 requested: aggregate_id.clone().into(),
             }),
         });
@@ -180,7 +180,7 @@ async fn get_show_children_catalog(
     media_reconciliation::get_aggregate_show_items(
         state,
         preprocessed,
-        group.virtual_media_id,
+        group.virtual_media_id.into_string(),
         targets,
         skipped_targets,
     )

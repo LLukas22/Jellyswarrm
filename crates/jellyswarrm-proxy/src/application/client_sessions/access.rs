@@ -48,7 +48,7 @@ impl MediaAccess {
         for item in items {
             if self
                 .selection
-                .client_media_mapping(item, Some(&scope), None)
+                .client_media_mapping(&item.as_str().into(), Some(&scope), None)
                 .await?
                 .is_none()
             {
@@ -57,10 +57,14 @@ impl MediaAccess {
         }
         if let Some(source) = source_id {
             // A source selection applies to the first item; the queue retains virtual IDs.
-            if let Some(group) = self.media.get_media_version_group(&items[0]).await? {
+            if let Some(group) = self
+                .media
+                .get_media_version_group(&items[0].as_str().into())
+                .await?
+            {
                 let Some(route) = self
                     .media
-                    .get_media_version_source_route(group.id, source)
+                    .get_media_version_source_route(group.id, &source.into())
                     .await?
                 else {
                     return Ok(false);
@@ -74,14 +78,14 @@ impl MediaAccess {
             } else {
                 let Some(item) = self
                     .selection
-                    .client_media_mapping(&items[0], Some(&scope), None)
+                    .client_media_mapping(&items[0].as_str().into(), Some(&scope), None)
                     .await?
                 else {
                     return Ok(false);
                 };
                 if self
                     .selection
-                    .client_media_mapping(source, Some(&scope), Some(item.server_id))
+                    .client_media_mapping(&source.into(), Some(&scope), Some(item.server_id))
                     .await?
                     .is_none()
                 {

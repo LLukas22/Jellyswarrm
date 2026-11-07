@@ -298,7 +298,7 @@ mod tests {
             .unwrap();
         let server = registry.get_server_by_id(id).await.unwrap().unwrap();
         let mapping = media
-            .get_or_create_media_mapping("item", &server)
+            .get_or_create_media_mapping(&"item".into(), &server)
             .await
             .unwrap();
         assert_eq!(

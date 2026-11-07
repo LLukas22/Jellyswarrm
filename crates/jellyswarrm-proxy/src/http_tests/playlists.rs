@@ -173,13 +173,16 @@ impl Fixture {
         let anchor = self
             .state
             .media_storage
-            .get_or_create_media_mapping("anchor", &self.servers[index])
+            .get_or_create_media_mapping(&"anchor".into(), &self.servers[index])
             .await
             .unwrap();
         let response = self
             .request(
                 Method::GET,
-                &format!("/TestSongs{index}?ParentId={}", anchor.virtual_media_id),
+                &format!(
+                    "/TestSongs{index}?ParentId={}",
+                    anchor.virtual_media_id.as_str()
+                ),
                 None,
             )
             .await;
@@ -236,7 +239,7 @@ async fn collection_membership_writes_translate_owner_and_movie_ids() {
     let collection = f
         .state
         .media_storage
-        .get_or_create_media_mapping("collection", &f.servers[1])
+        .get_or_create_media_mapping(&"collection".into(), &f.servers[1])
         .await
         .unwrap();
     for method in [Method::POST, Method::DELETE] {
@@ -252,7 +255,7 @@ async fn collection_membership_writes_translate_owner_and_movie_ids() {
                 method,
                 &format!(
                     "/Collections/{}/Items?Ids={movie}",
-                    collection.virtual_media_id
+                    collection.virtual_media_id.as_str()
                 ),
                 None
             )
@@ -277,7 +280,7 @@ async fn collection_writes_reject_foreign_unknown_and_malformed_ids_before_forwa
     let collection = f
         .state
         .media_storage
-        .get_or_create_media_mapping("collection", &f.servers[0])
+        .get_or_create_media_mapping(&"collection".into(), &f.servers[0])
         .await
         .unwrap();
     for invalid in [
@@ -292,7 +295,7 @@ async fn collection_writes_reject_foreign_unknown_and_malformed_ids_before_forwa
             (
                 format!(
                     "/Collections/{}/Items?Ids={invalid}",
-                    collection.virtual_media_id
+                    collection.virtual_media_id.as_str()
                 ),
                 None,
             ),
@@ -472,7 +475,7 @@ async fn encoded_container_paths_use_the_same_owner_for_validation_and_translati
         let mapping = f
             .state
             .media_storage
-            .get_or_create_media_mapping(backend, &f.servers[1])
+            .get_or_create_media_mapping(&backend.into(), &f.servers[1])
             .await
             .unwrap();
         Mock::given(method("POST"))
@@ -488,7 +491,7 @@ async fn encoded_container_paths_use_the_same_owner_for_validation_and_translati
                 &format!(
                     "/{}/{}/%49tems?Ids={movie}",
                     encoded(tag),
-                    encoded(&mapping.virtual_media_id)
+                    encoded(mapping.virtual_media_id.as_str())
                 ),
                 None,
             )
@@ -509,7 +512,7 @@ async fn encoded_container_paths_use_the_same_owner_for_validation_and_translati
                     &format!(
                         "/{}/{}/%55sers",
                         encoded(tag),
-                        encoded(&mapping.virtual_media_id)
+                        encoded(mapping.virtual_media_id.as_str())
                     ),
                     None,
                 )

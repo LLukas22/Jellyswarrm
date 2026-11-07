@@ -151,10 +151,13 @@ impl Fixture {
                 .unwrap();
             let mapping = state
                 .media_storage
-                .get_or_create_media_mapping(&uuid::Uuid::new_v4().simple().to_string(), &server)
+                .get_or_create_media_mapping(
+                    &uuid::Uuid::new_v4().simple().to_string().as_str().into(),
+                    &server,
+                )
                 .await
                 .unwrap();
-            items.push(mapping.virtual_media_id);
+            items.push(mapping.virtual_media_id.into_string());
             upstreams.push(upstream);
         }
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -261,10 +264,11 @@ impl Fixture {
     pub(super) async fn original(&self, index: usize) -> String {
         self.state
             .media_storage
-            .get_media_mapping_by_virtual(&self.items[index])
+            .get_media_mapping_by_virtual(&self.items[index].as_str().into())
             .await
             .unwrap()
             .unwrap()
             .original_media_id
+            .into_string()
     }
 }

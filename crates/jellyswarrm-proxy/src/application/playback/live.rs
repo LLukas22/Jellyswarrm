@@ -5,7 +5,6 @@
 use super::target::MediaTargetResolver;
 use crate::application::error::FailureStage;
 use crate::application::media_services::MediaServices;
-use crate::media::storage::MediaStorageService;
 use hyper::StatusCode;
 use serde_json::Value;
 
@@ -257,16 +256,18 @@ pub(crate) async fn post_livestream_open(
         ))?;
     let item_id = field(&preprocessed.original_request, &payload, "ItemId")?
         .ok_or(ApplicationError::InvalidInput("missing live item"))?;
-    let item_id = MediaStorageService::normalize_uuid(&item_id);
+    let item_id = crate::domain::ids::VirtualItemId::from(item_id).normalized();
     let item_id = &item_id;
+    let viewer = crate::domain::ids::ViewerId::from(scope.user_id());
+    let play_session = crate::domain::ids::PlaybackSessionId::from(session_id.as_str());
     let binding = (MediaTargetResolver {
         media: &state.media_storage,
     })
     .session(
         &state.playback_registry,
         item_id,
-        Some(&session_id),
-        scope.user_id(),
+        Some(&play_session),
+        &viewer,
         false,
     )
     .await
@@ -288,7 +289,7 @@ pub(crate) async fn post_livestream_open(
     let original_item_id =
         binding
             .original_item_id
-            .as_deref()
+            .as_ref()
             .ok_or(ApplicationError::InvalidInput(
                 "missing bound upstream item",
             ))?;
@@ -324,7 +325,7 @@ pub(crate) async fn post_livestream_open(
         .query_pairs_mut()
         .clear()
         .extend_pairs(pairs)
-        .append_pair("ItemId", &member.virtual_media_id)
+        .append_pair("ItemId", member.virtual_media_id.as_str())
         .append_pair("PlaySessionId", &session_id);
     let object = payload
         .as_object_mut()
@@ -336,7 +337,10 @@ pub(crate) async fn post_livestream_open(
             .iter()
             .any(|field| key.eq_ignore_ascii_case(field))
     });
-    object.insert("ItemId".into(), Value::String(original_item_id.into()));
+    object.insert(
+        "ItemId".into(),
+        Value::String(original_item_id.as_str().into()),
+    );
     object.insert(
         "UserId".into(),
         Value::String(session.original_user_id.clone()),
@@ -382,9 +386,9 @@ pub(crate) async fn post_livestream_open(
         .map_err(|error| {
             ApplicationError::Internal(error.into()).at(FailureStage::PlaybackCommit)
         })?;
-    track_play_session(source, &session_id, scope.user_id(), server, state).await;
+    track_play_session(source, &play_session, &viewer, server, state).await;
     super::lifecycle::PlaybackLifecycle::new(&state.playback_registry)
-        .bind_original(&session_id, scope.user_id(), server.id, original_item_id)
+        .bind_original(&play_session, &viewer, server.id, original_item_id)
         .await;
     Ok(response)
 }

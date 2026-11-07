@@ -29,7 +29,7 @@ async fn migrated_service() -> (SqlitePool, MediaStorageService) {
 
 fn tmdb_movie_observation(virtual_media_id: &str, provider_id: &str) -> MediaObservation {
     MediaObservation {
-        virtual_media_id: virtual_media_id.to_string(),
+        virtual_media_id: virtual_media_id.into(),
         kind: MediaKind::Movie,
         aliases: BTreeSet::from([MediaAlias {
             provider: crate::media::identity::MediaProvider::Tmdb,
@@ -55,7 +55,7 @@ async fn episode_continuity_parent_uses_persisted_viewer_scoped_unambiguous_iden
     for original in ["episode-a", "episode-b"] {
         members.push(
             service
-                .get_or_create_media_mapping(original, &server)
+                .get_or_create_media_mapping(&original.into(), &server)
                 .await
                 .unwrap(),
         );
@@ -97,7 +97,7 @@ async fn episode_continuity_parent_uses_persisted_viewer_scoped_unambiguous_iden
             Some(parent)
         );
         if scope.ends_with("alice") {
-            aggregate = id.clone();
+            aggregate = id.as_str().to_owned();
         }
     }
     assert_eq!(
@@ -110,7 +110,7 @@ async fn episode_continuity_parent_uses_persisted_viewer_scoped_unambiguous_iden
     );
     assert_eq!(
         service
-            .get_episode_series_id(&aggregate, "bob")
+            .get_episode_series_id(&aggregate.as_str().into(), "bob")
             .await
             .unwrap(),
         None
@@ -124,7 +124,7 @@ async fn episode_continuity_parent_uses_persisted_viewer_scoped_unambiguous_iden
     );
     assert_eq!(
         service
-            .get_episode_series_id("missing", "alice")
+            .get_episode_series_id(&"missing".into(), "alice")
             .await
             .unwrap(),
         None
@@ -235,14 +235,17 @@ async fn validated_inventory_keeps_observations_bounded_and_missing_sources_non_
     let mut snapshots = Vec::new();
     for server in &servers {
         let mapping = service
-            .get_or_create_media_mapping("movie", server)
+            .get_or_create_media_mapping(&"movie".into(), server)
             .await
             .unwrap();
         snapshots.push(MediaCatalogSnapshot {
             source_key: format!("source-{}", server.id),
             server_id: server.id,
             complete: false,
-            observations: vec![tmdb_movie_observation(&mapping.virtual_media_id, "42")],
+            observations: vec![tmdb_movie_observation(
+                mapping.virtual_media_id.as_str(),
+                "42",
+            )],
         });
     }
     let evidence = |status| {
@@ -338,10 +341,10 @@ async fn typed_inventory_removals_fence_old_scans_without_pruning_other_types() 
     let mut observations = Vec::new();
     for kind in MediaKind::ALL {
         let mapping = service
-            .get_or_create_media_mapping(kind.as_str(), &server)
+            .get_or_create_media_mapping(&kind.as_str().into(), &server)
             .await
             .unwrap();
-        let mut observation = tmdb_movie_observation(&mapping.virtual_media_id, "42");
+        let mut observation = tmdb_movie_observation(mapping.virtual_media_id.as_str(), "42");
         observation.kind = kind;
         observation.aliases = observation
             .aliases
@@ -355,7 +358,7 @@ async fn typed_inventory_removals_fence_old_scans_without_pruning_other_types() 
     }
     // A type is known even if the backend supplies no provider IDs.
     let unknown = service
-        .get_or_create_media_mapping("unidentified-movie", &server)
+        .get_or_create_media_mapping(&"unidentified-movie".into(), &server)
         .await
         .unwrap();
     observations.push(MediaObservation {
@@ -442,7 +445,7 @@ async fn typed_inventory_migration_preserves_ids_and_backfills_existing_members(
     let (pool, service) = migrated_service().await;
     let server = create_test_server_with_url(&pool, "http://upgrade:8096").await;
     let mapping = service
-        .get_or_create_media_mapping("movie", &server)
+        .get_or_create_media_mapping(&"movie".into(), &server)
         .await
         .unwrap();
     let generation = service.begin_media_reconciliation().await.unwrap();
@@ -454,7 +457,10 @@ async fn typed_inventory_migration_preserves_ids_and_backfills_existing_members(
                 source_key: "library".into(),
                 server_id: server.id,
                 complete: true,
-                observations: vec![tmdb_movie_observation(&mapping.virtual_media_id, "42")],
+                observations: vec![tmdb_movie_observation(
+                    mapping.virtual_media_id.as_str(),
+                    "42",
+                )],
             }],
             true,
         )
@@ -542,15 +548,15 @@ async fn playback_source_observations_preserve_siblings_and_respect_full_refresh
     let (pool, service) = migrated_service().await;
     let server = create_test_server(&pool).await;
     let owner = service
-        .get_or_create_media_mapping("owner", &server)
+        .get_or_create_media_mapping(&"owner".into(), &server)
         .await
         .unwrap();
     let source_a = service
-        .get_or_create_media_mapping("source-a", &server)
+        .get_or_create_media_mapping(&"source-a".into(), &server)
         .await
         .unwrap();
     let source_b = service
-        .get_or_create_media_mapping("source-b", &server)
+        .get_or_create_media_mapping(&"source-b".into(), &server)
         .await
         .unwrap();
     let initial = service.begin_media_reconciliation().await.unwrap();
@@ -562,7 +568,10 @@ async fn playback_source_observations_preserve_siblings_and_respect_full_refresh
                 source_key: "library".into(),
                 server_id: server.id,
                 complete: true,
-                observations: vec![tmdb_movie_observation(&owner.virtual_media_id, "42")],
+                observations: vec![tmdb_movie_observation(
+                    owner.virtual_media_id.as_str(),
+                    "42",
+                )],
             }],
             true,
         )
@@ -641,7 +650,7 @@ async fn parent_navigation_accepts_filtered_subsets_but_rejects_incomparable_gro
         let server =
             create_test_server_with_url(&pool, &format!("http://server-{index}:8096")).await;
         let mapping = service
-            .get_or_create_media_mapping("series", &server)
+            .get_or_create_media_mapping(&"series".into(), &server)
             .await
             .unwrap();
         snapshots.push(MediaCatalogSnapshot {
@@ -690,7 +699,8 @@ async fn parent_navigation_accepts_filtered_subsets_but_rejects_incomparable_gro
             .get_media_parent_group_id(member, "viewer")
             .await
             .unwrap()
-            .as_deref(),
+            .as_ref()
+            .map(|id| id.as_str()),
         Some(groups[member].virtual_media_id.as_str())
     );
     assert!(service
@@ -707,11 +717,11 @@ async fn test_media_storage_service() {
 
     // Create media mapping
     let mapping = service
-        .get_or_create_media_mapping("original-media-123", &server)
+        .get_or_create_media_mapping(&"original-media-123".into(), &server)
         .await
         .unwrap();
 
-    assert_eq!(mapping.original_media_id, "original-media-123");
+    assert_eq!(mapping.original_media_id.as_str(), "original-media-123");
     assert_eq!(mapping.server_url, "http://localhost:8096");
 
     // Get mapping by virtual ID
@@ -722,7 +732,10 @@ async fn test_media_storage_service() {
         .unwrap();
 
     assert_eq!(retrieved_mapping.virtual_media_id, mapping.virtual_media_id);
-    assert_eq!(retrieved_mapping.original_media_id, "original-media-123");
+    assert_eq!(
+        retrieved_mapping.original_media_id.as_str(),
+        "original-media-123"
+    );
 }
 
 #[tokio::test]
@@ -732,7 +745,7 @@ async fn test_get_media_mapping_with_server() {
 
     // Create media mapping
     let mapping = service
-        .get_or_create_media_mapping("original-media-123", &server)
+        .get_or_create_media_mapping(&"original-media-123".into(), &server)
         .await
         .unwrap();
 
@@ -744,7 +757,10 @@ async fn test_get_media_mapping_with_server() {
         .unwrap();
 
     assert_eq!(retrieved_mapping.virtual_media_id, mapping.virtual_media_id);
-    assert_eq!(retrieved_mapping.original_media_id, "original-media-123");
+    assert_eq!(
+        retrieved_mapping.original_media_id.as_str(),
+        "original-media-123"
+    );
     assert_eq!(server.name, "http://localhost:8096");
     assert_eq!(server.url.as_str(), "http://localhost:8096");
 }
@@ -756,7 +772,7 @@ async fn test_delete_operations() {
 
     // Create media mapping
     let mapping = service
-        .get_or_create_media_mapping("media-123", &server)
+        .get_or_create_media_mapping(&"media-123".into(), &server)
         .await
         .unwrap();
 
@@ -790,10 +806,13 @@ async fn older_full_catalog_merges_after_newer_filtered_catalog() {
     let mut observations = Vec::new();
     for id in ["shared", "full-only", "filtered-only", "removed"] {
         let mapping = service
-            .get_or_create_media_mapping(id, &server)
+            .get_or_create_media_mapping(&id.into(), &server)
             .await
             .unwrap();
-        observations.push(tmdb_movie_observation(&mapping.virtual_media_id, id));
+        observations.push(tmdb_movie_observation(
+            mapping.virtual_media_id.as_str(),
+            id,
+        ));
     }
     let snapshot = |observations, complete| MediaCatalogSnapshot {
         source_key: "source".to_string(),
@@ -864,14 +883,17 @@ async fn stale_catalogs_cannot_revive_newer_full_removals() {
     let (pool, service) = migrated_service().await;
     let server = create_test_server(&pool).await;
     let mapping = service
-        .get_or_create_media_mapping("removed", &server)
+        .get_or_create_media_mapping(&"removed".into(), &server)
         .await
         .unwrap();
     let mut snapshot = MediaCatalogSnapshot {
         source_key: "source".to_string(),
         server_id: server.id,
         complete: true,
-        observations: vec![tmdb_movie_observation(&mapping.virtual_media_id, "42")],
+        observations: vec![tmdb_movie_observation(
+            mapping.virtual_media_id.as_str(),
+            "42",
+        )],
     };
     let initial = service.begin_media_reconciliation().await.unwrap();
     service
@@ -918,14 +940,17 @@ async fn overlapping_catalog_sources_have_independent_freshness() {
     for url in ["http://primary.example:8096", "http://sibling.example:8096"] {
         let server = create_test_server_with_url(&pool, url).await;
         let mapping = service
-            .get_or_create_media_mapping("movie", &server)
+            .get_or_create_media_mapping(&"movie".into(), &server)
             .await
             .unwrap();
         snapshots.push(MediaCatalogSnapshot {
             source_key: server.id.to_string(),
             server_id: server.id,
             complete: true,
-            observations: vec![tmdb_movie_observation(&mapping.virtual_media_id, "42")],
+            observations: vec![tmdb_movie_observation(
+                mapping.virtual_media_id.as_str(),
+                "42",
+            )],
         });
     }
     let older = service.begin_media_reconciliation().await.unwrap();
@@ -983,24 +1008,27 @@ async fn detail_routes_require_equivalent_viewer_scopes() {
     let primary = create_test_server_with_url(&pool, "http://primary.example:8096").await;
     let sibling = create_test_server_with_url(&pool, "http://sibling.example:8096").await;
     let owner = service
-        .get_or_create_media_mapping("owner", &sibling)
+        .get_or_create_media_mapping(&"owner".into(), &sibling)
         .await
         .unwrap();
     let source = service
-        .get_or_create_media_mapping("source", &sibling)
+        .get_or_create_media_mapping(&"source".into(), &sibling)
         .await
         .unwrap();
     let mut snapshots = Vec::new();
     for server in [&primary, &sibling] {
         let mapping = service
-            .get_or_create_media_mapping("owner", server)
+            .get_or_create_media_mapping(&"owner".into(), server)
             .await
             .unwrap();
         snapshots.push(MediaCatalogSnapshot {
             source_key: server.url.to_string(),
             server_id: server.id,
             complete: true,
-            observations: vec![tmdb_movie_observation(&mapping.virtual_media_id, "42")],
+            observations: vec![tmdb_movie_observation(
+                mapping.virtual_media_id.as_str(),
+                "42",
+            )],
         });
     }
     let mut first_viewer_group_id = None;
@@ -1113,7 +1141,7 @@ async fn detail_routes_require_equivalent_viewer_scopes() {
 
             // A different owner for the same source must also be refused.
             let other_owner = service
-                .get_or_create_media_mapping("other-owner", &sibling)
+                .get_or_create_media_mapping(&"other-owner".into(), &sibling)
                 .await
                 .unwrap();
             snapshots[1].observations[0].virtual_media_id = other_owner.virtual_media_id.clone();
@@ -1158,16 +1186,18 @@ async fn media_groups_have_stable_ids_and_exact_source_routes() {
     let sibling = create_test_server_with_url(&pool, "http://sibling.example:8096").await;
 
     let primary_mapping = service
-        .get_or_create_media_mapping("media-1", &primary)
+        .get_or_create_media_mapping(&"media-1".into(), &primary)
         .await
         .unwrap();
     let sibling_mapping = service
-        .get_or_create_media_mapping("media-1", &sibling)
+        .get_or_create_media_mapping(&"media-1".into(), &sibling)
         .await
         .unwrap();
 
-    let primary_observation = tmdb_movie_observation(&primary_mapping.virtual_media_id, "42");
-    let sibling_observation = tmdb_movie_observation(&sibling_mapping.virtual_media_id, "42");
+    let primary_observation =
+        tmdb_movie_observation(primary_mapping.virtual_media_id.as_str(), "42");
+    let sibling_observation =
+        tmdb_movie_observation(sibling_mapping.virtual_media_id.as_str(), "42");
     let generation = service.begin_media_reconciliation().await.unwrap();
     let assignments = service
         .reconcile_media_catalog(
@@ -1238,7 +1268,7 @@ async fn media_groups_have_stable_ids_and_exact_source_routes() {
     );
 
     let source_mapping = service
-        .get_or_create_media_mapping("source-1", &sibling)
+        .get_or_create_media_mapping(&"source-1".into(), &sibling)
         .await
         .unwrap();
     let source_generation = service.begin_media_reconciliation().await.unwrap();
@@ -1263,10 +1293,10 @@ async fn media_groups_have_stable_ids_and_exact_source_routes() {
     assert_eq!(route.member_mapping.id, sibling_mapping.id);
 
     let same_server_copy = service
-        .get_or_create_media_mapping("media-copy", &sibling)
+        .get_or_create_media_mapping(&"media-copy".into(), &sibling)
         .await
         .unwrap();
-    let copy_observation = tmdb_movie_observation(&same_server_copy.virtual_media_id, "42");
+    let copy_observation = tmdb_movie_observation(same_server_copy.virtual_media_id.as_str(), "42");
     let ambiguous_generation = service.begin_media_reconciliation().await.unwrap();
     let assignments = service
         .reconcile_media_catalog(
@@ -1336,11 +1366,11 @@ async fn media_groups_have_stable_ids_and_exact_source_routes() {
     assert!(!stale.contains_key(&sibling_mapping.virtual_media_id));
 
     let replacement_primary = service
-        .get_or_create_media_mapping("replacement-primary", &primary)
+        .get_or_create_media_mapping(&"replacement-primary".into(), &primary)
         .await
         .unwrap();
     let replacement_sibling = service
-        .get_or_create_media_mapping("replacement-sibling", &sibling)
+        .get_or_create_media_mapping(&"replacement-sibling".into(), &sibling)
         .await
         .unwrap();
     let replacement_generation = service.begin_media_reconciliation().await.unwrap();
@@ -1354,7 +1384,7 @@ async fn media_groups_have_stable_ids_and_exact_source_routes() {
                     server_id: primary.id,
                     complete: true,
                     observations: vec![tmdb_movie_observation(
-                        &replacement_primary.virtual_media_id,
+                        replacement_primary.virtual_media_id.as_str(),
                         "42",
                     )],
                 },
@@ -1363,7 +1393,7 @@ async fn media_groups_have_stable_ids_and_exact_source_routes() {
                     server_id: sibling.id,
                     complete: true,
                     observations: vec![tmdb_movie_observation(
-                        &replacement_sibling.virtual_media_id,
+                        replacement_sibling.virtual_media_id.as_str(),
                         "42",
                     )],
                 },
@@ -1484,18 +1514,21 @@ async fn removing_provider_ids_deletes_recorded_sources_only_in_the_current_scop
     let (pool, service) = migrated_service().await;
     let server = create_test_server(&pool).await;
     let mapping = service
-        .get_or_create_media_mapping("member", &server)
+        .get_or_create_media_mapping(&"member".into(), &server)
         .await
         .unwrap();
     let source = service
-        .get_or_create_media_mapping("source", &server)
+        .get_or_create_media_mapping(&"source".into(), &server)
         .await
         .unwrap();
     let mut snapshots = vec![MediaCatalogSnapshot {
         source_key: "library".to_string(),
         server_id: server.id,
         complete: true,
-        observations: vec![tmdb_movie_observation(&mapping.virtual_media_id, "42")],
+        observations: vec![tmdb_movie_observation(
+            mapping.virtual_media_id.as_str(),
+            "42",
+        )],
     }];
     let mut groups = Vec::new();
     for scope in ["scope-a", "scope-b"] {
@@ -1567,15 +1600,15 @@ async fn rebuilding_one_scope_does_not_move_another_scopes_source_routes() {
     let primary = create_test_server_with_url(&pool, "http://scope-a.example:8096").await;
     let sibling = create_test_server_with_url(&pool, "http://scope-b.example:8096").await;
     let primary_mapping = service
-        .get_or_create_media_mapping("media-primary", &primary)
+        .get_or_create_media_mapping(&"media-primary".into(), &primary)
         .await
         .unwrap();
     let sibling_mapping = service
-        .get_or_create_media_mapping("media-sibling", &sibling)
+        .get_or_create_media_mapping(&"media-sibling".into(), &sibling)
         .await
         .unwrap();
     let source_mapping = service
-        .get_or_create_media_mapping("source-sibling", &sibling)
+        .get_or_create_media_mapping(&"source-sibling".into(), &sibling)
         .await
         .unwrap();
     let snapshots = || {
@@ -1585,7 +1618,7 @@ async fn rebuilding_one_scope_does_not_move_another_scopes_source_routes() {
                 server_id: primary.id,
                 complete: true,
                 observations: vec![tmdb_movie_observation(
-                    &primary_mapping.virtual_media_id,
+                    primary_mapping.virtual_media_id.as_str(),
                     "42",
                 )],
             },
@@ -1594,7 +1627,7 @@ async fn rebuilding_one_scope_does_not_move_another_scopes_source_routes() {
                 server_id: sibling.id,
                 complete: true,
                 observations: vec![tmdb_movie_observation(
-                    &sibling_mapping.virtual_media_id,
+                    sibling_mapping.virtual_media_id.as_str(),
                     "42",
                 )],
             },

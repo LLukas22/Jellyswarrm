@@ -78,10 +78,10 @@ pub(crate) async fn fixture_member_parent_ids(
     for (_, server) in sessions {
         let mapping = state
             .media_storage
-            .get_or_create_media_mapping(original_parent_id, server)
+            .get_or_create_media_mapping(&original_parent_id.into(), server)
             .await
             .unwrap();
-        ids.insert(server.id, mapping.virtual_media_id);
+        ids.insert(server.id, mapping.virtual_media_id.into_string());
     }
     ids
 }
@@ -122,16 +122,16 @@ async fn request_independent_refresh_shares_paging_reconciliation_and_interactiv
         // member IDs may enter the shared request construction stage.
         let decoy = state
             .media_storage
-            .get_or_create_media_mapping("wrong-parent", server)
+            .get_or_create_media_mapping(&"wrong-parent".into(), server)
             .await
             .unwrap();
-        let original_parent = decoy.virtual_media_id;
+        let original_parent = decoy.virtual_media_id.into_string();
         state
             .virtual_library_service
             .add_member(
                 &library.virtual_id,
                 server.id,
-                &original_parent,
+                original_parent.as_str(),
                 "Movies",
                 "movies",
             )
@@ -202,7 +202,7 @@ async fn request_independent_refresh_shares_paging_reconciliation_and_interactiv
     for id in first_ids {
         let group = state
             .media_storage
-            .get_media_version_group(id.as_str().unwrap())
+            .get_media_version_group(&id.as_str().unwrap().into())
             .await
             .unwrap()
             .unwrap();
@@ -277,10 +277,11 @@ async fn catalog_service_boundaries_preserve_source_and_storage_causes() {
         ids.push(
             state
                 .media_storage
-                .get_or_create_media_mapping("movie", server)
+                .get_or_create_media_mapping(&"movie".into(), server)
                 .await
                 .unwrap()
-                .virtual_media_id,
+                .virtual_media_id
+                .into_string(),
         );
     }
     for upstream in &upstreams {
@@ -454,12 +455,12 @@ async fn series_tv_schedule_only_queries_the_series_server() {
     let (state, _pool, sessions, upstreams) = setup().await;
     let mapping = state
         .media_storage
-        .get_or_create_media_mapping("upstream-series", &sessions[1].1)
+        .get_or_create_media_mapping(&"upstream-series".into(), &sessions[1].1)
         .await
         .unwrap();
     let url = url::Url::parse(&format!(
         "http://localhost/LiveTv/Programs?LibrarySeriesId={}",
-        mapping.virtual_media_id
+        mapping.virtual_media_id.as_str()
     ))
     .unwrap();
     let scope =
@@ -498,12 +499,12 @@ async fn channel_tv_schedule_only_queries_the_channel_server() {
     let (state, _pool, sessions, upstreams) = setup().await;
     let mapping = state
         .media_storage
-        .get_or_create_media_mapping("upstream-channel", &sessions[1].1)
+        .get_or_create_media_mapping(&"upstream-channel".into(), &sessions[1].1)
         .await
         .unwrap();
     let url = url::Url::parse(&format!(
         "http://localhost/LiveTv/Programs?ChannelIds={}",
-        mapping.virtual_media_id
+        mapping.virtual_media_id.as_str()
     ))
     .unwrap();
     let scope =
@@ -546,17 +547,18 @@ async fn guide_programs_remap_channel_ids_on_each_server() {
         let original_id = format!("channel-{index}");
         let mapping = state
             .media_storage
-            .get_or_create_media_mapping(&original_id, server)
+            .get_or_create_media_mapping(&original_id.as_str().into(), server)
             .await
             .unwrap();
-        channel_ids.push(mapping.virtual_media_id);
+        channel_ids.push(mapping.virtual_media_id.into_string());
         timer_ids.push(
             state
                 .media_storage
-                .get_or_create_media_mapping(&format!("timer-{index}"), server)
+                .get_or_create_media_mapping(&format!("timer-{index}").into(), server)
                 .await
                 .unwrap()
-                .virtual_media_id,
+                .virtual_media_id
+                .into_string(),
         );
         Mock::given(method("GET"))
             .and(path("/LiveTv/Programs"))
@@ -741,7 +743,7 @@ async fn merged_library_show_routes_merge_localized_seasons_and_keep_navigation(
         assert_eq!(
             state
                 .media_storage
-                .get_media_version_members_by_virtual_id(id)
+                .get_media_version_members_by_virtual_id(&id.into())
                 .await
                 .unwrap()
                 .len(),
@@ -871,7 +873,7 @@ async fn episode_playback_queue_spans_servers_and_applies_start_before_paginatio
     assert_eq!(ids.len(), 4);
     let alternate = state
         .media_storage
-        .get_or_create_media_mapping("episode-2", &sessions[1].1)
+        .get_or_create_media_mapping(&"episode-2".into(), &sessions[1].1)
         .await
         .unwrap()
         .virtual_media_id;
@@ -1140,12 +1142,12 @@ async fn catalog_cache_contains_only_final_visible_items_and_titles() {
         for prefix in ["first", "second"] {
             let mapping = state
                 .media_storage
-                .get_or_create_media_mapping(&format!("{prefix}-{index}"), server)
+                .get_or_create_media_mapping(&format!("{prefix}-{index}").into(), server)
                 .await
                 .unwrap();
             assert!(state
                 .client_sessions
-                .media_metadata(token, &mapping.virtual_media_id)
+                .media_metadata(token, mapping.virtual_media_id.as_str())
                 .await
                 .is_none());
         }
@@ -1209,7 +1211,7 @@ async fn search_first_show_children_merge_and_keep_viewer_scoped_parent_links() 
     for (_, server) in &sessions {
         let mapping = state
             .media_storage
-            .get_or_create_media_mapping("show", server)
+            .get_or_create_media_mapping(&"show".into(), server)
             .await
             .unwrap();
         assert_eq!(
@@ -1218,7 +1220,8 @@ async fn search_first_show_children_merge_and_keep_viewer_scoped_parent_links() 
                 .get_media_parent_group_id(&mapping.virtual_media_id, "viewer")
                 .await
                 .unwrap()
-                .as_deref(),
+                .as_ref()
+                .map(|id| id.as_str()),
             show["Id"].as_str()
         );
         assert!(state
@@ -1344,7 +1347,7 @@ async fn item_catalog_seasons_use_their_provider_matched_series_parent() {
     for season in seasons {
         let members = state
             .media_storage
-            .get_media_version_members_by_virtual_id(season["Id"].as_str().unwrap())
+            .get_media_version_members_by_virtual_id(&season["Id"].as_str().unwrap().into())
             .await
             .unwrap();
         assert_eq!(members.len(), 2);
@@ -1438,7 +1441,7 @@ async fn first_recursive_catalog_merges_series_and_numbered_seasons_together() {
     let removed_season = previous_ids.unwrap().1;
     assert!(state
         .media_storage
-        .get_media_version_members_by_virtual_id(removed_season.as_str().unwrap())
+        .get_media_version_members_by_virtual_id(&removed_season.as_str().unwrap().into())
         .await
         .unwrap()
         .is_empty());
@@ -1492,7 +1495,7 @@ async fn numbered_seasons_with_same_server_duplicates_are_not_hidden() {
     for season in seasons {
         assert!(state
             .media_storage
-            .get_media_version_group(season["Id"].as_str().unwrap())
+            .get_media_version_group(&season["Id"].as_str().unwrap().into())
             .await
             .unwrap()
             .is_none());
@@ -1609,13 +1612,13 @@ async fn check_show_season_navigation(with_provider_ids: bool) {
 
     let member = state
         .media_storage
-        .get_media_mapping_by_original("season-one", sessions[0].1.id)
+        .get_media_mapping_by_original(&"season-one".into(), sessions[0].1.id)
         .await
         .unwrap()
         .unwrap();
     let mut detail = json!({
         "Id": "selected-episode", "Type": "Episode", "SeriesId": aggregate,
-        "SeasonId": member.virtual_media_id, "ParentId": member.virtual_media_id,
+        "SeasonId": member.virtual_media_id.as_str(), "ParentId": member.virtual_media_id.as_str(),
         "MediaSources": [{"Id": "selected-source"}]
     });
     let preprocessed = request("/Items/selected-episode", &sessions);
@@ -1862,14 +1865,17 @@ async fn latest_virtual_parent_reuses_browse_scope_and_member_routes() {
     assert_eq!(scopes, 0);
     let mapping = state
         .media_storage
-        .get_or_create_media_mapping("unmerged-library", &sessions[0].1)
+        .get_or_create_media_mapping(&"unmerged-library".into(), &sessions[0].1)
         .await
         .unwrap();
     assert!(matches!(
         resolve_catalog_plan(
             &state,
             &request(
-                &format!("/Items/Latest?ParentId={}", mapping.virtual_media_id),
+                &format!(
+                    "/Items/Latest?ParentId={}",
+                    mapping.virtual_media_id.as_str()
+                ),
                 &sessions,
             )
         )

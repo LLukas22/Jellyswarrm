@@ -68,7 +68,7 @@ async fn secondary_show(count: usize) -> (Fixture, String, Vec<String>) {
     let series = f
         .state
         .media_storage
-        .get_or_create_media_mapping(SERIES, &server)
+        .get_or_create_media_mapping(&SERIES.into(), &server)
         .await
         .unwrap()
         .virtual_media_id;
@@ -77,10 +77,11 @@ async fn secondary_show(count: usize) -> (Fixture, String, Vec<String>) {
         ids.push(
             f.state
                 .media_storage
-                .get_or_create_media_mapping(&episode(number), &server)
+                .get_or_create_media_mapping(&episode(number).as_str().into(), &server)
                 .await
                 .unwrap()
-                .virtual_media_id,
+                .virtual_media_id
+                .into_string(),
         );
     }
     Mock::given(method("GET"))
@@ -121,7 +122,7 @@ async fn secondary_show(count: usize) -> (Fixture, String, Vec<String>) {
         })
         .mount(&f.upstreams[1])
         .await;
-    (f, series, ids)
+    (f, series.into_string(), ids)
 }
 
 #[tokio::test]
@@ -284,14 +285,14 @@ async fn web_episode_queue_validates_the_anchor_before_widening_the_query() {
     let forbidden = f
         .state
         .media_storage
-        .get_or_create_media_mapping(&episode(500), &server)
+        .get_or_create_media_mapping(&episode(500).as_str().into(), &server)
         .await
         .unwrap();
     let response = reqwest::Client::new()
         .get(format!(
             "{}{}",
             f.url,
-            queue_url(&series, &forbidden.virtual_media_id)
+            queue_url(&series, forbidden.virtual_media_id.as_str())
         ))
         .header("Authorization", web_auth(&f).to_header_value())
         .send()

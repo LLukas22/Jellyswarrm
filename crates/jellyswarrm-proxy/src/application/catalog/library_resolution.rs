@@ -96,8 +96,8 @@ pub(crate) async fn resolve_catalog_plan(
                             session,
                             server: member.server,
                             parent: Some(ResolvedCatalogParent {
-                                backend: member.mapping.original_media_id.into(),
-                                member: member.mapping.virtual_media_id.into(),
+                                backend: member.mapping.original_media_id,
+                                member: member.mapping.virtual_media_id,
                                 requested: parent_id.clone().into(),
                             }),
                         })
@@ -272,7 +272,7 @@ async fn resolve_aggregate_plan(
     // movies merge at the library level.
     let Some(group) = state
         .media_storage
-        .get_media_version_group(parent_id)
+        .get_media_version_group(&parent_id.into())
         .await
         .map_err(ApplicationError::Storage)?
     else {
@@ -309,8 +309,8 @@ async fn resolve_aggregate_plan(
             session,
             server,
             parent: Some(ResolvedCatalogParent {
-                backend: member.mapping.original_media_id.into(),
-                member: member.mapping.virtual_media_id.into(),
+                backend: member.mapping.original_media_id,
+                member: member.mapping.virtual_media_id,
                 requested: parent_id.into(),
             }),
         });
@@ -326,14 +326,14 @@ async fn resolve_aggregate_plan(
     debug!(
         "ParentId {} is version aggregate '{}' - fanning out to {} members",
         parent_id,
-        group.virtual_media_id,
+        group.virtual_media_id.as_str(),
         targets.len()
     );
     Ok(Some(CatalogPlan::Virtual {
         catalog_scope_key: MediaCatalogScope {
             kind: MediaScopeKind::Aggregate,
             viewer,
-            resource_id: &group.virtual_media_id,
+            resource_id: group.virtual_media_id.as_str(),
         }
         .to_string(),
         targets,
@@ -348,7 +348,7 @@ async fn is_single_server_parent(
     let parent_id = normalize_library_id(parent_id);
     Ok(state
         .media_storage
-        .get_media_mapping_by_virtual(&parent_id)
+        .get_media_mapping_by_virtual(&parent_id.as_str().into())
         .await
         .map_err(ApplicationError::Storage)?
         .is_some())

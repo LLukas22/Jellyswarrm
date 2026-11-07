@@ -81,7 +81,7 @@ async fn fixture() -> (Fixture, Vec<String>, Vec<String>) {
         let member = f
             .state
             .media_storage
-            .get_media_version_members_by_virtual_id(item)
+            .get_media_version_members_by_virtual_id(&item.as_str().into())
             .await
             .unwrap()
             .into_iter()
@@ -90,7 +90,7 @@ async fn fixture() -> (Fixture, Vec<String>, Vec<String>) {
             });
         secondary_sources.push(
             member
-                .map(|member| member.mapping.virtual_media_id)
+                .map(|member| member.mapping.virtual_media_id.into_string())
                 .unwrap_or_default(),
         );
     }
@@ -310,14 +310,15 @@ async fn failed_or_preview_negotiation_does_not_change_episode_server_preference
     let first_source = f
         .state
         .media_storage
-        .get_media_version_members_by_virtual_id(&items[1])
+        .get_media_version_members_by_virtual_id(&items[1].as_str().into())
         .await
         .unwrap()
         .into_iter()
         .find(|member| member.server.url.as_str().trim_end_matches('/') == f.upstreams[0].uri())
         .unwrap()
         .mapping
-        .virtual_media_id;
+        .virtual_media_id
+        .into_string();
     let response = f
         .request(
             reqwest::Method::POST,
