@@ -1,7 +1,8 @@
 //! Reconcile fetched media observations and validated inventory evidence before catalog presentation.
 use crate::application::error::ApplicationError;
+use crate::media::presentation::CatalogItem;
 use crate::protocol::models::enums::BaseItemKind;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::application::media_services::MediaServices;
 use crate::{
@@ -21,6 +22,7 @@ use super::{
     finalize_items_response,
     library_resolution::CatalogFetchTarget,
     postprocessing::{FederatedItems, ServerItems},
+    query::CatalogEndpoint,
     request_policy::CatalogRequestPolicy,
 };
 
@@ -367,13 +369,32 @@ pub(super) async fn reconcile_fetched_catalog(
                     })
                     .collect(),
             });
-            catalog_aliases.extend(aliases);
+            catalog_aliases.push(aliases);
+        } else {
+            catalog_aliases.push(vec![BTreeSet::new(); items.len()]);
         }
-        tagged_items.extend(items.into_iter().map(|item| TaggedMediaItem {
-            item,
-            server: server.clone(),
-        }));
+        tagged_items.push(
+            items
+                .into_iter()
+                .map(|item| TaggedMediaItem {
+                    item,
+                    server: server.clone(),
+                })
+                .collect::<Vec<_>>(),
+        );
     }
+    let next_up = policy.endpoint() == CatalogEndpoint::NextUp;
+    // Next Up is ranked upstream by when the previous episode was watched, which
+    // the returned episodes cannot reproduce. Interleave each server's ranking
+    // (as unmerged Next Up does) instead of concatenating whole servers.
+    let (tagged_items, catalog_aliases) = if next_up {
+        interleave_server_lists(tagged_items, catalog_aliases)
+    } else {
+        (
+            tagged_items.into_iter().flatten().collect(),
+            catalog_aliases.into_iter().flatten().collect(),
+        )
+    };
 
     let mut items = if let ReconciliationMode::Enabled { generation } = reconciliation_generation {
         let plan = MediaDedupPlan::with_aliases(tagged_items, catalog_aliases);
@@ -416,7 +437,87 @@ pub(super) async fn reconcile_fetched_catalog(
             }
         }
     }
+    if next_up && deduplicate_media {
+        items =
+            FederatedItems::from_merged_items(keep_furthest_episode_per_series(items.into_items()));
+    }
     Ok(items)
+}
+
+/// Round-robin each server's ranked list, keeping item/alias pairs aligned.
+fn interleave_server_lists(
+    items: Vec<Vec<TaggedMediaItem>>,
+    aliases: Vec<Vec<BTreeSet<MediaAlias>>>,
+) -> (Vec<TaggedMediaItem>, Vec<BTreeSet<MediaAlias>>) {
+    let mut queues = items
+        .into_iter()
+        .zip(aliases)
+        .map(|(items, aliases)| items.into_iter().zip(aliases))
+        .collect::<Vec<_>>();
+    let mut merged_items = Vec::new();
+    let mut merged_aliases = Vec::new();
+    loop {
+        let mut advanced = false;
+        for queue in &mut queues {
+            if let Some((item, aliases)) = queue.next() {
+                merged_items.push(item);
+                merged_aliases.push(aliases);
+                advanced = true;
+            }
+        }
+        if !advanced {
+            return (merged_items, merged_aliases);
+        }
+    }
+}
+
+/// Each backend computes Next Up from its own watch history, so a show
+/// watched mostly on one server can surface a stale, earlier episode from
+/// another. Once two entries are known to belong to the same matched show
+/// (both carry its aggregate series ID), keep only the furthest episode, at the
+/// rank of the show's first appearance. Entries whose series is not matched
+/// across servers keep their own server-local series ID and are never hidden.
+fn keep_furthest_episode_per_series(items: Vec<CatalogItem>) -> Vec<CatalogItem> {
+    let rank = |item: &CatalogItem| {
+        let number = |key: &str| {
+            item.extra
+                .iter()
+                .find(|(field, _)| field.eq_ignore_ascii_case(key))
+                .and_then(|(_, value)| value.as_i64())
+        };
+        // Specials (season 0) never outrank regular progress. Entries without
+        // both numbers cannot be compared, so they stay visible.
+        match (number("ParentIndexNumber"), number("IndexNumber")) {
+            (Some(season), Some(episode)) => Some((season != 0, season, episode)),
+            _ => None,
+        }
+    };
+    let mut slots: Vec<Option<CatalogItem>> = Vec::with_capacity(items.len());
+    let mut series_slots = HashMap::<String, usize>::new();
+    for item in items {
+        let series = (item.item_type == BaseItemKind::Episode)
+            .then(|| item.series_id.clone())
+            .flatten();
+        let Some(series) = series else {
+            slots.push(Some(item));
+            continue;
+        };
+        if let Some(&slot) = series_slots.get(&series) {
+            let current = slots[slot].as_ref().expect("series slot is filled");
+            match (rank(current), rank(&item)) {
+                (Some(current), Some(candidate)) => {
+                    if candidate > current {
+                        slots[slot] = Some(item);
+                    }
+                }
+                _ => slots.push(Some(item)),
+            }
+            continue;
+        }
+        series_slots.insert(series, slots.len());
+        slots.push(Some(item));
+    }
+    slots.into_iter().flatten().collect()
 }
 
 /// Federates `/Shows/{aggregateId}/Seasons|Episodes` across the member
@@ -461,6 +562,52 @@ mod tests {
     use crate::{
         media::storage::MediaStorageService, persistence::MIGRATOR, servers::storage::Server,
     };
+
+    fn next_up_episode(id: &str, series: &str, season: i64, episode: i64) -> CatalogItem {
+        serde_json::from_value::<crate::protocol::models::MediaItem>(serde_json::json!({
+            "Id": id, "Type": "Episode", "SeriesId": series,
+            "ParentIndexNumber": season, "IndexNumber": episode
+        }))
+        .unwrap()
+        .into()
+    }
+
+    fn ids(items: &[CatalogItem]) -> Vec<&str> {
+        items.iter().map(|item| item.id.as_str()).collect()
+    }
+
+    #[test]
+    fn next_up_keeps_the_furthest_episode_of_a_matched_show_at_its_first_rank() {
+        let items = vec![
+            next_up_episode("a-show-s1e3", "show", 1, 3),
+            next_up_episode("a-other", "other-a", 2, 1),
+            next_up_episode("b-show-s2e1", "show", 2, 1),
+            next_up_episode("b-other", "other-b", 1, 1),
+        ];
+        assert_eq!(
+            ids(&keep_furthest_episode_per_series(items)),
+            vec!["b-show-s2e1", "a-other", "b-other"]
+        );
+    }
+
+    #[test]
+    fn next_up_never_hides_unnumbered_or_special_progress_ahead_of_regular_episodes() {
+        let unnumbered: CatalogItem =
+            serde_json::from_value::<crate::protocol::models::MediaItem>(serde_json::json!({
+                "Id": "unnumbered", "Type": "Episode", "SeriesId": "show"
+            }))
+            .unwrap()
+            .into();
+        let items = vec![
+            next_up_episode("regular", "show", 1, 5),
+            next_up_episode("special", "show", 0, 9),
+            unnumbered,
+        ];
+        assert_eq!(
+            ids(&keep_furthest_episode_per_series(items)),
+            vec!["regular", "unnumbered"]
+        );
+    }
 
     #[tokio::test]
     async fn partial_inventories_retain_sightings_until_a_full_inventory_removes_them() {

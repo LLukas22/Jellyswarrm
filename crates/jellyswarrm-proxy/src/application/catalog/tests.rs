@@ -1943,11 +1943,25 @@ async fn latest_preserves_unknown_identity_and_disabled_behavior() {
             .unwrap(),
         CatalogPlan::Virtual { .. }
     ));
+    let CatalogPlan::Virtual {
+        catalog_scope_key, ..
+    } = resolve_catalog_plan(&state, &request("/Shows/NextUp", &sessions))
+        .await
+        .unwrap()
+    else {
+        panic!("Next Up must merge across servers");
+    };
+    assert!(
+        catalog_scope_key.starts_with("nextup:"),
+        "{catalog_scope_key}"
+    );
     state.config.write().await.deduplicate_media = false;
-    assert!(matches!(
-        resolve_catalog_plan(&state, &request("/UserItems/Resume", &sessions))
-            .await
-            .unwrap(),
-        CatalogPlan::Interleaved(_)
-    ));
+    for path in ["/UserItems/Resume", "/Shows/NextUp"] {
+        assert!(matches!(
+            resolve_catalog_plan(&state, &request(path, &sessions))
+                .await
+                .unwrap(),
+            CatalogPlan::Interleaved(_)
+        ));
+    }
 }
