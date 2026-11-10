@@ -119,7 +119,7 @@ fn default_merge_libraries() -> bool {
 }
 
 fn default_deduplicate_media() -> bool {
-    false
+    true
 }
 
 mod base64_serde {

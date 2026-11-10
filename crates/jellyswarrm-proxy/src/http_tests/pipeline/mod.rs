@@ -266,6 +266,9 @@ async fn same_server_episode_selection_survives_streams_and_all_playback_reports
 #[tokio::test]
 async fn successful_mutations_refresh_cached_user_data_and_live_feeds_always_refresh() {
     let f = Fixture::new().await;
+    // The mock feeds return the same non-resumable movie from every backend;
+    // reconciled playback filtering would (correctly) drop it from Resume.
+    f.state.config.write().await.deduplicate_media = false;
     healthy(&f).await;
     let played = Arc::new(AtomicBool::new(false));
     for upstream in &f.upstreams {
