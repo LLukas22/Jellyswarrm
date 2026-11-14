@@ -44,6 +44,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .no_gzip()
         .no_brotli()
         .no_deflate()
+        .no_zstd()
         .build()
         .unwrap_or_else(|e| {
             error!("Failed to create streaming reqwest client: {}", e);

@@ -38,6 +38,7 @@ mod composition;
 mod coverage;
 mod discovery;
 mod editing;
+mod headers;
 mod hls;
 mod kodi;
 mod live_tv;
