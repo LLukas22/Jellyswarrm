@@ -64,6 +64,8 @@ url = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+flate2 = "1.1.2"
+zstd = "0.13"
 tempfile = { workspace = true }
 testcontainers = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

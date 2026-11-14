@@ -38,7 +38,7 @@ use crate::{
     translation::{
         request_processor::RequestProcessingContext, response_processor::ResponseProcessingProfile,
     },
-    upstream::headers::is_hop_by_hop_header,
+    upstream::headers::remove_hop_by_hop_headers,
 };
 
 /// A request with its backend chosen and authorized, not yet sent.
@@ -306,10 +306,10 @@ fn client_response(
     body: Bytes,
 ) -> Result<Response<Bytes>, ApplicationError> {
     let mut builder = Response::builder().status(status);
-    for (name, value) in headers {
-        if !is_hop_by_hop_header(name) {
-            builder = builder.header(name, value);
-        }
+    let mut headers = headers.clone();
+    remove_hop_by_hop_headers(&mut headers);
+    for (name, value) in &headers {
+        builder = builder.header(name, value);
     }
     builder
         .body(body)
