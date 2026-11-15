@@ -7,7 +7,7 @@ use crate::{
     protocol::url::{join_server_url, strip_url_prefix},
     servers::storage::Server,
     translation::url_processor::UrlProcessor,
-    upstream::headers::remove_hop_by_hop_headers,
+    upstream::headers::prepare_request_headers,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -60,10 +60,7 @@ impl<'a> UpstreamRequestBuilder<'a> {
         auth: Option<&JellyfinAuthorization>,
         access_scope: Option<&VirtualLibraryAccessScope>,
     ) -> anyhow::Result<()> {
-        remove_hop_by_hop_headers(request.headers_mut());
-        // Let reqwest derive Host from the target URL, including its port. An explicit
-        // Host header would otherwise survive redirects to external image hosts.
-        request.headers_mut().remove(reqwest::header::HOST);
+        prepare_request_headers(request.headers_mut());
         apply_authorization_header(request, auth);
         let mut url = request.url().clone();
         self.urls
@@ -236,6 +233,10 @@ mod tests {
         let mut original = reqwest::Request::try_from(raw).unwrap();
         for (name, value) in [
             ("host", "proxy.example"),
+            (
+                "accept-encoding",
+                "gzip, deflate, br, zstd, future-encoding",
+            ),
             ("connection", "keep-alive"),
             ("keep-alive", "timeout=5"),
             ("proxy-authorization", "proxy-secret"),
@@ -298,6 +299,7 @@ mod tests {
             assert!(!built.headers().contains_key(reqwest::header::HOST));
             assert_eq!(built.headers()["x-mediabrowser-token"], "chosen-token");
             for name in [
+                "accept-encoding",
                 "connection",
                 "keep-alive",
                 "proxy-authorization",

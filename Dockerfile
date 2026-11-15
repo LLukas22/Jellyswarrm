@@ -49,7 +49,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 #################################
 # Runtime image
 #################################
-FROM alpine:3.20 AS runtime
+FROM alpine:3.24 AS runtime
 WORKDIR /app
 ENV RUST_LOG=info
 RUN apk add --no-cache ca-certificates curl sqlite-libs && update-ca-certificates
