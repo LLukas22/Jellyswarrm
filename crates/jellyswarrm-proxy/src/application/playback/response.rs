@@ -312,9 +312,6 @@ mod tests {
             "ParentThumbItemId": "cccccccccccccccccccccccccccccccc",
             "ParentThumbImageTag": "dddddddddddddddddddddddddddddddd",
             "SeriesPrimaryImageTag": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-            "ParentPrimaryImageItemId": "21212121212121212121212121212121",
-            "ParentPrimaryImageTag": "24242424242424242424242424242424",
-            "ParentArtItemId": "25252525252525252525252525252525",
             "CanDelete": true,
             "CanDownload": true,
             "ImageTags": {
@@ -388,6 +385,17 @@ mod tests {
                 }
             ]
         });
+        // Added outside the literal, which is at json!'s recursion limit.
+        for (field, value) in [
+            (
+                "ParentPrimaryImageItemId",
+                "21212121212121212121212121212121",
+            ),
+            ("ParentPrimaryImageTag", "24242424242424242424242424242424"),
+            ("ParentArtItemId", "25252525252525252525252525252525"),
+        ] {
+            media_item[field] = json!(value);
+        }
 
         let was_modified = state
             .process_response_json(
@@ -432,11 +440,11 @@ mod tests {
             assert_ne!(virtual_id, original, "{field}");
             let mapping = state
                 .media_storage
-                .get_media_mapping_by_virtual(virtual_id)
+                .get_media_mapping_by_virtual(&virtual_id.into())
                 .await
                 .unwrap()
                 .unwrap();
-            assert_eq!(mapping.original_media_id, original, "{field}");
+            assert_eq!(mapping.original_media_id.as_str(), original, "{field}");
             assert_eq!(mapping.server_id, server.id, "{field}");
         }
         assert_ne!(
