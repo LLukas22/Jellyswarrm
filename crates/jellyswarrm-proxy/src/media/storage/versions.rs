@@ -263,6 +263,43 @@ impl MediaStorageService {
             .collect()
     }
 
+    /// Every copy matched with `media_mapping_id` in one of `viewer`'s catalog
+    /// scopes, the copy itself included. Ambiguous groups match nothing.
+    pub(crate) async fn get_media_version_copies(
+        &self,
+        media_mapping_id: i64,
+        viewer: &str,
+    ) -> Result<Vec<MediaVersionMember>, sqlx::Error> {
+        let rows = sqlx::query(
+            r#"
+            SELECT DISTINCT member.group_id, scope.scope_key
+            FROM movie_version_members member
+            JOIN movie_catalog_scopes scope ON scope.id = member.scope_id
+            JOIN movie_version_groups version_group ON version_group.id = member.group_id
+            WHERE member.media_mapping_id = ? AND version_group.ambiguous = 0
+            "#,
+        )
+        .bind(media_mapping_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut groups = BTreeSet::new();
+        for row in rows {
+            if MediaCatalogScope::belongs_to(&row.try_get::<String, _>("scope_key")?, viewer) {
+                groups.insert(row.try_get::<i64, _>("group_id")?);
+            }
+        }
+        let mut copies = Vec::new();
+        let mut seen = BTreeSet::new();
+        for group in groups {
+            for member in self.get_media_version_members(group).await? {
+                if seen.insert(member.mapping.id) {
+                    copies.push(member);
+                }
+            }
+        }
+        Ok(copies)
+    }
+
     pub(crate) async fn get_media_version_members_by_virtual_id(
         &self,
         group_virtual_id: &VirtualItemId,

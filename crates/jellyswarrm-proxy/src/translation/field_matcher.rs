@@ -67,6 +67,12 @@ pub(crate) static RESPONSE_MEDIA_ID_FIELDS: LazyLock<FieldMatcher> = LazyLock::n
         "ParentLogoImageTag",
         "ParentThumbItemId",
         "ParentThumbImageTag",
+        // Episodes on "Recently Added" use the season poster (jellyfin-web's
+        // `preferParentPoster`), addressed by these two fields.
+        "ParentPrimaryImageItemId",
+        "ParentPrimaryImageTag",
+        "ParentArtItemId",
+        "ParentArtImageTag",
         "SeriesPrimaryImageTag",
         "ImageTag",
     ])

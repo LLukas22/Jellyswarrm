@@ -26,6 +26,7 @@ use crate::{
         media_services::MediaServices,
         playback::{
             continuity::EpisodeContinuity, lifecycle::PendingPlaybackSessionUpdate, reports,
+            watch_sync,
         },
         request::{
             context::AuthorizedTarget,
@@ -60,6 +61,8 @@ struct PlaybackReport {
     body: Value,
     /// Binding change to commit once the backend accepted the report.
     pending_update: Option<PendingPlaybackSessionUpdate>,
+    /// The copy being played, as resolved for the owner backend.
+    member: crate::media::storage::MediaMapping,
 }
 
 /// Choose and authorize the backend. Sends nothing and changes no state.
@@ -152,6 +155,7 @@ async fn prepare_report(
             action,
             body,
             pending_update,
+            member,
         },
     ))
 }
@@ -202,6 +206,23 @@ pub(crate) async fn forward(
     let response = client_response(status, &headers, body)?;
 
     if status.is_success() {
+        if let Some(report) = prepared.report.as_ref() {
+            if let Some(sync) = watch_sync::plan(
+                state,
+                &prepared.input,
+                &prepared.path,
+                report.action,
+                &report.member,
+                &prepared.target,
+            )
+            .await
+            {
+                tokio::spawn(sync.run(
+                    state.reqwest_client.clone(),
+                    state.catalog_snapshots.clone(),
+                ));
+            }
+        }
         if let Some(update) = prepared.report.and_then(|report| report.pending_update) {
             update.commit(&state.playback_registry).await;
         }

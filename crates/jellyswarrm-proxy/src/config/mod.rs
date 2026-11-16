@@ -122,6 +122,14 @@ fn default_deduplicate_media() -> bool {
     true
 }
 
+fn default_sync_watch_state() -> bool {
+    false
+}
+
+fn default_watch_state_progress_sync_secs() -> u64 {
+    60
+}
+
 mod base64_serde {
     use super::*;
     use serde::de::Error as DeError;
@@ -220,6 +228,12 @@ define_fallback_deserializer!(
     bool,
     default_deduplicate_media
 );
+define_fallback_deserializer!(deserialize_sync_watch_state, bool, default_sync_watch_state);
+define_fallback_deserializer!(
+    deserialize_watch_state_progress_sync_secs,
+    u64,
+    default_watch_state_progress_sync_secs
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct PreconfiguredServer {
@@ -314,6 +328,23 @@ pub(crate) struct AppConfig {
         alias = "deduplicate_movies"
     )]
     pub(crate) deduplicate_media: bool,
+
+    /// Copy watch state from the played copy of a merged item to its other
+    /// copies when playback stops (requires `deduplicate_media`). Opt-in:
+    /// it writes to every backend that holds a copy.
+    #[serde(
+        default = "default_sync_watch_state",
+        deserialize_with = "deserialize_sync_watch_state"
+    )]
+    pub(crate) sync_watch_state: bool,
+
+    /// Also copy the position during playback, at most this often per item
+    /// (seconds). `0` syncs only when playback stops.
+    #[serde(
+        default = "default_watch_state_progress_sync_secs",
+        deserialize_with = "deserialize_watch_state_progress_sync_secs"
+    )]
+    pub(crate) watch_state_progress_sync_secs: u64,
 }
 
 impl Default for AppConfig {
@@ -338,6 +369,8 @@ impl Default for AppConfig {
             auto_create_users_on_login: default_auto_create_users_on_login(),
             merge_libraries: default_merge_libraries(),
             deduplicate_media: default_deduplicate_media(),
+            sync_watch_state: default_sync_watch_state(),
+            watch_state_progress_sync_secs: default_watch_state_progress_sync_secs(),
         }
     }
 }
@@ -373,6 +406,11 @@ impl fmt::Debug for AppConfig {
                 &self.auto_create_users_on_login,
             )
             .field("deduplicate_media", &self.deduplicate_media)
+            .field("sync_watch_state", &self.sync_watch_state)
+            .field(
+                "watch_state_progress_sync_secs",
+                &self.watch_state_progress_sync_secs,
+            )
             .finish()
     }
 }

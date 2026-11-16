@@ -9,6 +9,22 @@ pub(crate) enum MediaScopeKind {
     Latest,
     Search,
     Resume,
+    NextUp,
+}
+
+impl MediaScopeKind {
+    /// Per-viewer feeds (Recently Added, search, Continue Watching, Next Up).
+    /// Their membership is a recent window that is only ever added to, never
+    /// an inventory that a complete scan could prune.
+    pub(crate) fn is_feed(self) -> bool {
+        matches!(
+            self,
+            MediaScopeKind::Latest
+                | MediaScopeKind::Search
+                | MediaScopeKind::Resume
+                | MediaScopeKind::NextUp
+        )
+    }
 }
 
 /// Shared codec for persisted catalog keys and viewer-scoped reverse lookups.
@@ -30,6 +46,7 @@ impl<'a> MediaCatalogScope<'a> {
             "latest" => MediaScopeKind::Latest,
             "search" => MediaScopeKind::Search,
             "resume" => MediaScopeKind::Resume,
+            "nextup" => MediaScopeKind::NextUp,
             _ => return None,
         };
         let middle = parts.next()?;
@@ -38,16 +55,20 @@ impl<'a> MediaCatalogScope<'a> {
             return None;
         }
         let (viewer, resource_id) = match kind {
-            MediaScopeKind::Latest | MediaScopeKind::Search | MediaScopeKind::Resume => {
-                (middle, last)
-            }
+            MediaScopeKind::Latest
+            | MediaScopeKind::Search
+            | MediaScopeKind::Resume
+            | MediaScopeKind::NextUp => (middle, last),
             _ => (last, middle),
         };
         if viewer.is_empty()
             || (resource_id.is_empty()
                 && !matches!(
                     kind,
-                    MediaScopeKind::Latest | MediaScopeKind::Search | MediaScopeKind::Resume
+                    MediaScopeKind::Latest
+                        | MediaScopeKind::Search
+                        | MediaScopeKind::Resume
+                        | MediaScopeKind::NextUp
                 ))
         {
             return None;
@@ -73,9 +94,13 @@ impl fmt::Display for MediaCatalogScope<'_> {
             MediaScopeKind::Latest => "latest",
             MediaScopeKind::Search => "search",
             MediaScopeKind::Resume => "resume",
+            MediaScopeKind::NextUp => "nextup",
         };
         match self.kind {
-            MediaScopeKind::Latest | MediaScopeKind::Search | MediaScopeKind::Resume => {
+            MediaScopeKind::Latest
+            | MediaScopeKind::Search
+            | MediaScopeKind::Resume
+            | MediaScopeKind::NextUp => {
                 write!(f, "{kind}:{}:{}", self.viewer, self.resource_id)
             }
             _ => write!(f, "{kind}:{}:{}", self.resource_id, self.viewer),
@@ -99,6 +124,8 @@ mod tests {
             "search:viewer:library",
             "resume:viewer:",
             "resume:viewer:library",
+            "nextup:viewer:",
+            "nextup:viewer:library",
         ] {
             let scope = MediaCatalogScope::parse(key).unwrap();
             assert_eq!(scope.to_string(), key);

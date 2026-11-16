@@ -324,10 +324,20 @@ async fn fetch_catalog_operation(
         }
         let upstream_limited = policy.endpoint().is_upstream_limited();
         let library_inventory = policy.endpoint().is_library_root();
-        let pagination = policy.pagination;
+        // Continue Watching and Next Up are small, ranked feeds. Never page
+        // through a whole backend for them: one request per server, windowed.
+        let ranked_feed = matches!(
+            policy.endpoint(),
+            CatalogEndpoint::Resume | CatalogEndpoint::NextUp
+        );
+        let pagination = if policy.endpoint() == CatalogEndpoint::Resume {
+            resume_window(policy.pagination)
+        } else {
+            policy.pagination
+        };
         let state = state.clone();
         join_set.spawn(async move {
-            let result = if upstream_limited || library_inventory {
+            let result = if upstream_limited || library_inventory || ranked_feed {
                 fetch_items_from_server(
                     index,
                     state,
@@ -338,7 +348,7 @@ async fn fetch_catalog_operation(
                 )
                 .await
                 .map(|items| {
-                    if upstream_limited {
+                    if upstream_limited || ranked_feed {
                         FetchedServerItems::bounded(items)
                     } else {
                         FetchedServerItems::complete(items)
@@ -388,6 +398,24 @@ async fn fetch_catalog_operation(
         report: CatalogReport::new(outcomes, unavailable_targets),
     })
 }
+
+/// Continue Watching is listed from each server's most recently played items
+/// (see `CatalogRequestPolicy::prepare_upstream`). Finished copies in that
+/// slice hide stale in-progress copies elsewhere but are then filtered out,
+/// so fetch a margin beyond the client's window.
+fn resume_window(pagination: Pagination) -> Pagination {
+    let window = pagination
+        .limit
+        .map(|limit| pagination.start_index.saturating_add(limit))
+        .unwrap_or(0)
+        .max(RESUME_SCAN_ITEMS);
+    Pagination {
+        start_index: 0,
+        limit: Some(window),
+    }
+}
+
+const RESUME_SCAN_ITEMS: usize = 100;
 
 async fn collect_federated_results<T: Send + 'static>(
     mut join_set: JoinSet<(usize, Result<T, ApplicationError>)>,

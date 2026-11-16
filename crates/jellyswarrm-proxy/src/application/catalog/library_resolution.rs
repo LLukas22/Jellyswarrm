@@ -168,7 +168,8 @@ pub(crate) async fn resolve_catalog_plan(
         .query_pairs()
         .any(|(key, _)| key.eq_ignore_ascii_case("SearchTerm"));
     let is_resume = endpoint == CatalogEndpoint::Resume;
-    if (is_search || is_resume || endpoint == CatalogEndpoint::Latest)
+    let is_next_up = endpoint == CatalogEndpoint::NextUp;
+    if (is_search || is_resume || is_next_up || endpoint == CatalogEndpoint::Latest)
         && state.deduplicate_media_enabled().await
     {
         let viewer = preprocessed
@@ -180,14 +181,18 @@ pub(crate) async fn resolve_catalog_plan(
                 ApplicationError::MissingIdentity("catalog viewer")
                     .at(FailureStage::CallerAuthentication)
             })?;
-        // Latest and search are additive feeds, not inventories. Keep their
-        // identity scopes stable across windows, terms and missing sessions.
+        // Latest, search, Continue Watching and Next Up are additive feeds, not
+        // inventories. Keep their identity scopes stable across windows, terms
+        // and missing sessions, so one episode or movie seen on several servers
+        // collapses into one selectable entry.
         return Ok(CatalogPlan::Virtual {
             catalog_scope_key: MediaCatalogScope {
                 kind: if is_search {
                     MediaScopeKind::Search
                 } else if is_resume {
                     MediaScopeKind::Resume
+                } else if is_next_up {
+                    MediaScopeKind::NextUp
                 } else {
                     MediaScopeKind::Latest
                 },

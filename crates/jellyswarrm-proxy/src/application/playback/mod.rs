@@ -11,3 +11,4 @@ pub(crate) mod reports;
 pub(crate) mod resources;
 pub(crate) mod response;
 pub(crate) mod target;
+pub(crate) mod watch_sync;

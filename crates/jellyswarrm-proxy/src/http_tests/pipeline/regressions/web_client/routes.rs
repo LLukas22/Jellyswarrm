@@ -316,6 +316,93 @@ async fn watched_actions_apply_to_all_copies_and_survive_reload() {
 }
 
 #[tokio::test]
+async fn playback_reports_sync_watch_state_to_other_copies() {
+    let (f, aggregate, source) = web_fixture().await;
+    f.state.config.write().await.sync_watch_state = true;
+    let response = f
+        .request(
+            reqwest::Method::POST,
+            &format!("/Items/{aggregate}/PlaybackInfo"),
+            &f.user,
+            "tv",
+        )
+        .json(&json!({"MediaSourceId":source,"DeviceProfile":{}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    for report in ["/Sessions/Playing/Progress", "/Sessions/Playing/Stopped"] {
+        Mock::given(method("POST"))
+            .and(path(report))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&f.upstreams[1])
+            .await;
+    }
+    let user_data = format!("/UserItems/{MOVIE}/UserData");
+    // The played backend applied its own rules: finished, position reset.
+    Mock::given(method("GET"))
+        .and(path(&user_data))
+        .respond_with(ResponseTemplate::new(200).set_body_json(playback_data(
+            0,
+            true,
+            Some("2026-11-11T18:00:00Z"),
+        )))
+        .mount(&f.upstreams[1])
+        .await;
+    Mock::given(method("POST"))
+        .and(path(&user_data))
+        .respond_with(ResponseTemplate::new(200).set_body_json(playback_data(0, true, None)))
+        .expect(0)
+        .mount(&f.upstreams[1])
+        .await;
+    Mock::given(method("POST"))
+        .and(path(&user_data))
+        .respond_with(ResponseTemplate::new(200).set_body_json(playback_data(0, true, None)))
+        .mount(&f.upstreams[0])
+        .await;
+
+    let report = json!({"ItemId":aggregate,"MediaSourceId":source,"PlaySessionId":"web-1","PositionTicks":123000000});
+    for endpoint in [
+        "/Sessions/Playing/Progress",
+        "/Sessions/Playing/Progress",
+        "/Sessions/Playing/Stopped",
+    ] {
+        let response = f
+            .request(reqwest::Method::POST, endpoint, &f.user, "tv")
+            .json(&report)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT, "{endpoint}");
+    }
+    // Writes run in the background after the report is answered.
+    let mut writes = Vec::new();
+    for _ in 0..50 {
+        writes = f.upstreams[0]
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|request| request.method.as_str() == "POST" && request.url.path() == user_data)
+            .collect::<Vec<_>>();
+        if writes.len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    // At most one progress sync per minute plus the stop; a progress sync
+    // superseded by the stop may be skipped.
+    assert!((1..=2).contains(&writes.len()), "{} writes", writes.len());
+    for write in &writes {
+        let body: Value = serde_json::from_slice(&write.body).unwrap();
+        assert_eq!(
+            body,
+            json!({"Played":true,"PlaybackPositionTicks":0,"LastPlayedDate":"2026-11-11T18:00:00Z"})
+        );
+    }
+}
+
+#[tokio::test]
 async fn watched_actions_preflight_offline_members() {
     let (f, aggregate, _) = web_fixture().await;
     Mock::given(method("DELETE"))

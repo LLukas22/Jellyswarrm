@@ -1,6 +1,9 @@
 //! Reconcile complete or partial catalog evidence and rebuild stable media groups atomically.
 use super::*;
 
+/// Feed entries not shown for this long leave the feed's catalog scope.
+pub(super) const FEED_MEMBER_TTL_DAYS: i64 = 7;
+
 impl MediaStorageService {
     pub(crate) async fn begin_media_reconciliation(
         &self,
@@ -313,9 +316,59 @@ impl MediaStorageService {
                 .await?;
         }
 
+        if crate::media::scope::MediaCatalogScope::parse(scope_key)
+            .is_some_and(|scope| scope.kind.is_feed())
+        {
+            Self::expire_feed_members(
+                &mut transaction,
+                scope_id,
+                chrono::Utc::now() - chrono::Duration::days(FEED_MEMBER_TTL_DAYS),
+            )
+            .await?;
+        }
+
         let stable_groups = Self::rebuild_media_groups(&mut transaction, scope_id).await?;
         transaction.commit().await?;
         Ok(stable_groups)
+    }
+
+    /// Feeds are never pruned by a complete scan, and every reconciliation
+    /// regroups the whole scope. Without expiry a feed scope accumulates every
+    /// item that ever appeared in it, and each home-page load gets slower.
+    /// Anything still shown is re-observed on every load, so only entries that
+    /// have left the feed expire; their aggregate IDs are retired with them.
+    pub(super) async fn expire_feed_members(
+        transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        scope_id: i64,
+        observed_before: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), sqlx::Error> {
+        // Aliases, sightings and source routes cascade from the member.
+        let expired =
+            sqlx::query("DELETE FROM movie_version_members WHERE scope_id = ? AND observed_at < ?")
+                .bind(scope_id)
+                .bind(observed_before)
+                .execute(&mut **transaction)
+                .await?
+                .rows_affected();
+        if expired == 0 {
+            return Ok(());
+        }
+        sqlx::query(
+            r#"
+            DELETE FROM movie_version_groups
+            WHERE scope_id = ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM movie_version_members member
+                  WHERE member.scope_id = movie_version_groups.scope_id
+                    AND member.group_id = movie_version_groups.id
+              )
+            "#,
+        )
+        .bind(scope_id)
+        .execute(&mut **transaction)
+        .await?;
+        debug!("Expired {expired} feed entries from catalog scope {scope_id}");
+        Ok(())
     }
 
     pub(super) async fn media_scope_id(

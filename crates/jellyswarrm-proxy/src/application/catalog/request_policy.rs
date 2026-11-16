@@ -119,6 +119,22 @@ impl CatalogRequestPolicy {
                 if !has_query_key(url, &["Recursive"]) {
                     url.query_pairs_mut().append_pair("Recursive", "true");
                 }
+                // Rank the unfiltered listing by last played, so a bounded
+                // window holds both in-progress copies and copies finished
+                // more recently elsewhere, without scanning whole libraries.
+                let pairs = url
+                    .query_pairs()
+                    .filter(|(key, _)| {
+                        !key.eq_ignore_ascii_case("SortBy")
+                            && !key.eq_ignore_ascii_case("SortOrder")
+                    })
+                    .map(|(key, value)| (key.into_owned(), value.into_owned()))
+                    .collect::<Vec<_>>();
+                url.query_pairs_mut()
+                    .clear()
+                    .extend_pairs(pairs)
+                    .append_pair("SortBy", "DatePlayed,SortName")
+                    .append_pair("SortOrder", "Descending");
             }
         }
         if matches!(self.sort, super::postprocessing::SortPolicy::Random) {
@@ -366,6 +382,12 @@ mod tests {
             policy.prepare_upstream(&mut url, true);
             assert_eq!(url.path(), expected);
             assert!(has_query_key(&url, &["Recursive"]));
+            let sort = url
+                .query_pairs()
+                .filter(|(key, _)| key == "SortBy" || key == "SortOrder")
+                .map(|(key, value)| format!("{key}={value}"))
+                .collect::<Vec<_>>();
+            assert_eq!(sort, ["SortBy=DatePlayed,SortName", "SortOrder=Descending"]);
             assert_eq!(
                 url.query_pairs()
                     .filter(|(key, _)| key == "X-Future")
