@@ -123,7 +123,7 @@ fn default_deduplicate_media() -> bool {
 }
 
 fn default_sync_watch_state() -> bool {
-    true
+    false
 }
 
 fn default_watch_state_progress_sync_secs() -> u64 {
@@ -330,7 +330,8 @@ pub(crate) struct AppConfig {
     pub(crate) deduplicate_media: bool,
 
     /// Copy watch state from the played copy of a merged item to its other
-    /// copies when playback stops (requires `deduplicate_media`).
+    /// copies when playback stops (requires `deduplicate_media`). Opt-in:
+    /// it writes to every backend that holds a copy.
     #[serde(
         default = "default_sync_watch_state",
         deserialize_with = "deserialize_sync_watch_state"

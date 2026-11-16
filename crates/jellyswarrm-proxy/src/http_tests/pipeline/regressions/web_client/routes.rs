@@ -318,6 +318,7 @@ async fn watched_actions_apply_to_all_copies_and_survive_reload() {
 #[tokio::test]
 async fn playback_reports_sync_watch_state_to_other_copies() {
     let (f, aggregate, source) = web_fixture().await;
+    f.state.config.write().await.sync_watch_state = true;
     let response = f
         .request(
             reqwest::Method::POST,
