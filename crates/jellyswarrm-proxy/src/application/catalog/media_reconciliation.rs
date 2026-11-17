@@ -502,6 +502,12 @@ fn keep_furthest_episode_per_series(items: Vec<CatalogItem>) -> Vec<CatalogItem>
             slots.push(Some(item));
             continue;
         };
+        // Keep unnumbered entries visible without making them the comparison
+        // slot for this show's numbered progress.
+        if rank(&item).is_none() {
+            slots.push(Some(item));
+            continue;
+        }
         if let Some(&slot) = series_slots.get(&series) {
             let current = slots[slot].as_ref().expect("series slot is filled");
             match (rank(current), rank(&item)) {
@@ -607,6 +613,31 @@ mod tests {
             ids(&keep_furthest_episode_per_series(items)),
             vec!["regular", "unnumbered"]
         );
+    }
+
+    #[test]
+    fn next_up_unnumbered_entries_do_not_block_numbered_progress() {
+        for missing_field in ["ParentIndexNumber", "IndexNumber"] {
+            for position in 0..=2 {
+                let mut unnumbered = next_up_episode("unnumbered", "show", 1, 1);
+                unnumbered.extra.remove(missing_field);
+                let mut items = vec![
+                    next_up_episode("earlier", "show", 1, 3),
+                    next_up_episode("furthest", "show", 2, 1),
+                ];
+                items.insert(position, unnumbered);
+                let expected = if position == 0 {
+                    vec!["unnumbered", "furthest"]
+                } else {
+                    vec!["furthest", "unnumbered"]
+                };
+                assert_eq!(
+                    ids(&keep_furthest_episode_per_series(items)),
+                    expected,
+                    "missing {missing_field}, position {position}"
+                );
+            }
+        }
     }
 
     #[tokio::test]
