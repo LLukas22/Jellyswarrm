@@ -133,6 +133,10 @@ impl FederatedItems {
         Self { items }
     }
 
+    pub(super) fn into_items(self) -> Vec<CatalogItem> {
+        self.items
+    }
+
     pub(super) fn from_servers(servers: Vec<ServerItems>, policy: ItemNamePolicy) -> Self {
         Self::from_merged_items(interleave_catalog(
             servers
