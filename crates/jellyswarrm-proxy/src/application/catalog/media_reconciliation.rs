@@ -492,38 +492,38 @@ fn keep_furthest_episode_per_series(items: Vec<CatalogItem>) -> Vec<CatalogItem>
             _ => None,
         }
     };
-    let mut slots: Vec<Option<CatalogItem>> = Vec::with_capacity(items.len());
+    let mut slots: Vec<CatalogItem> = Vec::with_capacity(items.len());
     let mut series_slots = HashMap::<String, usize>::new();
     for item in items {
         let series = (item.item_type == BaseItemKind::Episode)
             .then(|| item.series_id.clone())
             .flatten();
         let Some(series) = series else {
-            slots.push(Some(item));
+            slots.push(item);
             continue;
         };
         // Keep unnumbered entries visible without making them the comparison
         // slot for this show's numbered progress.
         if rank(&item).is_none() {
-            slots.push(Some(item));
+            slots.push(item);
             continue;
         }
         if let Some(&slot) = series_slots.get(&series) {
-            let current = slots[slot].as_ref().expect("series slot is filled");
+            let current = &slots[slot];
             match (rank(current), rank(&item)) {
                 (Some(current), Some(candidate)) => {
                     if candidate > current {
-                        slots[slot] = Some(item);
+                        slots[slot] = item;
                     }
                 }
-                _ => slots.push(Some(item)),
+                _ => slots.push(item),
             }
             continue;
         }
         series_slots.insert(series, slots.len());
-        slots.push(Some(item));
+        slots.push(item);
     }
-    slots.into_iter().flatten().collect()
+    slots
 }
 
 /// Federates `/Shows/{aggregateId}/Seasons|Episodes` across the member
