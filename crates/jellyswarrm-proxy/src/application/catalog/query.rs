@@ -98,9 +98,6 @@ impl CatalogEndpoint {
     }
 }
 
-/// Largest `Limit` treated as a bounded row. Home-screen rows ask for 12–24.
-pub(super) const MAX_BOUNDED_ROW_LIMIT: usize = 100;
-
 fn parent_path(path: &str) -> &str {
     path.trim_end_matches('/')
         .rsplit_once('/')
@@ -196,13 +193,8 @@ impl CatalogQuery {
                 .any(|(key, _)| key.eq_ignore_ascii_case("Ids"))
     }
 
-    /// The shape of a home-screen row: the first page of a small `/Items`
-    /// listing whose client explicitly declined a total count. Such a row can
-    /// be answered from the first `Limit` items of every backend, so it never
-    /// needs a full scan. A client that wants a count, or a later page, may be
-    /// paging through a stable listing and keeps the materialized path.
-    /// Playback predicates are checked by [`CatalogRequestPolicy`].
-    pub(super) fn has_bounded_row_shape(&self) -> bool {
+    /// All pages of an uncounted item listing share a reconciliation scope.
+    pub(super) fn is_uncounted_item_listing(&self) -> bool {
         let mut count_declined = false;
         for (key, value) in &self.parameters {
             if key.eq_ignore_ascii_case("EnableTotalRecordCount") {
@@ -212,14 +204,7 @@ impl CatalogQuery {
                 count_declined = true;
             }
         }
-        self.endpoint == CatalogEndpoint::Items
-            && count_declined
-            && self.pagination.start_index == 0
-            && self
-                .pagination
-                .limit
-                .is_some_and(|limit| (1..=MAX_BOUNDED_ROW_LIMIT).contains(&limit))
-            && !self.is_batch_lookup()
+        self.endpoint == CatalogEndpoint::Items && count_declined && !self.is_batch_lookup()
     }
 
     pub(crate) fn policy(&self, materialize: bool) -> CatalogRequestPolicy {

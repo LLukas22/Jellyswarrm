@@ -142,7 +142,8 @@ pub(crate) async fn resolve_catalog_plan(
         }
     }
 
-    let endpoint = preprocessed.catalog_query().endpoint();
+    let query = preprocessed.catalog_query();
+    let endpoint = query.endpoint();
     let grouping = if endpoint.is_library_root() {
         state
             .virtual_library_service
@@ -168,7 +169,7 @@ pub(crate) async fn resolve_catalog_plan(
         .query_pairs()
         .any(|(key, _)| key.eq_ignore_ascii_case("SearchTerm"));
     let is_resume = endpoint == CatalogEndpoint::Resume;
-    let is_row = preprocessed.catalog_query().policy(false).is_bounded_row();
+    let is_row = query.is_uncounted_item_listing();
     if (is_search || is_resume || is_row || endpoint == CatalogEndpoint::Latest)
         && state.deduplicate_media_enabled().await
     {

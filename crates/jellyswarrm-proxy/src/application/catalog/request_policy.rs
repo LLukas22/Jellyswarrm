@@ -5,6 +5,9 @@ use crate::media::identity::MediaKind;
 use crate::media::storage::MediaStorageService;
 use std::collections::BTreeSet;
 
+/// Largest `Limit` treated as a bounded row. Home-screen rows ask for 12–24.
+const MAX_BOUNDED_ROW_LIMIT: usize = 100;
+
 /// One interpretation of the client query, shared by fetching and finalization.
 pub(crate) struct CatalogRequestPolicy {
     endpoint: CatalogEndpoint,
@@ -14,7 +17,7 @@ pub(crate) struct CatalogRequestPolicy {
     pub(crate) inventory_types: BTreeSet<MediaKind>,
     pub(crate) reconcile_playback: bool,
     playback_filters: Vec<PlaybackFilter>,
-    /// See [`CatalogQuery::has_bounded_row_shape`]. Fetched with one request
+    /// A small first page fetched with one request
     /// per backend and never treated as inventory evidence.
     bounded_row: bool,
 }
@@ -62,7 +65,13 @@ impl CatalogRequestPolicy {
         }
         // Playback predicates over merged copies need every copy, which the
         // first items of each backend cannot provide.
-        let bounded_row = query.has_bounded_row_shape() && playback_filters.is_empty();
+        let bounded_row = query.is_uncounted_item_listing()
+            && query.pagination.start_index == 0
+            && query
+                .pagination
+                .limit
+                .is_some_and(|limit| (1..=MAX_BOUNDED_ROW_LIMIT).contains(&limit))
+            && playback_filters.is_empty();
         Self {
             endpoint,
             pagination,
@@ -293,6 +302,8 @@ fn stabilize_random_sort(url: &mut url::Url) {
     if orders.is_empty() {
         orders.push("Ascending".into());
     } else {
+        let inherited = orders[0].clone();
+        orders.resize(random, inherited);
         orders.resize(fields.len(), "Ascending".into());
     }
     let pairs = url
@@ -719,6 +730,16 @@ mod tests {
                 "SortBy=CommunityRating,Random,Name&SortOrder=Descending,Ascending,Descending",
                 "CommunityRating,SortName",
                 "Descending,Ascending",
+            ),
+            (
+                "SortBy=Studio,SeriesSortName,Random&SortOrder=Descending",
+                "Studio,SeriesSortName,SortName",
+                "Descending,Descending,Ascending",
+            ),
+            (
+                "SortBy=Studio,SortName,Random&SortOrder=Descending",
+                "Studio,SortName",
+                "Descending,Descending",
             ),
             ("SortBy=SortName,Random", "SortName", "Ascending"),
         ] {

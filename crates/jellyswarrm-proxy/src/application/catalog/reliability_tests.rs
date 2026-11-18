@@ -741,13 +741,19 @@ async fn rows_fail_only_when_every_backend_fails() {
 async fn mount_movies(upstream: &wiremock::MockServer, movies: Vec<(String, String)>) {
     Mock::given(method("GET"))
         .and(wiremock::matchers::path_regex(r"/Items$"))
-        .respond_with(move |_: &wiremock::Request| {
+        .respond_with(move |request: &wiremock::Request| {
+            let start = offset(request);
+            let limit = query_value(request, "Limit")
+                .map(|value| value.parse().unwrap())
+                .unwrap_or(movies.len());
+            let counted =
+                query_value(request, "EnableTotalRecordCount").as_deref() != Some("false");
             ResponseTemplate::new(200).set_body_json(json!({
-                "Items": movies.iter().map(|(id, tmdb)| json!({
+                "Items": movies.iter().skip(start).take(limit).map(|(id, tmdb)| json!({
                     "Id": id, "Type": "Movie", "Name": format!("Movie {tmdb}"),
                     "ProviderIds": {"Tmdb": tmdb}
                 })).collect::<Vec<_>>(),
-                "TotalRecordCount": 0, "StartIndex": 0
+                "TotalRecordCount": if counted { movies.len() } else { 0 }, "StartIndex": start
             }))
         })
         .mount(upstream)
@@ -783,6 +789,40 @@ async fn rows_without_a_library_collapse_copies_and_stay_full() {
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(names.len(), 20, "copies collapse into one item");
     assert!(items.iter().all(|item| item["MediaSourceCount"] == 2));
+}
+
+#[tokio::test]
+async fn favorites_pages_use_the_same_merged_listing() {
+    let (state, _, sessions, upstreams) = setup().await;
+    for (server, upstream) in upstreams.iter().enumerate() {
+        mount_movies(
+            upstream,
+            ["A", "B"]
+                .map(|id| (format!("{server}-{id}"), id.to_owned()))
+                .to_vec(),
+        )
+        .await;
+    }
+    let row = "/Items?SortBy=SortName&Filters=IsFavorite&EnableTotalRecordCount=false&Limit=1";
+    for (start, name) in [(0, "Movie A"), (1, "Movie B")] {
+        let page = get_catalog(
+            &state.services,
+            request(&format!("{row}&StartIndex={start}"), &sessions),
+        )
+        .await
+        .unwrap();
+        let items = page["Items"].as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["Name"], name);
+        assert_eq!(items[0]["MediaSourceCount"], 2);
+    }
+    let end = get_catalog(
+        &state.services,
+        request(&format!("{row}&StartIndex=2"), &sessions),
+    )
+    .await
+    .unwrap();
+    assert!(end["Items"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]

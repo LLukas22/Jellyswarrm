@@ -550,6 +550,7 @@ fn depends_on_user_data(query: &super::query::CatalogQuery) -> bool {
     ];
     const SORTS: &[&str] = &[
         "DatePlayed",
+        "SeriesDatePlayed",
         "PlayCount",
         "IsFavoriteOrLiked",
         "IsPlayed",
@@ -1197,6 +1198,7 @@ mod materialization_tests {
             "Filters=IsUnplayed",
             "filters=IsFolder,IsFavorite",
             "SortBy=DatePlayed",
+            "sortBy=seriesdateplayed",
             "SortBy=SortName,IsFavoriteOrLiked",
             "IsPlayed=false",
             "isFavorite=true",
