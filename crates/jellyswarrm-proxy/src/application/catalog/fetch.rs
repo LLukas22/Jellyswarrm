@@ -1,5 +1,5 @@
 //! Fetch catalog pages from authorized backends with bounded scans and completeness evidence.
-use std::time::Duration;
+use std::{future::Future, sync::Arc, time::Duration};
 
 use crate::application::error::{ApplicationError, FailureStage};
 use tokio::task::JoinSet;
@@ -18,13 +18,14 @@ use crate::{
 };
 
 use super::{
+    item_store::StoredListing,
     library_resolution::presentable_library_collection_type,
     library_resolution::CatalogFetchTarget,
-    postprocessing::{Pagination, ResponseShape, ServerItems},
+    postprocessing::{Pagination, ResponseShape, ServerItems, SortKey, SortPolicy},
     query::CatalogEndpoint,
     request_policy::{
         normalize_upstream_pagination, replace_aggregate_parent_id, set_upstream_page,
-        CatalogRequestPolicy, UPSTREAM_PAGE_SIZE,
+        CatalogRequestPolicy, UPSTREAM_PAGE_SIZE, UPSTREAM_SCAN_CONCURRENCY,
     },
     scan::{CatalogReport, FetchOutcome, PartialReason, ScanProgress, SourceOutcome},
 };
@@ -223,11 +224,6 @@ impl FetchedServerItems {
     }
 }
 
-struct PagedItems {
-    response: ItemsResponseVariants,
-    outcome: FetchOutcome,
-}
-
 #[derive(Clone, Copy)]
 enum ScanPolicy {
     Items,
@@ -251,6 +247,7 @@ pub(crate) async fn fetch_catalog(
         targets,
         mode,
         failures,
+        fetch_server_items,
     )
     .await
 }
@@ -271,6 +268,7 @@ pub(super) async fn fetch_refresh_catalog(
         targets,
         FetchMode::VirtualLibrary,
         failures,
+        fetch_server_items,
     )
     .await
 }
@@ -292,14 +290,133 @@ impl CatalogFetchInput<'_> {
     }
 }
 
-async fn fetch_catalog_operation(
+struct SourceRequest {
+    index: usize,
+    state: MediaServices,
+    request: reqwest::Request,
+    target: CatalogFetchTarget,
+    pagination: Pagination,
+    upstream_limited: bool,
+    library_inventory: bool,
+}
+
+async fn fetch_server_items(
+    source: SourceRequest,
+) -> Result<(FetchedServerItems, ResponseShape), ApplicationError> {
+    let SourceRequest {
+        index,
+        state,
+        request,
+        target,
+        pagination,
+        upstream_limited,
+        library_inventory,
+    } = source;
+    let result = if upstream_limited || library_inventory {
+        let items = fetch_items_from_server(
+            index,
+            state,
+            request,
+            target.session,
+            target.server,
+            pagination,
+        )
+        .await?;
+        if upstream_limited {
+            FetchedServerItems::bounded(items)
+        } else {
+            FetchedServerItems::complete(items)
+        }
+    } else {
+        fetch_paged_items_from_server(index, state, request, target.session, target.server).await?
+    };
+    let shape = ResponseShape::from_responses([&result.server_items.response]);
+    Ok((result, shape))
+}
+
+pub(super) struct CompactSource {
+    pub(super) listing: StoredListing,
+    pub(super) keys: Vec<SortKey>,
+}
+
+pub(super) async fn fetch_compact_catalog(
+    state: &MediaServices,
+    request: &reqwest::Request,
+    policy: &CatalogRequestPolicy,
+    targets: Vec<CatalogFetchTarget>,
+    failures: usize,
+    name_policy: crate::media::presentation::ItemNamePolicy,
+) -> Result<FetchedCatalog<CompactSource>, ApplicationError> {
+    let sort = Arc::new(policy.sort.clone());
+    fetch_catalog_operation(
+        state,
+        CatalogFetchInput::Http(request),
+        policy,
+        targets,
+        FetchMode::Listing,
+        failures,
+        move |source| fetch_compact_source(source, sort.clone(), name_policy),
+    )
+    .await
+}
+
+async fn fetch_compact_source(
+    source: SourceRequest,
+    sort: Arc<SortPolicy>,
+    name_policy: crate::media::presentation::ItemNamePolicy,
+) -> Result<(FetchedServerItems<CompactSource>, ResponseShape), ApplicationError> {
+    let SourceRequest {
+        index,
+        state,
+        request,
+        target,
+        ..
+    } = source;
+    let mut listing = StoredListing::new(state.catalog_snapshots.item_store());
+    let mut keys = Vec::new();
+    let shape = scan_pages(
+        index,
+        &state,
+        request,
+        &target.session,
+        &target.server,
+        ScanPolicy::Items,
+        |page| {
+            let mut items = page.into_items();
+            for item in &mut items {
+                keys.push(sort.key(item));
+                name_policy.apply(item, &target.server.name);
+            }
+            listing.extend_items(items)
+        },
+    )
+    .await?;
+    Ok((
+        FetchedServerItems {
+            server_items: CompactSource { listing, keys },
+            outcome: FetchOutcome::Complete,
+            source_parent_id: None,
+        },
+        shape,
+    ))
+}
+
+async fn fetch_catalog_operation<T, F, Fut>(
     state: &MediaServices,
     input: CatalogFetchInput<'_>,
     policy: &CatalogRequestPolicy,
     targets: Vec<CatalogFetchTarget>,
     mode: FetchMode,
     mut failures: usize,
-) -> Result<FetchedCatalog, ApplicationError> {
+    fetch_source: F,
+) -> Result<FetchedCatalog<T>, ApplicationError>
+where
+    T: Send + 'static,
+    F: Fn(SourceRequest) -> Fut,
+    Fut: Future<Output = Result<(FetchedServerItems<T>, ResponseShape), ApplicationError>>
+        + Send
+        + 'static,
+{
     let unavailable_targets = failures;
     let mut join_set = JoinSet::new();
     let mut outcomes = source_outcomes(&targets);
@@ -322,39 +439,26 @@ async fn fetch_catalog_operation(
             *request.url_mut() =
                 replace_aggregate_parent_id(request.url(), &parent.requested, &parent.member);
         }
-        let upstream_limited = policy.endpoint().is_upstream_limited();
+        // A bounded row needs only each backend's first `Limit` items, in one
+        // request that keeps the client's `EnableTotalRecordCount=false`.
+        let upstream_limited = policy.endpoint().is_upstream_limited() || policy.is_bounded_row();
         let library_inventory = policy.endpoint().is_library_root();
         let pagination = policy.pagination;
-        let state = state.clone();
+        let fetch = fetch_source(SourceRequest {
+            index,
+            state: state.clone(),
+            request,
+            target,
+            pagination,
+            upstream_limited,
+            library_inventory,
+        });
         join_set.spawn(async move {
-            let result = if upstream_limited || library_inventory {
-                fetch_items_from_server(
-                    index,
-                    state,
-                    request,
-                    target.session,
-                    target.server,
-                    pagination,
-                )
-                .await
-                .map(|items| {
-                    if upstream_limited {
-                        FetchedServerItems::bounded(items)
-                    } else {
-                        FetchedServerItems::complete(items)
-                    }
-                })
-            } else {
-                fetch_paged_items_from_server(index, state, request, target.session, target.server)
-                    .await
-            };
-            (
-                index,
-                result.map(|mut fetched| {
-                    fetched.source_parent_id = source_parent_id;
-                    fetched
-                }),
-            )
+            let result = fetch.await.map(|(mut fetched, shape)| {
+                fetched.source_parent_id = source_parent_id;
+                (fetched, shape)
+            });
+            (index, result)
         });
     }
 
@@ -365,22 +469,21 @@ async fn fetch_catalog_operation(
             report: CatalogReport::new(outcomes, unavailable_targets),
         });
     }
-    let (indexed_results, _) = collect_federated_results(
-        join_set,
-        failures,
-        &mut outcomes,
-        |items: &FetchedServerItems| items.outcome,
-    )
-    .await?;
+    let (indexed_results, _) =
+        collect_federated_results(join_set, failures, &mut outcomes, |(items, _)| {
+            items.outcome
+        })
+        .await?;
+    let mut response_shape = ResponseShape::Bare;
     let server_items = indexed_results
         .into_iter()
-        .map(|(_, items)| items)
-        .collect::<Vec<_>>();
-    let response_shape = ResponseShape::from_responses(
-        server_items
-            .iter()
-            .map(|items| &items.server_items.response),
-    );
+        .map(|(_, (items, shape))| {
+            if shape == ResponseShape::Counted {
+                response_shape = shape;
+            }
+            items
+        })
+        .collect();
 
     Ok(FetchedCatalog {
         server_items,
@@ -521,119 +624,134 @@ async fn fetch_paged_items_from_server(
     session: AuthorizationSession,
     server: Server,
 ) -> Result<FetchedServerItems, ApplicationError> {
+    let mut items = Vec::new();
+    let shape = scan_pages(
+        index,
+        &state,
+        request,
+        &session,
+        &server,
+        ScanPolicy::Items,
+        |page| {
+            items.extend(page.into_items());
+            Ok(())
+        },
+    )
+    .await?;
+    let count = items.len();
+    Ok(FetchedServerItems::complete(ServerItems {
+        response: shape.wrap(items, count, Pagination::unbounded()),
+        server,
+    }))
+}
+
+/// Pass each validated page to the consumer before requesting another batch.
+/// Item scans translate and stage discoveries. A successful scan publishes
+/// those discoveries, while inventory scans return raw IDs to their caller.
+async fn scan_pages(
+    index: usize,
+    state: &MediaServices,
+    request: reqwest::Request,
+    session: &AuthorizationSession,
+    server: &Server,
+    policy: ScanPolicy,
+    mut accept_page: impl FnMut(ItemsResponseVariants) -> Result<(), ApplicationError>,
+) -> Result<ResponseShape, ApplicationError> {
     let proxy_api_key = JellyfinAuthorization::from_headers_url(request.headers(), request.url())
         .and_then(|auth| auth.token_ref().map(str::to_string));
-    let PagedItems {
-        mut response,
-        outcome,
-    } = fetch_paged_raw_items_from_server(index, state.clone(), request, session, server.clone())
-        .await?;
-    if let FetchOutcome::Partial(reason) = outcome {
-        warn!(
-            "Discarding incomplete catalog from {}: {reason:?}",
-            server.name
-        );
-        // Retain the exact scan outcome, but never expose or reconcile a partial
-        // inventory. The fan-out collector discards this value after recording it.
-        return Err(ApplicationError::IncompleteCatalog {
-            reason,
-            cause: None,
-        });
-    }
-    process_items_response_json(&mut response, &state, &server, proxy_api_key.as_deref()).await?;
-    Ok(FetchedServerItems {
-        server_items: ServerItems { response, server },
-        outcome,
-        source_parent_id: None,
-    })
-}
-
-async fn fetch_paged_raw_items_from_server(
-    index: usize,
-    state: MediaServices,
-    request: reqwest::Request,
-    session: AuthorizationSession,
-    server: Server,
-) -> Result<PagedItems, ApplicationError> {
-    let request = prepare_backend_request(request, &state, &session, &server).await?;
-    scan_raw_items(index, state, request, server, ScanPolicy::Items).await
-}
-
-async fn scan_raw_items(
-    index: usize,
-    state: MediaServices,
-    request: reqwest::Request,
-    server: Server,
-    policy: ScanPolicy,
-) -> Result<PagedItems, ApplicationError> {
+    let request = prepare_backend_request(request, state, session, server).await?;
+    let mut libraries = Vec::new();
     // The configured timeout bounds each page, not the size of a valid catalog.
     let page_timeout = Duration::from_secs(state.config.read().await.timeout.clamp(1, 300));
     let mut progress = ScanProgress::default();
-    let mut all_items = Vec::new();
-    let mut had_counted_response = false;
-    let outcome = loop {
-        let mut page_request = request
-            .try_clone()
-            .ok_or(ApplicationError::MissingIdentity("cloneable catalog page"))?;
-        if matches!(policy, ScanPolicy::Items) || progress.offset() > 0 {
-            set_upstream_page(
-                page_request.url_mut(),
-                progress.offset(),
-                UPSTREAM_PAGE_SIZE,
-            );
-        }
-        let page = tokio::time::timeout(
-            page_timeout,
-            execute_raw_items_request(index, state.clone(), page_request, server.clone()),
-        )
-        .await;
-        let page = match page {
-            Ok(Ok(page)) => page.response,
-            Ok(Err(status)) if all_items.is_empty() => return Err(status),
-            Err(error) if all_items.is_empty() => {
-                return Err(
-                    ApplicationError::Internal(error.into()).at(FailureStage::CatalogDeadline)
-                )
-            }
-            Ok(Err(error)) => {
-                return Err(ApplicationError::IncompleteCatalog {
-                    reason: PartialReason::Failed,
-                    cause: Some(Box::new(error)),
-                })
-            }
-            Err(error) => {
-                return Err(ApplicationError::IncompleteCatalog {
-                    reason: PartialReason::Deadline,
-                    cause: Some(Box::new(ApplicationError::Internal(error.into()))),
-                })
-            }
-        };
-        if matches!(&page, ItemsResponseVariants::WithCount(_)) {
-            had_counted_response = true;
-        }
-        let bare_inventory = matches!(policy, ScanPolicy::LibraryInventory)
-            && matches!(page, ItemsResponseVariants::Bare(_));
-        let step = progress.accept(&page)?;
-        all_items.extend(page.into_items());
-        if step == super::scan::ScanStep::Complete || bare_inventory {
-            break FetchOutcome::Complete;
-        }
-    };
 
-    let response = if had_counted_response {
-        ItemsResponseVariants::WithCount(ItemsResponseWithCount {
-            total_record_count: all_items.len().min(i32::MAX as usize) as i32,
-            items: all_items,
-            start_index: 0,
-        })
-    } else {
-        ItemsResponseVariants::Bare(all_items)
-    };
-    if outcome == FetchOutcome::Complete && matches!(policy, ScanPolicy::Items) {
-        track_discovered_libraries(&state, &server, &response).await;
+    let mut known_total: Option<usize> = None;
+    let mut page_size = UPSTREAM_PAGE_SIZE;
+    'scan: loop {
+        // Once a counted page has told us the size of the listing, fetch the
+        // next few pages together. They are still accepted strictly in offset
+        // order with the same validation as a sequential scan. Library
+        // inventories and uncounted listings stay sequential.
+        let offset = progress.offset();
+        let batch = match (policy, known_total) {
+            (ScanPolicy::Items, Some(total)) => total
+                .saturating_sub(offset)
+                .div_ceil(page_size)
+                .clamp(1, UPSTREAM_SCAN_CONCURRENCY),
+            _ => 1,
+        };
+        let mut pages = Vec::with_capacity(batch);
+        for page in 0..batch {
+            let mut page_request = request
+                .try_clone()
+                .ok_or(ApplicationError::MissingIdentity("cloneable catalog page"))?;
+            if matches!(policy, ScanPolicy::Items) || offset > 0 {
+                set_upstream_page(page_request.url_mut(), offset + page * page_size, page_size);
+            }
+            pages.push(tokio::time::timeout(
+                page_timeout,
+                execute_raw_items_request(index, state.clone(), page_request, server.clone()),
+            ));
+        }
+        for page in futures_util::future::join_all(pages).await {
+            let page = match page {
+                Ok(Ok(page)) => page.response,
+                Ok(Err(status)) if progress.offset() == 0 => return Err(status),
+                Err(error) if progress.offset() == 0 => {
+                    return Err(
+                        ApplicationError::Internal(error.into()).at(FailureStage::CatalogDeadline)
+                    )
+                }
+                Ok(Err(error)) => {
+                    return Err(ApplicationError::IncompleteCatalog {
+                        reason: PartialReason::Failed,
+                        cause: Some(Box::new(error)),
+                    })
+                }
+                Err(error) => {
+                    return Err(ApplicationError::IncompleteCatalog {
+                        reason: PartialReason::Deadline,
+                        cause: Some(Box::new(ApplicationError::Internal(error.into()))),
+                    })
+                }
+            };
+            if let ItemsResponseVariants::WithCount(page) = &page {
+                known_total = Some(page.total_record_count.max(0) as usize);
+            }
+            let bare_inventory = matches!(policy, ScanPolicy::LibraryInventory)
+                && matches!(page, ItemsResponseVariants::Bare(_));
+            let received = page.len();
+            let step = progress.accept(&page)?;
+            let page = if matches!(policy, ScanPolicy::Items) {
+                libraries.extend(discovered_libraries_from_response(server.id, &page));
+                translate_page(page, state, server, proxy_api_key.as_deref()).await?
+            } else {
+                page
+            };
+            accept_page(page)?;
+            if step == super::scan::ScanStep::Complete || bare_inventory {
+                break 'scan;
+            }
+            if received < page_size {
+                // A backend may return a short page before the end. Later
+                // pages of this batch then start at the wrong offset, so drop
+                // them and continue from what was actually received.
+                if known_total.is_some() && matches!(policy, ScanPolicy::Items) {
+                    page_size = received;
+                }
+                continue 'scan;
+            }
+        }
     }
 
-    Ok(PagedItems { response, outcome })
+    if matches!(policy, ScanPolicy::Items) {
+        track_libraries(state, server, &libraries).await;
+    }
+    Ok(if known_total.is_some() {
+        ResponseShape::Counted
+    } else {
+        ResponseShape::Bare
+    })
 }
 
 async fn fetch_raw_items_from_server(
@@ -694,24 +812,22 @@ async fn fetch_library_inventory(
         None
     };
     normalize_upstream_pagination(request.url_mut(), Pagination::unbounded());
-    let request = prepare_backend_request(request, &state, &session, &server).await?;
-    let PagedItems { response, outcome } = scan_raw_items(
+    let mut items = Vec::new();
+    let shape = scan_pages(
         index,
-        state.clone(),
+        &state,
         request,
-        server.clone(),
+        &session,
+        &server,
         ScanPolicy::LibraryInventory,
+        |page| {
+            items.extend(page.into_items());
+            Ok(())
+        },
     )
     .await?;
-    if let FetchOutcome::Partial(reason) = outcome {
-        warn!(
-            "Incomplete library inventory from server '{}': {reason:?}",
-            server.name
-        );
-        return Err(ApplicationError::InvalidUpstreamPayload(
-            "incomplete library inventory",
-        ));
-    }
+    let count = items.len();
+    let response = shape.wrap(items, count, Pagination::unbounded());
     // Commit discoveries only after all pages succeeded. A failed continuation
     // must not make a partial inventory look authoritative.
     track_discovered_libraries(&state, &server, &response).await;
@@ -789,9 +905,13 @@ async fn track_discovered_libraries(
     response: &ItemsResponseVariants,
 ) {
     let libraries = discovered_libraries_from_response(server.id, response);
+    track_libraries(state, server, &libraries).await;
+}
+
+async fn track_libraries(state: &MediaServices, server: &Server, libraries: &[DiscoveredLibrary]) {
     if let Err(error) = state
         .virtual_library_service
-        .track_discovered_libraries(&libraries)
+        .track_discovered_libraries(libraries)
         .await
     {
         warn!(
@@ -824,32 +944,72 @@ fn discovered_libraries_from_response(
         .collect()
 }
 
+/// Translate a scanned listing one upstream page at a time. Each page goes
+/// through the same JSON translation as before, in the same envelope shape, so
+/// a large catalog never exists as a single JSON tree.
 async fn process_items_response_json(
     response: &mut ItemsResponseVariants,
     state: &MediaServices,
     server: &Server,
     proxy_api_key: Option<&str>,
 ) -> Result<(), ApplicationError> {
-    let mut response_json =
-        serde_json::to_value(&*response).map_err(ApplicationError::Serialization)?;
+    let (items, envelope) = match response {
+        ItemsResponseVariants::WithCount(counted) => (
+            std::mem::take(&mut counted.items),
+            Some((counted.total_record_count, counted.start_index)),
+        ),
+        ItemsResponseVariants::Bare(items) => (std::mem::take(items), None),
+    };
+    let mut translated = Vec::with_capacity(items.len());
+    let mut items = items.into_iter().peekable();
+    // An empty listing still goes through translation once, as before.
+    let mut first = true;
+    while first || items.peek().is_some() {
+        first = false;
+        let chunk = items.by_ref().take(UPSTREAM_PAGE_SIZE).collect::<Vec<_>>();
+        let page = match envelope {
+            Some((total_record_count, start_index)) => {
+                ItemsResponseVariants::WithCount(ItemsResponseWithCount {
+                    items: chunk,
+                    total_record_count,
+                    start_index,
+                })
+            }
+            None => ItemsResponseVariants::Bare(chunk),
+        };
+        let page = translate_page(page, state, server, proxy_api_key).await?;
+        translated.extend(page.into_items());
+    }
+    match response {
+        ItemsResponseVariants::WithCount(counted) => counted.items = translated,
+        ItemsResponseVariants::Bare(items) => *items = translated,
+    }
+    Ok(())
+}
 
+async fn translate_page(
+    page: ItemsResponseVariants,
+    state: &MediaServices,
+    server: &Server,
+    proxy_api_key: Option<&str>,
+) -> Result<ItemsResponseVariants, ApplicationError> {
+    let mut page_json = serde_json::to_value(&page).map_err(ApplicationError::Serialization)?;
+    drop(page);
     state
         .process_response_json(
-            &mut response_json,
+            &mut page_json,
             server,
             ResponseProcessingProfile::Media,
             proxy_api_key,
         )
         .await
-        .inspect_err(|e| {
+        .inspect_err(|error| {
             error!(
-                "Failed to process media items from server '{}': {:?}",
-                server.name, e
-            );
+                "Failed to process media items from server '{}': {error:?}",
+                server.name
+            )
         })?;
-
-    *response = response_json_to_payload(response_json)?;
-    Ok(())
+    response_json_to_payload(page_json)
 }
 
 #[cfg(test)]

@@ -5,6 +5,7 @@ pub(crate) use paths::Paths;
 mod snapshots;
 use serde::{Deserialize, Serialize};
 pub(crate) use snapshots::AdminCredentials;
+pub(crate) use snapshots::CatalogCacheSettings;
 pub(crate) use snapshots::SettingsView;
 pub(crate) use snapshots::StartupConfig;
 
@@ -122,6 +123,20 @@ fn default_deduplicate_media() -> bool {
     true
 }
 
+/// About the real memory the former 64 MiB JSON budget allowed: a parsed
+/// JSON listing used roughly four times its serialized size.
+fn default_catalog_cache_size_mb() -> u64 {
+    256
+}
+
+fn default_catalog_cache_fresh_secs() -> u64 {
+    5 * 60
+}
+
+fn default_catalog_cache_max_age_secs() -> u64 {
+    6 * 60 * 60
+}
+
 mod base64_serde {
     use super::*;
     use serde::de::Error as DeError;
@@ -220,6 +235,21 @@ define_fallback_deserializer!(
     bool,
     default_deduplicate_media
 );
+define_fallback_deserializer!(
+    deserialize_catalog_cache_size_mb,
+    u64,
+    default_catalog_cache_size_mb
+);
+define_fallback_deserializer!(
+    deserialize_catalog_cache_fresh_secs,
+    u64,
+    default_catalog_cache_fresh_secs
+);
+define_fallback_deserializer!(
+    deserialize_catalog_cache_max_age_secs,
+    u64,
+    default_catalog_cache_max_age_secs
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct PreconfiguredServer {
@@ -314,6 +344,29 @@ pub(crate) struct AppConfig {
         alias = "deduplicate_movies"
     )]
     pub(crate) deduplicate_media: bool,
+
+    /// Memory budget for cached catalog listings, in MiB of estimated retained
+    /// memory. Items shared between listings count once. 0 disables the cache.
+    #[serde(
+        default = "default_catalog_cache_size_mb",
+        deserialize_with = "deserialize_catalog_cache_size_mb"
+    )]
+    pub(crate) catalog_cache_size_mb: u64,
+
+    /// How long a cached listing is served without being rebuilt.
+    #[serde(
+        default = "default_catalog_cache_fresh_secs",
+        deserialize_with = "deserialize_catalog_cache_fresh_secs"
+    )]
+    pub(crate) catalog_cache_fresh_secs: u64,
+
+    /// How long an outdated listing may still be served while it is rebuilt
+    /// in the background.
+    #[serde(
+        default = "default_catalog_cache_max_age_secs",
+        deserialize_with = "deserialize_catalog_cache_max_age_secs"
+    )]
+    pub(crate) catalog_cache_max_age_secs: u64,
 }
 
 impl Default for AppConfig {
@@ -338,6 +391,9 @@ impl Default for AppConfig {
             auto_create_users_on_login: default_auto_create_users_on_login(),
             merge_libraries: default_merge_libraries(),
             deduplicate_media: default_deduplicate_media(),
+            catalog_cache_size_mb: default_catalog_cache_size_mb(),
+            catalog_cache_fresh_secs: default_catalog_cache_fresh_secs(),
+            catalog_cache_max_age_secs: default_catalog_cache_max_age_secs(),
         }
     }
 }
@@ -373,8 +429,23 @@ impl fmt::Debug for AppConfig {
                 &self.auto_create_users_on_login,
             )
             .field("deduplicate_media", &self.deduplicate_media)
+            .field("catalog_cache_size_mb", &self.catalog_cache_size_mb)
+            .field("catalog_cache_fresh_secs", &self.catalog_cache_fresh_secs)
+            .field(
+                "catalog_cache_max_age_secs",
+                &self.catalog_cache_max_age_secs,
+            )
             .finish()
     }
+}
+
+/// `JELLYSWARRM_<KEY>` overrides a top-level key, so multi-word keys such as
+/// `JELLYSWARRM_CATALOG_CACHE_SIZE_MB` work. A double underscore reaches a
+/// nested key, as in `JELLYSWARRM_DEBUG_USER__USERNAME`.
+fn environment() -> config::Environment {
+    config::Environment::with_prefix("JELLYSWARRM")
+        .prefix_separator("_")
+        .separator("__")
 }
 
 pub(crate) const DEFAULT_CONFIG_FILENAME: &str = "jellyswarrm.toml";
@@ -403,11 +474,11 @@ pub(crate) fn load_config_with_session_key(
                 config::File::with_name(paths.dev_config.to_string_lossy().as_ref())
                     .required(false),
             )
-            .add_source(config::Environment::with_prefix("JELLYSWARRM").separator("_"))
+            .add_source(environment())
     } else {
         config::Config::builder()
             .add_source(config::File::with_name(path.to_string_lossy().as_ref()).required(false))
-            .add_source(config::Environment::with_prefix("JELLYSWARRM").separator("_"))
+            .add_source(environment())
     };
 
     let source = builder.build()?;
@@ -548,5 +619,57 @@ impl<'de> serde::Deserialize<'de> for UrlSegment {
         } else {
             Ok(UrlSegment(t))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn from_environment(vars: &[(&str, &str)]) -> AppConfig {
+        let vars = vars
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect();
+        config::Config::builder()
+            .add_source(environment().source(Some(vars)))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap()
+    }
+
+    #[test]
+    fn multi_word_environment_keys_override_their_setting() {
+        let config = from_environment(&[
+            ("JELLYSWARRM_PORT", "4000"),
+            ("JELLYSWARRM_SERVER_BACKGROUND_CHECK_INTERVAL_SECS", "77"),
+            ("JELLYSWARRM_CATALOG_CACHE_SIZE_MB", "512"),
+            ("JELLYSWARRM_CATALOG_CACHE_FRESH_SECS", "60"),
+            ("JELLYSWARRM_CATALOG_CACHE_MAX_AGE_SECS", "0"),
+            ("JELLYSWARRM_DEBUG_USER__USERNAME", "debug"),
+            ("JELLYSWARRM_DEBUG_USER__PASSWORD", "secret"),
+        ]);
+        assert_eq!(config.port, 4000);
+        assert_eq!(config.server_background_check_interval_secs, 77);
+        assert_eq!(config.catalog_cache_size_mb, 512);
+        assert_eq!(config.catalog_cache_fresh_secs, 60);
+        assert_eq!(config.catalog_cache_max_age_secs, 0);
+        assert_eq!(config.debug_user.unwrap().username, "debug");
+    }
+
+    #[test]
+    fn invalid_cache_settings_fall_back_to_defaults() {
+        let config = from_environment(&[("JELLYSWARRM_CATALOG_CACHE_SIZE_MB", "lots")]);
+        assert_eq!(config.catalog_cache_size_mb, 256);
+        let excessive = AppConfig {
+            catalog_cache_max_age_secs: u64::MAX,
+            catalog_cache_fresh_secs: u64::MAX,
+            ..AppConfig::default()
+        };
+        assert_eq!(
+            excessive.startup_config().catalog_cache,
+            CatalogCacheSettings::default()
+        );
     }
 }

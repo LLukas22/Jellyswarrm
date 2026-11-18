@@ -599,3 +599,737 @@ async fn numbered_episode_versions_keep_ranges_distinct_and_route_same_server_co
         sibling.mapping.id
     );
 }
+
+/// A backend whose listing is far larger than any home-screen row.
+async fn mount_large_listing(upstream: &wiremock::MockServer, server: usize) {
+    Mock::given(method("GET"))
+        .and(wiremock::matchers::path_regex(r"/Items$"))
+        .respond_with(move |request: &wiremock::Request| {
+            let start = offset(request);
+            let limit = request
+                .url
+                .query_pairs()
+                .find(|(key, _)| key.eq_ignore_ascii_case("Limit"))
+                .and_then(|(_, value)| value.parse().ok())
+                .unwrap_or(100);
+            ResponseTemplate::new(200).set_body_json(json!({
+                "Items": (start..start + limit).map(|index| json!({
+                    "Id": format!("server-{server}-item-{index}"), "Type": "Movie",
+                    "Name": format!("Movie {index:05}"),
+                    "ProviderIds": {"Tmdb": format!("{server}-{index}")}
+                })).collect::<Vec<_>>(),
+                "TotalRecordCount": 0, "StartIndex": start
+            }))
+        })
+        .mount(upstream)
+        .await;
+}
+
+fn query_value(request: &wiremock::Request, name: &str) -> Option<String> {
+    request
+        .url
+        .query_pairs()
+        .find(|(key, _)| key.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.into_owned())
+}
+
+#[tokio::test]
+async fn home_screen_rows_fetch_one_bounded_page_per_backend() {
+    let (state, _, sessions, upstreams) = setup().await;
+    for (index, upstream) in upstreams.iter().enumerate() {
+        mount_large_listing(upstream, index).await;
+    }
+    // The favorites row from the webOS home screen (issue #231).
+    let response = get_catalog(
+        &state.services,
+        request(
+            "/Users/viewer/Items?SortBy=SeriesSortName,SortName&SortOrder=Ascending&Filters=IsFavorite&Recursive=true&EnableTotalRecordCount=false&Limit=20&IncludeItemTypes=Movie",
+            &sessions,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(response["Items"].as_array().unwrap().len(), 20);
+    for upstream in &upstreams {
+        let requests = upstream.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1, "a row must not scan the backend");
+        assert_eq!(query_value(&requests[0], "Limit").as_deref(), Some("20"));
+        assert_eq!(query_value(&requests[0], "StartIndex"), None);
+        assert_eq!(
+            query_value(&requests[0], "EnableTotalRecordCount").as_deref(),
+            Some("false"),
+            "keep the client's opt-out of the expensive upstream count"
+        );
+        assert_eq!(
+            query_value(&requests[0], "Filters").as_deref(),
+            Some("IsFavorite")
+        );
+    }
+}
+
+#[tokio::test]
+async fn random_rows_sample_each_backend_once() {
+    let (state, _, sessions, upstreams) = setup().await;
+    for (index, upstream) in upstreams.iter().enumerate() {
+        mount_large_listing(upstream, index).await;
+    }
+    // The search suggestions row from jellyfin-web.
+    let response = get_catalog(
+        &state.services,
+        request(
+            "/Items?userId=viewer&limit=20&recursive=true&includeItemTypes=Movie&includeItemTypes=Series&sortBy=IsFavoriteOrLiked&sortBy=Random&imageTypeLimit=0&enableTotalRecordCount=false&enableImages=false",
+            &sessions,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(response["Items"].as_array().unwrap().len(), 20);
+    for upstream in &upstreams {
+        let requests = upstream.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0]
+            .url
+            .query_pairs()
+            .any(|(key, value)| key.eq_ignore_ascii_case("SortBy") && value == "Random"));
+    }
+}
+
+#[tokio::test]
+async fn rows_serve_available_backends_when_one_fails() {
+    let (state, _, sessions, upstreams) = setup().await;
+    mount_large_listing(&upstreams[0], 0).await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&upstreams[1])
+        .await;
+    let response = get_catalog(
+        &state.services,
+        request(
+            "/Items?Recursive=true&EnableTotalRecordCount=false&Limit=12",
+            &sessions,
+        ),
+    )
+    .await
+    .unwrap();
+    let items = response["Items"].as_array().unwrap();
+    assert_eq!(items.len(), 12);
+    assert!(items
+        .iter()
+        .all(|item| item["Name"].as_str().unwrap().starts_with("Movie")));
+}
+
+#[tokio::test]
+async fn rows_fail_only_when_every_backend_fails() {
+    let (state, _, sessions, upstreams) = setup().await;
+    for upstream in &upstreams {
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(upstream)
+            .await;
+    }
+    assert!(get_catalog(
+        &state.services,
+        request(
+            "/Items?Recursive=true&EnableTotalRecordCount=false&Limit=12",
+            &sessions,
+        ),
+    )
+    .await
+    .is_err());
+}
+
+async fn mount_movies(upstream: &wiremock::MockServer, movies: Vec<(String, String)>) {
+    Mock::given(method("GET"))
+        .and(wiremock::matchers::path_regex(r"/Items$"))
+        .respond_with(move |_: &wiremock::Request| {
+            ResponseTemplate::new(200).set_body_json(json!({
+                "Items": movies.iter().map(|(id, tmdb)| json!({
+                    "Id": id, "Type": "Movie", "Name": format!("Movie {tmdb}"),
+                    "ProviderIds": {"Tmdb": tmdb}
+                })).collect::<Vec<_>>(),
+                "TotalRecordCount": 0, "StartIndex": 0
+            }))
+        })
+        .mount(upstream)
+        .await;
+}
+
+const FAVORITES_ROW: &str = "/Users/viewer/Items?SortBy=SeriesSortName,SortName&SortOrder=Ascending&Filters=IsFavorite&Recursive=true&EnableTotalRecordCount=false&Limit=20&IncludeItemTypes=Movie";
+
+#[tokio::test]
+async fn rows_without_a_library_collapse_copies_and_stay_full() {
+    let (state, _, sessions, upstreams) = setup().await;
+    for (server, upstream) in upstreams.iter().enumerate() {
+        mount_movies(
+            upstream,
+            (0..20)
+                .map(|index| (format!("server-{server}-{index}"), format!("{index}")))
+                .collect(),
+        )
+        .await;
+    }
+    let response = get_catalog(&state.services, request(FAVORITES_ROW, &sessions))
+        .await
+        .unwrap();
+    let items = response["Items"].as_array().unwrap();
+    assert_eq!(
+        items.len(),
+        20,
+        "every movie exists twice, the row is still full"
+    );
+    let names = items
+        .iter()
+        .map(|item| item["Name"].as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(names.len(), 20, "copies collapse into one item");
+    assert!(items.iter().all(|item| item["MediaSourceCount"] == 2));
+}
+
+#[tokio::test]
+async fn rows_with_backend_only_sorts_take_items_from_every_backend() {
+    let (state, _, sessions, upstreams) = setup().await;
+    for (server, upstream) in upstreams.iter().enumerate() {
+        mount_movies(
+            upstream,
+            (0..20)
+                .map(|index| {
+                    (
+                        format!("server-{server}-{index}"),
+                        format!("{server}-{index}"),
+                    )
+                })
+                .collect(),
+        )
+        .await;
+    }
+    // SeriesSortName is ranked by the backends, not the proxy.
+    let response = get_catalog(&state.services, request(FAVORITES_ROW, &sessions))
+        .await
+        .unwrap();
+    let items = response["Items"].as_array().unwrap();
+    assert_eq!(items.len(), 20);
+    for server in 0..2 {
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| item["Name"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with(&format!("Movie {server}-")))
+                .count(),
+            10,
+            "server {server}"
+        );
+    }
+}
+
+use std::sync::{Arc, Mutex};
+
+/// A counted listing of `total` movies that returns at most `cap` per page.
+async fn mount_counted_listing(
+    upstream: &wiremock::MockServer,
+    server: usize,
+    total: usize,
+    cap: usize,
+    delay: std::time::Duration,
+    arrivals: Arc<Mutex<Vec<(usize, std::time::Instant)>>>,
+) {
+    Mock::given(method("GET"))
+        .and(path("/Items"))
+        .respond_with(move |request: &wiremock::Request| {
+            let start = offset(request);
+            arrivals
+                .lock()
+                .unwrap()
+                .push((start, std::time::Instant::now()));
+            let limit = query_value(request, "Limit")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(total);
+            let end = total.min(start + limit.min(cap));
+            ResponseTemplate::new(200)
+                .set_delay(delay)
+                .set_body_json(json!({
+                    "Items": (start..end).map(|index| json!({
+                        "Id": format!("server-{server}-item-{index}"), "Type": "Movie",
+                        "Name": format!("Movie {index:05}"),
+                    })).collect::<Vec<_>>(),
+                    "TotalRecordCount": total, "StartIndex": start
+                }))
+        })
+        .mount(upstream)
+        .await;
+}
+
+fn upstream_offsets(requests: &[wiremock::Request]) -> Vec<usize> {
+    let mut offsets = requests.iter().map(offset).collect::<Vec<_>>();
+    offsets.sort_unstable();
+    offsets
+}
+
+#[tokio::test]
+async fn full_scans_fetch_large_pages_several_at_a_time() {
+    let (state, _, sessions, upstreams) = setup().await;
+    let delay = std::time::Duration::from_secs(1);
+    let arrivals = Arc::new(Mutex::new(Vec::new()));
+    for (server, upstream) in upstreams.iter().enumerate() {
+        mount_counted_listing(upstream, server, 2_300, usize::MAX, delay, arrivals.clone()).await;
+    }
+    let response = get_catalog(
+        &state.services,
+        request("/Items?Recursive=true&Limit=10", &sessions),
+    )
+    .await
+    .unwrap();
+    assert_eq!(response["TotalRecordCount"], 4_600);
+    // One page to learn the total, then the remaining four together: they
+    // all arrive before the first of them could have been answered.
+    let continuations = arrivals
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(start, _)| *start > 0)
+        .map(|(_, at)| *at)
+        .collect::<Vec<_>>();
+    let first = continuations.iter().min().unwrap();
+    let last = continuations.iter().max().unwrap();
+    assert!(
+        last.duration_since(*first) < delay,
+        "continuation pages were fetched one after another"
+    );
+    for upstream in &upstreams {
+        let requests = upstream.received_requests().await.unwrap();
+        assert_eq!(
+            upstream_offsets(&requests),
+            vec![0, 500, 1_000, 1_500, 2_000]
+        );
+        assert!(requests
+            .iter()
+            .all(|request| query_value(request, "Limit").as_deref() == Some("500")));
+    }
+}
+
+#[tokio::test]
+async fn compact_scan_releases_staged_records_after_a_failed_continuation() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let (state, _, sessions, upstreams) = setup().await;
+    let saw_staged_items = Arc::new(AtomicBool::new(false));
+    let snapshots = Arc::clone(&state.catalog_snapshots);
+    let saw_staged = Arc::clone(&saw_staged_items);
+    Mock::given(method("GET"))
+        .and(path("/Items"))
+        .respond_with(move |request: &wiremock::Request| {
+            if offset(request) == 0 {
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "Items": [{"Id": "staged-only", "Type": "Movie"}],
+                    "StartIndex": 0,
+                    "TotalRecordCount": 2
+                }))
+            } else {
+                saw_staged.store(snapshots.store_stats().records > 0, Ordering::Relaxed);
+                ResponseTemplate::new(503)
+            }
+        })
+        .mount(&upstreams[0])
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/Items"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "Items": [],
+            "StartIndex": 0,
+            "TotalRecordCount": 0
+        })))
+        .mount(&upstreams[1])
+        .await;
+
+    let response = get_catalog(
+        &state.services,
+        request("/Items?Recursive=true&Limit=10", &sessions),
+    )
+    .await
+    .unwrap();
+    assert_eq!(response["Items"], json!([]));
+    assert_eq!(response["TotalRecordCount"], 0);
+    assert!(saw_staged_items.load(Ordering::Relaxed));
+    assert_eq!(state.catalog_snapshots.store_stats().records, 0);
+}
+
+#[tokio::test]
+async fn full_scans_resume_after_a_short_page_without_gaps_or_duplicates() {
+    let (state, _, sessions, upstreams) = setup().await;
+    for (server, upstream) in upstreams.iter().enumerate() {
+        // The backend caps every page at 300 items, below the requested 500.
+        mount_counted_listing(
+            upstream,
+            server,
+            1_000,
+            300,
+            Default::default(),
+            Default::default(),
+        )
+        .await;
+    }
+    let response = get_catalog(
+        &state.services,
+        request("/Items?Recursive=true&Limit=2000", &sessions),
+    )
+    .await
+    .unwrap();
+    let items = response["Items"].as_array().unwrap();
+    assert_eq!(response["TotalRecordCount"], 2_000);
+    assert_eq!(
+        items
+            .iter()
+            .map(|item| item["Id"].as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        2_000
+    );
+    for upstream in &upstreams {
+        let requests = upstream.received_requests().await.unwrap();
+        assert_eq!(upstream_offsets(&requests), vec![0, 300, 600, 900]);
+    }
+}
+
+/// Run explicitly when changing scan or snapshot performance.
+#[tokio::test]
+#[ignore = "scans two 22,000-episode catalogs"]
+async fn large_episode_catalog_reuses_snapshot_for_deep_pages() {
+    let (state, _, sessions, upstreams) = setup().await;
+    for (server, upstream) in upstreams.iter().enumerate() {
+        Mock::given(method("GET"))
+            .and(path("/Items"))
+            .respond_with(move |req: &wiremock::Request| {
+                let start = offset(req);
+                let limit: usize = query_value(req, "Limit").unwrap().parse().unwrap();
+                let items = (start..22_000.min(start + limit))
+                    .map(|index| {
+                        json!({
+                            "Id": format!("{:032x}", 1 + server * 22_000 + index),
+                            "Type": "Episode",
+                            "ProviderIds": {"Tvdb": (index + 1).to_string()},
+                            "Name": format!("Episode {index:05}"),
+                            "Overview": "description ".repeat(40),
+                            "IndexNumber": index + 1,
+                            "ParentIndexNumber": 1
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "Items": items, "TotalRecordCount": 22_000, "StartIndex": start
+                }))
+            })
+            .mount(upstream)
+            .await;
+    }
+    for merged in [false, true] {
+        let total = if merged { 22_000 } else { 44_000 };
+        let copies = if merged { 1 } else { 2 };
+        for start in [0, total - 10, total / 2, total] {
+            let url = format!("/Items?Recursive=true&IncludeItemTypes=Episode&SortBy=SortName&Limit=10&StartIndex={start}");
+            let request = request(&url, &sessions);
+            let began = std::time::Instant::now();
+            let page = if merged {
+                let targets = sessions
+                    .iter()
+                    .map(|(session, server)| CatalogFetchTarget {
+                        session: session.clone(),
+                        server: server.clone(),
+                        parent: None,
+                    })
+                    .collect();
+                get_virtual_library_items(
+                    &state.services,
+                    request,
+                    "configured:episodes:viewer".into(),
+                    targets,
+                    0,
+                )
+                .await
+            } else {
+                get_catalog(&state.services, request).await
+            }
+            .unwrap();
+            eprintln!(
+                "merged={merged}, offset={start}, elapsed={:?}",
+                began.elapsed()
+            );
+            assert_eq!(page["TotalRecordCount"], total);
+            assert_eq!(page["StartIndex"], start);
+            let items = page["Items"].as_array().unwrap();
+            assert_eq!(items.len(), if start == total { 0 } else { 10 });
+            for (i, item) in items.iter().enumerate() {
+                assert_eq!(item["IndexNumber"], (start + i) / copies + 1);
+            }
+            for upstream in &upstreams {
+                let scans = if merged { 2 } else { 1 };
+                let expected = (0..22_000)
+                    .step_by(500)
+                    .flat_map(|n| std::iter::repeat_n(n, scans))
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    upstream_offsets(&upstream.received_requests().await.unwrap()),
+                    expected
+                );
+            }
+        }
+    }
+}
+
+/// Two movies per backend whose watched state follows `played`. Batch `Ids`
+/// lookups return only the requested movies.
+async fn mount_watchable(
+    upstream: &wiremock::MockServer,
+    server: usize,
+    played: Arc<std::sync::atomic::AtomicBool>,
+) {
+    mount_watchable_movies(upstream, server, 2, None, played).await;
+}
+
+/// `count` movies on one backend. With `shared`, every backend's movie N has
+/// the same TMDB ID, so the copies are merged.
+async fn mount_watchable_movies(
+    upstream: &wiremock::MockServer,
+    server: usize,
+    count: usize,
+    shared: Option<()>,
+    played: Arc<std::sync::atomic::AtomicBool>,
+) {
+    Mock::given(method("GET"))
+        .and(path("/Items"))
+        .respond_with(move |request: &wiremock::Request| {
+            let ids = query_value(request, "Ids");
+            let played = played.load(std::sync::atomic::Ordering::SeqCst);
+            let items = (0..count)
+                .map(|index| (index, format!("server-{server}-movie-{index}")))
+                .filter(|(_, id)| ids.as_ref().is_none_or(|ids| ids.split(',').any(|wanted| wanted == id)))
+                .map(|(index, id)| json!({
+                    "Id": id, "Type": "Movie",
+                    "Name": shared.map_or_else(|| id.clone(), |()| format!("Movie {index}")),
+                    "ProviderIds": if shared.is_some() { json!({"Tmdb": index.to_string()}) } else { json!({}) },
+                    "UserData": {"Played": played, "Key": id, "ItemId": id, "PlaybackPositionTicks": 0, "PlayCount": 0, "IsFavorite": false}
+                }))
+                .collect::<Vec<_>>();
+            ResponseTemplate::new(200).set_body_json(json!({
+                "TotalRecordCount": items.len(), "StartIndex": offset(request), "Items": items
+            }))
+        })
+        .mount(upstream)
+        .await;
+}
+
+async fn listing_scans(upstreams: &[wiremock::MockServer]) -> usize {
+    let mut scans = 0;
+    for upstream in upstreams {
+        scans += upstream
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|request| query_value(request, "Ids").is_none())
+            .count();
+    }
+    scans
+}
+
+#[tokio::test]
+async fn watched_changes_refresh_the_page_instead_of_rescanning_the_library() {
+    let (state, _, sessions, upstreams) = setup().await;
+    let played = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    for (server, upstream) in upstreams.iter().enumerate() {
+        mount_watchable(upstream, server, played.clone()).await;
+    }
+    let listing = || {
+        get_catalog(
+            &state.services,
+            request("/Items?Recursive=true&Limit=10", &sessions),
+        )
+    };
+    let watched = |response: &serde_json::Value| {
+        response["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["UserData"]["Played"].as_bool().unwrap())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(watched(&listing().await.unwrap()), vec![false; 4]);
+    let scans = listing_scans(&upstreams).await;
+
+    played.store(true, std::sync::atomic::Ordering::SeqCst);
+    state.catalog_snapshots.user_data_changed("viewer");
+    assert_eq!(watched(&listing().await.unwrap()), vec![true; 4]);
+    assert_eq!(
+        listing_scans(&upstreams).await,
+        scans,
+        "inventory is reused"
+    );
+
+    // Any other write discards the cached listing.
+    state.catalog_snapshots.invalidate_viewer("viewer");
+    listing().await.unwrap();
+    assert!(listing_scans(&upstreams).await > scans);
+}
+
+#[tokio::test]
+async fn listings_filtered_by_watched_state_are_rebuilt_after_watched_changes() {
+    let (state, _, sessions, upstreams) = setup().await;
+    let played = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    for (server, upstream) in upstreams.iter().enumerate() {
+        mount_watchable(upstream, server, played.clone()).await;
+    }
+    let unwatched = || {
+        get_catalog(
+            &state.services,
+            request(
+                "/Items?Recursive=true&Filters=IsUnplayed&Limit=10",
+                &sessions,
+            ),
+        )
+    };
+    unwatched().await.unwrap();
+    let scans = listing_scans(&upstreams).await;
+    unwatched().await.unwrap();
+    assert_eq!(
+        listing_scans(&upstreams).await,
+        scans,
+        "cached while unchanged"
+    );
+    state.catalog_snapshots.user_data_changed("viewer");
+    unwatched().await.unwrap();
+    assert!(
+        listing_scans(&upstreams).await > scans,
+        "membership may have changed"
+    );
+}
+
+#[tokio::test]
+async fn stale_listings_are_answered_at_once_and_rebuilt_in_the_background() {
+    let (state, _, sessions, upstreams) = setup().await;
+    let played = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    for (server, upstream) in upstreams.iter().enumerate() {
+        mount_watchable(upstream, server, played.clone()).await;
+    }
+    let listing = || {
+        get_catalog(
+            &state.services,
+            request("/Items?Recursive=true&Limit=10", &sessions),
+        )
+    };
+    let first = listing().await.unwrap();
+    let scans = listing_scans(&upstreams).await;
+    state.catalog_snapshots.age();
+    assert_eq!(
+        listing().await.unwrap(),
+        first,
+        "the stale listing is served"
+    );
+    state.catalog_snapshots.settle().await;
+    assert!(
+        listing_scans(&upstreams).await > scans,
+        "and rebuilt behind it"
+    );
+    let rescanned = listing_scans(&upstreams).await;
+    listing().await.unwrap();
+    assert_eq!(
+        listing_scans(&upstreams).await,
+        rescanned,
+        "the rebuild is fresh"
+    );
+}
+
+fn watched(response: &serde_json::Value) -> Vec<bool> {
+    response["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["UserData"]["Played"].as_bool().unwrap())
+        .collect()
+}
+
+#[tokio::test]
+async fn watched_changes_refresh_merged_copies() {
+    let (state, _, sessions, upstreams) = setup().await;
+    let played = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    for (server, upstream) in upstreams.iter().enumerate() {
+        mount_watchable_movies(upstream, server, 2, Some(()), played.clone()).await;
+    }
+    let listing = || {
+        let targets = sessions
+            .iter()
+            .map(
+                |(session, server)| super::library_resolution::CatalogFetchTarget {
+                    session: session.clone(),
+                    server: server.clone(),
+                    parent: None,
+                },
+            )
+            .collect();
+        get_virtual_library_items(
+            &state.services,
+            request("/Items?Recursive=true&Limit=10", &sessions),
+            "configured:movies:viewer".into(),
+            targets,
+            0,
+        )
+    };
+    let first = listing().await.unwrap();
+    assert_eq!(watched(&first), vec![false; 2], "copies are merged");
+    let scans = listing_scans(&upstreams).await;
+
+    played.store(true, std::sync::atomic::Ordering::SeqCst);
+    state.catalog_snapshots.user_data_changed("viewer");
+    assert_eq!(watched(&listing().await.unwrap()), vec![true; 2]);
+    assert_eq!(
+        listing_scans(&upstreams).await,
+        scans,
+        "inventory is reused"
+    );
+}
+
+#[tokio::test]
+async fn unlimited_listings_are_rebuilt_after_watched_changes() {
+    let (state, _, sessions, upstreams) = setup().await;
+    let played = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    for (server, upstream) in upstreams.iter().enumerate() {
+        mount_watchable(upstream, server, played.clone()).await;
+    }
+    let everything = || get_catalog(&state.services, request("/Items?Recursive=true", &sessions));
+    everything().await.unwrap();
+    let scans = listing_scans(&upstreams).await;
+    played.store(true, std::sync::atomic::Ordering::SeqCst);
+    state.catalog_snapshots.user_data_changed("viewer");
+    assert_eq!(watched(&everything().await.unwrap()), vec![true; 4]);
+    assert!(
+        listing_scans(&upstreams).await > scans,
+        "a whole library is not refreshed by ID"
+    );
+}
+
+#[tokio::test]
+async fn large_pages_refresh_user_data_in_bounded_lookups() {
+    let (state, _, sessions, upstreams) = setup().await;
+    let played = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    mount_watchable_movies(&upstreams[0], 0, 250, None, played.clone()).await;
+    mount_watchable_movies(&upstreams[1], 1, 0, None, played.clone()).await;
+    let listing = || {
+        get_catalog(
+            &state.services,
+            request("/Items?Recursive=true&Limit=300", &sessions),
+        )
+    };
+    listing().await.unwrap();
+    played.store(true, std::sync::atomic::Ordering::SeqCst);
+    state.catalog_snapshots.user_data_changed("viewer");
+    assert_eq!(watched(&listing().await.unwrap()), vec![true; 250]);
+    let lookups = upstreams[0]
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter_map(|request| query_value(&request, "Ids"))
+        .map(|ids| ids.split(',').count())
+        .collect::<Vec<_>>();
+    assert_eq!(lookups.iter().sum::<usize>(), 250);
+    assert!(lookups.iter().all(|&ids| ids <= 100), "{lookups:?}");
+}

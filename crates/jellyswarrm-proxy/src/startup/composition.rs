@@ -43,7 +43,9 @@ pub(super) fn adapter_state(
     virtual_library_service: Arc<VirtualLibraryService>,
 ) -> AppState {
     let credentials = config.admin_credentials();
-    let adapter_paths = AdapterPaths::new(&config.startup_config());
+    let startup = config.startup_config();
+    let adapter_paths = AdapterPaths::new(&startup);
+    let catalog_cache = startup.catalog_cache;
     let url_prefix = adapter_paths.url_prefix();
     let config = Arc::new(tokio::sync::RwLock::new(config));
     let settings = SettingsView::new(config.clone());
@@ -78,7 +80,9 @@ pub(super) fn adapter_state(
     ));
     let syncplay = Arc::new(SyncPlayService::with_connections(connections));
     let quick_connect = QuickConnectStorage::new();
-    let catalog_snapshots = Arc::new(application::catalog::snapshots::CatalogSnapshots::default());
+    let catalog_snapshots = Arc::new(application::catalog::snapshots::CatalogSnapshots::new(
+        catalog_cache,
+    ));
     let media_access = MediaAccess::new(
         user_authorization.clone(),
         media_storage.clone(),

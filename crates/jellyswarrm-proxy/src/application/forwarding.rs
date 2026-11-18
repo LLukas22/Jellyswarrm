@@ -322,7 +322,11 @@ async fn observe_success(state: &MediaServices, prepared: &PreparedForward, is_m
     let context = &prepared.input.context;
     if is_mutation {
         if let Some(user) = context.user() {
-            state.catalog_snapshots.invalidate_viewer(&user.id);
+            if is_user_data_write(&prepared.path) {
+                state.catalog_snapshots.user_data_changed(&user.id);
+            } else {
+                state.catalog_snapshots.invalidate_viewer(&user.id);
+            }
         }
     }
     let (Some(report), Some(user), Some(token)) = (
@@ -367,6 +371,31 @@ async fn observe_success(state: &MediaServices, prepared: &PreparedForward, is_m
         }
         Ok(None) => {}
         Err(_) => warn!("Could not retain episode server preference after playback report"),
+    }
+}
+
+/// Writes that change only the caller's watched, favorite, rating or progress
+/// state. Cached listings keep their inventory and refresh this state per page.
+/// Every other write discards the caller's cached listings.
+fn is_user_data_write(path: &str) -> bool {
+    let segments = decoded_path_segments(path);
+    let segments = segments.iter().map(String::as_str).collect::<Vec<_>>();
+    let is = |segment: &str, name: &str| segment.eq_ignore_ascii_case(name);
+    match segments.as_slice() {
+        [sessions, playing] | [sessions, playing, _]
+            if is(sessions, "Sessions") && is(playing, "Playing") =>
+        {
+            true
+        }
+        [tag, _] if is(tag, "UserPlayedItems") || is(tag, "UserFavoriteItems") => true,
+        [users, _, tag, _] if is(users, "Users") => {
+            is(tag, "PlayedItems") || is(tag, "FavoriteItems")
+        }
+        [users, _, items, _, tag] if is(users, "Users") && is(items, "Items") => {
+            is(tag, "Rating") || is(tag, "UserData")
+        }
+        [items, _, tag] if is(items, "UserItems") => is(tag, "Rating") || is(tag, "UserData"),
+        _ => false,
     }
 }
 
@@ -455,7 +484,7 @@ async fn update_aggregate(
         )
         .await?;
         // Also invalidate after a partial write if a later member rejects it.
-        state.catalog_snapshots.invalidate_viewer(scope.user_id());
+        state.catalog_snapshots.user_data_changed(scope.user_id());
         if result.is_none() {
             state
                 .process_response_json(
@@ -484,6 +513,33 @@ async fn update_aggregate(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_personal_state_writes_keep_cached_inventories() {
+        for path in [
+            "/Sessions/Playing",
+            "/Sessions/Playing/Progress",
+            "/sessions/playing/stopped",
+            "/Users/u/PlayedItems/item",
+            "/Users/u/FavoriteItems/item",
+            "/UserPlayedItems/item",
+            "/UserFavoriteItems/item",
+            "/Users/u/Items/item/Rating",
+            "/UserItems/item/Rating",
+            "/UserItems/item/UserData",
+        ] {
+            assert!(super::is_user_data_write(path), "{path}");
+        }
+        for path in [
+            "/Items/item",
+            "/Items/item/Refresh",
+            "/Collections",
+            "/Playlists/list/Items",
+            "/Library/Refresh",
+            "/Users/u/Policy",
+        ] {
+            assert!(!super::is_user_data_write(path), "{path}");
+        }
+    }
 
     use super::*;
     use crate::{

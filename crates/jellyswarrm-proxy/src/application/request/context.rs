@@ -17,11 +17,13 @@ pub(crate) enum Principal {
     Anonymous,
 }
 
+#[derive(Clone)]
 pub(crate) struct BackendAccessSnapshot {
     /// Usable device sessions; authorization lives separately in access_scope.
     pub(crate) sessions: Option<Vec<(AuthorizationSession, Server)>>,
 }
 
+#[derive(Clone)]
 pub(crate) struct RequestContext {
     identity: CallerIdentity,
     /// Anonymous requests can retain legacy user metadata without authenticating.
@@ -31,6 +33,7 @@ pub(crate) struct RequestContext {
     backends: BackendAccessSnapshot,
 }
 
+#[derive(Clone)]
 enum CallerIdentity {
     Anonymous,
     BackendPassthrough {

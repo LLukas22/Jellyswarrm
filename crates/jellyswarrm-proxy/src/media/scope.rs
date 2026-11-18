@@ -9,6 +9,15 @@ pub(crate) enum MediaScopeKind {
     Latest,
     Search,
     Resume,
+    /// Home-screen rows without a library, such as favorites.
+    Row,
+}
+
+impl MediaScopeKind {
+    /// Additive, viewer-first scopes whose library is optional.
+    fn is_viewer_feed(self) -> bool {
+        matches!(self, Self::Latest | Self::Search | Self::Resume | Self::Row)
+    }
 }
 
 /// Shared codec for persisted catalog keys and viewer-scoped reverse lookups.
@@ -30,6 +39,7 @@ impl<'a> MediaCatalogScope<'a> {
             "latest" => MediaScopeKind::Latest,
             "search" => MediaScopeKind::Search,
             "resume" => MediaScopeKind::Resume,
+            "row" => MediaScopeKind::Row,
             _ => return None,
         };
         let middle = parts.next()?;
@@ -37,19 +47,12 @@ impl<'a> MediaCatalogScope<'a> {
         if parts.next().is_some() {
             return None;
         }
-        let (viewer, resource_id) = match kind {
-            MediaScopeKind::Latest | MediaScopeKind::Search | MediaScopeKind::Resume => {
-                (middle, last)
-            }
-            _ => (last, middle),
+        let (viewer, resource_id) = if kind.is_viewer_feed() {
+            (middle, last)
+        } else {
+            (last, middle)
         };
-        if viewer.is_empty()
-            || (resource_id.is_empty()
-                && !matches!(
-                    kind,
-                    MediaScopeKind::Latest | MediaScopeKind::Search | MediaScopeKind::Resume
-                ))
-        {
+        if viewer.is_empty() || (resource_id.is_empty() && !kind.is_viewer_feed()) {
             return None;
         }
         Some(Self {
@@ -73,12 +76,12 @@ impl fmt::Display for MediaCatalogScope<'_> {
             MediaScopeKind::Latest => "latest",
             MediaScopeKind::Search => "search",
             MediaScopeKind::Resume => "resume",
+            MediaScopeKind::Row => "row",
         };
-        match self.kind {
-            MediaScopeKind::Latest | MediaScopeKind::Search | MediaScopeKind::Resume => {
-                write!(f, "{kind}:{}:{}", self.viewer, self.resource_id)
-            }
-            _ => write!(f, "{kind}:{}:{}", self.resource_id, self.viewer),
+        if self.kind.is_viewer_feed() {
+            write!(f, "{kind}:{}:{}", self.viewer, self.resource_id)
+        } else {
+            write!(f, "{kind}:{}:{}", self.resource_id, self.viewer)
         }
     }
 }
@@ -99,6 +102,7 @@ mod tests {
             "search:viewer:library",
             "resume:viewer:",
             "resume:viewer:library",
+            "row:viewer:",
         ] {
             let scope = MediaCatalogScope::parse(key).unwrap();
             assert_eq!(scope.to_string(), key);

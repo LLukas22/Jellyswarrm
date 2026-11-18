@@ -2,6 +2,7 @@
 //! nor AppState; HTTP fixtures explicitly opt into adapter construction.
 use std::sync::Arc;
 pub(crate) mod adapters;
+pub(crate) mod alloc;
 use crate::{
     application::{self, media_services::MediaServices},
     auth::UserAuthorizationService,

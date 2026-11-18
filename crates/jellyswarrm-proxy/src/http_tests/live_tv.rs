@@ -12,7 +12,7 @@ async fn posted_multi_channel_guide_partitions_ids_and_paginates_after_merging()
     for owner in 0..2 {
         let original = f.original(owner).await;
         Mock::given(method("POST")).and(path("/LiveTv/Programs"))
-            .and(body_json(json!({"ChannelIds":[original],"UserId":format!("backend-user-{owner}"),"StartIndex":0,"Limit":100,"EnableImages":true})))
+            .and(body_json(json!({"ChannelIds":[original],"UserId":format!("backend-user-{owner}"),"StartIndex":0,"Limit":500,"EnableImages":true})))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Items":[{"Id":original,"Name":format!("Program {owner}"),"Type":"Program","ChannelId":original}],"TotalRecordCount":1,"StartIndex":0})))
             .expect(1).mount(&f.upstreams[owner]).await;
     }
@@ -40,7 +40,7 @@ async fn posted_unscoped_guide_advances_upstream_body_pages_without_losing_filte
                 uuid::Uuid::new_v4().simple().to_string()
             };
             Mock::given(method("POST")).and(path("/LiveTv/Programs"))
-                .and(body_json(json!({"UserId":format!("backend-user-{owner}"),"StartIndex":page,"Limit":100,"MinStartDate":"2026-10-11T00:00:00Z","IsMovie":true})))
+                .and(body_json(json!({"UserId":format!("backend-user-{owner}"),"StartIndex":page,"Limit":if page == 0 { 500 } else { 1 },"MinStartDate":"2026-10-11T00:00:00Z","IsMovie":true})))
                 .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Items":[{"Id":id,"Name":format!("Program {owner}-{page}"),"Type":"Program"}],"TotalRecordCount":2,"StartIndex":page})))
                 .expect(1).mount(&f.upstreams[owner]).await;
         }
@@ -98,7 +98,7 @@ async fn posted_guide_null_pagination_is_replaced_with_numeric_upstream_pages() 
         Mock::given(method("POST"))
             .and(path("/LiveTv/Programs"))
             .and(body_json(
-                json!({"ChannelIds":null,"StartIndex":0,"Limit":100,"IsMovie":null}),
+                json!({"ChannelIds":null,"StartIndex":0,"Limit":500,"IsMovie":null}),
             ))
             .respond_with(
                 ResponseTemplate::new(200)

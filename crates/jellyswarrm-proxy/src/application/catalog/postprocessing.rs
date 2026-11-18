@@ -1,14 +1,13 @@
 //! Catalog grouping, ordering and presentation.
-use crate::application::error::ApplicationError;
-use std::collections::VecDeque;
 use std::str::FromStr;
+use std::{cmp::Ordering, collections::VecDeque};
 
 use crate::{
     media::grouping::{label_duplicates, TaggedMediaItem},
     media::presentation::{CatalogItem, ItemNamePolicy},
     protocol::models::{
         enums::{ItemSortBy, SortOrder},
-        ItemsResponseVariants, ItemsResponseWithCount, MediaItem,
+        ItemsResponseVariants, ItemsResponseWithCount, MediaItem, MediaSortValue,
     },
     servers::storage::Server,
 };
@@ -82,7 +81,7 @@ impl ResponseShape {
         }
     }
 
-    fn wrap(
+    pub(super) fn wrap(
         self,
         items: Vec<MediaItem>,
         total_count: usize,
@@ -198,13 +197,19 @@ pub(super) struct SortCriterion {
     order: SortOrder,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) enum SortPolicy {
     Random,
     PreserveUpstream,
     SeasonOrder,
     EpisodeOrder,
     Fields(Vec<SortCriterion>),
+}
+
+pub(super) struct SortKey {
+    values: Box<[MediaSortValue<'static>]>,
+    id: String,
+    pub(super) live_tv_view: bool,
 }
 
 impl SortPolicy {
@@ -256,42 +261,89 @@ impl SortPolicy {
     }
 
     fn apply(&self, items: &mut [CatalogItem]) {
+        self.sort(items, |left, right| {
+            self.compare(
+                |_, field| left.cmp_by(right, field),
+                || left.id.cmp(&right.id),
+            )
+        });
+    }
+
+    fn sort<T>(&self, items: &mut [T], compare: impl FnMut(&T, &T) -> Ordering) {
         match self {
             Self::Random => {
                 use rand::seq::SliceRandom;
                 items.shuffle(&mut rand::rng());
             }
             Self::PreserveUpstream => {}
-            Self::SeasonOrder | Self::EpisodeOrder => {
-                let numeric_key = |item: &MediaItem| {
-                    (
-                        if matches!(self, Self::EpisodeOrder) {
-                            item.item_number("ParentIndexNumber")
-                        } else {
-                            0
-                        },
-                        item.item_number("IndexNumber"),
-                    )
-                };
-                items.sort_by(|left, right| {
-                    numeric_key(left)
-                        .cmp(&numeric_key(right))
-                        .then_with(|| left.id.cmp(&right.id))
-                });
-            }
-            Self::Fields(criteria) => items.sort_by(|left, right| {
-                criteria
-                    .iter()
-                    .find_map(|criterion| {
-                        let ordering = left.cmp_by(right, criterion.field);
-                        (!ordering.is_eq()).then(|| match criterion.order {
-                            SortOrder::Ascending => ordering,
-                            SortOrder::Descending => ordering.reverse(),
-                        })
-                    })
-                    .unwrap_or_else(|| left.id.cmp(&right.id))
-            }),
+            _ => items.sort_by(compare),
         }
+    }
+
+    fn criteria(&self) -> &[SortCriterion] {
+        const SEASON: &[SortCriterion] = &[SortCriterion {
+            field: ItemSortBy::IndexNumber,
+            order: SortOrder::Ascending,
+        }];
+        const EPISODE: &[SortCriterion] = &[
+            SortCriterion {
+                field: ItemSortBy::ParentIndexNumber,
+                order: SortOrder::Ascending,
+            },
+            SortCriterion {
+                field: ItemSortBy::IndexNumber,
+                order: SortOrder::Ascending,
+            },
+        ];
+        match self {
+            Self::Fields(criteria) => criteria,
+            Self::SeasonOrder => SEASON,
+            Self::EpisodeOrder => EPISODE,
+            Self::Random | Self::PreserveUpstream => &[],
+        }
+    }
+
+    fn compare(
+        &self,
+        mut compare_field: impl FnMut(usize, ItemSortBy) -> Ordering,
+        tie_breaker: impl FnOnce() -> Ordering,
+    ) -> Ordering {
+        self.criteria()
+            .iter()
+            .enumerate()
+            .find_map(|(index, criterion)| {
+                let ordering = compare_field(index, criterion.field);
+                (!ordering.is_eq()).then(|| match criterion.order {
+                    SortOrder::Ascending => ordering,
+                    SortOrder::Descending => ordering.reverse(),
+                })
+            })
+            .unwrap_or_else(tie_breaker)
+    }
+
+    pub(super) fn key(&self, item: &MediaItem) -> SortKey {
+        let criteria = self.criteria();
+        SortKey {
+            values: criteria
+                .iter()
+                .map(|criterion| item.sort_value(criterion.field).into_owned())
+                .collect(),
+            id: if criteria.is_empty() {
+                String::new()
+            } else {
+                item.id.clone()
+            },
+            live_tv_view: is_live_tv_user_view(item),
+        }
+    }
+
+    pub(super) fn sort_compact(&self, items: &mut [(usize, SortKey)]) {
+        self.sort(items, |(_, left), (_, right)| {
+            self.compare(
+                |index, _| left.values[index].compare(&right.values[index]),
+                || left.id.cmp(&right.id),
+            )
+        });
     }
 
     pub(super) fn required_fields(&self) -> Vec<&'static str> {
@@ -345,6 +397,13 @@ fn interleave(responses: Vec<ItemsResponseVariants>) -> Vec<MediaItem> {
 }
 
 fn interleave_catalog(responses: Vec<Vec<CatalogItem>>) -> Vec<CatalogItem> {
+    interleave_sources(responses, |item| is_live_tv_user_view(item))
+}
+
+pub(super) fn interleave_sources<T>(
+    responses: Vec<Vec<T>>,
+    is_live_tv_view: impl Fn(&T) -> bool,
+) -> Vec<T> {
     let mut queues = responses
         .into_iter()
         .map(VecDeque::from)
@@ -360,7 +419,7 @@ fn interleave_catalog(responses: Vec<Vec<CatalogItem>>) -> Vec<CatalogItem> {
             };
             remaining -= 1;
 
-            if is_live_tv_user_view(&item) {
+            if is_live_tv_view(&item) {
                 if has_live_tv_user_view {
                     continue;
                 }
@@ -380,40 +439,6 @@ fn to_i32(value: usize) -> i32 {
 
 /// Page an already grouped/sorted materialization without reconstructing DTOs.
 /// Unknown item and envelope fields survive unchanged.
-pub(super) fn page_materialized_response(
-    snapshot: &serde_json::Value,
-    pagination: Pagination,
-) -> Result<serde_json::Value, ApplicationError> {
-    let slice = |items: &[serde_json::Value]| {
-        items
-            .iter()
-            .skip(pagination.start_index)
-            .take(pagination.limit.unwrap_or(usize::MAX))
-            .cloned()
-            .collect::<Vec<_>>()
-    };
-    if let Some(items) = snapshot.as_array() {
-        return Ok(serde_json::Value::Array(slice(items)));
-    }
-    let mut response = snapshot
-        .as_object()
-        .ok_or_else(|| {
-            ApplicationError::Internal(anyhow::anyhow!("invalid materialized catalog envelope"))
-        })?
-        .clone();
-    let items = snapshot["Items"].as_array().ok_or_else(|| {
-        ApplicationError::Internal(anyhow::anyhow!(
-            "materialized catalog Items must be an array"
-        ))
-    })?;
-    response.insert("Items".into(), serde_json::Value::Array(slice(items)));
-    response.insert(
-        "StartIndex".into(),
-        serde_json::json!(pagination.start_index.min(i32::MAX as usize)),
-    );
-    Ok(serde_json::Value::Object(response))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

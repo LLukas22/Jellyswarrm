@@ -37,10 +37,14 @@ The table below lists all available configuration options:
 | `auto_create_users_on_login` | `true` | `JELLYSWARRM_AUTO_CREATE_USERS_ON_LOGIN` | Automatically create local users on successful upstream login. |
 | `merge_libraries` | `true` | `JELLYSWARRM_MERGE_LIBRARIES` | Merge libraries with matching names across servers into virtual libraries. |
 | `deduplicate_media` | `true` | `JELLYSWARRM_DEDUPLICATE_MEDIA` | Collapse the same movie or show (series/season/episode) on multiple servers into one item whose versions are served by the different hosts (Jellyfin-style linked versions; Jellyfin v12 adds multi-versions for episodes). Legacy key `deduplicate_movies` / env `JELLYSWARRM_DEDUPLICATE_MOVIES` still loads. |
+| `catalog_cache_size_mb` | `256` | `JELLYSWARRM_CATALOG_CACHE_SIZE_MB` | Estimated cache memory budget in MiB. Active scans use additional memory. `0` disables caching. Requires a restart. |
+| `catalog_cache_fresh_secs` | `300` | `JELLYSWARRM_CATALOG_CACHE_FRESH_SECS` | Seconds before an accessed listing is refreshed in the background. Requires a restart. |
+| `catalog_cache_max_age_secs` | `21600` | `JELLYSWARRM_CATALOG_CACHE_MAX_AGE_SECS` | Maximum age in seconds for a cached listing. At least `catalog_cache_fresh_secs`. Requires a restart. |
 
 ---
 
 ### Notes
 - The `session_key` is generated as a secure 64-byte key if not specified, and is stored in the config file for reuse.  
 - Each server now has its own streaming mode (`Redirect` or `Proxy`). For preconfigured servers, omit `media_streaming_mode` to use the default `Redirect`.
+- An environment variable overrides the top-level key of the same name, e.g. `JELLYSWARRM_SERVER_BACKGROUND_CHECK_INTERVAL_SECS`. A double underscore reaches a nested key, e.g. `JELLYSWARRM_DEBUG_USER__USERNAME`.
 - Configuration files are resolved from the data directory (`./data` by default), which can be overridden with `JELLYSWARRM_DATA_DIR`.

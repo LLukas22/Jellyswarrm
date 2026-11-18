@@ -362,105 +362,93 @@ impl MediaItem {
     }
 
     pub(crate) fn cmp_by(&self, other: &Self, sort_by: enums::ItemSortBy) -> std::cmp::Ordering {
-        use enums::ItemSortBy;
-        use std::cmp::Ordering;
+        self.sort_value(sort_by).compare(&other.sort_value(sort_by))
+    }
 
-        match sort_by {
-            ItemSortBy::ParentIndexNumber => self
-                .item_number("ParentIndexNumber")
-                .cmp(&other.item_number("ParentIndexNumber")),
-            ItemSortBy::IndexNumber => self
-                .item_number("IndexNumber")
-                .cmp(&other.item_number("IndexNumber")),
-            ItemSortBy::StartDate => compare_dates(
+    pub(crate) fn sort_value(&self, field: enums::ItemSortBy) -> MediaSortValue<'_> {
+        use enums::ItemSortBy::*;
+        use MediaSortValue::*;
+
+        let user_data = self.user_data.as_ref();
+        match field {
+            ParentIndexNumber => Integer(Some(self.item_number("ParentIndexNumber"))),
+            IndexNumber => Integer(Some(self.item_number("IndexNumber"))),
+            StartDate => Date(
                 self.extra_field("StartDate")
-                    .and_then(serde_json::Value::as_str),
-                other
-                    .extra_field("StartDate")
-                    .and_then(serde_json::Value::as_str),
+                    .and_then(serde_json::Value::as_str)
+                    .map(Into::into),
             ),
-            ItemSortBy::SortName => {
-                let left = self
-                    .sort_name
+            SortName => Text(
+                self.sort_name
                     .as_deref()
                     .or(self.name.as_deref())
-                    .unwrap_or("");
-                let right = other
-                    .sort_name
-                    .as_deref()
-                    .or(other.name.as_deref())
-                    .unwrap_or("");
-                left.to_lowercase().cmp(&right.to_lowercase())
-            }
-            ItemSortBy::Name => self
-                .name
-                .as_deref()
-                .unwrap_or("")
-                .to_lowercase()
-                .cmp(&other.name.as_deref().unwrap_or("").to_lowercase()),
-            ItemSortBy::AlbumArtist => self
-                .album_artist
-                .as_deref()
-                .unwrap_or("")
-                .to_lowercase()
-                .cmp(&other.album_artist.as_deref().unwrap_or("").to_lowercase()),
-            ItemSortBy::Album => compare_text(self.album.as_deref(), other.album.as_deref()),
-            ItemSortBy::Artist => compare_text(
+                    .unwrap_or("")
+                    .to_lowercase(),
+            ),
+            Name => Text(self.name.as_deref().unwrap_or("").to_lowercase()),
+            AlbumArtist => Text(self.album_artist.as_deref().unwrap_or("").to_lowercase()),
+            Album => Text(self.album.as_deref().unwrap_or("").to_lowercase()),
+            Artist => Text(
                 self.artists
                     .as_ref()
                     .and_then(|artists| artists.first())
-                    .map(String::as_str),
-                other
-                    .artists
-                    .as_ref()
-                    .and_then(|artists| artists.first())
-                    .map(String::as_str),
+                    .map(String::as_str)
+                    .unwrap_or("")
+                    .to_lowercase(),
             ),
-            ItemSortBy::ProductionYear => self.production_year.cmp(&other.production_year),
-            ItemSortBy::Runtime => self.run_time_ticks.cmp(&other.run_time_ticks),
-            ItemSortBy::CommunityRating => {
-                let left = self.community_rating.unwrap_or(0.0);
-                let right = other.community_rating.unwrap_or(0.0);
-                left.partial_cmp(&right).unwrap_or(Ordering::Equal)
-            }
-            ItemSortBy::CriticRating => {
-                let left = self.critic_rating.unwrap_or(0.0);
-                let right = other.critic_rating.unwrap_or(0.0);
-                left.partial_cmp(&right).unwrap_or(Ordering::Equal)
-            }
-            ItemSortBy::OfficialRating => self.official_rating.cmp(&other.official_rating),
-            ItemSortBy::PremiereDate => compare_dates(
-                self.premiere_date.as_deref(),
-                other.premiere_date.as_deref(),
+            ProductionYear => Integer(self.production_year.map(i64::from)),
+            Runtime => Integer(self.run_time_ticks),
+            CommunityRating => Rating(self.community_rating.unwrap_or(0.0)),
+            CriticRating => Rating(self.critic_rating.unwrap_or(0.0)),
+            OfficialRating => OptionalText(self.official_rating.as_deref().map(Into::into)),
+            PremiereDate => Date(self.premiere_date.as_deref().map(Into::into)),
+            DateCreated => Date(self.date_created.as_deref().map(Into::into)),
+            PlayCount => Integer(Some(user_data.map_or(0, |data| i64::from(data.play_count)))),
+            DatePlayed => Date(
+                user_data
+                    .and_then(|data| data.last_played_date.as_deref())
+                    .map(Into::into),
             ),
-            ItemSortBy::DateCreated => {
-                compare_dates(self.date_created.as_deref(), other.date_created.as_deref())
-            }
-            ItemSortBy::PlayCount => {
-                let left = self.user_data.as_ref().map(|u| u.play_count).unwrap_or(0);
-                let right = other.user_data.as_ref().map(|u| u.play_count).unwrap_or(0);
-                left.cmp(&right)
-            }
-            ItemSortBy::DatePlayed => {
-                let left = self
-                    .user_data
-                    .as_ref()
-                    .and_then(|u| u.last_played_date.as_deref());
-                let right = other
-                    .user_data
-                    .as_ref()
-                    .and_then(|u| u.last_played_date.as_deref());
-                compare_dates(left, right)
-            }
-            _ => Ordering::Equal,
+            _ => Unordered,
         }
     }
 }
 
-fn compare_text(left: Option<&str>, right: Option<&str>) -> std::cmp::Ordering {
-    left.unwrap_or("")
-        .to_lowercase()
-        .cmp(&right.unwrap_or("").to_lowercase())
+#[derive(Debug)]
+pub(crate) enum MediaSortValue<'a> {
+    Integer(Option<i64>),
+    Rating(f32),
+    Text(String),
+    OptionalText(Option<std::borrow::Cow<'a, str>>),
+    Date(Option<std::borrow::Cow<'a, str>>),
+    Unordered,
+}
+
+impl MediaSortValue<'_> {
+    pub(crate) fn into_owned(self) -> MediaSortValue<'static> {
+        use MediaSortValue::*;
+        match self {
+            Integer(value) => Integer(value),
+            Rating(value) => Rating(value),
+            Text(value) => Text(value),
+            OptionalText(value) => OptionalText(value.map(|value| value.into_owned().into())),
+            Date(value) => Date(value.map(|value| value.into_owned().into())),
+            Unordered => Unordered,
+        }
+    }
+
+    pub(crate) fn compare(&self, other: &Self) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        use MediaSortValue::*;
+        match (self, other) {
+            (Integer(left), Integer(right)) => left.cmp(right),
+            (Rating(left), Rating(right)) => left.partial_cmp(right).unwrap_or(Ordering::Equal),
+            (Text(left), Text(right)) => left.cmp(right),
+            (OptionalText(left), OptionalText(right)) => left.cmp(right),
+            (Date(left), Date(right)) => compare_dates(left.as_deref(), right.as_deref()),
+            _ => Ordering::Equal,
+        }
+    }
 }
 
 fn compare_dates(left: Option<&str>, right: Option<&str>) -> std::cmp::Ordering {

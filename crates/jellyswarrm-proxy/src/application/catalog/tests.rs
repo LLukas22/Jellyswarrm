@@ -1081,7 +1081,7 @@ async fn catalog_pagination_follows_backend_caps_and_detects_stalled_pages() {
                 assert_eq!(result.outcome, super::scan::FetchOutcome::Complete);
             }
         }
-        let offsets = upstreams[0]
+        let mut offsets = upstreams[0]
             .received_requests()
             .await
             .unwrap()
@@ -1096,11 +1096,11 @@ async fn catalog_pagination_follows_backend_caps_and_detects_stalled_pages() {
                     .unwrap()
             })
             .collect::<Vec<_>>();
+        // Counted continuations can arrive in either order, even when one proves stalled.
+        offsets.sort_unstable();
         assert_eq!(
             offsets,
-            if stalled {
-                vec![0, 2]
-            } else if counted {
+            if counted {
                 vec![0, 2, 4]
             } else {
                 vec![0, 2, 4, 5]

@@ -28,10 +28,27 @@ pub(crate) struct StartupConfig {
     pub(crate) url_prefix: Option<UrlSegment>,
     pub(crate) session_key: Vec<u8>,
     pub(crate) server_background_check_interval_secs: u64,
+    pub(crate) catalog_cache: CatalogCacheSettings,
     username: String,
     password: Password,
     preconfigured_servers: Vec<PreconfiguredServer>,
     debug_user: Option<DebugUser>,
+}
+
+/// Catalog snapshot cache limits. The cache is built once at startup, so
+/// changes take effect after a restart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CatalogCacheSettings {
+    pub(crate) max_bytes: u64,
+    pub(crate) fresh_for: std::time::Duration,
+    /// Never shorter than `fresh_for`.
+    pub(crate) max_age: std::time::Duration,
+}
+
+impl Default for CatalogCacheSettings {
+    fn default() -> Self {
+        AppConfig::default().startup_config().catalog_cache
+    }
 }
 
 #[derive(Clone)]
@@ -94,10 +111,35 @@ impl AppConfig {
             url_prefix: self.url_prefix.clone(),
             session_key: self.session_key.clone(),
             server_background_check_interval_secs: self.server_background_check_interval_secs,
+            catalog_cache: self.catalog_cache_settings(),
             username: self.username.clone(),
             password: self.password.clone(),
             preconfigured_servers: self.preconfigured_servers.clone(),
             debug_user: self.debug_user.clone(),
+        }
+    }
+
+    fn catalog_cache_settings(&self) -> CatalogCacheSettings {
+        // Moka rejects expiration periods longer than 1,000 years at startup.
+        let duration = |seconds, fallback| {
+            std::time::Duration::from_secs(if seconds <= 1_000 * 365 * 24 * 3600 {
+                seconds
+            } else {
+                fallback
+            })
+        };
+        let fresh_for = duration(
+            self.catalog_cache_fresh_secs,
+            super::default_catalog_cache_fresh_secs(),
+        );
+        CatalogCacheSettings {
+            max_bytes: self.catalog_cache_size_mb.saturating_mul(1024 * 1024),
+            fresh_for,
+            max_age: duration(
+                self.catalog_cache_max_age_secs,
+                super::default_catalog_cache_max_age_secs(),
+            )
+            .max(fresh_for),
         }
     }
 
