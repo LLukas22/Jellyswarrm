@@ -158,6 +158,7 @@ pub(super) fn adapter_state(
         translation,
         client_sessions,
         catalog_snapshots,
+        version_hints: Arc::new(crate::media::version_preference::BestVersionHints::new()),
         url_prefix,
     };
     AppState::new(

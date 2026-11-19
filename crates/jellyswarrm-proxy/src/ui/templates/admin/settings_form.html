@@ -19,6 +19,10 @@
     <label>Merge Duplicate Movies & Shows Across Servers
       <input type="checkbox" role="switch" name="deduplicate_media" value="true" {% if deduplicate_media %}checked{% endif %}>
     </label>
+    <label>Prefer the Best Version Over Server Priority
+      <input type="checkbox" role="switch" name="prefer_best_version" value="true" {% if prefer_best_version %}checked{% endif %}>
+      <small>Orders the versions of merged movies and episodes by resolution, then HDR format, then bitrate, and plays that version by default. Server priority only breaks ties.</small>
+    </label>
   </fieldset>
   <div style="display:flex; gap:.5rem;">
     <button type="submit">Save</button>
