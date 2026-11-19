@@ -37,6 +37,7 @@ The table below lists all available configuration options:
 | `auto_create_users_on_login` | `true` | `JELLYSWARRM_AUTO_CREATE_USERS_ON_LOGIN` | Automatically create local users on successful upstream login. |
 | `merge_libraries` | `true` | `JELLYSWARRM_MERGE_LIBRARIES` | Merge libraries with matching names across servers into virtual libraries. |
 | `deduplicate_media` | `true` | `JELLYSWARRM_DEDUPLICATE_MEDIA` | Collapse the same movie or show (series/season/episode) on multiple servers into one item whose versions are served by the different hosts (Jellyfin-style linked versions; Jellyfin v12 adds multi-versions for episodes). Also merges the home feeds: *Recently Added*, *Continue Watching* (resumes from the most recently played version) and *Next Up* (one entry per matched show, at the furthest episode any server reports). Legacy key `deduplicate_movies` / env `JELLYSWARRM_DEDUPLICATE_MOVIES` still loads. |
+| `prefer_best_version` | `false` | `JELLYSWARRM_PREFER_BEST_VERSION` | With `deduplicate_media`, order the versions of a merged item by quality instead of server priority: higher resolution first (a version that needs transcoding still wins), then the HDR format (Dolby Vision with an HDR10/HDR10+ base, HDR10+, HDR10, HLG, SDR), then bitrate in 5 Mbit/s steps; server priority breaks ties. Clients that pre-select the first version play the best one, and playback started without a version (e.g. from a home-screen card) goes to the server that held the best version in the last detail response. |
 
 ---
 

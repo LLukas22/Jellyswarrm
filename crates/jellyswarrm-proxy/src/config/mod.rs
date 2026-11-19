@@ -122,6 +122,10 @@ fn default_deduplicate_media() -> bool {
     true
 }
 
+fn default_prefer_best_version() -> bool {
+    false
+}
+
 mod base64_serde {
     use super::*;
     use serde::de::Error as DeError;
@@ -220,6 +224,11 @@ define_fallback_deserializer!(
     bool,
     default_deduplicate_media
 );
+define_fallback_deserializer!(
+    deserialize_prefer_best_version,
+    bool,
+    default_prefer_best_version
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct PreconfiguredServer {
@@ -314,6 +323,15 @@ pub(crate) struct AppConfig {
         alias = "deduplicate_movies"
     )]
     pub(crate) deduplicate_media: bool,
+
+    /// Order the versions of a merged item by quality (resolution, then HDR
+    /// format, then bitrate) instead of by server priority, and play that best
+    /// version when a client does not name one. Server priority breaks ties.
+    #[serde(
+        default = "default_prefer_best_version",
+        deserialize_with = "deserialize_prefer_best_version"
+    )]
+    pub(crate) prefer_best_version: bool,
 }
 
 impl Default for AppConfig {
@@ -338,6 +356,7 @@ impl Default for AppConfig {
             auto_create_users_on_login: default_auto_create_users_on_login(),
             merge_libraries: default_merge_libraries(),
             deduplicate_media: default_deduplicate_media(),
+            prefer_best_version: default_prefer_best_version(),
         }
     }
 }
@@ -373,6 +392,7 @@ impl fmt::Debug for AppConfig {
                 &self.auto_create_users_on_login,
             )
             .field("deduplicate_media", &self.deduplicate_media)
+            .field("prefer_best_version", &self.prefer_best_version)
             .finish()
     }
 }

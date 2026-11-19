@@ -527,6 +527,8 @@ pub(crate) struct MediaStream {
     pub(crate) is_text_subtitle_stream: Option<bool>,
     pub(crate) supports_external_stream: Option<bool>,
     pub(crate) pixel_format: Option<String>,
+    pub(crate) video_range: Option<String>,
+    pub(crate) video_range_type: Option<String>,
     pub(crate) level: Option<i32>,
     pub(crate) language: Option<String>,
     pub(crate) title: Option<String>,

@@ -142,7 +142,13 @@ pub(crate) async fn merge_media_detail(
         .iter()
         .map(|hosted| hosted.member_mapping.id)
         .collect::<Vec<_>>();
-    let (sources, mut observations) = merge_sources(&hosted_sources);
+    let (mut sources, mut observations) = merge_sources(&hosted_sources);
+    if hosted_sources.len() > 1 && state.prefer_best_version_enabled().await {
+        crate::media::version_preference::order_by_quality(&mut sources);
+        if let Some(server_id) = best_version_server(&sources, &hosted_sources) {
+            state.version_hints.remember(group.id, server_id).await;
+        }
+    }
     if !sources.is_empty() {
         item.media_source_count = Some(sources.len().min(i32::MAX as usize) as i32);
         item.media_sources = Some(sources);
@@ -431,6 +437,23 @@ fn merge_sources(
     (sources, observations)
 }
 
+/// The server that hosts the first (best) of the merged sources.
+fn best_version_server(
+    sources: &[MediaSource],
+    hosted_sources: &[HostedMediaSources],
+) -> Option<crate::domain::ids::ServerId> {
+    let best = sources.first()?;
+    hosted_sources
+        .iter()
+        .find(|hosted| {
+            hosted
+                .sources
+                .iter()
+                .any(|source| source.id.eq_ignore_ascii_case(&best.id))
+        })
+        .map(|hosted| hosted.server.id)
+}
+
 pub(crate) fn version_name(source: &MediaSource, server: &Server) -> String {
     let name = source
         .name
@@ -577,6 +600,44 @@ mod tests {
                 "{name:?}, {path:?}"
             );
         }
+    }
+
+    #[test]
+    fn best_version_ordering_moves_the_higher_resolution_server_first() {
+        let hosted = [(1, 1080), (2, 2160)]
+            .into_iter()
+            .map(|(id, height)| HostedMediaSources {
+                member_mapping: mapping(id, id),
+                server: server(id, &format!("svr{id}")),
+                sources: vec![source(&format!("source-{id}"), None, Some(height))],
+                user_data: None,
+                is_primary: id == 1,
+            })
+            .collect::<Vec<_>>();
+        let (mut sources, _) = merge_sources(&hosted);
+        assert_eq!(
+            best_version_server(&sources, &hosted),
+            Some(ServerId::new(1))
+        );
+
+        crate::media::version_preference::order_by_quality(&mut sources);
+        assert_eq!(
+            sources
+                .iter()
+                .map(|source| source.id.as_str())
+                .collect::<Vec<_>>(),
+            ["source-2", "source-1"]
+        );
+        assert_eq!(
+            best_version_server(&sources, &hosted),
+            Some(ServerId::new(2))
+        );
+        // Only non-primary members are re-labelled as grouping sources.
+        assert_eq!(
+            sources[0].source_type.as_deref(),
+            Some(GROUPING_SOURCE_TYPE)
+        );
+        assert_eq!(sources[1].source_type, None);
     }
 
     #[test]

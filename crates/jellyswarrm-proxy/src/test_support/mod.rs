@@ -91,6 +91,7 @@ impl MediaFixture {
             catalog_snapshots: Arc::new(
                 application::catalog::snapshots::CatalogSnapshots::default(),
             ),
+            version_hints: Arc::new(crate::media::version_preference::BestVersionHints::new()),
             url_prefix,
         };
         Self { services, config }

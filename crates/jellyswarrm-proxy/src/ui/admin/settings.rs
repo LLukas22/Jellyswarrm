@@ -29,6 +29,7 @@ pub(crate) struct SettingsFormTemplate {
     pub(crate) include_server_name_in_media: bool,
     pub(crate) auto_create_users_on_login: bool,
     pub(crate) deduplicate_media: bool,
+    pub(crate) prefer_best_version: bool,
     pub(crate) ui_route: String,
 }
 
@@ -54,6 +55,7 @@ pub(crate) async fn settings_form(State(state): State<SettingsState>) -> impl In
         include_server_name_in_media: cfg.include_server_name_in_media,
         auto_create_users_on_login: cfg.auto_create_users_on_login,
         deduplicate_media: cfg.deduplicate_media,
+        prefer_best_version: cfg.prefer_best_version,
         ui_route: state.paths.ui_route(),
     };
     match form.render() {
@@ -76,6 +78,8 @@ pub(crate) struct SaveForm {
     pub(crate) auto_create_users_on_login: bool,
     #[serde(default)]
     pub(crate) deduplicate_media: bool,
+    #[serde(default)]
+    pub(crate) prefer_best_version: bool,
 }
 
 pub(crate) async fn save_settings(
@@ -90,6 +94,7 @@ pub(crate) async fn save_settings(
             include_server_name_in_media: form.include_server_name_in_media,
             auto_create_users_on_login: form.auto_create_users_on_login,
             deduplicate_media: form.deduplicate_media,
+            prefer_best_version: form.prefer_best_version,
         })
         .await;
     if let Err(error) = save_result {
@@ -131,38 +136,57 @@ pub(crate) async fn reload_config(State(state): State<SettingsState>) -> impl In
 mod tests {
     use super::*;
 
-    #[test]
-    fn settings_form_does_not_render_library_merging_control() {
-        let html = SettingsFormTemplate {
+    fn form(prefer_best_version: bool) -> SettingsFormTemplate {
+        SettingsFormTemplate {
             server_id: "server".to_string(),
             public_address: "http://localhost:8096".to_string(),
             server_name: "Jellyswarrm".to_string(),
             include_server_name_in_media: false,
             auto_create_users_on_login: true,
             deduplicate_media: true,
+            prefer_best_version,
             ui_route: "admin".to_string(),
         }
-        .render()
-        .unwrap();
+    }
+
+    #[test]
+    fn settings_form_does_not_render_library_merging_control() {
+        let html = form(false).render().unwrap();
 
         assert!(!html.contains("name=\"merge_libraries\""));
     }
 
     #[test]
     fn settings_form_renders_media_deduplication_control() {
-        let html = SettingsFormTemplate {
-            server_id: "server".to_string(),
-            public_address: "http://localhost:8096".to_string(),
-            server_name: "Jellyswarrm".to_string(),
-            include_server_name_in_media: false,
-            auto_create_users_on_login: true,
-            deduplicate_media: true,
-            ui_route: "admin".to_string(),
-        }
-        .render()
-        .unwrap();
+        let html = form(false).render().unwrap();
 
         assert!(html.contains("name=\"deduplicate_media\""));
         assert!(html.contains("name=\"deduplicate_media\" value=\"true\" checked"));
+    }
+
+    #[test]
+    fn settings_form_renders_best_version_control() {
+        let unchecked = form(false).render().unwrap();
+        assert!(unchecked.contains("name=\"prefer_best_version\" value=\"true\" >"));
+
+        let checked = form(true).render().unwrap();
+        assert!(checked.contains("name=\"prefer_best_version\" value=\"true\" checked"));
+    }
+
+    #[test]
+    fn unchecked_best_version_switch_saves_as_disabled() {
+        let form: SaveForm = serde_json::from_value(serde_json::json!({
+            "public_address": "https://proxy",
+            "server_name": "Swarm"
+        }))
+        .unwrap();
+        assert!(!form.prefer_best_version);
+        let form: SaveForm = serde_json::from_value(serde_json::json!({
+            "public_address": "https://proxy",
+            "server_name": "Swarm",
+            "prefer_best_version": true
+        }))
+        .unwrap();
+        assert!(form.prefer_best_version);
     }
 }
