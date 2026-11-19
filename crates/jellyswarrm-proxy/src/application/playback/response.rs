@@ -293,6 +293,8 @@ mod tests {
         let original_source_id = "22222222222222222222222222222222";
         let original_album_id = "23232323232323232323232323232323";
         let original_person_id = "18181818181818181818181818181818";
+        let original_parent_primary_id = "25252525252525252525252525252525";
+        let original_parent_primary_tag = "26262626262626262626262626262626";
         let mut media_item = json!({
             "Id": original_item_id,
             "AlbumId": original_album_id,
@@ -385,6 +387,9 @@ mod tests {
                 }
             ]
         });
+        // Added outside `json!`: the literal above is already at the macro's recursion limit.
+        media_item["ParentPrimaryImageItemId"] = json!(original_parent_primary_id);
+        media_item["ParentPrimaryImageTag"] = json!(original_parent_primary_tag);
 
         let was_modified = state
             .process_response_json(
@@ -416,6 +421,25 @@ mod tests {
             .unwrap();
         assert_eq!(album_mapping.original_media_id.as_str(), original_album_id);
         assert_eq!(album_mapping.server_id, server.id);
+        // Web clients load episode and season posters through ParentPrimaryImageItemId;
+        // an untranslated ID falls back to the highest-priority server and 404s there.
+        let virtual_parent_primary_id = media_item["ParentPrimaryImageItemId"].as_str().unwrap();
+        assert_ne!(virtual_parent_primary_id, original_parent_primary_id);
+        let parent_primary_mapping = state
+            .media_storage
+            .get_media_mapping_by_virtual(&virtual_parent_primary_id.into())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            parent_primary_mapping.original_media_id.as_str(),
+            original_parent_primary_id
+        );
+        assert_eq!(parent_primary_mapping.server_id, server.id);
+        assert_ne!(
+            media_item["ParentPrimaryImageTag"].as_str(),
+            Some(original_parent_primary_tag)
+        );
         assert_ne!(
             media_item["People"][0]["Id"].as_str(),
             Some(original_person_id)
