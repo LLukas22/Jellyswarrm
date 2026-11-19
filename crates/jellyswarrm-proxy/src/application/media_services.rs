@@ -12,7 +12,7 @@ use crate::{
     client_sessions::ClientSessionService,
     config::SettingsView,
     libraries::VirtualLibraryService,
-    media::MediaStorageService,
+    media::{version_preference::BestVersionHints, MediaStorageService},
     playback::PlaybackRegistry,
     servers::{Server, ServerStorageService},
     translation::{
@@ -39,6 +39,8 @@ pub(crate) struct MediaServices {
     pub(crate) translation: Arc<ProxyProcessors>,
     pub(crate) client_sessions: Arc<ClientSessionService>,
     pub(crate) catalog_snapshots: Arc<CatalogSnapshots>,
+    /// Best version per merged item, learned from merged detail responses.
+    pub(crate) version_hints: Arc<BestVersionHints>,
     /// Fixed at startup, like the router mount it mirrors.
     pub(crate) url_prefix: Option<String>,
 }
@@ -58,6 +60,10 @@ impl MediaServices {
 
     pub(crate) async fn deduplicate_media_enabled(&self) -> bool {
         self.config.read().await.deduplicate_media
+    }
+
+    pub(crate) async fn prefer_best_version_enabled(&self) -> bool {
+        self.config.read().await.prefer_best_version
     }
 
     pub(crate) async fn merge_libraries_enabled(&self) -> bool {

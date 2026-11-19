@@ -126,13 +126,20 @@ pub(crate) async fn post_playback_info(
             .as_ref()
             .is_none_or(|source| source.as_str().trim().is_empty())
     {
-        if let Some(continuity) = &continuity {
-            if let Some(preferred) = continuity
-                .preferred_target(state, &input.context, &requested_item_id)
-                .await?
-            {
-                initial_target = preferred;
+        // The best version wins when it is known; otherwise successive episodes
+        // keep the server of the previous one.
+        let mut preferred =
+            super::best_version::preferred_target(state, &input.context, &requested_item_id)
+                .await?;
+        if preferred.is_none() {
+            if let Some(continuity) = &continuity {
+                preferred = continuity
+                    .preferred_target(state, &input.context, &requested_item_id)
+                    .await?;
             }
+        }
+        if let Some(preferred) = preferred {
+            initial_target = preferred;
         }
     }
     // Explicit false is a preview, not a change to the client's playing server.

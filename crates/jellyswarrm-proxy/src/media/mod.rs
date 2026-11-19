@@ -5,5 +5,6 @@ pub(crate) mod identity;
 pub(crate) mod presentation;
 pub(crate) mod scope;
 pub(crate) mod storage;
+pub(crate) mod version_preference;
 
 pub(crate) use storage::MediaStorageService;
