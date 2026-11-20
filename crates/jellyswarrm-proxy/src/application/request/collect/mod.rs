@@ -161,7 +161,13 @@ async fn backend_sessions(
             let rebound = state
                 .user_authorization
                 .rebind_android_tv_device_sessions_if_needed(&user.id, device)
-                .await?;
+                .await
+                .inspect_err(|e| {
+                    error!(
+                        "Android TV device-ID rebind failed for user {} on device '{}': {e}",
+                        user.id, device.device
+                    )
+                })?;
             if rebound {
                 sessions = state
                     .user_authorization

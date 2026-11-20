@@ -1700,6 +1700,195 @@ async fn test_android_tv_rebind_scope_does_not_touch_other_users() {
     assert!(user_b_device_ids.contains(&"old-device-id-2"));
 }
 
+fn android_tv_auth(client: &str, device: &str, device_id: &str, version: &str) -> Authorization {
+    Authorization {
+        client: client.to_string(),
+        device: device.to_string(),
+        device_id: device_id.to_string(),
+        version: version.to_string(),
+        token: None,
+    }
+}
+
+#[tokio::test]
+async fn test_android_tv_rebind_replaces_row_holding_target_id_under_old_client_name() {
+    let (pool, service) = setup_service().await;
+    insert_test_server(&pool, "Test Server", "http://localhost:8096").await;
+
+    let user = service
+        .get_or_create_user("androidtv-upgrade", &"testpass".into())
+        .await
+        .unwrap();
+    let other_user = service
+        .get_or_create_user("androidtv-same-tv", &"testpass".into())
+        .await
+        .unwrap();
+    for u in [&user, &other_user] {
+        service
+            .add_server_mapping(
+                &u.id,
+                "http://localhost:8096",
+                "mappeduser",
+                &"mappedpass".into(),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+
+    let store = |user_id: String, auth: Authorization, token: &'static str| {
+        let service = &service;
+        async move {
+            service
+                .store_authorization_session(
+                    &user_id,
+                    "http://localhost:8096",
+                    &auth,
+                    token.to_string(),
+                    "original-jellyfin-user-id".to_string(),
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+    };
+
+    // Pre-upgrade row (0.19) already holding the target ID under the old client name.
+    store(
+        user.id.to_string(),
+        android_tv_auth("Jellyfin+Android+TV", "Vorgarten", "target-id", "0.19.10"),
+        "stale-token",
+    )
+    .await;
+    // Fresh login (0.20) under the new client name with the username-derived ID.
+    store(
+        user.id.to_string(),
+        android_tv_auth("Jellyfin+for+Android+TV", "Vorgarten", "login-id", "0.20.0"),
+        "fresh-token",
+    )
+    .await;
+    // Same user, another device: must stay untouched.
+    store(
+        user.id.to_string(),
+        android_tv_auth("Jellyfin+Android+TV", "FireTVStick", "firetv-id", "0.19.9"),
+        "firetv-token",
+    )
+    .await;
+    // Another user on the same TV, even with the same device ID: must stay untouched.
+    store(
+        other_user.id.to_string(),
+        android_tv_auth("Jellyfin+Android+TV", "Vorgarten", "target-id", "0.19.10"),
+        "other-user-token",
+    )
+    .await;
+
+    let incoming_device = Device {
+        client: "Jellyfin+for+Android+TV".to_string(),
+        device: "Vorgarten".to_string(),
+        device_id: "target-id".to_string(),
+        version: "0.20.0".to_string(),
+    };
+    assert!(service
+        .get_user_sessions(&user.id, Some(incoming_device.clone()))
+        .await
+        .unwrap()
+        .is_empty());
+
+    let rebound = service
+        .rebind_android_tv_device_sessions_if_needed(&user.id, &incoming_device)
+        .await
+        .expect("rebind must not fail on the unique key");
+    assert!(rebound);
+
+    let after = service
+        .get_user_sessions(&user.id, Some(incoming_device.clone()))
+        .await
+        .unwrap();
+    assert_eq!(after.len(), 1);
+    assert_eq!(
+        after[0].0.jellyfin_token, "fresh-token",
+        "keep the fresh login"
+    );
+
+    let mut remaining = service
+        .get_user_sessions(&user.id, None)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(s, _)| s.device.device_id)
+        .collect::<Vec<_>>();
+    remaining.sort();
+    assert_eq!(remaining, ["firetv-id", "target-id"]);
+
+    let other = service
+        .get_user_sessions(&other_user.id, None)
+        .await
+        .unwrap();
+    assert_eq!(other.len(), 1);
+    assert_eq!(other[0].0.jellyfin_token, "other-user-token");
+}
+
+/// An expired row is invisible to session lookups but still occupies the unique key.
+#[tokio::test]
+async fn test_android_tv_rebind_replaces_expired_row_holding_target_id() {
+    let (pool, service) = setup_service().await;
+    insert_test_server(&pool, "Test Server", "http://localhost:8096").await;
+
+    let user = service
+        .get_or_create_user("androidtv-expired", &"testpass".into())
+        .await
+        .unwrap();
+    service
+        .add_server_mapping(
+            &user.id,
+            "http://localhost:8096",
+            "mappeduser",
+            &"mappedpass".into(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    for (device_id, token, expires_at) in [
+        (
+            "target-id",
+            "expired-token",
+            Some(chrono::Utc::now() - chrono::Duration::hours(1)),
+        ),
+        ("login-id", "fresh-token", None),
+    ] {
+        service
+            .store_authorization_session(
+                &user.id,
+                "http://localhost:8096",
+                &android_tv_auth("Jellyfin Android TV", "Chromecast", device_id, "0.20.0"),
+                token.to_string(),
+                "original-jellyfin-user-id".to_string(),
+                expires_at,
+            )
+            .await
+            .unwrap();
+    }
+
+    let incoming_device = Device {
+        client: "Jellyfin Android TV".to_string(),
+        device: "Chromecast".to_string(),
+        device_id: "target-id".to_string(),
+        version: "0.20.0".to_string(),
+    };
+    assert!(service
+        .rebind_android_tv_device_sessions_if_needed(&user.id, &incoming_device)
+        .await
+        .expect("rebind must not fail on an expired row"));
+
+    let after = service
+        .get_user_sessions(&user.id, Some(incoming_device))
+        .await
+        .unwrap();
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0].0.jellyfin_token, "fresh-token");
+}
+
 #[tokio::test]
 async fn test_android_tv_rebind_is_not_applied_to_other_clients() {
     let (pool, service) = setup_service().await;
