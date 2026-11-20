@@ -2,11 +2,20 @@
 [graph]
 all-features = true
 
-# Vulnerabilities and unsoundness fail by default, with no ignored advisories.
-# CI and `just audit` report unmaintained transitive crates as warnings: several
-# have no fixed release and replacing their parents is separate migration work.
+# Vulnerabilities and unsoundness fail by default; every ignore below needs a
+# reason and an exit condition. CI and `just audit` report unmaintained
+# transitive crates as warnings: several have no fixed release and replacing
+# their parents is separate migration work.
 [advisories]
-ignore = []
+ignore = [
+    # Bundled SQLite < 3.54 can leak page-cache memory when opening a database
+    # together with a crafted `-wal` file of a different page size. Jellyswarrm
+    # only opens the database it creates in its own data directory; anyone who
+    # can plant files there already controls the instance. The fix needs
+    # libsqlite3-sys >= 0.39, which no released sqlx (0.8.6 / 0.9.0) allows.
+    # Remove once sqlx ships with `libsqlite3-sys < 0.40` (already on sqlx main).
+    { id = "RUSTSEC-2026-0459", reason = "local-only; only our own data-dir DB is opened; blocked on a sqlx release" },
+]
 
 # This audits dependency metadata; it does not change the project's licenses.
 [licenses]

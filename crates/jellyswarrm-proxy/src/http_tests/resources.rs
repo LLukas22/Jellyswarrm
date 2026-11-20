@@ -71,6 +71,7 @@ async fn resource_contract(route: &str) {
             "tv",
         )
         .header("Range", "bytes=2-5")
+        .header("Accept-Encoding", "gzip, br, zstd, future-encoding")
         .send()
         .await
         .unwrap();
@@ -99,6 +100,20 @@ async fn resource_contract(route: &str) {
     );
     let requests = f.upstreams[owner].received_requests().await.unwrap();
     assert_eq!(requests.len(), 1);
+    let encoding = requests[0].headers["accept-encoding"].to_str().unwrap();
+    if route.contains("/Images/")
+        || route.contains("/Trickplay/")
+        || route.starts_with("/FallbackFont/")
+    {
+        // Buffered resources use the API client's decoders; media streams
+        // retain identity encoding so byte ranges and framing stay intact.
+        let encodings: Vec<_> = encoding.split(',').map(str::trim).collect();
+        assert!(encodings.contains(&"gzip"));
+        assert!(encodings.contains(&"zstd"));
+        assert!(!encodings.contains(&"future-encoding"));
+    } else {
+        assert_eq!(encoding, "identity");
+    }
     if playlist {
         assert!(!requests[0].headers.contains_key("range"));
     }
