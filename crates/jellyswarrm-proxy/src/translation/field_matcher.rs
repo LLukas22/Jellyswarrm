@@ -65,6 +65,8 @@ pub(crate) static RESPONSE_MEDIA_ID_FIELDS: LazyLock<FieldMatcher> = LazyLock::n
         "ParentLogoItemId",
         "ParentBackdropItemId",
         "ParentLogoImageTag",
+        "ParentPrimaryImageItemId",
+        "ParentPrimaryImageTag",
         "ParentThumbItemId",
         "ParentThumbImageTag",
         "SeriesPrimaryImageTag",
