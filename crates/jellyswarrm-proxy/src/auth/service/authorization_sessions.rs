@@ -362,20 +362,12 @@ impl UserAuthorizationService {
             })
             .collect::<Vec<_>>();
 
-        warn!(
-            "Collapsing Android TV device IDs for user {} on device '{}' (client '{}') to '{}': {}",
-            user_id,
-            incoming_device.device,
-            incoming_device.client,
-            incoming_device.device_id,
-            collapsed_device_ids.join("; ")
-        );
-
         let now = chrono::Utc::now();
 
         let mut tx = self.pool.begin().await?;
 
         let mut changed = false;
+        let mut replaced_conflicts = 0;
 
         for (mapping_id, mut stale_sessions) in stale_sessions_by_mapping {
             stale_sessions.sort_by(|left, right| {
@@ -406,6 +398,20 @@ impl UserAuthorizationService {
             let Some(canonical_session) = stale_sessions.pop() else {
                 continue;
             };
+
+            let conflicts = sqlx::query(
+                r#"
+                DELETE FROM authorization_sessions
+                WHERE user_id = ? AND mapping_id = ? AND device_id = ? AND id <> ?
+                "#,
+            )
+            .bind(user_id)
+            .bind(mapping_id)
+            .bind(&incoming_device.device_id)
+            .bind(canonical_session.id)
+            .execute(&mut *tx)
+            .await?;
+            replaced_conflicts += conflicts.rows_affected();
 
             let updated = sqlx::query(
                 r#"
@@ -438,6 +444,16 @@ impl UserAuthorizationService {
         }
 
         tx.commit().await?;
+
+        warn!(
+            "Collapsed Android TV device IDs for user {} on device '{}' (client '{}') to '{}': {}; replaced {} conflicting session(s)",
+            user_id,
+            incoming_device.device,
+            incoming_device.client,
+            incoming_device.device_id,
+            collapsed_device_ids.join("; "),
+            replaced_conflicts
+        );
 
         Ok(changed)
     }
