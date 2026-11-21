@@ -213,17 +213,33 @@ impl UserAuthorizationService {
             }
         }
         let first = first.ok_or(sqlx::Error::RowNotFound)?;
+        let mut replaced = false;
         if Device::has_known_device_id(&normalize_device(&auth.device_id)) {
-            sqlx::query("DELETE FROM client_logins WHERE user_id=? AND client=? AND device_id=? AND token_hash IS NOT NULL AND id<>?")
+            // Android TV 0.20 renamed the app. Other clients can legitimately share a device ID.
+            let android_tv = matches!(
+                normalize_device(&auth.client).as_str(),
+                "jellyfin android tv" | "jellyfin for android tv"
+            );
+            replaced = sqlx::query(
+                "DELETE FROM client_logins
+                 WHERE user_id=? AND device_id=? AND token_hash IS NOT NULL AND id<>?
+                 AND (client=? OR (? AND lower(replace(trim(client), '+', ' ')) IN
+                     ('jellyfin android tv', 'jellyfin for android tv')))",
+            )
             .bind(&user.id)
-            .bind(&auth.client)
             .bind(&auth.device_id)
             .bind(login_id)
+            .bind(&auth.client)
+            .bind(android_tv)
             .execute(&mut *tx)
-            .await?;
+            .await?
+            .rows_affected()
+                > 0;
         }
         tx.commit().await?;
-        self.session_changes.send_replace(());
+        if replaced {
+            self.session_changes.send_replace(());
+        }
         Ok((token, first, login_id))
     }
 

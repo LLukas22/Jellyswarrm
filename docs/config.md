@@ -48,3 +48,5 @@ The table below lists all available configuration options:
 - Configuration files are resolved from the data directory (`./data` by default), which can be overridden with `JELLYSWARRM_DATA_DIR`.
 
 Upgrading to per-login credentials signs players out once. Existing named API keys keep their values and authenticate each mapped backend on first use. For Jellyfin device allowlists, approve the integration device `jellyswarrm-key-<key id>` for password mappings. A Quick Connect mapping uses its own durable credential. Placeholder player device IDs always receive fresh upstream IDs. When a real ID is preserved, Jellyfin may retire the previous upstream token even if the proxy cannot finish saving its replacement.
+
+If Jellyfin rejects a saved password during automatic API-key sign-in, Jellyswarrm pauses automatic sign-in for that mapping across all keys and restarts. Update the mapping credentials to resume. When a key already has a healthy backend session, missing healthy backends sign in in the background.

@@ -369,6 +369,14 @@ async fn mapping_relinked_during_login_skips_only_that_backend() {
         Mock, ResponseTemplate,
     };
     let f = Fixture::new().await;
+    // A malformed entry ahead of the valid logout must not stall the drain.
+    sqlx::query(
+        "INSERT INTO pending_upstream_logouts(server_url, encrypted_token) VALUES (?, 'invalid')",
+    )
+    .bind(f.upstreams[0].uri())
+    .execute(&f.pool)
+    .await
+    .unwrap();
     let service = &f.state.user_authorization;
     let mut backends = Vec::new();
     for server in f.state.server_storage.list_servers().await.unwrap() {
@@ -442,7 +450,7 @@ async fn mapping_relinked_during_login_skips_only_that_backend() {
     drop(backends);
     tokio::time::timeout(std::time::Duration::from_secs(2),async{
         loop{
-            let ready:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pending_upstream_logouts WHERE server_url=? AND next_attempt=0)")
+            let ready:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pending_upstream_logouts WHERE server_url=? AND encrypted_token<>'invalid' AND next_attempt=0)")
                 .bind(rejected_url.as_str()).fetch_one(&f.pool).await.unwrap();
             if ready{break}tokio::task::yield_now().await;
         }
@@ -450,7 +458,7 @@ async fn mapping_relinked_during_login_skips_only_that_backend() {
     // A timeout or server error retains the encrypted entry for retry.
     f.state.mapping_authenticator.drain_logouts().await.unwrap();
     let attempts: i64 = sqlx::query_scalar(
-        "SELECT attempts FROM pending_upstream_logouts WHERE server_url=? AND attempts>0",
+        "SELECT attempts FROM pending_upstream_logouts WHERE server_url=? AND encrypted_token<>'invalid' AND attempts>0",
     )
     .bind(rejected_url.as_str())
     .fetch_one(&f.pool)
@@ -524,9 +532,11 @@ async fn placeholder_logins_coexist_and_an_unbound_key_signs_in_on_first_use() {
         .unwrap()
         .is_empty());
     let hydrate = || {
-        f.state
-            .mapping_authenticator
-            .ensure_key_sessions(&f.user, login_id)
+        f.state.mapping_authenticator.ensure_key_sessions(
+            &f.user,
+            login_id,
+            &f.state.server_storage,
+        )
     };
     tokio::try_join!(hydrate(), hydrate()).unwrap();
     assert_eq!(
@@ -570,4 +580,168 @@ async fn admin_revocation_disconnects_a_player_without_another_client_request() 
         .for_user(&f.user.id)
         .await
         .is_empty());
+}
+
+#[tokio::test]
+async fn rejected_key_password_is_shared_across_keys_and_restarts_until_relinked() {
+    use crate::auth::mapping_authentication::MappingAuthenticator;
+    use wiremock::{matchers::path, Mock, ResponseTemplate};
+
+    let f = Fixture::new().await;
+    let service = &f.state.user_authorization;
+    let servers = &f.state.server_storage;
+    let (_, first) = service.create_api_key(&f.user, "scanner").await.unwrap();
+    let (_, second) = service.create_api_key(&f.user, "automation").await.unwrap();
+    let hydrate = |id| {
+        f.state
+            .mapping_authenticator
+            .ensure_key_sessions(&f.user, id, servers)
+    };
+
+    // Unknown/offline backends receive no automatic authentication traffic.
+    hydrate(first).await.unwrap();
+    for backend in &f.upstreams {
+        assert!(backend
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .all(|r| r.url.path() != "/Users/AuthenticateByName"));
+    }
+    f.healthy().await;
+    for backend in &f.upstreams {
+        Mock::given(path("/Users/AuthenticateByName"))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(1)
+            .mount(backend)
+            .await;
+    }
+    tokio::try_join!(hydrate(first), hydrate(second)).unwrap();
+    let fresh = MappingAuthenticator::new(
+        service.clone(),
+        reqwest::Client::new(),
+        f.state.config.read().await.password.clone(),
+    );
+    fresh
+        .ensure_key_sessions(&f.user, second, servers)
+        .await
+        .unwrap();
+    for backend in &f.upstreams {
+        backend.verify().await;
+        backend.reset().await;
+    }
+    let server = servers.list_servers().await.unwrap().remove(0);
+    service
+        .add_server_mapping(&f.user.id, &server, "alice", &"corrected".into(), None)
+        .await
+        .unwrap();
+    for backend in &f.upstreams {
+        let count = u64::from(backend.uri() == server.url.as_str());
+        Mock::given(path("/Users/AuthenticateByName"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "User":{"Id":"remote","Name":"alice","ServerId":"backend","Policy":{"IsAdministrator":false,"SyncPlayAccess":"None"}},
+                "AccessToken":"fresh-token","ServerId":"backend","SessionInfo":{"UserId":"remote","UserName":"alice","ServerId":"backend"}
+            }))).expect(count).mount(backend).await;
+    }
+    fresh
+        .ensure_key_sessions(&f.user, second, servers)
+        .await
+        .unwrap();
+    assert_eq!(
+        service
+            .sessions_for_credential(
+                &f.user.id,
+                crate::auth::service::CallerCredential::ApplicationKey(second)
+            )
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn healthy_key_session_remains_available_during_slow_backend_login() {
+    use std::time::Duration;
+    use wiremock::{matchers::path, Mock, ResponseTemplate};
+
+    let f = Fixture::new().await;
+    f.healthy().await;
+    let service = &f.state.user_authorization;
+    let (_, id) = service.create_api_key(&f.user, "scanner").await.unwrap();
+    // Seed the binding for only the first backend.
+    sqlx::query("INSERT INTO login_sessions(user_id,login_id,mapping_id,server_url,upstream_device_id,jellyfin_token,owned,original_user_id)
+        SELECT user_id,?,mapping_id,server_url,upstream_device_id,jellyfin_token,0,original_user_id
+        FROM login_sessions WHERE user_id=? AND server_url=? LIMIT 1")
+        .bind(id).bind(&f.user.id).bind(f.upstreams[0].uri()).execute(&f.pool).await.unwrap();
+    Mock::given(path("/Users/AuthenticateByName"))
+        .respond_with(ResponseTemplate::new(401).set_delay(Duration::from_secs(3)))
+        .expect(1)
+        .mount(&f.upstreams[1])
+        .await;
+    let hydrate = || {
+        f.state
+            .mapping_authenticator
+            .ensure_key_sessions(&f.user, id, &f.state.server_storage)
+    };
+    tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::try_join!(hydrate(), hydrate()).unwrap();
+    })
+    .await
+    .expect("a bound key waited for an unrelated upstream login");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let rejected: bool = sqlx::query_scalar("SELECT key_password_rejected FROM server_mappings WHERE user_id=? AND server_url=?")
+                .bind(&f.user.id).bind(f.upstreams[1].uri()).fetch_one(&f.pool).await.unwrap();
+            if rejected { break; }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }).await.expect("background bind never recorded its result");
+}
+
+#[tokio::test]
+async fn android_tv_upgrade_replaces_only_the_earlier_android_tv_login() {
+    use wiremock::{matchers::path, Mock, ResponseTemplate};
+    let f = Fixture::new().await;
+    f.healthy().await;
+    for backend in &f.upstreams {
+        Mock::given(path("/Users/AuthenticateByName")).respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "User":{"Id":"remote","Name":"alice","ServerId":"backend","Policy":{"IsAdministrator":false,"SyncPlayAccess":"None"}},
+            "AccessToken":"login-token","ServerId":"backend","SessionInfo":{"UserId":"remote","UserName":"alice","ServerId":"backend"}
+        }))).mount(backend).await;
+    }
+    let mut tokens = Vec::new();
+    for client in [
+        "Jellyfin+Android+TV",
+        "Other",
+        "Jellyfin%20for%20Android%20TV",
+    ] {
+        let body = reqwest::Client::new()
+            .post(format!("{}/Users/AuthenticateByName", f.url))
+            .header(
+                "Authorization",
+                format!("MediaBrowser Client={client}, Device=TV, DeviceId=shared, Version=1"),
+            )
+            .json(&json!({"Username":"alice","Pw":"password"}))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap();
+        tokens.push(body["AccessToken"].as_str().unwrap().to_owned());
+    }
+    for (token, valid) in tokens.iter().zip([false, true, true]) {
+        assert_eq!(
+            f.state
+                .user_authorization
+                .resolve_credential(token)
+                .await
+                .unwrap()
+                .is_some(),
+            valid
+        );
+    }
 }

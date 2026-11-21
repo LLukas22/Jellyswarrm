@@ -51,7 +51,7 @@ pub(crate) async fn create_api_key(
     // The key is already committed. A later request retries missing bindings.
     if let Err(error) = state
         .mapping_authenticator
-        .ensure_key_sessions(&user, login_id)
+        .ensure_key_sessions(&user, login_id, &state.server_storage)
         .await
     {
         error!(%error,"Failed to initialize API key sessions");

@@ -131,7 +131,7 @@ async fn backend_sessions(
     if let CallerCredential::ApplicationKey(id) = credential {
         state
             .mapping_authenticator
-            .ensure_key_sessions(user, id)
+            .ensure_key_sessions(user, id, &state.server_storage)
             .await?;
     }
     let sessions = state
