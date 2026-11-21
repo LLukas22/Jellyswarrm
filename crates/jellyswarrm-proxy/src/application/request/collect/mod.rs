@@ -158,7 +158,7 @@ async fn backend_sessions(
     // when strict lookup returns no session, then re-run strict lookup.
     if sessions.is_empty() && !partial {
         if let Some(device) = device {
-            let rebound = state
+            let retry_lookup = state
                 .user_authorization
                 .rebind_android_tv_device_sessions_if_needed(&user.id, device)
                 .await
@@ -168,7 +168,7 @@ async fn backend_sessions(
                         user.id, device.device
                     )
                 })?;
-            if rebound {
+            if retry_lookup {
                 sessions = state
                     .user_authorization
                     .get_user_sessions(&user.id, Some(device.clone()))

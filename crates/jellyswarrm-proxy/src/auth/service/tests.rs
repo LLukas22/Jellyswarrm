@@ -1711,6 +1711,84 @@ fn android_tv_auth(client: &str, device: &str, device_id: &str, version: &str) -
 }
 
 #[tokio::test]
+async fn overlapping_android_tv_rebind_preserves_the_newer_login() {
+    // WAL lets readers see the previous committed candidate while a writer is active.
+    use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
+
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let pool = SqlitePool::connect_with(
+        SqliteConnectOptions::new()
+            .filename(file.path())
+            .journal_mode(SqliteJournalMode::Wal),
+    )
+    .await
+    .unwrap();
+    MIGRATOR.run(&pool).await.unwrap();
+    let service = UserAuthorizationService::new(pool.clone());
+    let server = "http://localhost:8096";
+    insert_test_server(&pool, "Test Server", server).await;
+    let user = service.create_user("viewer", &"pass".into()).await.unwrap();
+    service
+        .add_server_mapping(&user.id, server, "remote", &"pass".into(), None)
+        .await
+        .unwrap();
+    let old = android_tv_auth("Jellyfin Android TV", "Chromecast", "login-id", "0.20");
+    let old_id = service
+        .store_authorization_session(
+            &user.id,
+            server,
+            &old,
+            "old-token".into(),
+            "remote-user".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let incoming = Device {
+        client: old.client,
+        device: old.device,
+        device_id: "target-id".into(),
+        version: old.version,
+    };
+
+    // Stage the winning request's result, with a fresh row at the target ID.
+    let mut winner = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+    sqlx::query(
+        "INSERT INTO authorization_sessions
+         (user_id, mapping_id, server_url, client, device, device_id, version, jellyfin_token, original_user_id)
+         SELECT user_id, mapping_id, server_url, client, device, ?, version, 'fresh-token', original_user_id
+         FROM authorization_sessions WHERE id = ?",
+    )
+    .bind(&incoming.device_id)
+    .bind(old_id)
+    .execute(&mut *winner)
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM authorization_sessions WHERE id = ?")
+        .bind(old_id)
+        .execute(&mut *winner)
+        .await
+        .unwrap();
+
+    let delayed = service.rebind_android_tv_device_sessions_if_needed(&user.id, &incoming);
+    tokio::pin!(delayed);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), &mut delayed)
+            .await
+            .is_err()
+    );
+    winner.commit().await.unwrap();
+    let retry_lookup = delayed.await.unwrap();
+    let sessions = service
+        .get_user_sessions(&user.id, Some(incoming.clone()))
+        .await
+        .unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].0.jellyfin_token, "fresh-token");
+    assert!(retry_lookup, "the waiting request must retry strict lookup");
+}
+
+#[tokio::test]
 async fn test_android_tv_rebind_replaces_row_holding_target_id_under_old_client_name() {
     let (pool, service) = setup_service().await;
     insert_test_server(&pool, "Test Server", "http://localhost:8096").await;
