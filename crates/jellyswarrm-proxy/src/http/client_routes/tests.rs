@@ -113,12 +113,10 @@ async fn check_selected_source_detail(catalog_scopes: &[&str]) {
                 }]),
             }],
         });
-        let now = chrono::Utc::now();
         sessions.push((
             AuthorizationSession {
                 id: index,
                 user_id: "viewer".into(),
-                mapping_id: index,
                 server_url: upstream.uri(),
                 device: Device {
                     client: "test".into(),
@@ -129,9 +127,6 @@ async fn check_selected_source_detail(catalog_scopes: &[&str]) {
                 upstream_device_id: None,
                 jellyfin_token: "upstream-token".into(),
                 original_user_id: "backend-user".into(),
-                expires_at: None,
-                created_at: now,
-                updated_at: now,
             },
             server,
         ));

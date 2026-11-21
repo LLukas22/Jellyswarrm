@@ -155,6 +155,8 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
         axum::extract::FromRef::from_ref(&app_state),
         session_store.clone(),
         startup.server_background_check_interval_secs,
+        axum::extract::FromRef::from_ref(&app_state),
+        loaded_config.login_idle_expiry_days,
     );
 
     // Create socket address

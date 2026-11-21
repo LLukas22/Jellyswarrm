@@ -268,102 +268,6 @@ async fn ui_login_migrates_raw_password_key_mapping_before_replacing_sha256() {
 }
 
 #[tokio::test]
-async fn session_tokens_are_encrypted_on_upgrade_and_new_writes() {
-    let (pool, legacy) = setup_service().await;
-    let id = insert_test_server(&pool, "Backend", "http://localhost:8096").await;
-    let server = Server::from_row(
-        sqlx::query("SELECT * FROM servers WHERE id = ?")
-            .bind(id.as_i64())
-            .fetch_one(&pool)
-            .await
-            .unwrap(),
-    )
-    .unwrap();
-    let user = legacy
-        .create_user("local", &"password".into())
-        .await
-        .unwrap();
-    legacy
-        .add_server_mapping(
-            &user.id,
-            &server,
-            "remote",
-            &"secret".into(),
-            Some(&user.local_credential.mapping_key()),
-        )
-        .await
-        .unwrap();
-    let auth = Authorization {
-        client: "test".into(),
-        device: "test".into(),
-        device_id: "device".into(),
-        version: "1".into(),
-        token: None,
-    };
-    legacy
-        .store_authorization_session(
-            &user.id,
-            &server,
-            &auth,
-            "persistent-backend-token".into(),
-            "remote-id".into(),
-            None,
-        )
-        .await
-        .unwrap();
-
-    let mut protected = UserAuthorizationService::with_mapping_key(
-        pool.clone(),
-        MappingEncryptionKey::from_session_key(&[7; 64]).unwrap(),
-        HashedPassword::from_password("admin"),
-    );
-    protected.enable_session_encryption(&[7; 64]).await.unwrap();
-    let stored: (String, String) = sqlx::query_as(
-            "SELECT jellyfin_token, token_format FROM authorization_sessions WHERE device_id = 'device'")
-            .fetch_one(&pool).await.unwrap();
-    assert_eq!(stored.1, "session_v1");
-    assert!(!stored.0.contains("persistent-backend-token"));
-    assert_eq!(
-        protected.get_user_sessions(&user.id, None).await.unwrap()[0]
-            .0
-            .jellyfin_token,
-        "persistent-backend-token"
-    );
-    protected
-        .store_authorization_session(
-            &user.id,
-            &server,
-            &auth,
-            "replacement-token".into(),
-            "remote-id".into(),
-            None,
-        )
-        .await
-        .unwrap();
-    let stored: String = sqlx::query_scalar(
-        "SELECT jellyfin_token FROM authorization_sessions WHERE device_id = 'device'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert!(!stored.contains("replacement-token"));
-    protected.enable_session_encryption(&[7; 64]).await.unwrap();
-    let after_restart: String = sqlx::query_scalar(
-        "SELECT jellyfin_token FROM authorization_sessions WHERE device_id = 'device'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(stored, after_restart);
-    assert_eq!(
-        protected.get_user_sessions(&user.id, None).await.unwrap()[0]
-            .0
-            .jellyfin_token,
-        "replacement-token"
-    );
-}
-
-#[tokio::test]
 async fn legacy_login_hash_upgrades_after_mapping_is_rekeyed() {
     let (pool, legacy) = setup_service().await;
     let id = insert_test_server(&pool, "Backend", "http://localhost:8096").await;
@@ -512,7 +416,7 @@ async fn legacy_password_mapping_upgrades_without_changing_mapping_or_sessions()
         token: None,
     };
     legacy
-        .store_authorization_session(
+        .bind_fixture_login(
             &user.id,
             &server,
             &session,
@@ -523,11 +427,12 @@ async fn legacy_password_mapping_upgrades_without_changing_mapping_or_sessions()
         .await
         .unwrap();
 
-    let upgraded = UserAuthorizationService::with_mapping_key(
+    let mut upgraded = UserAuthorizationService::with_mapping_key(
         pool.clone(),
         MappingEncryptionKey::from_session_key(&[3u8; 64]).unwrap(),
         HashedPassword::from_password("admin"),
     );
+    upgraded.enable_session_encryption(&[7; 64]).await.unwrap();
     let mapping = upgraded
         .get_server_mapping(&user.id, &server)
         .await
@@ -548,14 +453,7 @@ async fn legacy_password_mapping_upgrades_without_changing_mapping_or_sessions()
             .as_str(),
         "backend-password"
     );
-    assert_eq!(
-        upgraded
-            .get_user_sessions(&user.id, None)
-            .await
-            .unwrap()
-            .len(),
-        1
-    );
+    assert_eq!(upgraded.get_user_sessions(&user.id).await.unwrap().len(), 1);
     let wrong_key = UserAuthorizationService::with_mapping_key(
         pool.clone(),
         MappingEncryptionKey::from_session_key(&[9u8; 64]).unwrap(),
@@ -586,14 +484,7 @@ async fn legacy_password_mapping_upgrades_without_changing_mapping_or_sessions()
         )
         .await
         .unwrap();
-    assert_eq!(
-        upgraded
-            .get_user_sessions(&user.id, None)
-            .await
-            .unwrap()
-            .len(),
-        1
-    );
+    assert_eq!(upgraded.get_user_sessions(&user.id).await.unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -808,13 +699,10 @@ async fn admin_encrypted_quick_connect_mapping_survives_local_password_change() 
 async fn named_api_key_resolves_its_owner() {
     let (_, service) = setup_service().await;
     let user = service
-        .create_user("seerr-owner", &Password::from("password"))
+        .fixture_user("seerr-owner", &Password::from("password"))
         .await
         .unwrap();
-    let key = service
-        .create_api_key(&user.id, "Seerr", None)
-        .await
-        .unwrap();
+    let (key, _) = service.create_api_key(&user, "Seerr").await.unwrap();
 
     let resolved = service
         .get_user_by_token(&key.access_token)
@@ -829,25 +717,16 @@ async fn named_api_key_resolves_its_owner() {
 async fn api_key_listing_is_scoped_and_creation_ordered() {
     let (_, service) = setup_service().await;
     let owner = service
-        .create_user("owner", &Password::from("password"))
+        .fixture_user("owner", &Password::from("password"))
         .await
         .unwrap();
     let other = service
-        .create_user("other", &Password::from("password"))
+        .fixture_user("other", &Password::from("password"))
         .await
         .unwrap();
-    let first = service
-        .create_api_key(&owner.id, "Seerr", None)
-        .await
-        .unwrap();
-    let second = service
-        .create_api_key(&owner.id, "Seerr", None)
-        .await
-        .unwrap();
-    service
-        .create_api_key(&other.id, "Other", None)
-        .await
-        .unwrap();
+    let (first, _) = service.create_api_key(&owner, "Seerr").await.unwrap();
+    let (second, _) = service.create_api_key(&owner, "Seerr").await.unwrap();
+    service.create_api_key(&other, "Other").await.unwrap();
 
     let listed = service.list_api_keys(&owner.id).await.unwrap();
 
@@ -864,13 +743,10 @@ async fn api_key_listing_is_scoped_and_creation_ordered() {
 async fn deleting_user_revokes_named_api_keys() {
     let (_, service) = setup_service().await;
     let user = service
-        .create_user("owner", &Password::from("password"))
+        .fixture_user("owner", &Password::from("password"))
         .await
         .unwrap();
-    let key = service
-        .create_api_key(&user.id, "Seerr", None)
-        .await
-        .unwrap();
+    let (key, _) = service.create_api_key(&user, "Seerr").await.unwrap();
     service.delete_user(&user.id).await.unwrap();
 
     let resolved = service.get_user_by_token(&key.access_token).await.unwrap();
@@ -1149,103 +1025,6 @@ async fn test_password_updates_change_credential_mode_and_reencrypt_mappings() {
 }
 
 #[tokio::test]
-async fn test_store_authorization_session_upserts_existing_device_session() {
-    let (pool, service) = setup_service().await;
-    insert_test_server(&pool, "Test Server", "http://localhost:8096").await;
-
-    let user = service
-        .get_or_create_user("testuser", &"testpass".into())
-        .await
-        .unwrap();
-    let mapping_id = service
-        .add_server_mapping(
-            &user.id,
-            "http://localhost:8096",
-            "mappeduser",
-            &"mappedpass".into(),
-            None,
-        )
-        .await
-        .unwrap();
-
-    let mut auth = Authorization {
-        client: "Test Client".to_string(),
-        device: "Test Device".to_string(),
-        device_id: "test-device-id".to_string(),
-        version: "1.0.0".to_string(),
-        token: None,
-    };
-
-    let first_session_id = service
-        .store_authorization_session(
-            &user.id,
-            "http://localhost:8096",
-            &auth,
-            "old-token".to_string(),
-            "old-original-user".to_string(),
-            None,
-        )
-        .await
-        .unwrap();
-    let first_created_at = sqlx::query_scalar::<_, chrono::DateTime<chrono::Utc>>(
-        "SELECT created_at FROM authorization_sessions WHERE id = ?",
-    )
-    .bind(first_session_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-
-    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-    auth.version = "2.0.0".to_string();
-
-    let second_session_id = service
-        .store_authorization_session(
-            &user.id,
-            "http://localhost:8096",
-            &auth,
-            "new-token".to_string(),
-            "new-original-user".to_string(),
-            None,
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(first_session_id, second_session_id);
-
-    let count = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM authorization_sessions WHERE mapping_id = ?",
-    )
-    .bind(mapping_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(count, 1);
-
-    let row = sqlx::query(
-        r#"
-            SELECT jellyfin_token, original_user_id, version, created_at
-            FROM authorization_sessions
-            WHERE id = ?
-            "#,
-    )
-    .bind(first_session_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-
-    assert_eq!(row.get::<String, _>("jellyfin_token"), "new-token");
-    assert_eq!(
-        row.get::<String, _>("original_user_id"),
-        "new-original-user"
-    );
-    assert_eq!(row.get::<String, _>("version"), "2.0.0");
-    assert_eq!(
-        row.get::<chrono::DateTime<chrono::Utc>, _>("created_at"),
-        first_created_at
-    );
-}
-
-#[tokio::test]
 async fn test_get_mapped_servers_returns_server_rows_in_priority_order() {
     let (pool, service) = setup_service().await;
     let low_priority_server = insert_test_server(&pool, "Low Priority", "http://low:8096").await;
@@ -1303,761 +1082,6 @@ async fn test_get_mapped_servers_returns_server_rows_in_priority_order() {
 }
 
 #[tokio::test]
-async fn test_device_session_fallback_matching() {
-    let (pool, service) = setup_service().await;
-    insert_test_server(&pool, "Test Server", "http://localhost:8096").await;
-
-    // Create user
-    let user = service
-        .get_or_create_user("testuser", &"testpass".into())
-        .await
-        .unwrap();
-
-    // Add server mapping
-    service
-        .add_server_mapping(
-            &user.id,
-            "http://localhost:8096",
-            "mappeduser",
-            &"mappedpass".into(),
-            None,
-        )
-        .await
-        .unwrap();
-
-    // Store a session with specific device info
-    let auth = Authorization {
-        client: "Switchfin".to_string(),
-        device: "Linux".to_string(),
-        device_id: "1234567890abcdef-stored".to_string(),
-        version: "0.7.4".to_string(),
-        token: None,
-    };
-
-    service
-        .store_authorization_session(
-            &user.id,
-            "http://localhost:8096",
-            &auth,
-            "jellyfin-token".to_string(),
-            "original-jellyfin-user-id".to_string(),
-            None,
-        )
-        .await
-        .unwrap();
-
-    // Test 1: Exact match (device_id + client)
-    let query_device1 = Device {
-        client: "Switchfin".to_string(),
-        device: "Linux".to_string(),
-        device_id: "1234567890abcdef-stored".to_string(),
-        version: "0.7.4".to_string(),
-    };
-    let sessions1 = service
-        .get_user_sessions(&user.id, Some(query_device1))
-        .await
-        .unwrap();
-    assert_eq!(sessions1.len(), 1, "Should find exact match");
-
-    // Test 2: Strict match when known device ids share the same short prefix
-    let query_device2 = Device {
-        client: "Switchfin".to_string(),
-        device: "Linux".to_string(),
-        device_id: "1234567890abcdef-query".to_string(),
-        version: "0.7.4".to_string(),
-    };
-    let sessions2 = service
-        .get_user_sessions(&user.id, Some(query_device2))
-        .await
-        .unwrap();
-    assert_eq!(
-        sessions2.len(),
-        1,
-        "Should find strict match by short device id prefix"
-    );
-
-    // Test 3: Fallback to device name + client when device id is truly unknown
-    let query_device3 = Device {
-        client: "Switchfin".to_string(),
-        device: "Linux".to_string(),
-        device_id: "unknown".to_string(),
-        version: "0.7.4".to_string(),
-    };
-    let sessions3 = service
-        .get_user_sessions(&user.id, Some(query_device3))
-        .await
-        .unwrap();
-    assert_eq!(
-        sessions3.len(),
-        1,
-        "Should find fallback match by device name + client"
-    );
-
-    // Test 4: Different known device ids should not fallback by device name
-    let query_device4 = Device {
-        client: "Switchfin".to_string(),
-        device: "Linux".to_string(),
-        device_id: "different-device-id".to_string(),
-        version: "0.7.4".to_string(),
-    };
-    let sessions4 = service
-        .get_user_sessions(&user.id, Some(query_device4))
-        .await
-        .unwrap();
-    assert_eq!(
-        sessions4.len(),
-        0,
-        "Should not fallback when both device ids are known and different"
-    );
-
-    // Test 5: No match when client and version are different
-    let query_device4 = Device {
-        client: "DifferentClient".to_string(),
-        device: "Linux".to_string(),
-        device_id: "1234567890abcdef-stored".to_string(),
-        version: "1.0.0".to_string(),
-    };
-    let sessions5 = service
-        .get_user_sessions(&user.id, Some(query_device4))
-        .await
-        .unwrap();
-    assert_eq!(
-        sessions5.len(),
-        0,
-        "Should not find any match when client and version differ"
-    );
-
-    // Test 6: Two distinct web (browser) device ids sharing the same 16-char base64
-    // prefix ("Mozilla/5.0 (") must NOT fall back to a prefix match - every browser's
-    // device_id starts with that prefix, so this used to collide across all of a
-    // user's web sessions and let requests reuse another session's stale token.
-    let web_device_stored = Device {
-        client: "Jellyfin Web".to_string(),
-        device: "Chrome".to_string(),
-        device_id: "TW96aWxsYS81LjAgKFdpbmRvd3MgTlQgMTAuMCkgQ2hyb21lLzE0Ny4wfDE3ODM4NTg5NzQ1Mjc1"
-            .to_string(),
-        version: "10.11.10".to_string(),
-    };
-    service
-        .store_authorization_session(
-            &user.id,
-            "http://localhost:8096",
-            &Authorization {
-                client: web_device_stored.client.clone(),
-                device: web_device_stored.device.clone(),
-                device_id: web_device_stored.device_id.clone(),
-                version: web_device_stored.version.clone(),
-                token: None,
-            },
-            "jellyfin-token-web".to_string(),
-            "original-jellyfin-user-id".to_string(),
-            None,
-        )
-        .await
-        .unwrap();
-
-    let web_device_query = Device {
-        client: "Jellyfin Web".to_string(),
-        device: "Chrome Android".to_string(),
-        device_id:
-            "TW96aWxsYS81LjAgKExpbnV4OyBBbmRyb2lkIDEwKSBDaHJvbWUvMTUwLjB8MTc4MzQ0MTUzNjM2NQ=="
-                .to_string(),
-        version: "10.11.10".to_string(),
-    };
-    let sessions6 = service
-        .get_user_sessions(&user.id, Some(web_device_query))
-        .await
-        .unwrap();
-    assert_eq!(
-        sessions6.len(),
-        0,
-        "Distinct web device ids sharing the base64 'Mozilla/5.0 (' prefix must not match"
-    );
-}
-
-#[tokio::test]
-async fn test_android_tv_device_id_rebind_after_login_transition() {
-    let (pool, service) = setup_service().await;
-    insert_test_server(&pool, "Test Server", "http://localhost:8096").await;
-
-    let user = service
-        .get_or_create_user("androidtv", &"testpass".into())
-        .await
-        .unwrap();
-
-    service
-        .add_server_mapping(
-            &user.id,
-            "http://localhost:8096",
-            "mappeduser",
-            &"mappedpass".into(),
-            None,
-        )
-        .await
-        .unwrap();
-
-    let stored_auth = Authorization {
-        client: "Jellyfin Android TV".to_string(),
-        device: "Chromecast".to_string(),
-        device_id: "username-derived-device-id".to_string(),
-        version: "0.18.0".to_string(),
-        token: None,
-    };
-
-    service
-        .store_authorization_session(
-            &user.id,
-            "http://localhost:8096",
-            &stored_auth,
-            "jellyfin-token".to_string(),
-            "original-jellyfin-user-id".to_string(),
-            None,
-        )
-        .await
-        .unwrap();
-
-    let incoming_device = Device {
-        client: "Jellyfin Android TV".to_string(),
-        device: "Chromecast".to_string(),
-        device_id: "userid-derived-device-id".to_string(),
-        version: "0.18.0".to_string(),
-    };
-
-    let before = service
-        .get_user_sessions(&user.id, Some(incoming_device.clone()))
-        .await
-        .unwrap();
-    assert!(before.is_empty(), "precondition: strict lookup should miss");
-
-    let rebound = service
-        .rebind_android_tv_device_sessions_if_needed(&user.id, &incoming_device)
-        .await
-        .unwrap();
-    assert!(rebound, "android tv device id should be rebound");
-
-    let after = service
-        .get_user_sessions(&user.id, Some(incoming_device.clone()))
-        .await
-        .unwrap();
-    assert_eq!(after.len(), 1, "strict lookup should succeed after rebind");
-    assert_eq!(after[0].0.device.device_id, incoming_device.device_id);
-}
-
-#[tokio::test]
-async fn test_android_tv_rebind_collapses_multiple_stale_device_ids_for_same_user() {
-    let (pool, service) = setup_service().await;
-    insert_test_server(&pool, "Test Server", "http://localhost:8096").await;
-
-    let user = service
-        .get_or_create_user("androidtv-multi", &"testpass".into())
-        .await
-        .unwrap();
-
-    service
-        .add_server_mapping(
-            &user.id,
-            "http://localhost:8096",
-            "mappeduser",
-            &"mappedpass".into(),
-            None,
-        )
-        .await
-        .unwrap();
-
-    for old_device_id in ["old-device-id-1", "old-device-id-2", "old-device-id-3"] {
-        let stored_auth = Authorization {
-            client: "Jellyfin Android TV".to_string(),
-            device: "Chromecast".to_string(),
-            device_id: old_device_id.to_string(),
-            version: "0.18.0".to_string(),
-            token: None,
-        };
-
-        service
-            .store_authorization_session(
-                &user.id,
-                "http://localhost:8096",
-                &stored_auth,
-                format!("token-{old_device_id}"),
-                "original-jellyfin-user-id".to_string(),
-                None,
-            )
-            .await
-            .unwrap();
-    }
-
-    let incoming_device = Device {
-        client: "Jellyfin Android TV".to_string(),
-        device: "Chromecast".to_string(),
-        device_id: "incoming-device-id".to_string(),
-        version: "0.18.0".to_string(),
-    };
-
-    let before = service
-        .get_user_sessions(&user.id, Some(incoming_device.clone()))
-        .await
-        .unwrap();
-    assert!(before.is_empty(), "precondition: strict lookup should miss");
-
-    let rebound = service
-        .rebind_android_tv_device_sessions_if_needed(&user.id, &incoming_device)
-        .await
-        .unwrap();
-    assert!(rebound, "android tv stale sessions should be collapsed");
-
-    let after = service
-        .get_user_sessions(&user.id, Some(incoming_device.clone()))
-        .await
-        .unwrap();
-    assert_eq!(
-        after.len(),
-        1,
-        "collapse should leave one canonical session"
-    );
-    assert_eq!(after[0].0.device.device_id, incoming_device.device_id);
-
-    let all_sessions = service.get_user_sessions(&user.id, None).await.unwrap();
-    assert_eq!(all_sessions.len(), 1, "stale device ids should be pruned");
-}
-
-#[tokio::test]
-async fn test_android_tv_rebind_scope_does_not_touch_other_users() {
-    let (pool, service) = setup_service().await;
-    insert_test_server(&pool, "Test Server", "http://localhost:8096").await;
-
-    let user_a = service
-        .get_or_create_user("androidtv-a", &"testpass".into())
-        .await
-        .unwrap();
-    let user_b = service
-        .get_or_create_user("androidtv-b", &"testpass".into())
-        .await
-        .unwrap();
-
-    for user in [&user_a, &user_b] {
-        service
-            .add_server_mapping(
-                &user.id,
-                "http://localhost:8096",
-                "mappeduser",
-                &"mappedpass".into(),
-                None,
-            )
-            .await
-            .unwrap();
-    }
-
-    for old_device_id in ["old-device-id-1", "old-device-id-2"] {
-        let stored_auth = Authorization {
-            client: "Jellyfin Android TV".to_string(),
-            device: "Chromecast".to_string(),
-            device_id: old_device_id.to_string(),
-            version: "0.18.0".to_string(),
-            token: None,
-        };
-
-        service
-            .store_authorization_session(
-                &user_a.id,
-                "http://localhost:8096",
-                &stored_auth,
-                format!("token-a-{old_device_id}"),
-                "original-jellyfin-user-id-a".to_string(),
-                None,
-            )
-            .await
-            .unwrap();
-
-        service
-            .store_authorization_session(
-                &user_b.id,
-                "http://localhost:8096",
-                &stored_auth,
-                format!("token-b-{old_device_id}"),
-                "original-jellyfin-user-id-b".to_string(),
-                None,
-            )
-            .await
-            .unwrap();
-    }
-
-    let incoming_device = Device {
-        client: "Jellyfin Android TV".to_string(),
-        device: "Chromecast".to_string(),
-        device_id: "incoming-device-id".to_string(),
-        version: "0.18.0".to_string(),
-    };
-
-    let rebound = service
-        .rebind_android_tv_device_sessions_if_needed(&user_a.id, &incoming_device)
-        .await
-        .unwrap();
-    assert!(rebound);
-
-    let user_a_sessions = service.get_user_sessions(&user_a.id, None).await.unwrap();
-    assert_eq!(user_a_sessions.len(), 1);
-    assert_eq!(
-        user_a_sessions[0].0.device.device_id,
-        incoming_device.device_id
-    );
-
-    let user_b_sessions = service.get_user_sessions(&user_b.id, None).await.unwrap();
-    assert_eq!(
-        user_b_sessions.len(),
-        2,
-        "other users must remain untouched"
-    );
-    let user_b_device_ids = user_b_sessions
-        .iter()
-        .map(|(session, _)| session.device.device_id.as_str())
-        .collect::<Vec<_>>();
-    assert!(user_b_device_ids.contains(&"old-device-id-1"));
-    assert!(user_b_device_ids.contains(&"old-device-id-2"));
-}
-
-fn android_tv_auth(client: &str, device: &str, device_id: &str, version: &str) -> Authorization {
-    Authorization {
-        client: client.to_string(),
-        device: device.to_string(),
-        device_id: device_id.to_string(),
-        version: version.to_string(),
-        token: None,
-    }
-}
-
-#[tokio::test]
-async fn overlapping_android_tv_rebind_preserves_the_newer_login() {
-    // WAL lets readers see the previous committed candidate while a writer is active.
-    use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
-
-    let file = tempfile::NamedTempFile::new().unwrap();
-    let pool = SqlitePool::connect_with(
-        SqliteConnectOptions::new()
-            .filename(file.path())
-            .journal_mode(SqliteJournalMode::Wal),
-    )
-    .await
-    .unwrap();
-    MIGRATOR.run(&pool).await.unwrap();
-    let service = UserAuthorizationService::new(pool.clone());
-    let server = "http://localhost:8096";
-    insert_test_server(&pool, "Test Server", server).await;
-    let user = service.create_user("viewer", &"pass".into()).await.unwrap();
-    service
-        .add_server_mapping(&user.id, server, "remote", &"pass".into(), None)
-        .await
-        .unwrap();
-    let old = android_tv_auth("Jellyfin Android TV", "Chromecast", "login-id", "0.20");
-    let old_id = service
-        .store_authorization_session(
-            &user.id,
-            server,
-            &old,
-            "old-token".into(),
-            "remote-user".into(),
-            None,
-        )
-        .await
-        .unwrap();
-    let incoming = Device {
-        client: old.client,
-        device: old.device,
-        device_id: "target-id".into(),
-        version: old.version,
-    };
-
-    // Stage the winning request's result, with a fresh row at the target ID.
-    let mut winner = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
-    sqlx::query(
-        "INSERT INTO authorization_sessions
-         (user_id, mapping_id, server_url, client, device, device_id, version, jellyfin_token, original_user_id)
-         SELECT user_id, mapping_id, server_url, client, device, ?, version, 'fresh-token', original_user_id
-         FROM authorization_sessions WHERE id = ?",
-    )
-    .bind(&incoming.device_id)
-    .bind(old_id)
-    .execute(&mut *winner)
-    .await
-    .unwrap();
-    sqlx::query("DELETE FROM authorization_sessions WHERE id = ?")
-        .bind(old_id)
-        .execute(&mut *winner)
-        .await
-        .unwrap();
-
-    let delayed = service.rebind_android_tv_device_sessions_if_needed(&user.id, &incoming);
-    tokio::pin!(delayed);
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(100), &mut delayed)
-            .await
-            .is_err()
-    );
-    winner.commit().await.unwrap();
-    let retry_lookup = delayed.await.unwrap();
-    let sessions = service
-        .get_user_sessions(&user.id, Some(incoming.clone()))
-        .await
-        .unwrap();
-    assert_eq!(sessions.len(), 1);
-    assert_eq!(sessions[0].0.jellyfin_token, "fresh-token");
-    assert!(retry_lookup, "the waiting request must retry strict lookup");
-}
-
-#[tokio::test]
-async fn test_android_tv_rebind_replaces_row_holding_target_id_under_old_client_name() {
-    let (pool, service) = setup_service().await;
-    insert_test_server(&pool, "Test Server", "http://localhost:8096").await;
-
-    let user = service
-        .get_or_create_user("androidtv-upgrade", &"testpass".into())
-        .await
-        .unwrap();
-    let other_user = service
-        .get_or_create_user("androidtv-same-tv", &"testpass".into())
-        .await
-        .unwrap();
-    for u in [&user, &other_user] {
-        service
-            .add_server_mapping(
-                &u.id,
-                "http://localhost:8096",
-                "mappeduser",
-                &"mappedpass".into(),
-                None,
-            )
-            .await
-            .unwrap();
-    }
-
-    let store = |user_id: String, auth: Authorization, token: &'static str| {
-        let service = &service;
-        async move {
-            service
-                .store_authorization_session(
-                    &user_id,
-                    "http://localhost:8096",
-                    &auth,
-                    token.to_string(),
-                    "original-jellyfin-user-id".to_string(),
-                    None,
-                )
-                .await
-                .unwrap();
-        }
-    };
-
-    // Pre-upgrade row (0.19) already holding the target ID under the old client name.
-    store(
-        user.id.to_string(),
-        android_tv_auth("Jellyfin+Android+TV", "Vorgarten", "target-id", "0.19.10"),
-        "stale-token",
-    )
-    .await;
-    // Fresh login (0.20) under the new client name with the username-derived ID.
-    store(
-        user.id.to_string(),
-        android_tv_auth("Jellyfin+for+Android+TV", "Vorgarten", "login-id", "0.20.0"),
-        "fresh-token",
-    )
-    .await;
-    // Same user, another device: must stay untouched.
-    store(
-        user.id.to_string(),
-        android_tv_auth("Jellyfin+Android+TV", "FireTVStick", "firetv-id", "0.19.9"),
-        "firetv-token",
-    )
-    .await;
-    // Another user on the same TV, even with the same device ID: must stay untouched.
-    store(
-        other_user.id.to_string(),
-        android_tv_auth("Jellyfin+Android+TV", "Vorgarten", "target-id", "0.19.10"),
-        "other-user-token",
-    )
-    .await;
-
-    let incoming_device = Device {
-        client: "Jellyfin+for+Android+TV".to_string(),
-        device: "Vorgarten".to_string(),
-        device_id: "target-id".to_string(),
-        version: "0.20.0".to_string(),
-    };
-    assert!(service
-        .get_user_sessions(&user.id, Some(incoming_device.clone()))
-        .await
-        .unwrap()
-        .is_empty());
-
-    let rebound = service
-        .rebind_android_tv_device_sessions_if_needed(&user.id, &incoming_device)
-        .await
-        .expect("rebind must not fail on the unique key");
-    assert!(rebound);
-
-    let after = service
-        .get_user_sessions(&user.id, Some(incoming_device.clone()))
-        .await
-        .unwrap();
-    assert_eq!(after.len(), 1);
-    assert_eq!(
-        after[0].0.jellyfin_token, "fresh-token",
-        "keep the fresh login"
-    );
-
-    let mut remaining = service
-        .get_user_sessions(&user.id, None)
-        .await
-        .unwrap()
-        .into_iter()
-        .map(|(s, _)| s.device.device_id)
-        .collect::<Vec<_>>();
-    remaining.sort();
-    assert_eq!(remaining, ["firetv-id", "target-id"]);
-
-    let other = service
-        .get_user_sessions(&other_user.id, None)
-        .await
-        .unwrap();
-    assert_eq!(other.len(), 1);
-    assert_eq!(other[0].0.jellyfin_token, "other-user-token");
-}
-
-/// An expired row is invisible to session lookups but still occupies the unique key.
-#[tokio::test]
-async fn test_android_tv_rebind_replaces_expired_row_holding_target_id() {
-    let (pool, service) = setup_service().await;
-    insert_test_server(&pool, "Test Server", "http://localhost:8096").await;
-
-    let user = service
-        .get_or_create_user("androidtv-expired", &"testpass".into())
-        .await
-        .unwrap();
-    service
-        .add_server_mapping(
-            &user.id,
-            "http://localhost:8096",
-            "mappeduser",
-            &"mappedpass".into(),
-            None,
-        )
-        .await
-        .unwrap();
-
-    for (device_id, token, expires_at) in [
-        (
-            "target-id",
-            "expired-token",
-            Some(chrono::Utc::now() - chrono::Duration::hours(1)),
-        ),
-        ("login-id", "fresh-token", None),
-    ] {
-        service
-            .store_authorization_session(
-                &user.id,
-                "http://localhost:8096",
-                &android_tv_auth("Jellyfin Android TV", "Chromecast", device_id, "0.20.0"),
-                token.to_string(),
-                "original-jellyfin-user-id".to_string(),
-                expires_at,
-            )
-            .await
-            .unwrap();
-    }
-
-    let incoming_device = Device {
-        client: "Jellyfin Android TV".to_string(),
-        device: "Chromecast".to_string(),
-        device_id: "target-id".to_string(),
-        version: "0.20.0".to_string(),
-    };
-    assert!(service
-        .rebind_android_tv_device_sessions_if_needed(&user.id, &incoming_device)
-        .await
-        .expect("rebind must not fail on an expired row"));
-
-    let after = service
-        .get_user_sessions(&user.id, Some(incoming_device))
-        .await
-        .unwrap();
-    assert_eq!(after.len(), 1);
-    assert_eq!(after[0].0.jellyfin_token, "fresh-token");
-}
-
-#[tokio::test]
-async fn test_android_tv_rebind_is_not_applied_to_other_clients() {
-    let (pool, service) = setup_service().await;
-    insert_test_server(&pool, "Test Server", "http://localhost:8096").await;
-
-    let user = service
-        .get_or_create_user("webuser", &"testpass".into())
-        .await
-        .unwrap();
-
-    service
-        .add_server_mapping(
-            &user.id,
-            "http://localhost:8096",
-            "mappeduser",
-            &"mappedpass".into(),
-            None,
-        )
-        .await
-        .unwrap();
-
-    let stored_auth = Authorization {
-        client: "Jellyfin Web".to_string(),
-        device: "Firefox".to_string(),
-        device_id: "web-old-device-id".to_string(),
-        version: "10.10.7".to_string(),
-        token: None,
-    };
-
-    service
-        .store_authorization_session(
-            &user.id,
-            "http://localhost:8096",
-            &stored_auth,
-            "jellyfin-token".to_string(),
-            "original-jellyfin-user-id".to_string(),
-            None,
-        )
-        .await
-        .unwrap();
-
-    let incoming_device = Device {
-        client: "Jellyfin Web".to_string(),
-        device: "Firefox".to_string(),
-        device_id: "web-new-device-id".to_string(),
-        version: "10.10.7".to_string(),
-    };
-
-    let rebound = service
-        .rebind_android_tv_device_sessions_if_needed(&user.id, &incoming_device)
-        .await
-        .unwrap();
-    assert!(!rebound, "non-android clients must not be rebound");
-
-    let old_match = service
-        .get_user_sessions(
-            &user.id,
-            Some(Device {
-                client: "Jellyfin Web".to_string(),
-                device: "Firefox".to_string(),
-                device_id: "web-old-device-id".to_string(),
-                version: "10.10.7".to_string(),
-            }),
-        )
-        .await
-        .unwrap();
-    assert_eq!(old_match.len(), 1);
-
-    let new_match = service
-        .get_user_sessions(&user.id, Some(incoming_device))
-        .await
-        .unwrap();
-    assert_eq!(new_match.len(), 0);
-}
-
-#[tokio::test]
 async fn test_get_user_sessions_by_virtual_token() {
     let (pool, service) = setup_service().await;
     insert_test_server(&pool, "Test Server", "http://localhost:8096").await;
@@ -2093,7 +1117,7 @@ async fn test_get_user_sessions_by_virtual_token() {
 
     // Store authorization session
     let _session_id = service
-        .store_authorization_session(
+        .bind_fixture_login(
             &user.id,
             "http://localhost:8096",
             &auth,
@@ -2106,7 +1130,7 @@ async fn test_get_user_sessions_by_virtual_token() {
 
     // Test getting user sessions by virtual token
     let user_sessions = service
-        .get_user_sessions_by_virtual_token(&user.virtual_key)
+        .get_user_sessions_by_virtual_token(&user.fixture_token)
         .await
         .unwrap()
         .unwrap();
@@ -2206,7 +1230,7 @@ async fn test_multiple_servers_with_priority() {
     };
 
     service
-        .store_authorization_session(
+        .bind_fixture_login(
             &user.id,
             "http://localhost:8096",
             &auth1,
@@ -2218,7 +1242,7 @@ async fn test_multiple_servers_with_priority() {
         .unwrap();
 
     service
-        .store_authorization_session(
+        .bind_fixture_login(
             &user.id,
             "http://localhost:8097",
             &auth2,
@@ -2231,7 +1255,7 @@ async fn test_multiple_servers_with_priority() {
 
     // Test getting all authorization sessions for the user
     let user_sessions = service
-        .get_user_sessions_by_virtual_token(&user.virtual_key)
+        .get_user_sessions_by_virtual_token(&user.fixture_token)
         .await
         .unwrap()
         .unwrap();
@@ -2279,7 +1303,7 @@ async fn test_cascade_delete_sessions_on_mapping_delete() {
     };
 
     service
-        .store_authorization_session(
+        .bind_fixture_login(
             &user.id,
             "http://localhost:8096",
             &auth,
@@ -2292,7 +1316,7 @@ async fn test_cascade_delete_sessions_on_mapping_delete() {
 
     // Pre-check session exists
     let sessions_before = service
-        .get_user_sessions_by_virtual_token(&user.virtual_key)
+        .get_user_sessions_by_virtual_token(&user.fixture_token)
         .await
         .unwrap()
         .unwrap()
@@ -2305,7 +1329,7 @@ async fn test_cascade_delete_sessions_on_mapping_delete() {
 
     // Session should now be gone
     let sessions_after = service
-        .get_user_sessions_by_virtual_token(&user.virtual_key)
+        .get_user_sessions_by_virtual_token(&user.fixture_token)
         .await
         .unwrap()
         .unwrap()
@@ -2356,7 +1380,7 @@ async fn test_delete_all_sessions_for_user() {
             token: None,
         };
         service
-            .store_authorization_session(
+            .bind_fixture_login(
                 &user.id,
                 url,
                 &auth,
@@ -2370,7 +1394,7 @@ async fn test_delete_all_sessions_for_user() {
 
     // Verify 2 sessions exist
     let sessions_before = service
-        .get_user_sessions_by_virtual_token(&user.virtual_key)
+        .get_user_sessions_by_virtual_token(&user.fixture_token)
         .await
         .unwrap()
         .unwrap()
@@ -2384,13 +1408,11 @@ async fn test_delete_all_sessions_for_user() {
         .unwrap();
     assert_eq!(deleted_count, 2);
 
-    let sessions_after = service
-        .get_user_sessions_by_virtual_token(&user.virtual_key)
+    assert!(service
+        .resolve_credential(&user.fixture_token)
         .await
         .unwrap()
-        .unwrap()
-        .1;
-    assert!(sessions_after.is_empty());
+        .is_none());
 }
 
 #[tokio::test]
@@ -2426,7 +1448,7 @@ async fn test_add_server_mapping_upsert_preserves_mapping_id_and_sessions() {
     };
 
     service
-        .store_authorization_session(
+        .bind_fixture_login(
             &user.id,
             "http://localhost:8096",
             &auth1,
@@ -2457,7 +1479,7 @@ async fn test_add_server_mapping_upsert_preserves_mapping_id_and_sessions() {
 
     // Ensure first session is still present after mapping update
     let sessions_after_update = service
-        .get_user_sessions_by_virtual_token(&user.virtual_key)
+        .get_user_sessions_by_virtual_token(&user.fixture_token)
         .await
         .unwrap()
         .unwrap()
@@ -2467,36 +1489,6 @@ async fn test_add_server_mapping_upsert_preserves_mapping_id_and_sessions() {
         1,
         "Existing sessions should not be cascade-deleted on mapping update"
     );
-
-    // Store second session for another device and ensure both exist
-    let auth2 = Authorization {
-        client: "Jellyfin Web".to_string(),
-        device: "Firefox".to_string(),
-        device_id: "device-2".to_string(),
-        version: "10.0.0".to_string(),
-        token: None,
-    };
-
-    service
-        .store_authorization_session(
-            &user.id,
-            "http://localhost:8096",
-            &auth2,
-            "token-2".to_string(),
-            "orig-user-1".to_string(),
-            None,
-        )
-        .await
-        .unwrap();
-
-    let final_sessions = service
-        .get_user_sessions_by_virtual_token(&user.virtual_key)
-        .await
-        .unwrap()
-        .unwrap()
-        .1;
-
-    assert_eq!(final_sessions.len(), 2);
 }
 
 #[tokio::test]
@@ -2529,7 +1521,7 @@ async fn test_add_server_mapping_username_change_deletes_sessions() {
     };
 
     service
-        .store_authorization_session(
+        .bind_fixture_login(
             &user.id,
             "http://localhost:8096",
             &auth,
@@ -2541,7 +1533,7 @@ async fn test_add_server_mapping_username_change_deletes_sessions() {
         .unwrap();
 
     let sessions_before = service
-        .get_user_sessions_by_virtual_token(&user.virtual_key)
+        .get_user_sessions_by_virtual_token(&user.fixture_token)
         .await
         .unwrap()
         .unwrap()
@@ -2561,7 +1553,7 @@ async fn test_add_server_mapping_username_change_deletes_sessions() {
         .unwrap();
 
     let sessions_after = service
-        .get_user_sessions_by_virtual_token(&user.virtual_key)
+        .get_user_sessions_by_virtual_token(&user.fixture_token)
         .await
         .unwrap()
         .unwrap()
@@ -2600,7 +1592,7 @@ async fn test_add_server_mapping_password_change_deletes_sessions() {
     };
 
     service
-        .store_authorization_session(
+        .bind_fixture_login(
             &user.id,
             "http://localhost:8096",
             &auth,
@@ -2623,7 +1615,7 @@ async fn test_add_server_mapping_password_change_deletes_sessions() {
         .unwrap();
 
     let sessions_after = service
-        .get_user_sessions_by_virtual_token(&user.virtual_key)
+        .get_user_sessions_by_virtual_token(&user.fixture_token)
         .await
         .unwrap()
         .unwrap()

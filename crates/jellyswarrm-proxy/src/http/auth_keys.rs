@@ -28,28 +28,40 @@ pub(crate) struct ApiKeyList {
 }
 
 pub(crate) async fn create_api_key(
-    State(state): State<Arc<UserAuthorizationService>>,
+    State(state): State<crate::application::media_services::MediaServices>,
     Query(query): Query<CreateApiKeyQuery>,
-    RequirePrimaryUser(user, login_id): RequirePrimaryUser,
+    RequirePrimaryUser(user): RequirePrimaryUser,
 ) -> Result<StatusCode, StatusCode> {
     if query.app.trim().is_empty() || query.app.trim().len() > 128 {
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    state
-        .create_api_key(&user.id, &query.app, login_id)
+    let (_, login_id) = state
+        .user_authorization
+        .create_api_key(&user, &query.app)
         .await
         .map_err(|error| {
+            if matches!(error, sqlx::Error::RowNotFound) {
+                return StatusCode::UNAUTHORIZED;
+            }
             error!("Failed to create virtual API key: {error}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
+    // The key is already committed. A later request retries missing bindings.
+    if let Err(error) = state
+        .mapping_authenticator
+        .ensure_key_sessions(&user, login_id)
+        .await
+    {
+        error!(%error,"Failed to initialize API key sessions");
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn list_api_keys(
     State(state): State<Arc<UserAuthorizationService>>,
-    RequirePrimaryUser(user, _): RequirePrimaryUser,
+    RequirePrimaryUser(user): RequirePrimaryUser,
 ) -> Result<Json<ApiKeyList>, StatusCode> {
     let keys = state.list_api_keys(&user.id).await.map_err(|error| {
         error!("Failed to list virtual API keys: {error}");
@@ -68,4 +80,20 @@ pub(crate) async fn list_api_keys(
         items,
         start_index: 0,
     }))
+}
+
+pub(crate) async fn delete_api_key(
+    State(state): State<Arc<UserAuthorizationService>>,
+    axum::extract::Path(token): axum::extract::Path<String>,
+    RequirePrimaryUser(user): RequirePrimaryUser,
+) -> Result<StatusCode, StatusCode> {
+    if state
+        .delete_api_key(&user.id, &token)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
 }

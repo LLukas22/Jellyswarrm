@@ -182,7 +182,6 @@ mod tests {
     use crate::{
         config::{AppConfig, MediaStreamingMode},
         persistence::MIGRATOR,
-        protocol::device::Device,
         protocol::models::{
             AuthenticateResponse, SessionInfo, SyncPlayUserAccessType, User, UserPolicy,
         },
@@ -227,11 +226,11 @@ mod tests {
         );
         let user = state
             .user_authorization
-            .create_user("caller", &"password".into())
+            .fixture_user("caller", &"password".into())
             .await
             .unwrap();
         let mut headers = HeaderMap::new();
-        headers.insert("x-emby-token", user.virtual_key.parse().unwrap());
+        headers.insert("x-emby-token", user.fixture_token.parse().unwrap());
         assert_eq!(
             resolve_authorize_user_id(&state.user_authorization, &headers, Some("victim".into()))
                 .await
@@ -369,7 +368,7 @@ mod tests {
 
         state
             .user_authorization
-            .store_authorization_session(
+            .bind_fixture_login(
                 &user.id,
                 &upstream_server,
                 &existing_web_auth,
@@ -392,7 +391,7 @@ mod tests {
             "authorization",
             HeaderValue::from_str(&format!(
                 "MediaBrowser Client=\"Jellyfin Web\", Device=\"Firefox\", DeviceId=\"web-device-id\", Version=\"10.10.7\", Token=\"{}\"",
-                user.virtual_key
+                user.fixture_token
             ))
             .unwrap(),
         );
@@ -430,29 +429,22 @@ mod tests {
         .1
          .0;
 
-        assert_ne!(auth_response.access_token, user.virtual_key);
+        assert_ne!(auth_response.access_token, user.fixture_token);
 
         let all_sessions = state
             .user_authorization
-            .get_user_sessions(&user.id, None)
+            .get_user_sessions(&user.id)
             .await
             .unwrap();
         assert_eq!(all_sessions.len(), 2, "web and TV sessions should coexist");
 
         let web_sessions = state
             .user_authorization
-            .get_user_sessions(
-                &user.id,
-                Some(Device {
-                    client: "Jellyfin Web".to_string(),
-                    device: "Firefox".to_string(),
-                    device_id: "web-device-id".to_string(),
-                    version: "10.10.7".to_string(),
-                }),
-            )
+            .get_user_sessions_by_virtual_token(&user.fixture_token)
             .await
-            .unwrap();
-
+            .unwrap()
+            .unwrap()
+            .1;
         assert_eq!(
             web_sessions.len(),
             1,

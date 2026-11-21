@@ -107,12 +107,10 @@ async fn fixture() -> Fixture {
             .await
             .unwrap()
             .unwrap();
-        let now = chrono::Utc::now();
         sessions.push((
             AuthorizationSession {
                 id: index,
                 user_id: "viewer".into(),
-                mapping_id: index,
                 server_url: upstream.uri(),
                 device: Device {
                     client: "test".into(),
@@ -123,9 +121,6 @@ async fn fixture() -> Fixture {
                 upstream_device_id: None,
                 jellyfin_token: format!("backend-token-{index}"),
                 original_user_id: format!("backend-viewer-{index}"),
-                expires_at: None,
-                created_at: now,
-                updated_at: now,
             },
             server.clone(),
         ));

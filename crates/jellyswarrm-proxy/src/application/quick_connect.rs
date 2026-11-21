@@ -123,6 +123,10 @@ async fn redeem_owned(
     }
     // Only this coordinator owns these workers. It is not aborted when the
     // request is cancelled, and drains the set before dropping the reservation.
+    let _device_guard = state
+        .user_authorization
+        .lock_preserved_device(&authorization)
+        .await;
     let upstream_auth = state
         .user_authorization
         .upstream_login_device(&authorization);
@@ -164,15 +168,25 @@ async fn redeem_owned(
             )
         });
     }
+    let mut storage_failure = None;
     let mut successful = Vec::new();
     while let Some(result) = tasks.join_next().await {
         match result {
             Ok((order, Ok(response))) => successful.push((order, response)),
+            Ok((
+                _,
+                Err(crate::auth::mapping_authentication::MappingAuthenticationError::Storage(
+                    error,
+                )),
+            )) => storage_failure = Some(error),
             Ok((_, Err(error))) => {
                 tracing::debug!(%error, "Quick Connect backend authentication failed")
             }
             Err(error) => tracing::warn!(%error, "Quick Connect authentication task failed"),
         }
+    }
+    if let Some(error) = storage_failure {
+        return Err(error.into());
     }
     successful.sort_by_key(|(order, _)| *order);
     if successful.is_empty() {
@@ -180,14 +194,23 @@ async fn redeem_owned(
     }
     hooks.before_registration().await;
     let successful: Vec<_> = successful.into_iter().map(|(_, backend)| backend).collect();
-    let token = state
+    let (token, first, login_id) = state
         .user_authorization
         .create_login(&user, &authorization, &upstream_auth.device_id, &successful)
-        .await?;
+        .await
+        .map_err(|e| {
+            if matches!(e, sqlx::Error::RowNotFound) {
+                QuickConnectError::Unauthorized
+            } else {
+                e.into()
+            }
+        })?;
+    let mut user = user;
+    user.login_id = Some(login_id);
     hooks.after_registration().await;
     let mut response = successful
         .into_iter()
-        .next()
+        .nth(first)
         .ok_or(QuickConnectError::Unauthorized)?
         .login
         .response;
@@ -356,7 +379,7 @@ mod tests {
             .unwrap();
         caller.abort();
         assert!(caller.await.unwrap_err().is_cancelled());
-        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM authorization_sessions")
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM login_sessions")
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -370,7 +393,7 @@ mod tests {
             .await
             .unwrap();
         // Real registration has committed, but its worker has not returned.
-        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM authorization_sessions")
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM login_sessions")
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -385,14 +408,14 @@ mod tests {
             .unwrap();
         let retry = quick_connect.begin_redemption(&secret).unwrap();
         let response = redeem(&state, retry, Some(client)).await.unwrap();
-        assert_ne!(response.access_token, user.virtual_key);
+        assert_ne!(response.access_token, user.fixture_token);
         assert!(matches!(
             quick_connect.begin_redemption(&secret),
             Err(RedemptionError::NotFound)
         ));
         let sessions = state
             .user_authorization
-            .get_user_sessions(&user.id, None)
+            .get_user_sessions(&user.id)
             .await
             .unwrap();
         assert_eq!(sessions.len(), 1); // Only the delivered login survives the retry.

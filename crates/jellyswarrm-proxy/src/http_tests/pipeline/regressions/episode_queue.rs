@@ -24,13 +24,13 @@ async fn secondary_show(count: usize) -> (Fixture, String, Vec<String>) {
     for (session, server) in f
         .state
         .user_authorization
-        .get_user_sessions(&f.user.id, None)
+        .get_user_sessions(&f.user.id)
         .await
         .unwrap()
     {
         f.state
             .user_authorization
-            .store_authorization_session(
+            .bind_fixture_login(
                 &f.user.id,
                 &server,
                 &authorization,
@@ -45,7 +45,7 @@ async fn secondary_show(count: usize) -> (Fixture, String, Vec<String>) {
         native.device_id = "native".into();
         f.state
             .user_authorization
-            .store_authorization_session(
+            .bind_fixture_login(
                 &f.user.id,
                 &server,
                 &native,

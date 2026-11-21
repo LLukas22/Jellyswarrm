@@ -11,47 +11,7 @@ pub(crate) fn normalize_device(value: &str) -> String {
     value.trim().to_lowercase().replace("+", " ")
 }
 
-pub(crate) fn is_android_tv_client(client: &str) -> bool {
-    normalize_device(client).contains("android tv")
-}
-
 impl Device {
-    /// Match known device IDs strictly, falling back to names only for unknown IDs.
-    pub(crate) fn matches(&self, other: &Device) -> bool {
-        let self_client = normalize_device(&self.client);
-        let other_client = normalize_device(&other.client);
-        if self_client != other_client {
-            return false;
-        }
-
-        let self_device_id = normalize_device(&self.device_id);
-        let other_device_id = normalize_device(&other.device_id);
-        let short_self_device_id = &self_device_id[..self_device_id.len().min(16)];
-        let short_other_device_id = &other_device_id[..other_device_id.len().min(16)];
-        let self_has_known_device_id = Self::has_known_device_id(&self_device_id)
-            || Self::has_known_device_id(short_self_device_id);
-        let other_has_known_device_id = Self::has_known_device_id(&other_device_id)
-            || Self::has_known_device_id(short_other_device_id);
-
-        if self_has_known_device_id && other_has_known_device_id {
-            if self_device_id == other_device_id {
-                return true;
-            }
-            // Web IDs encode user-agent + timestamp. Their common Mozilla prefix
-            // is not identity: require an exact ID instead of prefix matching.
-            const WEB_DEVICE_ID_PREFIX: &str = "tw96awxs";
-            if self_device_id.starts_with(WEB_DEVICE_ID_PREFIX)
-                || other_device_id.starts_with(WEB_DEVICE_ID_PREFIX)
-            {
-                return false;
-            }
-            return short_self_device_id == short_other_device_id;
-        }
-        let self_device = normalize_device(&self.device);
-        let other_device = normalize_device(&other.device);
-        !self_device.is_empty() && self_device == other_device
-    }
-
     pub(crate) fn has_known_device_id(device_id: &str) -> bool {
         !device_id.is_empty()
             && device_id != "unknown-device-id"
@@ -144,13 +104,5 @@ mod tests {
             assert!(!Device::has_known_device_id(&normalize_device(id)), "{id}");
         }
         assert!(Device::has_known_device_id("kodi-device"));
-    }
-
-    #[test]
-    fn detects_android_tv_clients() {
-        assert!(is_android_tv_client("Jellyfin Android TV"));
-        assert!(is_android_tv_client("Jellyfin Android TV (debug)"));
-        assert!(!is_android_tv_client("Jellyfin Android"));
-        assert!(!is_android_tv_client("Jellyfin Web"));
     }
 }

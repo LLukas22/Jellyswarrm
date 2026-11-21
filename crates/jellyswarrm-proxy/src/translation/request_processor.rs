@@ -231,11 +231,9 @@ mod tests {
     }
 
     fn test_session() -> AuthorizationSession {
-        let now = chrono::Utc::now();
         AuthorizationSession {
             id: 1,
             user_id: "proxy-user".into(),
-            mapping_id: 1,
             server_url: "http://server.example:8096".to_string(),
             device: Device {
                 client: "Test".to_string(),
@@ -246,9 +244,6 @@ mod tests {
             upstream_device_id: None,
             jellyfin_token: "server-token".to_string(),
             original_user_id: "upstream-user".to_string(),
-            expires_at: None,
-            created_at: now,
-            updated_at: now,
         }
     }
 
@@ -441,7 +436,7 @@ mod tests {
             .await
             .unwrap();
         data.user_authorization
-            .store_authorization_session(
+            .bind_fixture_login(
                 &user.id,
                 &server,
                 &test_session().to_authorization(),

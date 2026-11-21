@@ -299,7 +299,7 @@ pub(crate) struct AppConfig {
     pub(crate) auto_create_users_on_login: bool,
 
     #[serde(default)]
-    pub(crate) disable_legacy_login_tokens: bool,
+    pub(crate) login_idle_expiry_days: u32,
 
     #[serde(default)]
     pub(crate) preserve_upstream_device_ids: bool,
@@ -342,7 +342,7 @@ impl Default for AppConfig {
             media_streaming_mode: default_media_streaming_mode(),
             server_background_check_interval_secs: default_server_background_check_interval_secs(),
             auto_create_users_on_login: default_auto_create_users_on_login(),
-            disable_legacy_login_tokens: false,
+            login_idle_expiry_days: 0,
             preserve_upstream_device_ids: false,
             merge_libraries: default_merge_libraries(),
             deduplicate_media: default_deduplicate_media(),
@@ -422,10 +422,6 @@ pub(crate) fn load_config_with_session_key(
         .set_override_option(
             "preserve_upstream_device_ids",
             std::env::var("JELLYSWARRM_PRESERVE_UPSTREAM_DEVICE_IDS").ok(),
-        )?
-        .set_override_option(
-            "disable_legacy_login_tokens",
-            std::env::var("JELLYSWARRM_DISABLE_LEGACY_LOGIN_TOKENS").ok(),
         )?
         .build()?;
     let had_session_key = source.get_string("session_key").is_ok();

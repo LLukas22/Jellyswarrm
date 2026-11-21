@@ -402,7 +402,8 @@ mod tests {
             session_id: "caller".into(),
             user: LocalUser {
                 id: "user".into(),
-                virtual_key: "key".into(),
+                login_id: None,
+                fixture_token: "key".into(),
                 original_username: "User".into(),
                 local_credential: LocalCredential::Passwordless,
                 created_at: Utc::now(),

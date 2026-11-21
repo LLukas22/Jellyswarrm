@@ -37,7 +37,7 @@ async fn token_only_stream_with_device_query_keeps_upstream_access() {
     let response = reqwest::Client::new()
         .get(format!("{}/Videos/{}/stream.mp4", f.url, f.items[0]))
         .query(&[
-            ("ApiKey", f.user.virtual_key.as_str()),
+            ("ApiKey", f.user.fixture_token.as_str()),
             ("DeviceId", "tv"),
             ("Static", "true"),
         ])
@@ -69,7 +69,7 @@ async fn token_only_browser_sockets_use_device_cookie_without_granting_authentic
         connect_async(unauthorized).await.is_err(),
         "cookie must not authenticate"
     );
-    let mut request = format!("{socket_url}/socket?api_key={}", f.user.virtual_key)
+    let mut request = format!("{socket_url}/socket?api_key={}", f.user.fixture_token)
         .into_client_request()
         .unwrap();
     request
@@ -85,7 +85,7 @@ async fn token_only_browser_sockets_use_device_cookie_without_granting_authentic
     // An explicit device ID must not be overwritten by the browser cookie.
     let mut request = format!(
         "{socket_url}/socket?api_key={}&deviceId=other",
-        f.user.virtual_key
+        f.user.fixture_token
     )
     .into_client_request()
     .unwrap();
@@ -110,7 +110,7 @@ async fn real_socket_discovery_play_commands_and_subscriptions_stay_local() {
     assert_eq!(listed[0]["Client"], "Test");
     assert!(!serde_json::to_string(&listed)
         .unwrap()
-        .contains(&f.user.virtual_key));
+        .contains(&f.user.fixture_token));
     assert_eq!(uuid::Uuid::parse_str(id).unwrap().simple().to_string(), id);
     let response = f
         .post(
@@ -327,10 +327,10 @@ async fn authorization_validation_and_unsupported_routes_never_fall_through() {
             StatusCode::NOT_IMPLEMENTED
         );
     }
-    let key = f
+    let (key, _) = f
         .state
         .user_authorization
-        .create_api_key(&f.user.id, "read-only", None)
+        .create_api_key(&f.user, "read-only")
         .await
         .unwrap();
     let response = reqwest::Client::new()
@@ -428,7 +428,12 @@ async fn messages_playback_reports_and_syncplay_share_the_same_target() {
     );
     assert!(!f.state.syncplay.is_group_member(id).await);
     assert!(f.state.client_sessions.get(id).await.is_none());
-    f.no_upstream_requests().await;
+    f.state.mapping_authenticator.drain_logouts().await.unwrap();
+    for backend in &f.upstreams {
+        let requests = backend.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url.path(), "/Sessions/Logout");
+    }
 }
 
 #[tokio::test]
@@ -444,7 +449,7 @@ async fn identity_reconnect_revocation_and_authentication_dto_are_consistent() {
     let mut response: crate::protocol::models::AuthenticateResponse = serde_json::from_value(json!({
         "User":{"Id":"backend-user", "Name":"Alice", "ServerId":"backend", "Policy":{"IsAdministrator":false, "SyncPlayAccess":"None"}},
         "SessionInfo":{"Id":"backend-session", "UserId":"backend-user", "UserName":"Alice", "ServerId":"backend"},
-        "AccessToken":f.user.virtual_key, "ServerId":"backend"
+        "AccessToken":f.user.fixture_token, "ServerId":"backend"
     })).unwrap();
     decorate_authentication(
         &f.state.client_sessions,
@@ -483,14 +488,16 @@ async fn identity_reconnect_revocation_and_authentication_dto_are_consistent() {
     let other_device_id = f
         .state
         .client_sessions
-        .ensure(&f.user, &f.user.virtual_key, Some(&device("tv-other")))
+        .ensure(&f.user, &f.user.fixture_token, Some(&device("tv-other")))
         .await;
     assert_ne!(id, other_device_id);
     // Invalid target credentials disappear before a command can be delivered.
+    let mut stale_user = f.user.clone();
+    stale_user.login_id = None;
     let revoked = f
         .state
         .client_sessions
-        .ensure(&f.user, "revoked-token", Some(&device("revoked")))
+        .ensure(&stale_user, "revoked-token", Some(&device("revoked")))
         .await;
     f.state
         .client_sessions
@@ -541,7 +548,7 @@ async fn telemetry_still_reaches_its_media_backend_and_updates_local_state() {
     let id = f
         .state
         .client_sessions
-        .ensure(&f.user, &f.user.virtual_key, Some(&device("tv")))
+        .ensure(&f.user, &f.user.fixture_token, Some(&device("tv")))
         .await;
     let item = &f.items[0];
     let playback_id = uuid::Uuid::new_v4().simple().to_string();
@@ -639,7 +646,7 @@ async fn query_capabilities_filters_browse_and_admin_reset_are_local() {
     f.state
         .client_sessions
         .cache_media_response(
-            &f.user.virtual_key,
+            &f.user.fixture_token,
             &json!({"Id":f.items[0], "Name":"Picture", "MediaType":"Photo"}),
         )
         .await;
@@ -720,12 +727,12 @@ async fn distinct_clients_with_the_same_device_id_are_not_merged() {
     let a = f
         .state
         .client_sessions
-        .ensure(&f.user, &f.user.virtual_key, Some(&first))
+        .ensure(&f.user, &f.user.fixture_token, Some(&first))
         .await;
     let b = f
         .state
         .client_sessions
-        .ensure(&f.user, &f.user.virtual_key, Some(&second))
+        .ensure(&f.user, &f.user.fixture_token, Some(&second))
         .await;
     assert_ne!(a, b);
     let unknown = Device {
@@ -736,14 +743,14 @@ async fn distinct_clients_with_the_same_device_id_are_not_merged() {
     let c = f
         .state
         .client_sessions
-        .ensure(&f.user, &f.user.virtual_key, Some(&unknown))
+        .ensure(&f.user, &f.user.fixture_token, Some(&unknown))
         .await;
     assert_ne!(c, a);
     assert_ne!(c, b);
     assert_eq!(
         f.state
             .client_sessions
-            .ensure(&f.user, &f.user.virtual_key, Some(&first))
+            .ensure(&f.user, &f.user.fixture_token, Some(&first))
             .await,
         a
     );

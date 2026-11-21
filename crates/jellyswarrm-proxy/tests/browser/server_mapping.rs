@@ -174,7 +174,7 @@ async fn run_mapping_scenario(name: &str, quick_connect: bool) -> Result<()> {
             assert_eq!(required_string(&login, "/User/Name")?, LOCAL_USERNAME);
             let backend_session: (String, String) = sqlx::query_as(
                 "SELECT auth.original_user_id, auth.jellyfin_token \
-                 FROM authorization_sessions auth WHERE auth.mapping_id = ?",
+                 FROM login_sessions auth WHERE auth.mapping_id = ?",
             )
             .bind(mapping.get::<i64, _>("id"))
             .fetch_one(&pool)

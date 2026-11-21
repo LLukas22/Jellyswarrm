@@ -590,7 +590,7 @@ mod tests {
                 upstream_id.hyphenated().to_string().to_uppercase()
             };
             user_authorization
-                .store_authorization_session(
+                .bind_fixture_login(
                     &user.id,
                     &server,
                     &Authorization {

@@ -194,7 +194,7 @@ async fn ambiguous_implicit_delivery_preserves_deterministic_mapping_default() {
             for request in &requests[count..] {
                 let identity = format!("{:?}", request.headers);
                 assert!(identity.contains(&format!("backend-token-{owner}")));
-                assert!(!identity.contains(&f.user.virtual_key));
+                assert!(!identity.contains(&f.user.fixture_token));
                 assert!(!identity.contains(&format!("backend-token-{}", 1 - owner)));
             }
         }
@@ -291,7 +291,7 @@ async fn anonymous_and_backend_token_delivery_do_not_borrow_proxy_credentials() 
                         .any(|(key, value)| key == "MediaSourceId"
                             && value == if owner == 0 { SOURCE_A } else { SOURCE_B }));
                     let credentials = format!("{:?} {}", request.headers, request.url);
-                    assert!(!credentials.contains(&f.user.virtual_key));
+                    assert!(!credentials.contains(&f.user.fixture_token));
                     assert!(!credentials.contains("backend-token-0"));
                     assert!(!credentials.contains("backend-token-1"));
                     assert_eq!(
@@ -372,7 +372,7 @@ async fn raw_upstream_id_passthrough_uses_stream_default_but_not_hls_resource_fa
                     token
                 );
                 let credentials = format!("{:?} {}", request.headers, request.url);
-                assert!(!credentials.contains(&f.user.virtual_key));
+                assert!(!credentials.contains(&f.user.fixture_token));
                 assert!(!credentials.contains("backend-token-0"));
                 assert!(!credentials.contains("backend-token-1"));
                 assert!(!request.headers.contains_key("authorization"));

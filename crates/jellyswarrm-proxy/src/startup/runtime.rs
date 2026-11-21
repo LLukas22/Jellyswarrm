@@ -16,8 +16,13 @@ impl ApplicationRuntime {
         quick_connect: QuickConnectStorage,
         store: SqliteStore,
         health_interval: u64,
+        sessions: crate::application::client_sessions::SessionOperations,
+        expiry_days: u32,
     ) -> Self {
         let mut tasks = JoinSet::new();
+        tasks.spawn(async move {
+            sessions.maintenance_loop(expiry_days).await;
+        });
         tasks.spawn(async move {
             servers.health_check_loop(health_interval).await;
         });

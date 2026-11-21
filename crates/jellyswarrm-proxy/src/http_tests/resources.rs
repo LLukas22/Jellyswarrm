@@ -119,7 +119,7 @@ async fn resource_contract(route: &str) {
     }
     let headers = format!("{:?}", requests[0].headers);
     assert!(headers.contains(&format!("backend-token-{owner}")));
-    assert!(!headers.contains(&f.user.virtual_key));
+    assert!(!headers.contains(&f.user.fixture_token));
 }
 
 #[tokio::test]

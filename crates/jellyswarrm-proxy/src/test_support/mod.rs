@@ -52,6 +52,11 @@ impl MediaFixture {
         let user_authorization = Arc::new(authorization);
         let playback_registry = Arc::new(PlaybackRegistry::new());
         let url_prefix = config.url_prefix.as_ref().map(ToString::to_string);
+        let mapping_authenticator = crate::auth::mapping_authentication::MappingAuthenticator::new(
+            user_authorization.clone(),
+            reqwest::Client::new(),
+            config.password.clone(),
+        );
         let config = Arc::new(tokio::sync::RwLock::new(config));
         let settings = SettingsView::new(config.clone());
         let translation = Arc::new(ProxyProcessors::new(
@@ -77,6 +82,7 @@ impl MediaFixture {
             virtual_library_service.clone(),
         );
         let services = MediaServices {
+            mapping_authenticator,
             reqwest_client: reqwest::Client::new(),
             streaming_reqwest_client: reqwest::Client::new(),
             user_authorization,

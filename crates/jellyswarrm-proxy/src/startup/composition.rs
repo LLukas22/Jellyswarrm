@@ -138,7 +138,7 @@ pub(super) fn adapter_state(
             (&credentials.password()).into(),
             clients.api.clone(),
         ),
-        mapping_authenticator,
+        mapping_authenticator: mapping_authenticator.clone(),
         credentials,
     };
     let settings_state = SettingsState {
@@ -147,6 +147,7 @@ pub(super) fn adapter_state(
         paths: adapter_paths,
     };
     let media = application::media_services::MediaServices {
+        mapping_authenticator,
         reqwest_client: clients.api,
         streaming_reqwest_client: clients.streaming,
         user_authorization,

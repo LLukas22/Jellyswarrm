@@ -235,7 +235,8 @@ mod tests {
     fn user() -> LocalUser {
         LocalUser {
             id: "viewer".into(),
-            virtual_key: "proxy-token".into(),
+            login_id: None,
+            fixture_token: "proxy-token".into(),
             original_username: "Viewer".into(),
             local_credential: LocalCredential::Passwordless,
             created_at: chrono::Utc::now(),
@@ -257,7 +258,6 @@ mod tests {
         let session = AuthorizationSession {
             id,
             user_id: "viewer".into(),
-            mapping_id: id,
             server_url: server.url.to_string(),
             device: Device {
                 client: "Test client".into(),
@@ -268,9 +268,6 @@ mod tests {
             upstream_device_id: None,
             jellyfin_token: format!("backend-token-{id}"),
             original_user_id: format!("backend-viewer-{id}"),
-            expires_at: None,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
         };
         (session, server)
     }

@@ -13,7 +13,7 @@ use crate::{
     http::incoming::{collect_operation, resolve_request_identity},
 };
 
-pub(crate) struct RequirePrimaryUser(pub(crate) LocalUser, pub(crate) Option<i64>);
+pub(crate) struct RequirePrimaryUser(pub(crate) LocalUser);
 
 impl<S: Send + Sync> FromRequest<S> for RequirePrimaryUser
 where
@@ -33,8 +33,7 @@ where
         let user = identity.user.ok_or(StatusCode::UNAUTHORIZED)?;
         use crate::auth::service::CallerCredential;
         match identity.credential {
-            Some(CallerCredential::Login(id)) => Ok(Self(user, Some(id))),
-            Some(CallerCredential::Legacy) => Ok(Self(user, None)),
+            Some(CallerCredential::Login(_)) => Ok(Self(user)),
             _ => Err(StatusCode::FORBIDDEN),
         }
     }

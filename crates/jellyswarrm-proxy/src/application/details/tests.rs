@@ -79,12 +79,10 @@ impl Fixture {
                 .await
                 .unwrap()
                 .unwrap();
-            let now = chrono::Utc::now();
             sessions.push((
                 AuthorizationSession {
                     id: index as i64,
                     user_id: "viewer".into(),
-                    mapping_id: index as i64,
                     server_url: upstream.uri(),
                     device: Device {
                         client: "test".into(),
@@ -95,9 +93,6 @@ impl Fixture {
                     upstream_device_id: None,
                     jellyfin_token: format!("backend-token-{index}"),
                     original_user_id: format!("backend-viewer-{index}"),
-                    expires_at: None,
-                    created_at: now,
-                    updated_at: now,
                 },
                 server,
             ));

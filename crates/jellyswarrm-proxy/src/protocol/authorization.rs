@@ -67,13 +67,6 @@ impl Authorization {
             })
     }
 
-    pub(crate) fn has_complete_metadata(&self) -> bool {
-        !self.client.is_empty()
-            && !self.device.is_empty()
-            && !self.device_id.is_empty()
-            && !self.version.is_empty()
-    }
-
     fn parse_internal(
         header_value: &str,
         enable_legacy: bool,
@@ -246,7 +239,7 @@ mod tests {
         ] {
             let auth = Authorization::parse_request_header(header, false).unwrap();
             assert_eq!(auth.token.as_deref(), Some("proxy"));
-            assert!(!auth.has_complete_metadata());
+            assert!(auth.device.is_empty() || auth.version.is_empty());
             assert!(Authorization::parse(header).is_err());
         }
         assert!(Authorization::parse_request_header(

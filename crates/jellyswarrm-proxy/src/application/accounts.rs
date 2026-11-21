@@ -291,6 +291,10 @@ pub(crate) async fn authenticate_by_name(
         return Err(unauthenticated());
     }
 
+    let _device_guard = state
+        .user_authorization
+        .lock_preserved_device(&authentication)
+        .await;
     let upstream_auth = state
         .user_authorization
         .upstream_login_device(&authentication);
@@ -369,6 +373,7 @@ pub(crate) async fn authenticate_by_name(
 
     // Wait for all authentication attempts to complete
     let mut successful_auths = Vec::new();
+    let mut storage_failure = None;
     let mut failures = Vec::new();
     let total_servers = auth_tasks.len();
 
@@ -377,6 +382,19 @@ pub(crate) async fn authenticate_by_name(
             Ok((order, Ok(auth_response))) => {
                 info!("Successfully authenticated user: {}", payload.username);
                 successful_auths.push((order, auth_response));
+            }
+            Ok((
+                _,
+                Err(
+                    AuthError::Storage(error)
+                    | AuthError::Mapping(
+                        crate::auth::mapping_authentication::MappingAuthenticationError::Storage(
+                            error,
+                        ),
+                    ),
+                ),
+            )) => {
+                storage_failure = Some(error);
             }
             Ok((_, Err(e))) => {
                 tracing::debug!("Authentication attempt failed: {:?}", e);
@@ -389,6 +407,9 @@ pub(crate) async fn authenticate_by_name(
         }
     }
 
+    if let Some(error) = storage_failure {
+        return Err(ApplicationError::Storage(error));
+    }
     if successful_auths.is_empty() {
         tracing::warn!(
             "All authentication attempts failed for user: {}",
@@ -399,10 +420,10 @@ pub(crate) async fn authenticate_by_name(
         // Completion order must not change which backend supplies the response.
         successful_auths.sort_by_key(|(order, _)| *order);
         let successful_auths: Vec<_> = successful_auths.into_iter().map(|(_, auth)| auth).collect();
-        let user =
+        let mut user =
             resolve_or_create_login_user(state, &payload.username, &payload.password).await?;
 
-        let token = state
+        let (token, first, login_id) = state
             .user_authorization
             .create_login(
                 &user,
@@ -411,13 +432,17 @@ pub(crate) async fn authenticate_by_name(
                 &successful_auths,
             )
             .await
-            .map_err(ApplicationError::Storage)?;
+            .map_err(|e| match e {
+                sqlx::Error::RowNotFound => unauthenticated(),
+                e => ApplicationError::Storage(e),
+            })?;
+        user.login_id = Some(login_id);
         let auth_response = decorate_auth_response(
             state,
             &user,
             &payload.username,
             &authentication,
-            &successful_auths[0],
+            &successful_auths[first],
             token,
         )
         .await;

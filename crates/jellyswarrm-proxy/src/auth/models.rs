@@ -11,7 +11,9 @@ use crate::protocol::device::Device;
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub(crate) struct LocalUser {
     pub(crate) id: UserId,
-    pub(crate) virtual_key: String,
+    pub(crate) login_id: Option<i64>,
+    #[cfg(test)]
+    pub(crate) fixture_token: String,
     pub(crate) original_username: String,
     pub(crate) local_credential: LocalCredential,
     pub(crate) created_at: chrono::DateTime<chrono::Utc>,
@@ -25,7 +27,9 @@ impl<'r> FromRow<'r, SqliteRow> for LocalUser {
 
         Ok(Self {
             id: row.try_get("id")?,
-            virtual_key: row.try_get("virtual_key")?,
+            login_id: None,
+            #[cfg(test)]
+            fixture_token: format!("fixture-login-{}", row.try_get::<String, _>("id")?),
             original_username: row.try_get("original_username")?,
             local_credential: LocalCredential::from_storage(&credential_kind, password_hash)?,
             created_at: row.try_get("created_at")?,
@@ -165,42 +169,12 @@ impl<'r> sqlx::FromRow<'r, SqliteRow> for ServerMapping {
 pub(crate) struct AuthorizationSession {
     pub(crate) id: i64,
     pub(crate) user_id: UserId,
-    pub(crate) mapping_id: i64, // FK to server_mappings.id enabling cascade delete
+
     pub(crate) server_url: String,
     pub(crate) device: Device,
     pub(crate) upstream_device_id: Option<String>,
     pub(crate) jellyfin_token: String,
     pub(crate) original_user_id: String,
-    #[expect(
-        dead_code,
-        reason = "Expiry is filtered in SQL; retain decoding of persisted expiry"
-    )]
-    pub(crate) expires_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub(crate) created_at: chrono::DateTime<chrono::Utc>,
-    pub(crate) updated_at: chrono::DateTime<chrono::Utc>,
-}
-
-impl<'r> sqlx::FromRow<'r, SqliteRow> for AuthorizationSession {
-    fn from_row(row: &SqliteRow) -> Result<Self, sqlx::Error> {
-        Ok(AuthorizationSession {
-            id: row.try_get("id")?,
-            user_id: row.try_get("user_id")?,
-            mapping_id: row.try_get("mapping_id")?,
-            server_url: row.try_get("server_url")?,
-            device: Device {
-                client: row.try_get("client")?,
-                device: row.try_get("device")?,
-                device_id: row.try_get("device_id")?,
-                version: row.try_get("version")?,
-            },
-            upstream_device_id: row.try_get("upstream_device_id")?,
-            jellyfin_token: row.try_get("jellyfin_token")?,
-            original_user_id: row.try_get("original_user_id")?,
-            expires_at: row.try_get("expires_at")?,
-            created_at: row.try_get("created_at")?,
-            updated_at: row.try_get("updated_at")?,
-        })
-    }
 }
 
 impl AuthorizationSession {
@@ -223,7 +197,6 @@ impl AuthorizationSession {
         Ok(Self {
             id: row.try_get("auth_id")?,
             user_id: row.try_get("auth_user_id")?,
-            mapping_id: row.try_get("auth_mapping_id")?,
             server_url: row.try_get("auth_server_url")?,
             device: Device {
                 client: row.try_get("client")?,
@@ -234,9 +207,6 @@ impl AuthorizationSession {
             upstream_device_id: row.try_get("upstream_device_id")?,
             jellyfin_token: row.try_get("jellyfin_token")?,
             original_user_id: row.try_get("original_user_id")?,
-            expires_at: row.try_get("expires_at")?,
-            created_at: row.try_get("auth_created_at")?,
-            updated_at: row.try_get("auth_updated_at")?,
         })
     }
 }

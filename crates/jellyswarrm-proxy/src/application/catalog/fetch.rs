@@ -908,7 +908,6 @@ mod tests {
         let session = AuthorizationSession {
             id: 1,
             user_id: "viewer".into(),
-            mapping_id: 1,
             server_url: upstream.uri(),
             device: Device {
                 client: "test".into(),
@@ -919,9 +918,6 @@ mod tests {
             upstream_device_id: None,
             jellyfin_token: "backend-token".into(),
             original_user_id: "backend-viewer".into(),
-            expires_at: None,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
         };
         (
             state,

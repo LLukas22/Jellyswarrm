@@ -103,7 +103,7 @@ async fn partially_mapped_user_cannot_access_another_backend() {
         .unwrap();
     f.state
         .user_authorization
-        .store_authorization_session(
+        .bind_fixture_login(
             &f.other.id,
             &allowed,
             &Authorization::parse(&auth(&f.other, "tv")).unwrap(),
@@ -168,7 +168,7 @@ async fn partially_mapped_user_cannot_access_another_backend() {
             reqwest::Method::GET,
             format!(
                 "/Videos/{}/master.m3u8?ApiKey={}&DeviceId=tv",
-                f.items[1], f.other.virtual_key
+                f.items[1], f.other.fixture_token
             ),
             Value::Null,
         ),
@@ -254,8 +254,8 @@ async fn header_and_query_authentication_translate_to_the_same_backend_identity(
         ));
         request = match mode {
             "Authorization" => request.header(mode, auth(&f.user, "tv")),
-            "ApiKey" => request.query(&[(mode, &f.user.virtual_key)]),
-            _ => request.header(mode, &f.user.virtual_key),
+            "ApiKey" => request.query(&[(mode, &f.user.fixture_token)]),
+            _ => request.header(mode, &f.user.fixture_token),
         };
         let response = request.send().await.unwrap();
         assert_eq!(response.status(), StatusCode::OK, "{mode}");
@@ -265,7 +265,7 @@ async fn header_and_query_authentication_translate_to_the_same_backend_identity(
     for request in requests {
         let identity = format!("{:?} {}", request.headers, request.url);
         assert!(identity.contains("backend-token-1"));
-        assert!(!identity.contains(&f.user.virtual_key));
+        assert!(!identity.contains(&f.user.fixture_token));
     }
     assert!(f.upstreams[0].received_requests().await.unwrap().is_empty());
 }

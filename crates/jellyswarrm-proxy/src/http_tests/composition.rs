@@ -60,7 +60,7 @@ async fn production_authentication_wiring_logs_in_with_encrypted_mappings_and_re
     assert_eq!(login.status(), StatusCode::OK);
     let login: Value = login.json().await.unwrap();
     let token = login["AccessToken"].as_str().unwrap();
-    assert_ne!(token, f.user.virtual_key);
+    assert_ne!(token, f.user.fixture_token);
     assert_eq!(login["User"]["Id"], f.user.id.as_str());
     assert_eq!(login["User"]["Name"], "alice");
 
@@ -87,11 +87,14 @@ async fn production_authentication_wiring_logs_in_with_encrypted_mappings_and_re
     }
     let session_key =
         MappingEncryptionKey::for_authorization_sessions(&config.session_key).unwrap();
-    let sessions: Vec<(String, String)> = sqlx::query_as("SELECT jellyfin_token, token_format FROM authorization_sessions WHERE user_id = ? AND login_id IS NOT NULL")
-        .bind(&f.user.id).fetch_all(&f.pool).await.unwrap();
+    let sessions: Vec<String> =
+        sqlx::query_scalar("SELECT jellyfin_token FROM login_sessions WHERE user_id = ?")
+            .bind(&f.user.id)
+            .fetch_all(&f.pool)
+            .await
+            .unwrap();
     assert_eq!(sessions.len(), 2);
-    for (ciphertext, format) in sessions {
-        assert_eq!(format, "session_v1");
+    for ciphertext in sessions {
         assert!(!ciphertext.starts_with("fresh-token-"));
         assert!(session_key
             .decrypt(&EncryptedPassword::from_raw(ciphertext))
@@ -106,7 +109,7 @@ async fn production_authentication_wiring_logs_in_with_encrypted_mappings_and_re
         .unwrap();
     let (_, credential) = rebuilt.resolve_credential(token).await.unwrap().unwrap();
     let sessions = rebuilt
-        .sessions_for_credential(&f.user.id, None, credential)
+        .sessions_for_credential(&f.user.id, credential)
         .await
         .unwrap();
     assert_eq!(sessions.len(), 2);
@@ -177,10 +180,10 @@ async fn concurrent_tv_logins_route_and_revoke_independently() {
     let f = Fixture::new().await;
     f.healthy().await;
     for (index, upstream) in f.upstreams.iter().enumerate() {
-        for version in ["1", "2"] {
+        for version in ["1", "2", "key"] {
             let backend_token = format!("backend-{index}-login-{version}");
             Mock::given(method("POST")).and(path("/Users/AuthenticateByName"))
-                .and(header_regex("Authorization", &format!(r#"Version="{version}""#)))
+                .and(header_regex("Authorization", &if version=="key" {String::from("jellyswarrm-key-")}else{format!(r#"Client="TV".*Version="{version}""#)}))
                 .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                     "User":{"Id":format!("remote-{index}"),"Name":"alice","ServerId":"backend","Policy":{"IsAdministrator":false,"SyncPlayAccess":"None"}},
                     "AccessToken":backend_token,"ServerId":"backend","SessionInfo":{"UserId":format!("remote-{index}"),"UserName":"alice","ServerId":"backend"}
@@ -207,7 +210,7 @@ async fn concurrent_tv_logins_route_and_revoke_independently() {
     let client = reqwest::Client::new();
     let login = |version| {
         let request = client.post(format!("{}/Users/AuthenticateByName", f.url))
-            .header("Authorization", format!("MediaBrowser Client=TV, Device=LivingRoom, DeviceId=same-id, Version={version}"))
+            .header("Authorization", format!("MediaBrowser Client=TV, Device=LivingRoom, DeviceId=tv-{version}, Version={version}"))
             .json(&json!({"Username":"alice","Pw":"password"}));
         async move {
             let response = request
@@ -227,13 +230,19 @@ async fn concurrent_tv_logins_route_and_revoke_independently() {
 
     // Reopen the authorization service with shared tokens disabled.
     let mut config = f.state.config.read().await.clone();
-    config.disable_legacy_login_tokens = true;
+
     config.preserve_upstream_device_ids = true;
     let service = crate::auth::UserAuthorizationService::from_config(f.pool.clone(), &config)
         .await
         .unwrap();
     assert!(service
-        .resolve_credential(&f.user.virtual_key)
+        .resolve_credential(
+            &sqlx::query_scalar::<_, String>("SELECT virtual_key FROM users WHERE id=?")
+                .bind(&f.user.id)
+                .fetch_one(&f.pool)
+                .await
+                .unwrap()
+        )
         .await
         .unwrap()
         .is_none());
@@ -248,7 +257,7 @@ async fn concurrent_tv_logins_route_and_revoke_independently() {
         assert_eq!(owner.id, f.user.id);
         assert_eq!(
             service
-                .sessions_for_credential(&owner.id, None, credential)
+                .sessions_for_credential(&owner.id, credential)
                 .await
                 .unwrap()
                 .len(),
@@ -288,7 +297,7 @@ async fn concurrent_tv_logins_route_and_revoke_independently() {
     else {
         panic!("expected client login")
     };
-    sqlx::query("UPDATE authorization_sessions SET expires_at = '2000-01-01' WHERE login_id = ?")
+    sqlx::query("UPDATE login_sessions SET expires_at = '2000-01-01' WHERE login_id = ?")
         .bind(first_id)
         .execute(&f.pool)
         .await
@@ -322,11 +331,11 @@ async fn concurrent_tv_logins_route_and_revoke_independently() {
         .for_user(&f.user.id)
         .await
         .iter()
-        .all(|player| player.token() != first));
+        .all(|player| player.login_id != Some(first_id)));
     // The scanner has independent read-only access after its issuer signs out.
     for (token, expected) in [
         (&second, "backend-0-login-2"),
-        (&scanner, "backend-0-login-1"),
+        (&scanner, "backend-0-login-key"),
     ] {
         let response = client
             .get(format!(
@@ -353,8 +362,12 @@ async fn concurrent_tv_logins_route_and_revoke_independently() {
 }
 
 #[tokio::test]
-async fn mapping_relinked_during_login_rolls_back_all_bindings() {
-    use crate::auth::mapping_authentication::{BackendLogin, MappingLogin};
+async fn mapping_relinked_during_login_skips_only_that_backend() {
+    use crate::auth::mapping_authentication::BackendLogin;
+    use wiremock::{
+        matchers::{method, path},
+        Mock, ResponseTemplate,
+    };
     let f = Fixture::new().await;
     let service = &f.state.user_authorization;
     let mut backends = Vec::new();
@@ -364,16 +377,31 @@ async fn mapping_relinked_during_login_rolls_back_all_bindings() {
             .await
             .unwrap()
             .unwrap();
+        let backend = f
+            .upstreams
+            .iter()
+            .find(|b| b.uri() == server.url.as_str())
+            .unwrap();
+        Mock::given(method("POST")).and(path("/Users/AuthenticateByName"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "User":{"Id":"remote","Name":"alice","ServerId":"backend","Policy":{"IsAdministrator":false,"SyncPlayAccess":"None"}},
+                "AccessToken":"pending-login","ServerId":"backend","SessionInfo":{"UserId":"remote","UserName":"alice","ServerId":"backend"}
+            }))).mount(backend).await;
+        let login = f
+            .state
+            .mapping_authenticator
+            .authenticate_password(
+                &server,
+                "alice",
+                &"password".into(),
+                crate::config::CLIENT_INFO.clone(),
+            )
+            .await
+            .unwrap();
         backends.push(BackendLogin {
             server,
             mapping: Some(mapping),
-            login: MappingLogin {
-                response: serde_json::from_value(json!({
-                    "User":{"Id":"remote","Name":"alice","ServerId":"backend","Policy":{"IsAdministrator":false,"SyncPlayAccess":"None"}},
-                    "AccessToken":"old-login","ServerId":"backend","SessionInfo":{"UserId":"remote","UserName":"alice","ServerId":"backend"}
-                })).unwrap(),
-                username:"alice".into(), password:Some("password".into()),
-            }
+            login,
         });
     }
     service
@@ -387,24 +415,159 @@ async fn mapping_relinked_during_login_rolls_back_all_bindings() {
         .await
         .unwrap();
     let device = Authorization::parse(&auth(&f.user, "tv")).unwrap();
-    assert!(service
+    let (token, first, _) = service
         .create_login(&f.user, &device, "upstream-id", &backends)
         .await
-        .is_err());
+        .unwrap();
+    assert_eq!(first, 0);
+    let (_, credential) = service.resolve_credential(&token).await.unwrap().unwrap();
     assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM client_logins")
-            .fetch_one(&f.pool)
+        service
+            .sessions_for_credential(&f.user.id, credential)
             .await
-            .unwrap(),
-        0
+            .unwrap()
+            .len(),
+        1
     );
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM authorization_sessions WHERE login_id IS NOT NULL"
-        )
-        .fetch_one(&f.pool)
+    // Replaying a stale set must leave the successfully published login usable.
+    assert!(matches!(
+        service
+            .create_login(&f.user, &device, "retry", &backends)
+            .await,
+        Err(sqlx::Error::RowNotFound)
+    ));
+    assert!(service.resolve_credential(&token).await.unwrap().is_some());
+
+    let rejected_url = backends[1].server.url.clone();
+    drop(backends);
+    tokio::time::timeout(std::time::Duration::from_secs(2),async{
+        loop{
+            let ready:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pending_upstream_logouts WHERE server_url=? AND next_attempt=0)")
+                .bind(rejected_url.as_str()).fetch_one(&f.pool).await.unwrap();
+            if ready{break}tokio::task::yield_now().await;
+        }
+    }).await.unwrap();
+    // A timeout or server error retains the encrypted entry for retry.
+    f.state.mapping_authenticator.drain_logouts().await.unwrap();
+    let attempts: i64 = sqlx::query_scalar(
+        "SELECT attempts FROM pending_upstream_logouts WHERE server_url=? AND attempts>0",
+    )
+    .bind(rejected_url.as_str())
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    assert_eq!(attempts, 1);
+}
+
+#[tokio::test]
+async fn placeholder_logins_coexist_and_an_unbound_key_signs_in_on_first_use() {
+    use wiremock::{
+        matchers::{method, path},
+        Mock, ResponseTemplate,
+    };
+    let f = Fixture::new().await;
+    f.healthy().await;
+    for upstream in &f.upstreams {
+        Mock::given(method("POST")).and(path("/Users/AuthenticateByName"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "User":{"Id":"remote","Name":"alice","ServerId":"backend","Policy":{"IsAdministrator":false,"SyncPlayAccess":"None"}},
+                "AccessToken":"mock-password-token","ServerId":"backend","SessionInfo":{"UserId":"remote","UserName":"alice","ServerId":"backend"}
+            }))).expect(3).mount(upstream).await;
+    }
+    let auth = "MediaBrowser Client=Player, Device=Unknown, DeviceId=unknown-device-id, Version=1";
+    let mut tokens = Vec::new();
+    for _ in 0..2 {
+        let response = reqwest::Client::new()
+            .post(format!("{}/Users/AuthenticateByName", f.url))
+            .header("Authorization", auth)
+            .json(&json!({"Username":"alice","Pw":"password"}))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap();
+        tokens.push(response["AccessToken"].as_str().unwrap().to_owned());
+    }
+    for token in tokens {
+        assert!(f
+            .state
+            .user_authorization
+            .resolve_credential(&token)
+            .await
+            .unwrap()
+            .is_some());
+    }
+    let cfg = crate::config::AppConfig {
+        preserve_upstream_device_ids: true,
+        ..f.state.config.read().await.clone()
+    };
+    let service = crate::auth::UserAuthorizationService::from_config(f.pool.clone(), &cfg)
         .await
-        .unwrap(),
-        0
+        .unwrap();
+    let auth = Authorization::parse(auth).unwrap();
+    assert_ne!(
+        service.upstream_login_device(&auth).device_id,
+        service.upstream_login_device(&auth).device_id
     );
+
+    let (_, login_id) = service
+        .create_api_key(&f.user, "migrated-scanner")
+        .await
+        .unwrap();
+    let key_login = crate::auth::service::CallerCredential::ApplicationKey(login_id);
+    assert!(service
+        .sessions_for_credential(&f.user.id, key_login)
+        .await
+        .unwrap()
+        .is_empty());
+    let hydrate = || {
+        f.state
+            .mapping_authenticator
+            .ensure_key_sessions(&f.user, login_id)
+    };
+    tokio::try_join!(hydrate(), hydrate()).unwrap();
+    assert_eq!(
+        service
+            .sessions_for_credential(&f.user.id, key_login)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    for backend in &f.upstreams {
+        backend.verify().await;
+    }
+}
+
+#[tokio::test]
+async fn admin_revocation_disconnects_a_player_without_another_client_request() {
+    use futures_util::StreamExt;
+    let f = Fixture::new().await;
+    let mut socket = f.socket("tv").await;
+    let operations = f.state.sessions.clone();
+    let task = tokio::spawn(async move { operations.maintenance_loop(0).await });
+    f.state
+        .user_authorization
+        .delete_all_sessions_for_user(&f.user.id)
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while let Some(Ok(message)) = socket.next().await {
+            if message.is_close() {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("revoked socket stayed open");
+    task.abort();
+    assert!(f
+        .state
+        .client_sessions
+        .for_user(&f.user.id)
+        .await
+        .is_empty());
 }

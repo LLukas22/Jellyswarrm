@@ -116,16 +116,44 @@ impl SessionOperations {
         &self,
         session: &ClientSession,
     ) -> Result<bool, SessionOperationError> {
-        let user = self
+        if self
             .authorization
-            .get_user_by_token(session.token())
-            .await?;
-        if user.is_some_and(|user| user.id == session.user_id) {
+            .login_exists(&session.user_id, session.login_id)
+            .await?
+        {
             return Ok(true);
         }
         self.sessions.remove(&session.id).await;
         self.groups.end_session(&session.id).await;
         Ok(false)
+    }
+
+    pub(crate) async fn maintenance_loop(&self, expiry_days: u32) {
+        // A slow backend must never hold open another player's revoked socket.
+        tokio::join!(
+            self.prune_players(expiry_days),
+            self.mapping_authenticator.logout_worker()
+        );
+    }
+
+    async fn prune_players(&self, expiry_days: u32) {
+        let mut hourly = tokio::time::interval(std::time::Duration::from_secs(3600));
+        let mut changed = self.authorization.session_changes.subscribe();
+        loop {
+            tokio::select! {
+                _=hourly.tick()=>{
+                    if let Err(error)=self.authorization.expire_idle_logins(expiry_days).await {
+                        tracing::error!(%error,"Failed to expire idle logins");
+                    }
+                }
+                _=changed.changed()=>{}
+            }
+            for player in self.sessions.players().await {
+                if let Err(error) = self.valid_session(&player).await {
+                    tracing::warn!(%error,"Failed to validate player");
+                }
+            }
+        }
     }
 
     pub(crate) async fn snapshots(
@@ -178,7 +206,7 @@ impl SessionOperations {
         if let Some(token) = &caller.login_token {
             self.mapping_authenticator.logout_login(token).await?;
             for player in self.sessions.for_user(&caller.user.id).await {
-                if player.token() == token {
+                if player.login_id == caller.user.login_id {
                     self.groups.end_session(&player.id).await;
                     self.sessions.remove(&player.id).await;
                 }
@@ -207,7 +235,11 @@ impl SessionOperations {
         items: &[String],
     ) -> Result<(), SessionOperationError> {
         for item in items {
-            if let Some(metadata) = self.sessions.media_metadata(target.token(), item).await {
+            if let Some(metadata) = self
+                .sessions
+                .metadata_for_hash(target.credential_hash, item)
+                .await
+            {
                 if let Some(media_type) = metadata["MediaType"].as_str() {
                     if !target
                         .capabilities

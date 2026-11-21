@@ -11,8 +11,7 @@ use crate::application::{
 };
 use crate::auth::service::{AuthorizationSession, CallerCredential, LocalUser};
 use crate::libraries::service::VirtualLibraryAccessScope;
-use crate::protocol::caller::JellyfinAuthorization;
-use crate::protocol::device::{normalize_device, Device};
+
 use crate::protocol::routes::PlaybackSessionAction;
 use crate::servers::storage::Server;
 use crate::translation::analyze_json;
@@ -60,9 +59,8 @@ pub(crate) async fn operation(
 
     // 3. Which backends may this caller use, and which are usable right now?
     let (sessions, access_scope) = match (&auth, &user, credential) {
-        (Some(auth), Some(user), Some(credential)) => {
-            let (sessions, scope) =
-                backend_sessions(state, &request, auth, user, device.as_ref(), credential).await?;
+        (Some(_), Some(user), Some(credential)) => {
+            let (sessions, scope) = backend_sessions(state, user, credential).await?;
             (
                 Some(sessions).filter(|sessions| !sessions.is_empty()),
                 Some(scope),
@@ -120,29 +118,26 @@ async fn analyze_body(
     Ok(Some(analysis))
 }
 
-/// Return the caller's healthy backend sessions for this device and the full
-/// mapped access scope. Authorization and availability are distinct: mapped
-/// servers stay in scope even when offline or missing a session for this device.
+/// Return the caller's healthy backend sessions and full mapped access scope.
+/// Mapped servers stay in scope while offline or awaiting a key's first login.
 async fn backend_sessions(
     state: &MediaServices,
-    request: &reqwest::Request,
-    auth: &JellyfinAuthorization,
     user: &LocalUser,
-    device: Option<&Device>,
     credential: CallerCredential,
 ) -> Result<(
     Vec<(AuthorizationSession, Server)>,
     VirtualLibraryAccessScope,
 )> {
-    let sessions = match credential {
-        CallerCredential::Login(_) | CallerCredential::ApplicationKey(Some(_)) => {
-            state
-                .user_authorization
-                .sessions_for_credential(&user.id, None, credential)
-                .await?
-        }
-        _ => sessions_for_device(state, request, auth, user, device, credential).await?,
-    };
+    if let CallerCredential::ApplicationKey(id) = credential {
+        state
+            .mapping_authenticator
+            .ensure_key_sessions(user, id)
+            .await?;
+    }
+    let sessions = state
+        .user_authorization
+        .sessions_for_credential(&user.id, credential)
+        .await?;
     let mapped_servers = state
         .user_authorization
         .get_mapped_servers(&user.id)
@@ -162,86 +157,6 @@ async fn backend_sessions(
         }
     }
     Ok((healthy, access_scope))
-}
-
-async fn sessions_for_device(
-    state: &MediaServices,
-    request: &reqwest::Request,
-    auth: &JellyfinAuthorization,
-    user: &LocalUser,
-    device: Option<&Device>,
-    credential: CallerCredential,
-) -> Result<Vec<(AuthorizationSession, Server)>> {
-    // Query-only DeviceId identifies a local player, but does not include
-    // the client metadata required by upstream Device::matches. Preserve
-    // token-only media delivery's existing lookup across this user's sessions.
-    let upstream_device = auth.get_device(request.headers());
-    let partial = matches!(auth,
-        JellyfinAuthorization::Authorization(a) | JellyfinAuthorization::XEmbyAuthorization(a)
-        if !a.has_complete_metadata());
-    let mut sessions = if partial {
-        state
-            .user_authorization
-            .get_user_sessions_for_partial_device(&user.id, upstream_device.as_ref(), credential)
-            .await?
-    } else {
-        state
-            .user_authorization
-            .sessions_for_credential(&user.id, upstream_device.clone(), credential)
-            .await?
-    };
-
-    // ANDROID TV DEVICE-ID REBIND (intentional behavior):
-    // Android TV can authenticate with a username-derived device ID and then switch to a
-    // user-id-derived device ID on the very next authenticated request. Our normal session
-    // lookup is strict on device ID, so the first request after login may not find a match.
-    // To keep the rest of the pipeline unchanged, we do a one-time Android-TV-only rebind
-    // when strict lookup returns no session, then re-run strict lookup.
-    if sessions.is_empty() && !partial && credential == CallerCredential::Legacy {
-        if let Some(device) = device {
-            let retry_lookup = state
-                .user_authorization
-                .rebind_android_tv_device_sessions_if_needed(&user.id, device)
-                .await
-                .inspect_err(|e| {
-                    error!(
-                        "Android TV device-ID rebind failed for user {} on device '{}': {e}",
-                        user.id, device.device
-                    )
-                })?;
-            if retry_lookup {
-                sessions = state
-                    .user_authorization
-                    .sessions_for_credential(&user.id, Some(device.clone()), credential)
-                    .await?;
-            }
-        }
-    }
-
-    // Kodi's separate playback process sends complete headers with placeholder
-    // device metadata; X-Emby-Token can similarly yield only a User-Agent-derived
-    // device. When neither identifies a real device, use the authenticated token
-    // owner's sessions just like token-only delivery. Never relax a real device
-    // mismatch or the stricter abbreviated-header lookup above.
-    if sessions.is_empty()
-        && !partial
-        && upstream_device.as_ref().is_some_and(|device| {
-            !Device::has_known_device_id(&normalize_device(&device.device_id))
-        })
-    {
-        sessions = state
-            .user_authorization
-            .sessions_for_credential(&user.id, None, credential)
-            .await?;
-    }
-
-    // Older application keys can match several logins on the same backend.
-    // Session lookup orders ties by recency, so forward once per mapping.
-    if credential == CallerCredential::ApplicationKey(None) {
-        let mut mappings = std::collections::HashSet::new();
-        sessions.retain(|(session, _)| mappings.insert(session.mapping_id));
-    }
-    Ok(sessions)
 }
 
 /// Parse a non-empty `application/json` body; anything else is opaque.

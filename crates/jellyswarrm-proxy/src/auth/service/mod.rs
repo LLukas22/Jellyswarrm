@@ -1,6 +1,6 @@
 //! Own authorization-service configuration and compose focused user, API-key, mapping, and session operations.
 use sqlx::{Row, SqlitePool};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::domain::ids::ServerId;
 use crate::domain::security::{
@@ -15,18 +15,18 @@ pub(crate) use super::models::{
     AuthorizationSession, CredentialFormat, LocalUser, MappingAuth, ServerMapping,
     VirtualUserApiKey,
 };
-use crate::protocol::device::{is_android_tv_client, normalize_device, Device};
+use crate::protocol::device::{normalize_device, Device};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CallerCredential {
     Login(i64),
-    Legacy,
-    ApplicationKey(Option<i64>),
+    ApplicationKey(i64),
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct UserAuthorizationService {
-    pool: SqlitePool,
-    disable_legacy_login_tokens: bool,
+    pub(crate) session_changes: tokio::sync::watch::Sender<()>,
+    pub(crate) pool: SqlitePool,
+    preserved_devices: moka::future::Cache<String, std::sync::Arc<tokio::sync::Mutex<()>>>,
     preserve_upstream_device_ids: bool,
     mapping_key: Option<MappingEncryptionKey>,
     session_key: Option<MappingEncryptionKey>,
@@ -72,10 +72,31 @@ impl UserAuthorizationService {
     pub(crate) fn upstream_login_device(&self, client: &Authorization) -> Authorization {
         let mut upstream = client.clone();
         upstream.token = None;
-        if !self.preserve_upstream_device_ids {
+        if !self.preserve_upstream_device_ids
+            || !Device::has_known_device_id(&normalize_device(&client.device_id))
+        {
             upstream.device_id = generate_token();
         }
         upstream
+    }
+
+    /// Jellyfin rotates a preserved device's token immediately. Serialize the
+    /// upstream exchange through local publication so competing sign-ins agree
+    /// on which token wins, even for two mappings to the same backend account.
+    pub(crate) async fn lock_preserved_device(
+        &self,
+        client: &Authorization,
+    ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        if !self.preserve_upstream_device_ids
+            || !Device::has_known_device_id(&normalize_device(&client.device_id))
+        {
+            return None;
+        }
+        let lock = self
+            .preserved_devices
+            .get_with(client.device_id.clone(), async { Default::default() })
+            .await;
+        Some(lock.lock_owned().await)
     }
 
     /// Production construction, shared with full HTTP fixtures: mapping and
@@ -88,7 +109,6 @@ impl UserAuthorizationService {
         let mut authorization =
             Self::with_mapping_key(pool, mapping_key, (&config.password).into());
         authorization.preserve_upstream_device_ids = config.preserve_upstream_device_ids;
-        authorization.disable_legacy_login_tokens = config.disable_legacy_login_tokens;
         authorization
             .enable_session_encryption(&config.session_key)
             .await?;
@@ -104,7 +124,10 @@ impl UserAuthorizationService {
     ) -> Self {
         Self {
             pool,
-            disable_legacy_login_tokens: false,
+            session_changes: tokio::sync::watch::channel(()).0,
+            preserved_devices: moka::future::Cache::builder()
+                .time_to_idle(std::time::Duration::from_secs(3600))
+                .build(),
             preserve_upstream_device_ids: false,
             mapping_key: Some(mapping_key),
             session_key: None,
@@ -116,10 +139,13 @@ impl UserAuthorizationService {
     pub(crate) fn new(pool: SqlitePool) -> Self {
         Self {
             pool,
-            disable_legacy_login_tokens: false,
+            session_changes: tokio::sync::watch::channel(()).0,
+            preserved_devices: moka::future::Cache::builder()
+                .time_to_idle(std::time::Duration::from_secs(3600))
+                .build(),
             preserve_upstream_device_ids: false,
             mapping_key: None,
-            session_key: None,
+            session_key: Some(MappingEncryptionKey::for_authorization_sessions(&[7; 64]).unwrap()),
             legacy_admin_key: None,
         }
     }
@@ -127,3 +153,6 @@ impl UserAuthorizationService {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod login_migration_tests;
