@@ -44,3 +44,26 @@ The table below lists all available configuration options:
 - The `session_key` is generated as a secure 64-byte key if not specified, and is stored in the config file for reuse.  
 - Each server now has its own streaming mode (`Redirect` or `Proxy`). For preconfigured servers, omit `media_streaming_mode` to use the default `Redirect`.
 - Configuration files are resolved from the data directory (`./data` by default), which can be overridden with `JELLYSWARRM_DATA_DIR`.
+
+---
+
+### Unauthenticated requests
+
+Requests that have no dedicated route in Jellyswarrm go to the catch-all and are forwarded to a backend server. Requests that carry a Jellyfin access token are forwarded for any path. The token can be in `Authorization` or `X-Emby-Authorization` with `Token=`, in `X-Emby-Token` or `X-MediaBrowser-Token`, or in the `api_key` query parameter. Requests **without** a token are forwarded only when the path is one of the endpoints Jellyfin serves anonymously. Every other unauthenticated request gets a local `404` and never reaches a backend. This stops internet scanners from probing backends through the proxy. Without it, backend admins can see the proxy's IP as the attacker, and fail2ban can ban it.
+
+Default public routes (case-insensitive):
+
+```
+/System/Ping, /System/Info/Public, /Branding/**, /QuickConnect/**, /web/**,
+/Items/*/Images/*/**, /Users/*/Images/*/**, /Persons/*/Images/*/**,
+/Artists/*/Images/*/**, /Genres/*/Images/*/**, /MusicGenres/*/Images/*/**,
+/Studios/*/Images/*/**
+```
+
+A client or plugin may make other unauthenticated calls. You can allow those with `JELLYSWARRM_EXTRA_PUBLIC_ROUTES`, a comma-separated list in the same syntax. `*` matches exactly one path segment, and a trailing `**` matches the rest of the path:
+
+```bash
+JELLYSWARRM_EXTRA_PUBLIC_ROUTES="/Intros/Public/**,/SomePlugin/*/Logo"
+```
+
+This setting is read from the environment at startup only.

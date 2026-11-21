@@ -48,6 +48,7 @@ mod preferences;
 mod resources;
 mod sessions;
 pub(crate) mod support;
+mod unauthenticated;
 
 use crate::{config::MediaStreamingMode, protocol::authorization::Authorization};
 use axum::http::StatusCode;
