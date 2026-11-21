@@ -187,13 +187,23 @@ impl UserAuthorizationService {
         Ok(Some((user, sessions)))
     }
 
-    ///Get authorization sessions with servers for a user
+    /// Get authorization sessions with servers for a user
     pub(crate) async fn get_user_sessions(
         &self,
         user_id: &str,
         device: Option<Device>,
     ) -> Result<Vec<(AuthorizationSession, Server)>, sqlx::Error> {
-        let query = String::from(
+        self.get_user_sessions_with(&self.pool, user_id, device)
+            .await
+    }
+
+    async fn get_user_sessions_with<'e>(
+        &self,
+        executor: impl sqlx::Executor<'e, Database = sqlx::Sqlite>,
+        user_id: &str,
+        device: Option<Device>,
+    ) -> Result<Vec<(AuthorizationSession, Server)>, sqlx::Error> {
+        let rows = sqlx::query(
             r#"
     SELECT
         auth.id as auth_id,
@@ -225,13 +235,11 @@ impl UserAuthorizationService {
     AND (auth.expires_at IS NULL OR auth.expires_at > ?)
     ORDER BY s.priority DESC, s.name ASC
 "#,
-        );
-
-        let rows = sqlx::query(&query)
-            .bind(user_id)
-            .bind(chrono::Utc::now())
-            .fetch_all(&self.pool)
-            .await?;
+        )
+        .bind(user_id)
+        .bind(chrono::Utc::now())
+        .fetch_all(executor)
+        .await?;
 
         let sessions: Vec<(AuthorizationSession, Server)> = rows
             .into_iter()
@@ -294,6 +302,7 @@ impl UserAuthorizationService {
     ///
     /// This is intentionally scoped to Android TV clients and is only meant for a one-time
     /// reconciliation path when strict device matching would otherwise miss existing sessions.
+    /// Returns true when the caller should retry its strict lookup.
     pub(crate) async fn rebind_android_tv_device_sessions_if_needed(
         &self,
         user_id: &str,
@@ -314,7 +323,10 @@ impl UserAuthorizationService {
             return Ok(false);
         }
 
-        let sessions = self.get_user_sessions(user_id, None).await?;
+        // Reserve the writer before reading candidates so a concurrent rebind or
+        // login cannot replace the selected row between the read and the rename.
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let sessions = self.get_user_sessions_with(&mut *tx, user_id, None).await?;
 
         let mut stale_sessions_by_mapping: std::collections::BTreeMap<
             i64,
@@ -346,7 +358,9 @@ impl UserAuthorizationService {
         }
 
         if stale_sessions_by_mapping.is_empty() {
-            return Ok(false);
+            tx.commit().await?;
+            // Another request may have completed the rebind after strict lookup.
+            return Ok(!incoming_session_exists_by_mapping.is_empty());
         }
 
         let collapsed_device_ids = stale_sessions_by_mapping
@@ -362,20 +376,10 @@ impl UserAuthorizationService {
             })
             .collect::<Vec<_>>();
 
-        warn!(
-            "Collapsing Android TV device IDs for user {} on device '{}' (client '{}') to '{}': {}",
-            user_id,
-            incoming_device.device,
-            incoming_device.client,
-            incoming_device.device_id,
-            collapsed_device_ids.join("; ")
-        );
-
         let now = chrono::Utc::now();
 
-        let mut tx = self.pool.begin().await?;
-
         let mut changed = false;
+        let mut replaced_conflicts = 0;
 
         for (mapping_id, mut stale_sessions) in stale_sessions_by_mapping {
             stale_sessions.sort_by(|left, right| {
@@ -406,6 +410,20 @@ impl UserAuthorizationService {
             let Some(canonical_session) = stale_sessions.pop() else {
                 continue;
             };
+
+            let conflicts = sqlx::query(
+                r#"
+                DELETE FROM authorization_sessions
+                WHERE user_id = ? AND mapping_id = ? AND device_id = ? AND id <> ?
+                "#,
+            )
+            .bind(user_id)
+            .bind(mapping_id)
+            .bind(&incoming_device.device_id)
+            .bind(canonical_session.id)
+            .execute(&mut *tx)
+            .await?;
+            replaced_conflicts += conflicts.rows_affected();
 
             let updated = sqlx::query(
                 r#"
@@ -438,6 +456,16 @@ impl UserAuthorizationService {
         }
 
         tx.commit().await?;
+
+        warn!(
+            "Collapsed Android TV device IDs for user {} on device '{}' (client '{}') to '{}': {}; replaced {} conflicting session(s)",
+            user_id,
+            incoming_device.device,
+            incoming_device.client,
+            incoming_device.device_id,
+            collapsed_device_ids.join("; "),
+            replaced_conflicts
+        );
 
         Ok(changed)
     }
