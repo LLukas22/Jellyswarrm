@@ -56,6 +56,7 @@ pub(crate) async fn setup() -> (
                     device_id: "test".into(),
                     version: "1".into(),
                 },
+                upstream_device_id: None,
                 jellyfin_token: "upstream-token".into(),
                 original_user_id: "backend-user".into(),
                 expires_at: None,

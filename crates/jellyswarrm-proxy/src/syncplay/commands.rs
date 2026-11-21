@@ -161,6 +161,7 @@ mod tests {
 
     fn session(id: &str) -> SessionCaller {
         SessionCaller {
+            login_token: None,
             session_id: id.into(),
             user: LocalUser {
                 id: id.into(),

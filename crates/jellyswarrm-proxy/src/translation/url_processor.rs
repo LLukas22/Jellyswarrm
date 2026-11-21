@@ -124,6 +124,21 @@ impl UrlProcessor {
             .map(|(key, value)| (key.to_string(), value.to_string()))
             .collect();
 
+        // Playback and transcode cleanup identify the backend player in the URL
+        // as well as the authorization header. Other routes can filter a target device.
+        if let Some(id) = session.and_then(|session| session.upstream_device_id.as_ref()) {
+            if url.path_segments().into_iter().flatten().any(|segment| {
+                ["Videos", "Audio", "PlaybackInfo"]
+                    .iter()
+                    .any(|tag| segment.eq_ignore_ascii_case(tag))
+            }) {
+                for (name, value) in &mut pairs {
+                    if name.eq_ignore_ascii_case("DeviceId") {
+                        value.clone_from(id);
+                    }
+                }
+            }
+        }
         self.replace_session_query_values(&mut pairs, session, required_server_id)
             .await?;
         self.replace_media_ids_in_query(&mut pairs, access_scope, required_server_id)

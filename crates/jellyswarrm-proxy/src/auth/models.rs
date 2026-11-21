@@ -36,7 +36,6 @@ impl<'r> FromRow<'r, SqliteRow> for LocalUser {
 
 #[derive(Clone, FromRow)]
 pub(crate) struct VirtualUserApiKey {
-    #[expect(dead_code, reason = "Retain the decoded API-key row identity")]
     pub(crate) id: i64,
     #[expect(dead_code, reason = "Retain the decoded API-key owner")]
     pub(crate) user_id: UserId,
@@ -49,7 +48,7 @@ pub(crate) struct VirtualUserApiKey {
     pub(crate) created_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum MappingAuth {
     Password {
         username: String,
@@ -169,6 +168,7 @@ pub(crate) struct AuthorizationSession {
     pub(crate) mapping_id: i64, // FK to server_mappings.id enabling cascade delete
     pub(crate) server_url: String,
     pub(crate) device: Device,
+    pub(crate) upstream_device_id: Option<String>,
     pub(crate) jellyfin_token: String,
     pub(crate) original_user_id: String,
     #[expect(
@@ -193,6 +193,7 @@ impl<'r> sqlx::FromRow<'r, SqliteRow> for AuthorizationSession {
                 device_id: row.try_get("device_id")?,
                 version: row.try_get("version")?,
             },
+            upstream_device_id: row.try_get("upstream_device_id")?,
             jellyfin_token: row.try_get("jellyfin_token")?,
             original_user_id: row.try_get("original_user_id")?,
             expires_at: row.try_get("expires_at")?,
@@ -208,7 +209,11 @@ impl AuthorizationSession {
         Authorization {
             client: self.device.client.clone(),
             device: self.device.device.clone(),
-            device_id: self.device.device_id.clone(),
+            device_id: self
+                .upstream_device_id
+                .as_ref()
+                .unwrap_or(&self.device.device_id)
+                .clone(),
             version: self.device.version.clone(),
             token: Some(self.jellyfin_token.clone()),
         }
@@ -226,6 +231,7 @@ impl AuthorizationSession {
                 device_id: row.try_get("device_id")?,
                 version: row.try_get("version")?,
             },
+            upstream_device_id: row.try_get("upstream_device_id")?,
             jellyfin_token: row.try_get("jellyfin_token")?,
             original_user_id: row.try_get("original_user_id")?,
             expires_at: row.try_get("expires_at")?,

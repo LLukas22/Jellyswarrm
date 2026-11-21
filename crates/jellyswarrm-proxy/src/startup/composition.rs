@@ -84,19 +84,20 @@ pub(super) fn adapter_state(
         media_storage.clone(),
         selection.clone(),
     );
+    let mapping_authenticator = MappingAuthenticator::new(
+        user_authorization.clone(),
+        clients.api.clone(),
+        credentials.password(),
+    );
     let session_operations = SessionOperations::new(
         user_authorization.clone(),
         client_sessions.clone(),
         syncplay.clone(),
         settings.clone(),
         media_access.clone(),
+        mapping_authenticator.clone(),
     );
     let syncplay_operations = SyncPlayOperations::new(syncplay, media_access);
-    let mapping_authenticator = MappingAuthenticator::new(
-        user_authorization.clone(),
-        clients.api.clone(),
-        credentials.password(),
-    );
     let authentication = application::accounts::AuthenticationService {
         user_authorization: user_authorization.clone(),
         server_storage: server_storage.clone(),

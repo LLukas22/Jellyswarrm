@@ -61,6 +61,11 @@ impl Fixture {
                 self.media.clone(),
                 self.selection.clone(),
             ),
+            crate::auth::mapping_authentication::MappingAuthenticator::new(
+                self.authorization.clone(),
+                reqwest::Client::new(),
+                "admin".into(),
+            ),
         )
     }
 
@@ -78,6 +83,7 @@ impl Fixture {
     ) -> (SessionCaller, mpsc::Receiver<String>) {
         let id = self.sessions.ensure(&user, token, None).await;
         let context = SessionCaller {
+            login_token: None,
             user,
             session_id: id,
         };
@@ -162,7 +168,7 @@ async fn authentication_enforces_read_only_keys_and_never_trusts_a_hint_as_a_cre
 
     let key = f
         .authorization
-        .create_api_key(&user.id, "reader")
+        .create_api_key(&user.id, "reader", None)
         .await
         .unwrap();
     let url = format!("http://proxy/Sessions?api_key={}", key.access_token)
@@ -254,7 +260,7 @@ async fn command_commit_rechecks_capabilities_and_group_membership_without_an_ht
         .unwrap();
     let message: Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
     assert_eq!(message["Data"]["Name"], "SetVolume");
-    operations.logout(&caller).await;
+    operations.logout(&caller).await.unwrap();
     assert!(!f.groups.is_group_member(&caller.session_id).await);
     assert!(f.sessions.get(&caller.session_id).await.is_none());
 }

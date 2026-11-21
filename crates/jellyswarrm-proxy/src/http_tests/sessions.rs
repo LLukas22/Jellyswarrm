@@ -330,7 +330,7 @@ async fn authorization_validation_and_unsupported_routes_never_fall_through() {
     let key = f
         .state
         .user_authorization
-        .create_api_key(&f.user.id, "read-only")
+        .create_api_key(&f.user.id, "read-only", None)
         .await
         .unwrap();
     let response = reqwest::Client::new()
@@ -444,7 +444,7 @@ async fn identity_reconnect_revocation_and_authentication_dto_are_consistent() {
     let mut response: crate::protocol::models::AuthenticateResponse = serde_json::from_value(json!({
         "User":{"Id":"backend-user", "Name":"Alice", "ServerId":"backend", "Policy":{"IsAdministrator":false, "SyncPlayAccess":"None"}},
         "SessionInfo":{"Id":"backend-session", "UserId":"backend-user", "UserName":"Alice", "ServerId":"backend"},
-        "AccessToken":"backend-token", "ServerId":"backend"
+        "AccessToken":f.user.virtual_key, "ServerId":"backend"
     })).unwrap();
     decorate_authentication(
         &f.state.client_sessions,

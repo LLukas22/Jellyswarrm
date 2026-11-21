@@ -220,14 +220,14 @@ async fn abbreviated_seasons_headers_dispatch_with_stored_credentials() {
     };
     assert!(state
         .user_authorization
-        .get_user_sessions_for_partial_device(&other.id, Some(&partial))
+        .get_user_sessions_for_partial_device(&other.id, Some(&partial), CallerCredential::Legacy)
         .await
         .unwrap()
         .is_empty());
     partial.device_id.push_str("-wrong");
     assert!(state
         .user_authorization
-        .get_user_sessions_for_partial_device(&caller.id, Some(&partial))
+        .get_user_sessions_for_partial_device(&caller.id, Some(&partial), CallerCredential::Legacy)
         .await
         .unwrap()
         .is_empty());
@@ -235,7 +235,7 @@ async fn abbreviated_seasons_headers_dispatch_with_stored_credentials() {
     partial.client = "Another client".into();
     assert!(state
         .user_authorization
-        .get_user_sessions_for_partial_device(&caller.id, Some(&partial))
+        .get_user_sessions_for_partial_device(&caller.id, Some(&partial), CallerCredential::Legacy)
         .await
         .unwrap()
         .is_empty());
@@ -243,7 +243,11 @@ async fn abbreviated_seasons_headers_dispatch_with_stored_credentials() {
     assert_eq!(
         state
             .user_authorization
-            .get_user_sessions_for_partial_device(&caller.id, Some(&partial))
+            .get_user_sessions_for_partial_device(
+                &caller.id,
+                Some(&partial),
+                CallerCredential::Legacy
+            )
             .await
             .unwrap()
             .len(),
@@ -263,7 +267,7 @@ async fn abbreviated_seasons_headers_dispatch_with_stored_credentials() {
         .unwrap();
     assert!(state
         .user_authorization
-        .get_user_sessions_for_partial_device(&caller.id, Some(&partial))
+        .get_user_sessions_for_partial_device(&caller.id, Some(&partial), CallerCredential::Legacy)
         .await
         .unwrap()
         .is_empty());
@@ -580,6 +584,7 @@ fn authorization_session(caller: &LocalUser, server: &Server) -> AuthorizationSe
         mapping_id: 1,
         server_url: server.url.to_string(),
         device: Device::from_useragent("Test"),
+        upstream_device_id: None,
         jellyfin_token: "upstream-token".into(),
         original_user_id: "upstream-user".into(),
         expires_at: None,
@@ -824,6 +829,7 @@ async fn playback_report_rejects_ambiguous_aggregate_without_session_or_source()
                 mapping_id: id.as_i64(),
                 server_url: server.url.to_string(),
                 device: Device::from_useragent("Test"),
+                upstream_device_id: None,
                 jellyfin_token: "upstream-token".into(),
                 original_user_id: "upstream-user".into(),
                 expires_at: None,

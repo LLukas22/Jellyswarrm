@@ -126,6 +126,7 @@ async fn check_selected_source_detail(catalog_scopes: &[&str]) {
                     device_id: "test".into(),
                     version: "1".into(),
                 },
+                upstream_device_id: None,
                 jellyfin_token: "upstream-token".into(),
                 original_user_id: "backend-user".into(),
                 expires_at: None,

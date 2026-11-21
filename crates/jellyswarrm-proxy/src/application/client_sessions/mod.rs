@@ -3,7 +3,10 @@ pub(crate) mod access;
 #[cfg(test)]
 mod tests;
 use crate::{
-    auth::{service::LocalUser, UserAuthorizationService},
+    auth::{
+        service::{CallerCredential, LocalUser},
+        UserAuthorizationService,
+    },
     client_sessions::{
         models::{Capabilities, GeneralCommand},
         ClientSession, ClientSessionService, SessionCaller,
@@ -47,6 +50,7 @@ pub(crate) struct SessionOperations {
     groups: Arc<SyncPlayService>,
     settings: SettingsView,
     access: access::MediaAccess,
+    mapping_authenticator: crate::auth::mapping_authentication::MappingAuthenticator,
 }
 
 impl SessionOperations {
@@ -56,6 +60,7 @@ impl SessionOperations {
         groups: Arc<SyncPlayService>,
         settings: SettingsView,
         access: access::MediaAccess,
+        mapping_authenticator: crate::auth::mapping_authentication::MappingAuthenticator,
     ) -> Self {
         Self {
             authorization,
@@ -63,6 +68,7 @@ impl SessionOperations {
             groups,
             settings,
             access,
+            mapping_authenticator,
         }
     }
 
@@ -82,7 +88,12 @@ impl SessionOperations {
             .as_ref()
             .and_then(|a| a.token_ref())
             .ok_or(SessionOperationError::Unauthenticated)?;
-        if mutating && self.authorization.is_read_only_api_key(token).await? {
+        if mutating
+            && matches!(
+                identity.credential,
+                Some(CallerCredential::ApplicationKey(_))
+            )
+        {
             return Err(SessionOperationError::ReadOnly);
         }
         // The cookie never authenticates. Explicit device IDs outrank it.
@@ -93,7 +104,12 @@ impl SessionOperations {
             .or(device_hint)
             .or(identity.device);
         let session_id = self.sessions.ensure(&user, token, device.as_ref()).await;
-        Ok(SessionCaller { user, session_id })
+        Ok(SessionCaller {
+            user,
+            session_id,
+            login_token: matches!(identity.credential, Some(CallerCredential::Login(_)))
+                .then(|| token.to_owned()),
+        })
     }
 
     pub(crate) async fn valid_session(
@@ -158,9 +174,20 @@ impl SessionOperations {
             .ok_or(SessionOperationError::NotFound)
     }
 
-    pub(crate) async fn logout(&self, caller: &SessionCaller) {
+    pub(crate) async fn logout(&self, caller: &SessionCaller) -> Result<(), SessionOperationError> {
+        if let Some(token) = &caller.login_token {
+            self.mapping_authenticator.logout_login(token).await?;
+            for player in self.sessions.for_user(&caller.user.id).await {
+                if player.token() == token {
+                    self.groups.end_session(&player.id).await;
+                    self.sessions.remove(&player.id).await;
+                }
+            }
+            return Ok(());
+        }
         self.groups.end_session(&caller.session_id).await;
         self.sessions.remove(&caller.session_id).await;
+        Ok(())
     }
 
     pub(crate) async fn viewing(
@@ -267,7 +294,7 @@ pub(crate) async fn decorate_authentication(
         version: auth.version.clone(),
     };
     let id = sessions
-        .ensure(user, &user.virtual_key, Some(&device))
+        .ensure(user, &response.access_token, Some(&device))
         .await;
     if let Some(session) = sessions.get(&id).await {
         response.session_info =

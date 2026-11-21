@@ -243,6 +243,7 @@ mod tests {
                 device_id: "device-id".to_string(),
                 version: "1".to_string(),
             },
+            upstream_device_id: None,
             jellyfin_token: "server-token".to_string(),
             original_user_id: "upstream-user".to_string(),
             expires_at: None,

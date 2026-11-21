@@ -139,47 +139,44 @@ impl UserAuthorizationService {
         Ok(user)
     }
 
-    /// Get user by virtual key
-    pub(crate) async fn get_user_by_virtual_key(
+    pub(crate) async fn resolve_credential(
         &self,
-        virtual_key: &str,
-    ) -> Result<Option<LocalUser>, sqlx::Error> {
-        let user = sqlx::query_as::<_, LocalUser>(
-            r#"
-            SELECT id, virtual_key, original_username, original_password_hash,
-                   local_credential_kind, created_at, updated_at
-            FROM users
-            WHERE virtual_key = ?
-            "#,
+        token: &str,
+    ) -> Result<Option<(LocalUser, CallerCredential)>, sqlx::Error> {
+        use sha2::{Digest, Sha256};
+        use sqlx::FromRow;
+        let row = sqlx::query(
+            "SELECT u.*, c.login_id, c.api_key FROM users u JOIN (
+                SELECT user_id, id AS login_id, 0 AS api_key FROM client_logins WHERE token_hash = ?
+                UNION ALL SELECT id, NULL, 0 FROM users WHERE virtual_key = ? AND ?
+                UNION ALL SELECT k.user_id, l.id, 1 FROM virtual_user_api_keys k
+                LEFT JOIN client_logins l ON l.api_key_id = k.id WHERE k.access_token = ?
+            ) c ON c.user_id = u.id",
         )
-        .bind(virtual_key)
+        .bind(Sha256::digest(token.as_bytes()).to_vec())
+        .bind(token)
+        .bind(!self.disable_legacy_login_tokens)
+        .bind(token)
         .fetch_optional(&self.pool)
         .await?;
-
-        Ok(user)
+        row.map(|row| {
+            let credential = if row.try_get::<bool, _>("api_key")? {
+                CallerCredential::ApplicationKey(row.try_get("login_id")?)
+            } else if let Some(id) = row.try_get("login_id")? {
+                CallerCredential::Login(id)
+            } else {
+                CallerCredential::Legacy
+            };
+            Ok((LocalUser::from_row(&row)?, credential))
+        })
+        .transpose()
     }
 
-    /// Resolve either a login token or an application API key to its virtual user.
     pub(crate) async fn get_user_by_token(
         &self,
         token: &str,
     ) -> Result<Option<LocalUser>, sqlx::Error> {
-        if let Some(user) = self.get_user_by_virtual_key(token).await? {
-            return Ok(Some(user));
-        }
-
-        sqlx::query_as::<_, LocalUser>(
-            r#"
-            SELECT u.id, u.virtual_key, u.original_username, u.original_password_hash,
-                   u.local_credential_kind, u.created_at, u.updated_at
-            FROM users u
-            JOIN virtual_user_api_keys key ON key.user_id = u.id
-            WHERE key.access_token = ?
-            "#,
-        )
-        .bind(token)
-        .fetch_optional(&self.pool)
-        .await
+        Ok(self.resolve_credential(token).await?.map(|(user, _)| user))
     }
 
     /// Get user by virtual ID, accepting equivalent UUID formats.

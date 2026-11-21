@@ -36,6 +36,13 @@ pub(crate) struct MappingLogin {
     pub(crate) password: Option<crate::domain::security::Password>,
 }
 
+/// Result of an upstream login, retaining the mapping that authorized the request.
+pub(crate) struct BackendLogin {
+    pub(crate) server: Server,
+    pub(crate) mapping: Option<ServerMapping>,
+    pub(crate) login: MappingLogin,
+}
+
 /// Independent authenticated identity over the shared transport. Each operation
 /// gets a fresh client: credentials are never shared by username or mutated in
 /// a process-global cache, and dropping this handle never revokes a durable
@@ -168,6 +175,25 @@ impl MappingAuthenticator {
         }
     }
 
+    pub(crate) async fn logout_login(&self, token: &str) -> Result<(), sqlx::Error> {
+        let retired = self.authorization.revoke_login(token).await?;
+        futures_util::future::join_all(retired.into_iter().map(|(url, token)| async move {
+            let client = JellyfinClient::new_with_client(
+                &url,
+                crate::config::CLIENT_INFO.clone(),
+                self.transport.clone(),
+            );
+            if let Ok(client) = client {
+                client.with_token(token).await;
+                if client.logout().await.is_err() {
+                    tracing::warn!("Could not close retired Jellyfin session on {url}");
+                }
+            }
+        }))
+        .await;
+        Ok(())
+    }
+
     fn validate_owner(
         &self,
         user: &LocalUser,
@@ -219,33 +245,6 @@ impl MappingAuthenticator {
             return Err(MappingAuthenticationError::AccountChanged);
         }
         Ok((token, remote))
-    }
-
-    /// Remote authentication and credential migration only. Registration of a
-    /// local authorization session and client-facing decoration are separate
-    /// application stages. Never logs out a durable Quick Connect credential.
-    pub(crate) async fn authenticate_for_client(
-        &self,
-        user: &LocalUser,
-        server: &Server,
-        mapping: &ServerMapping,
-        client_info: ClientInfo,
-    ) -> Result<crate::protocol::models::AuthenticateResponse, MappingAuthenticationError> {
-        let login = self
-            .authenticate_login(user, server, mapping, None, client_info)
-            .await?;
-        if let Some(password) = login.password {
-            self.authorization
-                .add_server_mapping(
-                    &user.id,
-                    server,
-                    &login.username,
-                    &password,
-                    Some(&user.local_credential.mapping_key()),
-                )
-                .await?;
-        }
-        Ok(login.response)
     }
 
     /// The caller must have verified the local credential before supplying its

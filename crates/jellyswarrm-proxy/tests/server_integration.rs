@@ -96,6 +96,30 @@ async fn user_can_login_browse_merged_libraries_and_stream_mapped_media() -> Res
     let user_id = required_string(&login, "/User/Id")?;
     assert_eq!(required_string(&login, "/User/Name")?, USERNAME);
 
+    // Real Jellyfin revokes the previous upstream token for a reused DeviceId.
+    // Both proxy logins with identical client metadata must remain usable.
+    let second =
+        success_json(login_as(client, proxy_url, USERNAME, PASSWORD, AUTHORIZATION).await?).await?;
+    let second_token = required_string(&second, "/AccessToken")?;
+    assert_ne!(second_token, token);
+    assert_eq!(
+        client
+            .get(format!("{proxy_url}/Users/Me"))
+            .header("X-Emby-Token", second_token)
+            .send()
+            .await?
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        client
+            .post(format!("{proxy_url}/Sessions/Logout"))
+            .header("X-Emby-Token", second_token)
+            .send()
+            .await?
+            .status(),
+        StatusCode::NO_CONTENT
+    );
     let views = wait_for_views(client, proxy_url, user_id, token).await?;
     verify_uuid_user_requests(client, proxy_url, user_id, token).await?;
     let movies = wait_for_library_items(

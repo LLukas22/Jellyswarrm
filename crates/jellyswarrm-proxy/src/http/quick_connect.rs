@@ -99,12 +99,19 @@ async fn resolve_authorize_user_id(
     })?;
 
     let user = state
-        .get_user_by_virtual_key(&token)
+        .resolve_credential(&token)
         .await
         .map_err(|e| {
             warn!("Failed to resolve user from virtual token: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR
         })?
+        .filter(|(_, kind)| {
+            !matches!(
+                kind,
+                crate::auth::service::CallerCredential::ApplicationKey(_)
+            )
+        })
+        .map(|(user, _)| user)
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
     // A userId parameter selects no authority of its own. Approval must always
@@ -193,7 +200,16 @@ mod tests {
     async fn adapter_fixture() -> AdapterFixture {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         MIGRATOR.run(&pool).await.unwrap();
-        AdapterFixture::new(pool, AppConfig::default()).await
+        let config = AppConfig::default();
+        let authorization = UserAuthorizationService::from_config(pool.clone(), &config)
+            .await
+            .unwrap();
+        AdapterFixture::from_media(crate::test_support::MediaFixture::with_authorization(
+            pool,
+            config,
+            authorization,
+        ))
+        .await
     }
 
     #[tokio::test]
@@ -414,7 +430,7 @@ mod tests {
         .1
          .0;
 
-        assert_eq!(auth_response.access_token, user.virtual_key);
+        assert_ne!(auth_response.access_token, user.virtual_key);
 
         let all_sessions = state
             .user_authorization

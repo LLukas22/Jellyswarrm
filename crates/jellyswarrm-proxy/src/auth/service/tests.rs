@@ -811,7 +811,10 @@ async fn named_api_key_resolves_its_owner() {
         .create_user("seerr-owner", &Password::from("password"))
         .await
         .unwrap();
-    let key = service.create_api_key(&user.id, "Seerr").await.unwrap();
+    let key = service
+        .create_api_key(&user.id, "Seerr", None)
+        .await
+        .unwrap();
 
     let resolved = service
         .get_user_by_token(&key.access_token)
@@ -833,9 +836,18 @@ async fn api_key_listing_is_scoped_and_creation_ordered() {
         .create_user("other", &Password::from("password"))
         .await
         .unwrap();
-    let first = service.create_api_key(&owner.id, "Seerr").await.unwrap();
-    let second = service.create_api_key(&owner.id, "Seerr").await.unwrap();
-    service.create_api_key(&other.id, "Other").await.unwrap();
+    let first = service
+        .create_api_key(&owner.id, "Seerr", None)
+        .await
+        .unwrap();
+    let second = service
+        .create_api_key(&owner.id, "Seerr", None)
+        .await
+        .unwrap();
+    service
+        .create_api_key(&other.id, "Other", None)
+        .await
+        .unwrap();
 
     let listed = service.list_api_keys(&owner.id).await.unwrap();
 
@@ -855,7 +867,10 @@ async fn deleting_user_revokes_named_api_keys() {
         .create_user("owner", &Password::from("password"))
         .await
         .unwrap();
-    let key = service.create_api_key(&user.id, "Seerr").await.unwrap();
+    let key = service
+        .create_api_key(&user.id, "Seerr", None)
+        .await
+        .unwrap();
     service.delete_user(&user.id).await.unwrap();
 
     let resolved = service.get_user_by_token(&key.access_token).await.unwrap();

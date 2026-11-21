@@ -92,6 +92,7 @@ impl Fixture {
                         device_id: "device".into(),
                         version: "1".into(),
                     },
+                    upstream_device_id: None,
                     jellyfin_token: format!("backend-token-{index}"),
                     original_user_id: format!("backend-viewer-{index}"),
                     expires_at: None,

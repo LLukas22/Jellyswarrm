@@ -28,8 +28,8 @@ impl Authorization {
 
     /// Authenticated requests may omit metadata available in the stored session.
     /// Missing metadata is represented by empty strings; login parsing stays strict.
-    pub(crate) fn parse_request(header_value: &str) -> Result<Self, String> {
-        Self::parse_internal(header_value, false, true)
+    pub(crate) fn parse_request_header(header_value: &str, legacy: bool) -> Result<Self, String> {
+        Self::parse_internal(header_value, legacy, true)
     }
 
     /// Client metadata from `Authorization`, then `X-Emby-Authorization`, accepting
@@ -48,11 +48,23 @@ impl Authorization {
     /// The caller's proxy token: credential headers first, then bare token headers.
     pub(crate) fn token_from_headers(headers: &http::HeaderMap) -> Option<String> {
         let header = |name: &str| headers.get(name).and_then(|value| value.to_str().ok());
-        let token = |name: &str, legacy| Self::parse_with_legacy(header(name)?, legacy).ok()?.token;
+        let token = |name: &str, legacy| {
+            Self::parse_request_header(header(name)?, legacy)
+                .ok()?
+                .token
+        };
         token("authorization", false)
             .or_else(|| token("x-emby-authorization", true))
-            .or_else(|| header("x-emby-token").map(str::to_owned))
-            .or_else(|| header("x-mediabrowser-token").map(str::to_owned))
+            .or_else(|| {
+                header("x-mediabrowser-token")
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+            })
+            .or_else(|| {
+                header("x-emby-token")
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+            })
     }
 
     pub(crate) fn has_complete_metadata(&self) -> bool {
@@ -232,16 +244,22 @@ mod tests {
             r#"MediaBrowser DeviceId="device", Token="proxy""#,
             r#"MediaBrowser Token="proxy""#,
         ] {
-            let auth = Authorization::parse_request(header).unwrap();
+            let auth = Authorization::parse_request_header(header, false).unwrap();
             assert_eq!(auth.token.as_deref(), Some("proxy"));
             assert!(!auth.has_complete_metadata());
             assert!(Authorization::parse(header).is_err());
         }
-        assert!(
-            Authorization::parse_request(r#"MediaBrowser DeviceId="device", Token="""#).is_err()
-        );
-        assert!(Authorization::parse_request("Bearer proxy").is_err());
-        assert!(Authorization::parse_request(r#"Emby DeviceId="device", Token="proxy""#).is_err());
+        assert!(Authorization::parse_request_header(
+            r#"MediaBrowser DeviceId="device", Token="""#,
+            false
+        )
+        .is_err());
+        assert!(Authorization::parse_request_header("Bearer proxy", false).is_err());
+        assert!(Authorization::parse_request_header(
+            r#"Emby DeviceId="device", Token="proxy""#,
+            false
+        )
+        .is_err());
     }
 
     #[test]

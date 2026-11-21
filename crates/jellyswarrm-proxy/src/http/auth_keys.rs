@@ -30,14 +30,14 @@ pub(crate) struct ApiKeyList {
 pub(crate) async fn create_api_key(
     State(state): State<Arc<UserAuthorizationService>>,
     Query(query): Query<CreateApiKeyQuery>,
-    RequirePrimaryUser(user): RequirePrimaryUser,
+    RequirePrimaryUser(user, login_id): RequirePrimaryUser,
 ) -> Result<StatusCode, StatusCode> {
     if query.app.trim().is_empty() || query.app.trim().len() > 128 {
         return Err(StatusCode::BAD_REQUEST);
     }
 
     state
-        .create_api_key(&user.id, &query.app)
+        .create_api_key(&user.id, &query.app, login_id)
         .await
         .map_err(|error| {
             error!("Failed to create virtual API key: {error}");
@@ -49,7 +49,7 @@ pub(crate) async fn create_api_key(
 
 pub(crate) async fn list_api_keys(
     State(state): State<Arc<UserAuthorizationService>>,
-    RequirePrimaryUser(user): RequirePrimaryUser,
+    RequirePrimaryUser(user, _): RequirePrimaryUser,
 ) -> Result<Json<ApiKeyList>, StatusCode> {
     let keys = state.list_api_keys(&user.id).await.map_err(|error| {
         error!("Failed to list virtual API keys: {error}");

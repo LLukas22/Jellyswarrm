@@ -663,6 +663,7 @@ mod tests {
 
     fn make_session(user: LocalUser, device: &str) -> SessionCaller {
         SessionCaller {
+            login_token: None,
             session_id: format!("{}:{}", user.id, device),
             user,
         }

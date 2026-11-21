@@ -171,7 +171,7 @@ async fn dispatch(
         return Ok(StatusCode::NO_CONTENT);
     }
     if path == "logout" {
-        operations.logout(&caller).await;
+        operations.logout(&caller).await.map_err(status)?;
         return Ok(StatusCode::NO_CONTENT);
     }
     if path == "viewing" {

@@ -398,6 +398,7 @@ mod tests {
     async fn fixture() -> (SyncPlayService, SessionCaller, mpsc::Receiver<String>) {
         let service = SyncPlayService::new();
         let session = SessionCaller {
+            login_token: None,
             session_id: "caller".into(),
             user: LocalUser {
                 id: "user".into(),

@@ -265,6 +265,7 @@ mod tests {
                 device_id: format!("device-{id}"),
                 version: "1".into(),
             },
+            upstream_device_id: None,
             jellyfin_token: format!("backend-token-{id}"),
             original_user_id: format!("backend-viewer-{id}"),
             expires_at: None,

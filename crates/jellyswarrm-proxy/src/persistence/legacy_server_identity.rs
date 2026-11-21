@@ -326,21 +326,27 @@ async fn merge_authorization_sessions(
         (false, false) => "id DESC",
     };
 
+    let login_id = if column_exists(tx, "authorization_sessions", "login_id").await? {
+        "login_id"
+    } else {
+        "NULL"
+    };
     let mapping_placeholders = placeholders(mapping_ids.len());
     let rows = sqlx::query(&format!(
-        "SELECT id, user_id, device_id FROM authorization_sessions WHERE mapping_id IN ({mapping_placeholders}) ORDER BY {order_by}"
+        "SELECT id, user_id, device_id, {login_id} AS owner_login FROM authorization_sessions WHERE mapping_id IN ({mapping_placeholders}) ORDER BY {order_by}"
     ))
     .try_bind_all(&mapping_ids)?
     .fetch_all(&mut **tx)
     .await?;
 
-    let mut session_by_device = HashMap::<(String, String), i64>::new();
+    let mut seen = std::collections::HashSet::new();
     let mut duplicate_session_ids = Vec::new();
 
     for row in rows {
-        let session_id = row.get("id");
-        let key = (row.get("user_id"), row.get("device_id"));
-        if session_by_device.insert(key, session_id).is_some() {
+        let session_id: i64 = row.get("id");
+        let login: Option<i64> = row.get("owner_login");
+        let legacy_device = login.is_none().then(|| row.get::<String, _>("device_id"));
+        if !seen.insert((row.get::<String, _>("user_id"), login, legacy_device)) {
             duplicate_session_ids.push(session_id);
         }
     }

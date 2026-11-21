@@ -916,6 +916,7 @@ mod tests {
                 device_id: "test".into(),
                 version: "1".into(),
             },
+            upstream_device_id: None,
             jellyfin_token: "backend-token".into(),
             original_user_id: "backend-viewer".into(),
             expires_at: None,
