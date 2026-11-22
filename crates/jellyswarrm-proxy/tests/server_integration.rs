@@ -80,6 +80,126 @@ impl ServerFixture {
     }
 }
 
+/// Read the disposable key credential from the isolated fixture so we can
+/// check revocation directly against Jellyfin after the proxy deletes its row.
+async fn key_backend_credential(data: &Path) -> Result<(String, String, String)> {
+    use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit, Nonce};
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    let pool = sqlx::SqlitePool::connect(&format!(
+        "sqlite://{}",
+        data.join("jellyswarrm.db").display()
+    ))
+    .await?;
+    let (url,encrypted,device):(String,String,String)=sqlx::query_as("SELECT s.server_url,s.jellyfin_token,s.upstream_device_id FROM login_sessions s JOIN client_logins l ON l.id=s.login_id WHERE l.api_key_id IS NOT NULL AND s.owned ORDER BY s.id LIMIT 1").fetch_one(&pool).await?;
+    let cfg: toml::Value =
+        toml::from_str(&std::fs::read_to_string(data.join("jellyswarrm.toml"))?)?;
+    let secret = STANDARD.decode(
+        cfg["session_key"]
+            .as_str()
+            .context("missing fixture secret")?,
+    )?;
+    let mut key = [0; 32];
+    hkdf::Hkdf::<sha2::Sha256>::new(None, &secret)
+        .expand(b"jellyswarrm/authorization-session/v1", &mut key)
+        .unwrap();
+    let blob = STANDARD.decode(encrypted)?;
+    let token = Aes256Gcm::new(&key.into())
+        .decrypt(Nonce::from_slice(&blob[..12]), &blob[12..])
+        .map_err(|_| anyhow::anyhow!("failed to decrypt fixture credential"))?;
+    Ok((url, String::from_utf8(token)?, device))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Docker and the Git LFS media fixtures"]
+async fn integration_key_survives_player_replacement_and_revokes_upstream() -> Result<()> {
+    let fixture = ServerFixture::start(false).await?;
+    let client = &fixture.client;
+    let upstreams = upstream_urls(&fixture._compose).await?;
+    for preserve in [false, true] {
+        let dir = tempfile::tempdir()?;
+        let port = available_port()?;
+        write_proxy_config(dir.path(), port, &upstreams, false)?;
+        let path = dir.path().join("jellyswarrm.toml");
+        let cfg = std::fs::read_to_string(&path)?;
+        std::fs::write(
+            &path,
+            format!("preserve_upstream_device_ids = {preserve}\n{cfg}"),
+        )?;
+        let mut proxy = start_proxy(dir, port)?;
+        let base = format!("http://127.0.0.1:{port}");
+        wait_for_proxy(client, &base, &mut proxy.child).await?;
+        let first = success_json(login(client, &base, PASSWORD).await?).await?;
+        let first = required_string(&first, "/AccessToken")?;
+        assert_eq!(
+            client
+                .post(format!("{base}/Auth/Keys?App=Scanner"))
+                .header("X-Emby-Token", first)
+                .send()
+                .await?
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+        let keys = success_json(
+            client
+                .get(format!("{base}/Auth/Keys"))
+                .header("X-Emby-Token", first)
+                .send()
+                .await?,
+        )
+        .await?;
+        let scanner = required_string(&keys, "/Items/0/AccessToken")?;
+        let (remote, token, device) = key_backend_credential(proxy._data_dir.path()).await?;
+        let me = || {
+            client
+                .get(format!("{remote}/Users/Me"))
+                .header("Authorization",format!(r#"MediaBrowser Client="Scanner", Device="Integration", DeviceId="{device}", Version="1", Token="{token}""#))
+                .send()
+        };
+        assert_eq!(me().await?.status(), StatusCode::OK);
+        let second = success_json(login(client, &base, PASSWORD).await?).await?;
+        let second = required_string(&second, "/AccessToken")?;
+        assert_eq!(
+            client
+                .post(format!("{base}/Sessions/Logout"))
+                .header("X-Emby-Token", second)
+                .send()
+                .await?
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(me().await?.status(), StatusCode::OK);
+        success_json(
+            client
+                .get(format!("{base}/Users/Me"))
+                .header("X-Emby-Token", scanner)
+                .send()
+                .await?,
+        )
+        .await?;
+        let owner = success_json(login(client, &base, PASSWORD).await?).await?;
+        assert_eq!(
+            client
+                .delete(format!("{base}/Auth/Keys/{scanner}"))
+                .header("X-Emby-Token", required_string(&owner, "/AccessToken")?)
+                .send()
+                .await?
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                if me().await?.status() == StatusCode::UNAUTHORIZED {
+                    return Ok::<(), reqwest::Error>(());
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        })
+        .await
+        .context("Jellyfin still accepts deleted key's backend token")??;
+    }
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires Docker and the Git LFS media fixtures"]
 async fn user_can_login_browse_merged_libraries_and_stream_mapped_media() -> Result<()> {
@@ -96,6 +216,21 @@ async fn user_can_login_browse_merged_libraries_and_stream_mapped_media() -> Res
     let user_id = required_string(&login, "/User/Id")?;
     assert_eq!(required_string(&login, "/User/Name")?, USERNAME);
 
+    // Replacing a known device invalidates the previous proxy credential.
+    let second =
+        success_json(login_as(client, proxy_url, USERNAME, PASSWORD, AUTHORIZATION).await?).await?;
+    let second_token = required_string(&second, "/AccessToken")?;
+    assert_ne!(token, second_token);
+    assert_eq!(
+        client
+            .get(format!("{proxy_url}/Auth/Keys"))
+            .header("X-Emby-Token", token)
+            .send()
+            .await?
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let token = second_token;
     let views = wait_for_views(client, proxy_url, user_id, token).await?;
     verify_uuid_user_requests(client, proxy_url, user_id, token).await?;
     let movies = wait_for_library_items(

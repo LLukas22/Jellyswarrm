@@ -92,7 +92,7 @@ async fn playlist_uri_attributes_and_reference_styles() {
         assert!(url.path().contains(&f.items[0]));
         assert!(url
             .query_pairs()
-            .any(|(key, value)| key == "ApiKey" && value == f.user.virtual_key));
+            .any(|(key, value)| key == "ApiKey" && value == f.user.fixture_token));
         assert!(url
             .query_pairs()
             .any(|(key, value)| key == "Tag" && value == "a&b"));
@@ -259,7 +259,7 @@ async fn playlist_content_type_is_recognized_without_m3u8_path() {
         assert!(child.path().starts_with("/proxy/"));
         assert!(child
             .query_pairs()
-            .any(|(key, value)| key == "ApiKey" && value == f.user.virtual_key));
+            .any(|(key, value)| key == "ApiKey" && value == f.user.fixture_token));
     }
     assert!(f.upstreams[1].received_requests().await.unwrap().is_empty());
 }

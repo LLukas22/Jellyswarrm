@@ -35,6 +35,8 @@ The table below lists all available configuration options:
 | `url_prefix` | *(none)* | `JELLYSWARRM_URL_PREFIX` | Optional URL prefix for all routes (useful for reverse proxy setups). |
 | `server_background_check_interval_secs` | `30` | `JELLYSWARRM_SERVER_BACKGROUND_CHECK_INTERVAL_SECS` | Interval in seconds for background server health checks. |
 | `auto_create_users_on_login` | `true` | `JELLYSWARRM_AUTO_CREATE_USERS_ON_LOGIN` | Automatically create local users on successful upstream login. |
+| `login_idle_expiry_days` | `0` | — | Days of inactivity before a player must sign in again. Zero disables expiry. Named API keys have independent backend sessions and do not expire. Restart after changing this setting. |
+| `preserve_upstream_device_ids` | `false` | `JELLYSWARRM_PRESERVE_UPSTREAM_DEVICE_IDS` | Set to `true` and restart if a backend requires approved client device IDs. By default each login gets its own backend device ID. With preservation enabled, Jellyfin can revoke an earlier backend token when the same device signs in again. |
 | `merge_libraries` | `true` | `JELLYSWARRM_MERGE_LIBRARIES` | Merge libraries with matching names across servers into virtual libraries. |
 | `deduplicate_media` | `true` | `JELLYSWARRM_DEDUPLICATE_MEDIA` | Collapse the same movie or show (series/season/episode) on multiple servers into one item whose versions are served by the different hosts (Jellyfin-style linked versions; Jellyfin v12 adds multi-versions for episodes). Also merges the home feeds: *Recently Added*, *Continue Watching* (resumes from the most recently played version) and *Next Up* (one entry per matched show, at the furthest episode any server reports). Legacy key `deduplicate_movies` / env `JELLYSWARRM_DEDUPLICATE_MOVIES` still loads. |
 
@@ -44,6 +46,10 @@ The table below lists all available configuration options:
 - The `session_key` is generated as a secure 64-byte key if not specified, and is stored in the config file for reuse.  
 - Each server now has its own streaming mode (`Redirect` or `Proxy`). For preconfigured servers, omit `media_streaming_mode` to use the default `Redirect`.
 - Configuration files are resolved from the data directory (`./data` by default), which can be overridden with `JELLYSWARRM_DATA_DIR`.
+
+Upgrading to per-login credentials signs players out once. Existing named API keys keep their values and authenticate each mapped backend on first use. For Jellyfin device allowlists, approve the integration device `jellyswarrm-key-<key id>` for password mappings. A Quick Connect mapping uses its own durable credential. Placeholder player device IDs always receive fresh upstream IDs. When a real ID is preserved, Jellyfin may retire the previous upstream token even if the proxy cannot finish saving its replacement.
+
+If Jellyfin rejects a saved password during automatic API-key sign-in, Jellyswarrm pauses automatic sign-in for that mapping across all keys and restarts. Update the mapping credentials to resume. When a key already has a healthy backend session, missing healthy backends sign in in the background.
 
 ---
 

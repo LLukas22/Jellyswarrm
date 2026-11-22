@@ -3,6 +3,7 @@ use super::*;
 use crate::auth::service::LocalUser;
 use crate::http::incoming::{collect_operation as extract_request_infos, resolve_request_identity};
 use crate::protocol::authorization::Authorization;
+use crate::protocol::caller::JellyfinAuthorization;
 use crate::protocol::device::Device;
 use crate::protocol::routes::{matches_case_insensitive, MEDIA_ID_PATH_TAGS, MEDIA_ID_QUERY_TAGS};
 use crate::protocol::url::contains_id;
@@ -90,7 +91,6 @@ use wiremock::{
 async fn abbreviated_seasons_headers_dispatch_with_stored_credentials() {
     let state = media_fixture().await;
     let caller = test_user(&state, "streamyfin").await;
-    let other = test_user(&state, "other").await;
     let upstream = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/System/Info/Public"))
@@ -133,7 +133,7 @@ async fn abbreviated_seasons_headers_dispatch_with_stored_credentials() {
         .unwrap();
     state
         .user_authorization
-        .store_authorization_session(
+        .bind_fixture_login(
             &caller.id,
             &server,
             &stored,
@@ -164,7 +164,7 @@ async fn abbreviated_seasons_headers_dispatch_with_stored_credentials() {
         .mount(&upstream)
         .await;
     let full = Authorization {
-        token: Some(caller.virtual_key.clone()),
+        token: Some(caller.fixture_token.clone()),
         ..stored.clone()
     };
     for (name, value) in [
@@ -173,14 +173,14 @@ async fn abbreviated_seasons_headers_dispatch_with_stored_credentials() {
             "authorization",
             format!(
                 r#"MediaBrowser DeviceId="streamyfin-device", Token="{}""#,
-                caller.virtual_key
+                caller.fixture_token
             ),
         ),
         (
             "x-emby-authorization",
             format!(
                 r#"MediaBrowser DeviceId="streamyfin-device", Token="{}""#,
-                caller.virtual_key
+                caller.fixture_token
             ),
         ),
     ] {
@@ -211,62 +211,6 @@ async fn abbreviated_seasons_headers_dispatch_with_stored_credentials() {
     assert_eq!(local[0].device.client, stored.client);
     assert_eq!(local[0].device.device, stored.device);
     assert_eq!(local[0].device.version, stored.version);
-
-    let mut partial = Device {
-        client: String::new(),
-        device: String::new(),
-        version: String::new(),
-        device_id: stored.device_id.clone(),
-    };
-    assert!(state
-        .user_authorization
-        .get_user_sessions_for_partial_device(&other.id, Some(&partial))
-        .await
-        .unwrap()
-        .is_empty());
-    partial.device_id.push_str("-wrong");
-    assert!(state
-        .user_authorization
-        .get_user_sessions_for_partial_device(&caller.id, Some(&partial))
-        .await
-        .unwrap()
-        .is_empty());
-    partial.device_id = stored.device_id.clone();
-    partial.client = "Another client".into();
-    assert!(state
-        .user_authorization
-        .get_user_sessions_for_partial_device(&caller.id, Some(&partial))
-        .await
-        .unwrap()
-        .is_empty());
-    partial.client = stored.client.clone();
-    assert_eq!(
-        state
-            .user_authorization
-            .get_user_sessions_for_partial_device(&caller.id, Some(&partial))
-            .await
-            .unwrap()
-            .len(),
-        1
-    );
-    state
-        .user_authorization
-        .store_authorization_session(
-            &caller.id,
-            &server,
-            &stored,
-            "expired-token".into(),
-            "upstream-user".into(),
-            Some(chrono::Utc::now() - chrono::Duration::seconds(1)),
-        )
-        .await
-        .unwrap();
-    assert!(state
-        .user_authorization
-        .get_user_sessions_for_partial_device(&caller.id, Some(&partial))
-        .await
-        .unwrap()
-        .is_empty());
 }
 
 async fn media_fixture() -> MediaServices {
@@ -423,7 +367,7 @@ async fn image_request_follows_same_origin_redirects_preserving_authorization() 
 async fn test_user(state: &MediaServices, name: &str) -> LocalUser {
     state
         .user_authorization
-        .get_or_create_user(name, &"password123".into())
+        .fixture_user(name, &"password123".into())
         .await
         .unwrap()
 }
@@ -518,7 +462,7 @@ async fn resolve_identity_resolves_authenticated_user_ignoring_different_userid_
         device: "Test".to_string(),
         device_id: "test-device".to_string(),
         version: "1.0.0".to_string(),
-        token: Some(caller.virtual_key.clone()),
+        token: Some(caller.fixture_token.clone()),
     }
     .to_header_value();
 
@@ -573,18 +517,15 @@ async fn playback_server(state: &MediaServices) -> Server {
 }
 
 fn authorization_session(caller: &LocalUser, server: &Server) -> AuthorizationSession {
-    let now = chrono::Utc::now();
     AuthorizationSession {
         id: 1,
         user_id: caller.id.clone(),
-        mapping_id: 1,
+
         server_url: server.url.to_string(),
         device: Device::from_useragent("Test"),
+        upstream_device_id: None,
         jellyfin_token: "upstream-token".into(),
         original_user_id: "upstream-user".into(),
-        expires_at: None,
-        created_at: now,
-        updated_at: now,
     }
 }
 
@@ -650,7 +591,7 @@ async fn playback_reports_route_without_cached_session_authority() {
             if let Some(session_id) = session_id {
                 body["PlaySessionId"] = session_id;
             }
-            let request = json_post(path, &caller.virtual_key, body.clone());
+            let request = json_post(path, &caller.fixture_token, body.clone());
             let request = extract_request_infos(request, &state, Some(action))
                 .await
                 .unwrap_or_else(|error| panic!("{path}: {case}: {error}"));
@@ -816,19 +757,15 @@ async fn playback_report_rejects_ambiguous_aggregate_without_session_or_source()
             }],
         });
         mappings.push(mapping);
-        let now = chrono::Utc::now();
         sessions.push((
             AuthorizationSession {
                 id: id.as_i64(),
                 user_id: "caller".into(),
-                mapping_id: id.as_i64(),
                 server_url: server.url.to_string(),
                 device: Device::from_useragent("Test"),
+                upstream_device_id: None,
                 jellyfin_token: "upstream-token".into(),
                 original_user_id: "upstream-user".into(),
-                expires_at: None,
-                created_at: now,
-                updated_at: now,
             },
             server,
         ));
@@ -903,31 +840,31 @@ async fn playback_reports_reject_missing_auth_and_conflicting_fields() {
             serde_json::json!({"ItemId": "item", "UserId": caller.id}),
         ),
         (
-            caller.virtual_key.as_str(),
+            caller.fixture_token.as_str(),
             serde_json::json!({"ItemId": "item", "itemId": "different"}),
         ),
         (
-            caller.virtual_key.as_str(),
+            caller.fixture_token.as_str(),
             serde_json::json!({"ItemId": "item", "PlaySessionId": "one", "playSessionId": "two"}),
         ),
         (
-            caller.virtual_key.as_str(),
+            caller.fixture_token.as_str(),
             serde_json::json!({"ItemId": "item", "MediaSourceId": "one", "mediaSourceId": "two"}),
         ),
         (
-            caller.virtual_key.as_str(),
+            caller.fixture_token.as_str(),
             serde_json::json!({"NowPlayingQueue": [{"ItemId": "item"}]}),
         ),
         (
-            caller.virtual_key.as_str(),
+            caller.fixture_token.as_str(),
             serde_json::json!({"ItemId": "", "PlaySessionId": ""}),
         ),
         (
-            caller.virtual_key.as_str(),
+            caller.fixture_token.as_str(),
             serde_json::json!({"ItemId": "item", "PlaySessionId": 42}),
         ),
         (
-            caller.virtual_key.as_str(),
+            caller.fixture_token.as_str(),
             serde_json::json!({"ItemId": "item", "MediaSourceId": false}),
         ),
     ] {
@@ -957,7 +894,7 @@ async fn blank_session_alias_does_not_clear_known_authority() {
     for (pascal, camel) in [("known-session", ""), ("", "known-session")] {
         let request = json_post(
             "/Sessions/Playing/Progress",
-            &caller.virtual_key,
+            &caller.fixture_token,
             serde_json::json!({
                 "ItemId": "item", "PlaySessionId": pascal, "playSessionId": camel
             }),
@@ -1004,7 +941,7 @@ async fn progress_rejects_a_session_owned_by_another_user() {
         .await;
     let request = json_post(
         "/Sessions/Playing/Progress",
-        &caller.virtual_key,
+        &caller.fixture_token,
         serde_json::json!({
             "PlaySessionId": "victim-session",
             "ItemId": "item"

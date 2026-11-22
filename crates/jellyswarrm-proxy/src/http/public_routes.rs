@@ -200,7 +200,7 @@ pub(crate) async fn gate(
     let Some(token) = request_token(uri, headers) else {
         return Ok(Gate::NotFound);
     };
-    Ok(match authorization.get_user_by_token(&token).await? {
+    Ok(match authorization.resolve_credential(&token).await? {
         Some(_) => Gate::Forward,
         None => Gate::Unauthorized,
     })

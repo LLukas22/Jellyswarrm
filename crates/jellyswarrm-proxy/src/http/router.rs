@@ -83,6 +83,7 @@ fn routes() -> Router<AppState> {
             .route("/socket", get(client_sessions::websocket))
             .route("/GetUtcTime", get(syncplay::get_utc_time))
             .route("/Auth/Keys", get(auth_keys::list_api_keys).post(auth_keys::create_api_key))
+            .route("/Auth/Keys/{token}", axum::routing::delete(auth_keys::delete_api_key))
             .nest("/SyncPlay", Router::new()
                 .route("/New", post(syncplay::create_group))
                 .route("/Join", post(syncplay::join_group))

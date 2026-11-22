@@ -32,8 +32,37 @@ impl std::fmt::Debug for MappingAuthenticationError {
 
 pub(crate) struct MappingLogin {
     pub(crate) response: crate::protocol::models::AuthenticateResponse,
+    pub(crate) guard: Option<UncommittedLogin>,
     pub(crate) username: String,
     pub(crate) password: Option<crate::domain::security::Password>,
+}
+
+/// Own a newly issued password token until its binding commits. Cancellation
+/// of the request also retires it. Quick Connect tokens belong to the mapping.
+pub(crate) struct UncommittedLogin {
+    authorization: Arc<crate::auth::UserAuthorizationService>,
+    pub(crate) retirement_id: i64,
+}
+impl Drop for UncommittedLogin {
+    fn drop(&mut self) {
+        // A successful binding deletes this reservation in its transaction.
+        // Otherwise make cleanup eligible immediately. The durable deadline
+        // also covers process exit or cancellation before this task runs.
+        let authorization = self.authorization.clone();
+        let id = self.retirement_id;
+        tokio::spawn(async move {
+            if let Err(error) = authorization.release_retirement(id).await {
+                tracing::error!(%error,"Could not advance pending logout");
+            }
+        });
+    }
+}
+
+/// Result of an upstream login, retaining the mapping that authorized the request.
+pub(crate) struct BackendLogin {
+    pub(crate) server: Server,
+    pub(crate) mapping: Option<ServerMapping>,
+    pub(crate) login: MappingLogin,
 }
 
 /// Independent authenticated identity over the shared transport. Each operation
@@ -68,6 +97,8 @@ impl AuthenticatedMapping {
 #[derive(Clone)]
 pub(crate) struct MappingAuthenticator {
     authorization: Arc<crate::auth::UserAuthorizationService>,
+    mapping_locks: moka::future::Cache<i64, Arc<tokio::sync::Mutex<()>>>,
+    failed_keys: moka::future::Cache<(i64, i64), ()>,
     transport: reqwest::Client,
     admin_password: crate::domain::security::Password,
 }
@@ -147,10 +178,30 @@ impl MappingAuthenticator {
             client_info,
             self.transport.clone(),
         )?;
-        let response = client
+        let response: crate::protocol::models::AuthenticateResponse = client
             .authenticate_by_name_typed(username, password.as_str())
             .await?;
+        // Jellyfin issues the token before SQLite can record it. Once this write
+        // commits, retirement survives a process exit even before binding.
+        let retirement_id = match self
+            .authorization
+            .reserve_retirement(server.url.as_str(), &response.access_token)
+            .await
+        {
+            Ok(id) => id,
+            Err(error) => {
+                client.with_token(response.access_token).await;
+                if client.logout().await.is_err() {
+                    tracing::warn!("Could not retire password login after storage failure");
+                }
+                return Err(error.into());
+            }
+        };
         Ok(MappingLogin {
+            guard: Some(UncommittedLogin {
+                authorization: self.authorization.clone(),
+                retirement_id,
+            }),
             response,
             username: username.to_owned(),
             password: Some(password.clone()),
@@ -163,9 +214,233 @@ impl MappingAuthenticator {
     ) -> Self {
         Self {
             authorization,
+            mapping_locks: moka::future::Cache::builder()
+                .time_to_idle(std::time::Duration::from_secs(3600))
+                .build(),
+            failed_keys: moka::future::Cache::builder()
+                .time_to_live(std::time::Duration::from_secs(600))
+                .build(),
             transport,
             admin_password,
         }
+    }
+
+    pub(crate) async fn logout_login(&self, token: &str) -> Result<(), sqlx::Error> {
+        self.authorization.revoke_login(token).await
+    }
+
+    pub(crate) async fn logout_worker(&self) {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+        let mut changed = self.authorization.session_changes.subscribe();
+        loop {
+            tokio::select! {_=tick.tick()=>{},_=changed.changed()=>{}}
+            if let Err(error) = self.drain_logouts().await {
+                tracing::warn!(%error,"Failed to process upstream logouts");
+            }
+        }
+    }
+
+    pub(crate) async fn drain_logouts(&self) -> Result<(), sqlx::Error> {
+        let pool = &self.authorization.pool;
+        sqlx::query(
+            "DELETE FROM pending_upstream_logouts WHERE created_at < unixepoch()-604800
+             OR NOT EXISTS (SELECT 1 FROM servers WHERE url=server_url)",
+        )
+        .execute(pool)
+        .await?;
+        loop {
+            // Claim the entry before network I/O. A lost acknowledgement or a
+            // stopped worker leaves it eligible for another idempotent attempt.
+            let row: Option<(i64, String, String)> = sqlx::query_as(
+                "UPDATE pending_upstream_logouts SET attempts=attempts+1,
+                    next_attempt=unixepoch()+min(3600,60*(1 << min(attempts,6)))
+                 WHERE id=(SELECT id FROM pending_upstream_logouts
+                           WHERE next_attempt<=unixepoch() ORDER BY id LIMIT 1)
+                 RETURNING id,server_url,encrypted_token",
+            )
+            .fetch_optional(pool)
+            .await?;
+            let Some((id, url, encrypted)) = row else {
+                break;
+            };
+            let token = match self.authorization.decrypt_session_token(encrypted) {
+                Ok(token) => token,
+                Err(_) => {
+                    tracing::warn!(logout_id = id, "Could not decrypt queued logout");
+                    continue;
+                }
+            };
+            let client = match JellyfinClient::new_with_client(
+                &url,
+                crate::config::CLIENT_INFO.clone(),
+                self.transport.clone(),
+            ) {
+                Ok(client) => client,
+                Err(_) => {
+                    tracing::warn!(logout_id = id, "Invalid queued logout URL");
+                    continue;
+                }
+            };
+            client.with_token(token).await;
+            match client.logout().await {
+                Ok(()) | Err(jellyfin_api::error::Error::Unauthorized) => {
+                    sqlx::query("DELETE FROM pending_upstream_logouts WHERE id=?")
+                        .bind(id)
+                        .execute(pool)
+                        .await?;
+                }
+                Err(_) => tracing::warn!(logout_id = id, "Will retry upstream logout"),
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn ensure_key_sessions(
+        &self,
+        user: &LocalUser,
+        login_id: i64,
+        servers: &crate::servers::ServerStorageService,
+    ) -> Result<(), sqlx::Error> {
+        use crate::domain::ids::ServerId;
+        let bindings: Vec<(i64, i64, bool, bool)> = sqlx::query_as(
+            "SELECT m.id, m.server_id, m.key_password_rejected, a.id IS NOT NULL
+             FROM client_logins l JOIN server_mappings m ON m.user_id=l.user_id
+             LEFT JOIN login_sessions a ON a.login_id=l.id AND a.mapping_id=m.id
+             WHERE l.user_id=? AND l.id=? AND l.api_key_id IS NOT NULL",
+        )
+        .bind(&user.id)
+        .bind(login_id)
+        .fetch_all(&self.authorization.pool)
+        .await?;
+        let mut usable = false;
+        let mut missing = Vec::new();
+        for (mapping_id, server_id, rejected, bound) in bindings {
+            if servers
+                .server_status(ServerId::new(server_id))
+                .await
+                .is_healthy()
+            {
+                usable |= bound;
+                if !bound && !rejected && !self.failed_keys.contains_key(&(login_id, mapping_id)) {
+                    missing.push(mapping_id);
+                }
+            }
+        }
+
+        for mapping_id in missing {
+            // Serialize automatic password attempts across all keys for this mapping.
+            let lock = self
+                .mapping_locks
+                .get_with(mapping_id, async { Arc::new(tokio::sync::Mutex::new(())) })
+                .await;
+            let guard = if usable {
+                let Ok(guard) = lock.try_lock_owned() else {
+                    continue;
+                };
+                guard
+            } else {
+                lock.lock_owned().await
+            };
+            let service = self.clone();
+            let user = user.clone();
+            // Finish recording a rejection even if the initiating request disconnects.
+            let task = tokio::spawn(async move {
+                let _guard = guard;
+                service
+                    .bind_key_mapping(&user, login_id, mapping_id)
+                    .await
+                    .inspect_err(|error| {
+                        tracing::warn!(%error, mapping_id, "Failed to bind API key");
+                    })
+            });
+            if !usable {
+                task.await.map_err(|_| sqlx::Error::WorkerCrashed)??;
+            }
+        }
+        Ok(())
+    }
+
+    async fn bind_key_mapping(
+        &self,
+        user: &LocalUser,
+        login_id: i64,
+        mapping_id: i64,
+    ) -> Result<(), sqlx::Error> {
+        use sqlx::{FromRow, Row};
+        let pool = &self.authorization.pool;
+        if self.failed_keys.contains_key(&(login_id, mapping_id)) {
+            return Ok(());
+        }
+        // Recheck under the mapping lock. Another key may have observed a rejection.
+        let row = sqlx::query(
+            "SELECT m.*, l.device_id, l.client, s.name AS server_name,
+                    s.url AS server_url_full, s.priority, s.media_streaming_mode,
+                    s.created_at AS server_created_at,s.updated_at AS server_updated_at
+             FROM client_logins l JOIN server_mappings m ON m.user_id=l.user_id
+             JOIN servers s ON s.id=m.server_id
+             WHERE l.user_id=? AND l.id=? AND l.api_key_id IS NOT NULL
+             AND m.id=? AND NOT m.key_password_rejected
+             AND NOT EXISTS(SELECT 1 FROM login_sessions a WHERE a.login_id=l.id AND a.mapping_id=m.id)")
+            .bind(&user.id)
+            .bind(login_id)
+            .bind(mapping_id)
+            .fetch_optional(pool)
+            .await?;
+        let Some(row) = row else { return Ok(()) };
+        let mapping = ServerMapping::from_row(&row)?;
+        let server = Server::from_session_join_row(&row)?;
+        let device_id: String = row.try_get("device_id")?;
+        let info = ClientInfo {
+            device_id: device_id.clone(),
+            client: row.try_get("client")?,
+            device: "Integration".into(),
+            version: "1".into(),
+        };
+        let login = match self
+            .authenticate_login(user, &server, &mapping, None, info)
+            .await
+        {
+            Ok(login) => login,
+            Err(MappingAuthenticationError::Storage(error)) => return Err(error),
+            Err(MappingAuthenticationError::Backend(
+                jellyfin_api::error::Error::AuthenticationFailed(_),
+            )) => {
+                if let MappingAuth::Password { username, password } = &mapping.auth {
+                    // A response for a superseded credential must not block its replacement.
+                    let updated = sqlx::query(
+                        "UPDATE server_mappings SET key_password_rejected=TRUE
+                         WHERE id=? AND auth_method='password' AND mapped_username=? AND mapped_password=?",
+                    )
+                    .bind(mapping_id)
+                    .bind(username)
+                    .bind(password.as_str())
+                    .execute(pool)
+                    .await?;
+                    if updated.rows_affected() > 0 {
+                        tracing::warn!(mapping_id, "Jellyfin rejected the saved password. Update the mapping to resume automatic API-key sign-in");
+                    }
+                }
+                return Ok(());
+            }
+            Err(_) => {
+                self.failed_keys.insert((login_id, mapping.id), ()).await;
+                return Ok(());
+            }
+        };
+        let backend = BackendLogin {
+            server,
+            mapping: Some(mapping),
+            login,
+        };
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+        if self
+            .authorization
+            .insert_backend(&mut tx, user, login_id, &device_id, &backend)
+            .await?
+        {
+            tx.commit().await?;
+        }
+        Ok(())
     }
 
     fn validate_owner(
@@ -221,33 +496,6 @@ impl MappingAuthenticator {
         Ok((token, remote))
     }
 
-    /// Remote authentication and credential migration only. Registration of a
-    /// local authorization session and client-facing decoration are separate
-    /// application stages. Never logs out a durable Quick Connect credential.
-    pub(crate) async fn authenticate_for_client(
-        &self,
-        user: &LocalUser,
-        server: &Server,
-        mapping: &ServerMapping,
-        client_info: ClientInfo,
-    ) -> Result<crate::protocol::models::AuthenticateResponse, MappingAuthenticationError> {
-        let login = self
-            .authenticate_login(user, server, mapping, None, client_info)
-            .await?;
-        if let Some(password) = login.password {
-            self.authorization
-                .add_server_mapping(
-                    &user.id,
-                    server,
-                    &login.username,
-                    &password,
-                    Some(&user.local_credential.mapping_key()),
-                )
-                .await?;
-        }
-        Ok(login.response)
-    }
-
     /// The caller must have verified the local credential before supplying its
     /// plaintext as a legacy decryption candidate. This operation authenticates
     /// remotely but leaves local session registration to the application.
@@ -263,6 +511,7 @@ impl MappingAuthenticator {
         if matches!(mapping.auth, MappingAuth::QuickConnect { .. }) {
             let (token, remote) = self.validated_token(user, server, mapping).await?;
             return Ok(MappingLogin {
+                guard: None,
                 username: mapping.auth.username().to_owned(),
                 password: None,
                 response: crate::protocol::models::AuthenticateResponse {

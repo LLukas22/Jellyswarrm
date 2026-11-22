@@ -11,5 +11,6 @@ pub(crate) use service::{ClientSession, ClientSessionService};
 #[derive(Clone)]
 pub(crate) struct SessionCaller {
     pub(crate) user: crate::auth::service::LocalUser,
+    pub(crate) login_token: Option<String>,
     pub(crate) session_id: String,
 }

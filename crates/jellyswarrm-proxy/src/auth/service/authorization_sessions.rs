@@ -1,64 +1,65 @@
-//! Persist, encrypt, rebind, and revoke backend authorization sessions.
+//! Persist and revoke per-login backend credentials.
 use super::*;
+use crate::auth::mapping_authentication::BackendLogin;
+use sha2::{Digest, Sha256};
 
 impl UserAuthorizationService {
-    /// Encrypt old session tokens before accepting requests. Legacy rows cannot
-    /// be left in the DB indefinitely: a Quick Connect session holds the same
-    /// durable backend token as its mapping.
+    /// Finish the one-time SQL migration using the configured secret.
     pub(crate) async fn enable_session_encryption(
         &mut self,
         secret: &[u8],
     ) -> Result<(), sqlx::Error> {
         let key = MappingEncryptionKey::for_authorization_sessions(secret)
             .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
-        let mut tx = self.pool.begin().await?;
-        let rows = sqlx::query(
-            "SELECT id, jellyfin_token FROM authorization_sessions WHERE token_format = 'legacy'",
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let staging: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='retiring_plaintext_sessions')",
         )
-        .fetch_all(&mut *tx)
+        .fetch_one(&mut *tx)
         .await?;
-        for row in rows {
-            let id: i64 = row.try_get("id")?;
-            let Some(token): Option<String> = row.try_get("jellyfin_token")? else {
-                // Very old rows may have no upstream session at all.
-                continue;
-            };
-            let encrypted = key
-                .encrypt(&Password::from(token))
-                .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
-            sqlx::query("UPDATE authorization_sessions SET jellyfin_token = ?, token_format = 'session_v1' WHERE id = ?")
-                .bind(encrypted.as_str()).bind(id).execute(&mut *tx).await?;
+        if staging {
+            let rows: Vec<(String, String)> =
+                sqlx::query_as("SELECT server_url, token FROM retiring_plaintext_sessions")
+                    .fetch_all(&mut *tx)
+                    .await?;
+            for (url, token) in rows {
+                let encrypted = key
+                    .encrypt(&Password::from(token))
+                    .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+                sqlx::query(
+                    "INSERT INTO pending_upstream_logouts(server_url, encrypted_token) VALUES(?,?)",
+                )
+                .bind(url)
+                .bind(encrypted.as_str())
+                .execute(&mut *tx)
+                .await?;
+            }
+            sqlx::query("DROP TABLE retiring_plaintext_sessions")
+                .execute(&mut *tx)
+                .await?;
         }
         tx.commit().await?;
         self.session_key = Some(key);
         Ok(())
     }
 
-    /// Store authorization session
-    #[cfg(not(test))]
-    pub(crate) async fn store_authorization_session(
-        &self,
-        user_id: &str,
-        server: &Server,
-        authorization: &Authorization,
-        jellyfin_token: String,
-        original_user_id: String,
-        expires_at: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> Result<i64, sqlx::Error> {
-        self.store_authorization_session_by_id(
-            user_id,
-            server.id,
-            server.url.as_str(),
-            authorization,
-            jellyfin_token,
-            original_user_id,
-            expires_at,
-        )
-        .await
-    }
-
     #[cfg(test)]
-    pub(crate) async fn store_authorization_session<'a, S>(
+    pub(crate) async fn fixture_user(
+        &self,
+        name: &str,
+        password: &Password,
+    ) -> Result<LocalUser, sqlx::Error> {
+        let mut user = self.create_user(name, password).await?;
+        let id = sqlx::query_scalar("INSERT INTO client_logins(user_id,token_hash,client,device,device_id,version) VALUES(?,?,'Test','Device','fixture','1') RETURNING id")
+           .bind(&user.id)
+            .bind(Sha256::digest(user.fixture_token.as_bytes()).to_vec())
+            .fetch_one(&self.pool)
+            .await?;
+        user.login_id = Some(id);
+        Ok(user)
+    }
+    #[cfg(test)]
+    pub(crate) async fn bind_fixture_login<'a, S>(
         &self,
         user_id: &str,
         server: S,
@@ -71,7 +72,7 @@ impl UserAuthorizationService {
         S: Into<ServerReference<'a>>,
     {
         let (server_id, server_url) = self.resolve_server_reference(server.into()).await?;
-        self.store_authorization_session_by_id(
+        self.bind_fixture_login_by_id(
             user_id,
             server_id,
             &server_url,
@@ -83,8 +84,9 @@ impl UserAuthorizationService {
         .await
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
-    pub(super) async fn store_authorization_session_by_id(
+    pub(super) async fn bind_fixture_login_by_id(
         &self,
         user_id: &str,
         server_id: ServerId,
@@ -94,69 +96,329 @@ impl UserAuthorizationService {
         original_user_id: String,
         expires_at: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<i64, sqlx::Error> {
-        let now = chrono::Utc::now();
-        #[cfg(not(test))]
-        if self.session_key.is_none() {
-            return Err(sqlx::Error::Protocol(
-                "session encryption key is required".into(),
-            ));
-        }
-        let (jellyfin_token, token_format) = if let Some(key) = &self.session_key {
-            (
-                key.encrypt(&Password::from(jellyfin_token))
-                    .map_err(|e| sqlx::Error::Protocol(e.to_string()))?
-                    .into_inner(),
-                "session_v1",
-            )
-        } else {
-            (jellyfin_token, "legacy")
-        };
-
-        // Find mapping to obtain mapping_id (required for referential integrity & cascade deletes)
         let mapping = self
             .get_server_mapping_by_server_id(user_id, server_id)
             .await?
             .ok_or(sqlx::Error::RowNotFound)?;
-
-        let session_id = sqlx::query_scalar::<_, i64>(
-            r#"
-            INSERT INTO authorization_sessions
-            (user_id, mapping_id, server_url, client, device, device_id, version, jellyfin_token, token_format, original_user_id, expires_at, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(user_id, mapping_id, device_id) DO UPDATE SET
-                server_url = excluded.server_url,
-                client = excluded.client,
-                device = excluded.device,
-                version = excluded.version,
-                jellyfin_token = excluded.jellyfin_token,
-                token_format = excluded.token_format,
-                original_user_id = excluded.original_user_id,
-                expires_at = excluded.expires_at,
-                updated_at = excluded.updated_at
-            RETURNING id
-            "#,
+        let token = format!("fixture-login-{user_id}");
+        let mut tx = self.pool.begin().await?;
+        let login_id: i64 = sqlx::query_scalar(
+            "INSERT INTO client_logins(user_id, token_hash, client, device, device_id, version)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(token_hash) DO UPDATE SET client=excluded.client, device=excluded.device,
+                device_id=excluded.device_id, version=excluded.version
+             RETURNING id",
         )
         .bind(user_id)
-        .bind(mapping.id)
-        .bind(server_url)
+        .bind(Sha256::digest(token.as_bytes()).to_vec())
         .bind(&authorization.client)
         .bind(&authorization.device)
         .bind(&authorization.device_id)
         .bind(&authorization.version)
-        .bind(jellyfin_token)
-        .bind(token_format)
-        .bind(original_user_id)
-        .bind(expires_at)
-        .bind(now)
-        .bind(now)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await?;
+        let id = sqlx::query_scalar(
+            "INSERT INTO login_sessions(user_id, login_id, mapping_id, server_url, upstream_device_id,
+                 jellyfin_token, owned, original_user_id, expires_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(login_id,mapping_id) DO UPDATE SET jellyfin_token=excluded.jellyfin_token,
+                 expires_at=excluded.expires_at, upstream_device_id=excluded.upstream_device_id
+             RETURNING id",
+        )
+           .bind(user_id)
+            .bind(login_id)
+            .bind(mapping.id)
+            .bind(server_url)
+            .bind(&authorization.device_id)
+           .bind(self.encrypt_session_token(jellyfin_token)?)
+            .bind(matches!(mapping.auth, MappingAuth::Password { .. }))
+           .bind(original_user_id)
+            .bind(expires_at)
+            .fetch_one(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(id)
+    }
+    pub(super) fn encrypt_session_token(&self, token: String) -> Result<String, sqlx::Error> {
+        self.session_key
+            .as_ref()
+            .ok_or_else(|| sqlx::Error::Protocol("missing session key".into()))?
+            .encrypt(&Password::from(token))
+            .map(|v| v.into_inner())
+            .map_err(|e| sqlx::Error::Protocol(e.to_string()))
+    }
+    pub(crate) fn decrypt_session_token(&self, value: String) -> Result<String, sqlx::Error> {
+        self.session_key
+            .as_ref()
+            .ok_or_else(|| sqlx::Error::Protocol("missing session key".into()))?
+            .decrypt(&EncryptedPassword::from_raw(value))
+            .map(|v| v.into_inner())
+            .map_err(|e| sqlx::Error::Protocol(e.to_string()))
+    }
+    pub(crate) async fn reserve_retirement(
+        &self,
+        url: &str,
+        token: &str,
+    ) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar(
+            "INSERT INTO pending_upstream_logouts(server_url,encrypted_token,next_attempt)
+             VALUES(?,?,unixepoch()+3600) RETURNING id",
+        )
+        .bind(url)
+        .bind(self.encrypt_session_token(token.to_owned())?)
+        .fetch_one(&self.pool)
+        .await
+    }
+    pub(crate) async fn release_retirement(&self, id: i64) -> Result<(), sqlx::Error> {
+        let released = sqlx::query(
+            "UPDATE pending_upstream_logouts SET next_attempt=0 WHERE id=? AND attempts=0",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        if released.rows_affected() > 0 {
+            self.session_changes.send_replace(());
+        }
+        Ok(())
+    }
+    /// Publish the bearer token and all successful backend bindings in one commit.
+    pub(crate) async fn create_login(
+        &self,
+        user: &LocalUser,
+        auth: &Authorization,
+        upstream_device_id: &str,
+        backends: &[BackendLogin],
+    ) -> Result<(String, usize, i64), sqlx::Error> {
+        if backends.is_empty() {
+            return Err(sqlx::Error::RowNotFound);
+        }
+        let token = generate_token();
+        let mut tx = self.pool.begin().await?;
+        let login_id: i64 =sqlx::query_scalar("INSERT INTO client_logins(user_id,token_hash,client,device,device_id,version) VALUES(?,?,?,?,?,?) RETURNING id")
+            .bind(&user.id)
+            .bind(Sha256::digest(token.as_bytes()).to_vec())
+            .bind(&auth.client)
+            .bind(&auth.device)
+            .bind(&auth.device_id)
+            .bind(&auth.version)
+            .fetch_one(&mut *tx)
+            .await?;
+        let mut first = None;
+        for (index, backend) in backends.iter().enumerate() {
+            if self
+                .insert_backend(&mut tx, user, login_id, upstream_device_id, backend)
+                .await?
+            {
+                first.get_or_insert(index);
+            }
+        }
+        let first = first.ok_or(sqlx::Error::RowNotFound)?;
+        let mut replaced = false;
+        if Device::has_known_device_id(&normalize_device(&auth.device_id)) {
+            // Android TV 0.20 renamed the app. Other clients can legitimately share a device ID.
+            let android_tv = matches!(
+                normalize_device(&auth.client).as_str(),
+                "jellyfin android tv" | "jellyfin for android tv"
+            );
+            replaced = sqlx::query(
+                "DELETE FROM client_logins
+                 WHERE user_id=? AND device_id=? AND token_hash IS NOT NULL AND id<>?
+                 AND (client=? OR (? AND lower(replace(trim(client), '+', ' ')) IN
+                     ('jellyfin android tv', 'jellyfin for android tv')))",
+            )
+            .bind(&user.id)
+            .bind(&auth.device_id)
+            .bind(login_id)
+            .bind(&auth.client)
+            .bind(android_tv)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected()
+                > 0;
+        }
+        tx.commit().await?;
+        if replaced {
+            self.session_changes.send_replace(());
+        }
+        Ok((token, first, login_id))
+    }
 
-        info!(
-            "Stored authorization session for user {} on server {}",
-            user_id, server_url
-        );
-        Ok(session_id)
+    pub(crate) async fn insert_backend(
+        &self,
+        tx: &mut sqlx::SqliteConnection,
+        user: &LocalUser,
+        login_id: i64,
+        device_id: &str,
+        backend: &BackendLogin,
+    ) -> Result<bool, sqlx::Error> {
+        let Some(mapping_id) = self.validated_login_mapping(tx, user, backend).await? else {
+            return Ok(false);
+        };
+        if let Some(guard) = &backend.login.guard {
+            let claimed =
+                sqlx::query("DELETE FROM pending_upstream_logouts WHERE id=? AND attempts=0")
+                    .bind(guard.retirement_id)
+                    .execute(&mut *tx)
+                    .await?;
+            if claimed.rows_affected() == 0 {
+                return Ok(false);
+            }
+        }
+        let owned = backend.login.password.is_some();
+        let device_id = if owned {
+            device_id.to_owned()
+        } else {
+            crate::auth::mapping_authentication::mapping_device_id(&backend.server, &user.id)
+        };
+        sqlx::query("INSERT INTO login_sessions(user_id,login_id,mapping_id,server_url,upstream_device_id,jellyfin_token,owned,original_user_id)
+            VALUES (?,?,?,?,?,?,?,?)")
+            .bind(&user.id)
+            .bind(login_id)
+            .bind(mapping_id)
+            .bind(backend.server.url.as_str())
+            .bind(device_id)
+            .bind(self.encrypt_session_token(backend.login.response.access_token.clone())?)
+            .bind(owned)
+            .bind(&backend.login.response.user.id)
+            .execute(tx)
+            .await?;
+        Ok(true)
+    }
+    /// Re-check the backend identity while holding the login transaction's writer lock.
+    /// A relink or removal during upstream authentication invalidates that result.
+    async fn validated_login_mapping(
+        &self,
+        tx: &mut sqlx::SqliteConnection,
+        user: &LocalUser,
+        backend: &BackendLogin,
+    ) -> Result<Option<i64>, sqlx::Error> {
+        let server = &backend.server;
+        let login = &backend.login;
+        let key = self
+            .mapping_key
+            .as_ref()
+            .ok_or_else(|| sqlx::Error::Protocol("mapping encryption key is required".into()))?;
+        let current_server: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM servers WHERE id=? AND url=?)")
+                .bind(server.id.as_i64())
+                .bind(server.url.as_str())
+                .fetch_one(&mut *tx)
+                .await?;
+        if !current_server {
+            return Ok(None);
+        }
+        if backend.mapping.is_none() {
+            let password = login.password.as_ref().ok_or(sqlx::Error::RowNotFound)?;
+            let encrypted = key
+                .encrypt(password)
+                .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+            sqlx::query("INSERT INTO server_mappings
+                (user_id, server_id, server_url, mapped_username, mapped_password, auth_method, credential_format)
+                VALUES (?, ?, ?, ?, ?, 'password', 'session_v1') ON CONFLICT(user_id, server_id) DO NOTHING")
+                .bind(&user.id)
+                .bind(server.id.as_i64())
+                .bind(server.url.as_str())
+                .bind(&login.username)
+                .bind(encrypted.as_str())
+                .execute(&mut *tx)
+            .await?;
+        }
+        let current: Option<ServerMapping> =
+            sqlx::query_as("SELECT * FROM server_mappings WHERE user_id = ? AND server_id = ?")
+                .bind(&user.id)
+                .bind(server.id.as_i64())
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some(current) = current else {
+            return Ok(None);
+        };
+        if backend
+            .mapping
+            .as_ref()
+            .is_some_and(|mapping| mapping.id != current.id)
+        {
+            return Ok(None);
+        }
+        // A password-hash upgrade can re-encrypt an unchanged mapping while
+        // the upstream login is in flight. Accept it if the credential still matches.
+        if !backend
+            .mapping
+            .as_ref()
+            .is_some_and(|original| original.auth == current.auth)
+        {
+            let user_key = user.local_credential.mapping_key();
+            let matches = match (&current.auth, &login.password) {
+                (MappingAuth::Password { .. }, Some(password)) => !self
+                    .mapping_credentials_changed(
+                        &current,
+                        &login.username,
+                        password,
+                        Some(&user_key),
+                    ),
+                (
+                    MappingAuth::QuickConnect {
+                        backend_user_id, ..
+                    },
+                    None,
+                ) => {
+                    *backend_user_id == login.response.user.id
+                        && self
+                            .decrypt_mapping_token(
+                                &current,
+                                &user_key,
+                                self.legacy_admin_key.as_ref().unwrap_or(&user_key),
+                            )
+                            .is_ok_and(|token| token == login.response.access_token)
+                }
+                _ => false,
+            };
+            if !matches {
+                return Ok(None);
+            }
+        }
+        if current.credential_format == CredentialFormat::Legacy {
+            if let Some(password) = &login.password {
+                let encrypted = key
+                    .encrypt(password)
+                    .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+                sqlx::query("UPDATE server_mappings SET mapped_password = ?, credential_format = 'session_v1', updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+                    .bind(encrypted.as_str())
+            .bind(current.id)
+            .execute(&mut *tx)
+            .await?;
+            }
+        }
+        Ok(Some(current.id))
+    }
+
+    pub(crate) async fn revoke_login(&self, token: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM client_logins WHERE token_hash=?")
+            .bind(Sha256::digest(token.as_bytes()).to_vec())
+            .execute(&self.pool)
+            .await?;
+        self.session_changes.send_replace(());
+        Ok(())
+    }
+    pub(crate) async fn expire_idle_logins(&self, days: u32) -> Result<(), sqlx::Error> {
+        if days > 0 {
+            sqlx::query("DELETE FROM client_logins WHERE token_hash IS NOT NULL AND last_used_at<unixepoch()-?")
+                .bind(i64::from(days)*86400)
+            .execute(&self.pool)
+            .await?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn login_exists(
+        &self,
+        user: &str,
+        login: Option<i64>,
+    ) -> Result<bool, sqlx::Error> {
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM client_logins WHERE user_id=? AND id=?)")
+            .bind(user)
+            .bind(login)
+            .fetch_one(&self.pool)
+            .await
     }
 
     /// Get authorization sessions and servers for a user by user ID
@@ -168,7 +430,7 @@ impl UserAuthorizationService {
             return Ok(None);
         };
 
-        let sessions = self.get_user_sessions(&user.id, None).await?;
+        let sessions = self.get_user_sessions(&user.id).await?;
         Ok(Some((user, sessions)))
     }
 
@@ -178,38 +440,48 @@ impl UserAuthorizationService {
         &self,
         virtual_token: &str,
     ) -> Result<Option<(LocalUser, Vec<(AuthorizationSession, Server)>)>, sqlx::Error> {
-        let user = match self.get_user_by_token(virtual_token).await? {
-            Some(user) => user,
-            None => return Ok(None),
+        let Some((user, credential)) = self.resolve_credential(virtual_token).await? else {
+            return Ok(None);
         };
-
-        let sessions = self.get_user_sessions(&user.id, None).await?;
+        let sessions = self.sessions_for_credential(&user.id, credential).await?;
         Ok(Some((user, sessions)))
     }
 
-    ///Get authorization sessions with servers for a user
+    /// Get authorization sessions with servers for a user
     pub(crate) async fn get_user_sessions(
         &self,
         user_id: &str,
-        device: Option<Device>,
     ) -> Result<Vec<(AuthorizationSession, Server)>, sqlx::Error> {
-        let query = String::from(
+        self.get_user_sessions_with(user_id, None).await
+    }
+
+    pub(crate) async fn sessions_for_credential(
+        &self,
+        user_id: &str,
+        credential: CallerCredential,
+    ) -> Result<Vec<(AuthorizationSession, Server)>, sqlx::Error> {
+        self.get_user_sessions_with(user_id, Some(credential)).await
+    }
+
+    async fn get_user_sessions_with(
+        &self,
+        user_id: &str,
+        credential: Option<CallerCredential>,
+    ) -> Result<Vec<(AuthorizationSession, Server)>, sqlx::Error> {
+        let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
             r#"
     SELECT
         auth.id as auth_id,
         auth.user_id as auth_user_id,
-        auth.mapping_id as auth_mapping_id,
         sm.server_url as auth_server_url,
-        auth.client,
-        auth.device,
-        auth.device_id,
-        auth.version,
+        l.client,
+        l.device,
+        l.device_id,
+        auth.upstream_device_id,
+        l.version,
         auth.jellyfin_token,
-        auth.token_format,
+
         auth.original_user_id,
-        auth.expires_at,
-        auth.created_at as auth_created_at,
-        auth.updated_at as auth_updated_at,
 
         s.id as server_id,
         s.name as server_name,
@@ -218,18 +490,21 @@ impl UserAuthorizationService {
         s.media_streaming_mode,
         s.created_at as server_created_at,
         s.updated_at as server_updated_at
-    FROM authorization_sessions auth
+    FROM login_sessions auth JOIN client_logins l ON l.id=auth.login_id
     JOIN server_mappings sm ON auth.mapping_id = sm.id
     JOIN servers s ON sm.server_id = s.id
-    WHERE auth.user_id = ?
-    AND (auth.expires_at IS NULL OR auth.expires_at > ?)
-    ORDER BY s.priority DESC, s.name ASC
-"#,
+    WHERE auth.user_id = "#,
         );
-
-        let rows = sqlx::query(&query)
-            .bind(user_id)
-            .bind(chrono::Utc::now())
+        query.push_bind(user_id);
+        if let Some(CallerCredential::Login(id) | CallerCredential::ApplicationKey(id)) = credential
+        {
+            query.push(" AND auth.login_id = ").push_bind(id);
+        }
+        let rows = query
+            .push(" AND (auth.expires_at IS NULL OR auth.expires_at > ")
+            .push_bind(chrono::Utc::now())
+            .push(") ORDER BY s.priority DESC, s.name ASC, auth.updated_at DESC, auth.id DESC")
+            .build()
             .fetch_all(&self.pool)
             .await?;
 
@@ -237,209 +512,14 @@ impl UserAuthorizationService {
             .into_iter()
             .map(|row| {
                 let mut session = AuthorizationSession::from_user_sessions_row(&row)?;
-                if row.try_get::<String, _>("token_format")? == "session_v1" {
-                    let key = self.session_key.as_ref().ok_or_else(|| {
-                        sqlx::Error::Protocol("session encryption key unavailable".into())
-                    })?;
-                    session.jellyfin_token = key
-                        .decrypt(&EncryptedPassword::from_raw(session.jellyfin_token))
-                        .map_err(|e| sqlx::Error::Protocol(e.to_string()))?
-                        .into_inner();
-                }
+                session.jellyfin_token = self.decrypt_session_token(session.jellyfin_token)?;
                 Ok((session, Server::from_session_join_row(&row)?))
             })
             .collect::<Result<_, sqlx::Error>>()?;
 
         debug!("Found {} sessions for user_id: {}", sessions.len(), user_id);
 
-        let sessions = if let Some(device) = device {
-            debug!("Filtering sessions for device: {:?}", device);
-            sessions
-                .into_iter()
-                .filter(|(session, _)| device.matches(&session.device))
-                .collect()
-        } else {
-            sessions
-        };
-
         Ok(sessions)
-    }
-
-    /// Resolve abbreviated authenticated headers without weakening normal device matching.
-    pub(crate) async fn get_user_sessions_for_partial_device(
-        &self,
-        user_id: &str,
-        device: Option<&Device>,
-    ) -> Result<Vec<(AuthorizationSession, Server)>, sqlx::Error> {
-        let sessions = self.get_user_sessions(user_id, None).await?;
-        let Some(device) = device.filter(|d| !d.device_id.is_empty()) else {
-            return Ok(sessions);
-        };
-        if !Device::has_known_device_id(&normalize_device(&device.device_id)) {
-            return Ok(Vec::new());
-        }
-        Ok(sessions
-            .into_iter()
-            .filter(|(session, _)| {
-                session.device.device_id == device.device_id
-                    && (device.client.is_empty()
-                        || normalize_device(&session.device.client)
-                            == normalize_device(&device.client))
-            })
-            .collect())
-    }
-
-    /// Rebind Android TV authorization sessions to a new device ID when the client rotates
-    /// from username-derived to user-id-derived device IDs after login.
-    ///
-    /// This is intentionally scoped to Android TV clients and is only meant for a one-time
-    /// reconciliation path when strict device matching would otherwise miss existing sessions.
-    pub(crate) async fn rebind_android_tv_device_sessions_if_needed(
-        &self,
-        user_id: &str,
-        incoming_device: &Device,
-    ) -> Result<bool, sqlx::Error> {
-        if !is_android_tv_client(&incoming_device.client) {
-            return Ok(false);
-        }
-
-        let incoming_device_id = normalize_device(&incoming_device.device_id);
-        if !Device::has_known_device_id(&incoming_device_id) {
-            return Ok(false);
-        }
-
-        let incoming_client = normalize_device(&incoming_device.client);
-        let incoming_name = normalize_device(&incoming_device.device);
-        if incoming_name.is_empty() {
-            return Ok(false);
-        }
-
-        let sessions = self.get_user_sessions(user_id, None).await?;
-
-        let mut stale_sessions_by_mapping: std::collections::BTreeMap<
-            i64,
-            Vec<AuthorizationSession>,
-        > = std::collections::BTreeMap::new();
-        let mut incoming_session_exists_by_mapping = std::collections::BTreeSet::new();
-
-        for (session, _) in sessions {
-            let session_client = normalize_device(&session.device.client);
-            let session_name = normalize_device(&session.device.device);
-            if session_client != incoming_client || session_name != incoming_name {
-                continue;
-            }
-
-            let session_device_id = normalize_device(&session.device.device_id);
-            if !Device::has_known_device_id(&session_device_id) {
-                continue;
-            }
-
-            if session_device_id == incoming_device_id {
-                incoming_session_exists_by_mapping.insert(session.mapping_id);
-                continue;
-            }
-
-            stale_sessions_by_mapping
-                .entry(session.mapping_id)
-                .or_default()
-                .push(session);
-        }
-
-        if stale_sessions_by_mapping.is_empty() {
-            return Ok(false);
-        }
-
-        let collapsed_device_ids = stale_sessions_by_mapping
-            .iter()
-            .map(|(mapping_id, sessions)| {
-                let mut ids = sessions
-                    .iter()
-                    .map(|session| session.device.device_id.clone())
-                    .collect::<Vec<_>>();
-                ids.sort();
-                ids.dedup();
-                format!("mapping {}: {}", mapping_id, ids.join(", "))
-            })
-            .collect::<Vec<_>>();
-
-        warn!(
-            "Collapsing Android TV device IDs for user {} on device '{}' (client '{}') to '{}': {}",
-            user_id,
-            incoming_device.device,
-            incoming_device.client,
-            incoming_device.device_id,
-            collapsed_device_ids.join("; ")
-        );
-
-        let now = chrono::Utc::now();
-
-        let mut tx = self.pool.begin().await?;
-
-        let mut changed = false;
-
-        for (mapping_id, mut stale_sessions) in stale_sessions_by_mapping {
-            stale_sessions.sort_by(|left, right| {
-                left.updated_at
-                    .cmp(&right.updated_at)
-                    .then(left.created_at.cmp(&right.created_at))
-                    .then(left.id.cmp(&right.id))
-            });
-
-            if incoming_session_exists_by_mapping.contains(&mapping_id) {
-                for session in stale_sessions {
-                    let deleted = sqlx::query(
-                        r#"
-                        DELETE FROM authorization_sessions
-                        WHERE id = ?
-                        "#,
-                    )
-                    .bind(session.id)
-                    .execute(&mut *tx)
-                    .await?;
-
-                    changed |= deleted.rows_affected() > 0;
-                }
-
-                continue;
-            }
-
-            let Some(canonical_session) = stale_sessions.pop() else {
-                continue;
-            };
-
-            let updated = sqlx::query(
-                r#"
-                UPDATE authorization_sessions
-                SET device_id = ?, updated_at = ?
-                WHERE id = ?
-                "#,
-            )
-            .bind(&incoming_device.device_id)
-            .bind(now)
-            .bind(canonical_session.id)
-            .execute(&mut *tx)
-            .await?;
-
-            changed |= updated.rows_affected() > 0;
-
-            for session in stale_sessions {
-                let deleted = sqlx::query(
-                    r#"
-                    DELETE FROM authorization_sessions
-                    WHERE id = ?
-                    "#,
-                )
-                .bind(session.id)
-                .execute(&mut *tx)
-                .await?;
-
-                changed |= deleted.rows_affected() > 0;
-            }
-        }
-
-        tx.commit().await?;
-
-        Ok(changed)
     }
 
     /// Get counts of authorization sessions per server for a user.
@@ -449,7 +529,7 @@ impl UserAuthorizationService {
     ) -> Result<Vec<(String, i64)>, sqlx::Error> {
         let rows = sqlx::query(
             r#"SELECT s.url as url_norm, COUNT(*) as cnt
-                FROM authorization_sessions auth
+                FROM login_sessions auth JOIN client_logins l ON l.id=auth.login_id
                 JOIN server_mappings sm ON auth.mapping_id = sm.id
                 JOIN servers s ON sm.server_id = s.id
                 WHERE auth.user_id = ?
@@ -469,10 +549,17 @@ impl UserAuthorizationService {
         &self,
         user_id: &str,
     ) -> Result<u64, sqlx::Error> {
-        let res = sqlx::query("DELETE FROM authorization_sessions WHERE user_id = ?")
+        let mut tx = self.pool.begin().await?;
+        let res = sqlx::query("DELETE FROM login_sessions WHERE user_id = ?")
             .bind(user_id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+        sqlx::query("DELETE FROM client_logins WHERE user_id = ? AND token_hash IS NOT NULL")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        self.session_changes.send_replace(());
         Ok(res.rows_affected())
     }
 
@@ -482,10 +569,11 @@ impl UserAuthorizationService {
         &self,
         mapping_id: i64,
     ) -> Result<u64, sqlx::Error> {
-        let res = sqlx::query("DELETE FROM authorization_sessions WHERE mapping_id = ?")
+        let res = sqlx::query("DELETE FROM login_sessions WHERE mapping_id = ?")
             .bind(mapping_id)
             .execute(&self.pool)
             .await?;
+        self.session_changes.send_replace(());
         Ok(res.rows_affected())
     }
 }

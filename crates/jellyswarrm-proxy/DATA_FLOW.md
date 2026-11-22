@@ -26,7 +26,7 @@ flowchart TD
     Local -->|Yes| Backend[Authenticate eligible backend accounts in parallel]
     Backend --> Success{Any backend succeeds?}
     Success -->|No| Denied[Login fails]
-    Success -->|Yes| Save[Store backend tokens and backend user IDs per device/server]
+    Success -->|Yes| Save[Store backend tokens and backend user IDs per login and backend mapping]
     Save --> Response[Return proxy user ID and proxy login token]
 ```
 
@@ -59,11 +59,11 @@ flowchart TD
 ```
 
 Tokens can arrive in supported Jellyfin authorization/token headers or an
-`api_key`/`ApiKey` query parameter. Media requests reuse stored backend sessions,
-matching device metadata when available and filtering for healthy servers; they
-do not repeat password authentication on every request. A mapping defines access
-scope but does not by itself provide a usable backend session.
-Application API keys are read-only proxy credentials, not new Jellyfin tokens.
+`api_key`/`ApiKey` query parameter. The proxy resolves the credential to a
+login ID and loads that login's sessions on healthy backends. Players can
+change their client name or device ID while retaining the same login.
+Read-only application keys establish their own sessions for password mappings.
+For Quick Connect mappings, both players and keys use the mapping's credential.
 
 **Code:** [token resolution](src/application/accounts.rs),
 [request context collection](src/application/request/collect/mod.rs),

@@ -34,6 +34,7 @@ macro_rules! scenario_test {
 mod access;
 mod bodies;
 mod catalog;
+mod client_auth;
 mod composition;
 mod coverage;
 mod discovery;

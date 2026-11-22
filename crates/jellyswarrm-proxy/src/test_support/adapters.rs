@@ -46,20 +46,21 @@ impl AdapterFixture {
             media.media_storage.clone(),
             media.url_selection.clone(),
         );
+        let mapping_authenticator = MappingAuthenticator::new(
+            media.user_authorization.clone(),
+            client.clone(),
+            credentials.password(),
+        );
         let sessions = application::client_sessions::SessionOperations::new(
             media.user_authorization.clone(),
             media.client_sessions.clone(),
             syncplay.clone(),
             media.services.config.clone(),
             access.clone(),
+            mapping_authenticator.clone(),
         );
         let syncplay_operations =
             application::syncplay::SyncPlayOperations::new(syncplay.clone(), access);
-        let mapping_authenticator = MappingAuthenticator::new(
-            media.user_authorization.clone(),
-            client.clone(),
-            credentials.password(),
-        );
         let quick_connect = QuickConnectStorage::new();
         let configuration = crate::config::service::ConfigurationService::new(
             media.config.clone(),

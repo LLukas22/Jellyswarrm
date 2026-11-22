@@ -119,45 +119,48 @@ impl JellyfinAuthorization {
     }
 
     pub(crate) fn from_headers_url(headers: &http::HeaderMap, url: &url::Url) -> Option<Self> {
-        if let Some(auth_header) = headers.get("authorization") {
-            if let Ok(auth_str) = auth_header.to_str() {
-                if let Ok(auth) = Authorization::parse_request(auth_str) {
-                    return Some(JellyfinAuthorization::Authorization(auth));
+        let header = |name: &str| {
+            headers
+                .get(name)
+                .and_then(|value: &http::HeaderValue| value.to_str().ok())
+        };
+        let mut metadata = None;
+        for (name, wrap) in [
+            (
+                "authorization",
+                Self::Authorization as fn(Authorization) -> Self,
+            ),
+            ("x-emby-authorization", Self::XEmbyAuthorization),
+        ] {
+            if let Some(auth) = header(name).and_then(|raw| {
+                Authorization::parse_request_header(raw, name == "x-emby-authorization").ok()
+            }) {
+                if auth.token.is_some() {
+                    return Some(wrap(auth));
                 }
+                metadata.get_or_insert((wrap, auth));
             }
         }
 
-        if let Some(auth_header) = headers.get("x-emby-authorization") {
-            if let Ok(auth_str) = auth_header.to_str() {
-                if let Ok(auth) = Authorization::parse_request(auth_str) {
-                    return Some(JellyfinAuthorization::XEmbyAuthorization(auth));
-                }
-            }
+        let bare = header("x-mediabrowser-token")
+            .filter(|s| !s.is_empty())
+            .map(|s| Self::XMediaBrowser(s.into()))
+            .or_else(|| {
+                header("x-emby-token")
+                    .filter(|s| !s.is_empty())
+                    .map(|s| Self::XEmbyToken(s.into()))
+            })
+            .or_else(|| {
+                url.query_pairs().find_map(|(k, v)| {
+                    (matches!(k.as_ref(), "api_key" | "ApiKey") && !v.is_empty())
+                        .then(|| Self::ApiKey(v.into_owned()))
+                })
+            });
+        if let Some((wrap, mut auth)) = metadata {
+            auth.token = bare.and_then(|value| value.token());
+            return Some(wrap(auth));
         }
-
-        if let Some(token_header) = headers.get("X-MediaBrowser-Token") {
-            if let Ok(token_str) = token_header.to_str() {
-                return Some(JellyfinAuthorization::XMediaBrowser(token_str.to_string()));
-            }
-        }
-
-        if let Some(token_header) = headers.get("x-emby-token") {
-            if let Ok(token_str) = token_header.to_str() {
-                return Some(JellyfinAuthorization::XEmbyToken(token_str.to_string()));
-            }
-        }
-
-        if let Some(auth) = url.query_pairs().find_map(|(k, v)| {
-            if (k == "api_key") | (k == "ApiKey") {
-                Some(JellyfinAuthorization::ApiKey(v.to_string()))
-            } else {
-                None
-            }
-        }) {
-            return Some(auth);
-        }
-
-        None
+        bare
     }
 }
 

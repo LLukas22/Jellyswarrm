@@ -272,7 +272,7 @@ async fn canonicalize_server_mappings(
             .map(|mapping| mapping.id)
             .collect::<Vec<_>>();
 
-        merge_authorization_sessions(tx, canonical_mapping_id, &duplicate_mapping_ids).await?;
+        retire_duplicate_mapping_sessions(tx, &canonical_url, &duplicate_mapping_ids).await?;
 
         for duplicate_mapping_id in duplicate_mapping_ids {
             sqlx::query("DELETE FROM server_mappings WHERE id = ?")
@@ -304,63 +304,36 @@ async fn canonicalize_server_mappings(
     Ok(())
 }
 
-async fn merge_authorization_sessions(
+// Duplicate mappings may predate both Quick Connect and session encryption.
+// Capture disposable tokens before deleting the mapping and its evidence of ownership.
+async fn retire_duplicate_mapping_sessions(
     tx: &mut Transaction<'_, Sqlite>,
-    canonical_mapping_id: i64,
-    duplicate_mapping_ids: &[i64],
+    url: &str,
+    ids: &[i64],
 ) -> Result<()> {
-    if duplicate_mapping_ids.is_empty() || !table_exists(tx, "authorization_sessions").await? {
+    if ids.is_empty() || !table_exists(tx, "authorization_sessions").await? {
         return Ok(());
     }
-
-    let mut mapping_ids = Vec::with_capacity(duplicate_mapping_ids.len() + 1);
-    mapping_ids.push(canonical_mapping_id);
-    mapping_ids.extend_from_slice(duplicate_mapping_ids);
-
-    let has_updated_at = column_exists(tx, "authorization_sessions", "updated_at").await?;
-    let has_created_at = column_exists(tx, "authorization_sessions", "created_at").await?;
-    let order_by = match (has_updated_at, has_created_at) {
-        (true, true) => "updated_at DESC, created_at DESC, id DESC",
-        (true, false) => "updated_at DESC, id DESC",
-        (false, true) => "created_at DESC, id DESC",
-        (false, false) => "id DESC",
+    let format = if column_exists(tx, "authorization_sessions", "token_format").await? {
+        "a.token_format"
+    } else {
+        "'legacy'"
     };
-
-    let mapping_placeholders = placeholders(mapping_ids.len());
-    let rows = sqlx::query(&format!(
-        "SELECT id, user_id, device_id FROM authorization_sessions WHERE mapping_id IN ({mapping_placeholders}) ORDER BY {order_by}"
-    ))
-    .try_bind_all(&mapping_ids)?
-    .fetch_all(&mut **tx)
-    .await?;
-
-    let mut session_by_device = HashMap::<(String, String), i64>::new();
-    let mut duplicate_session_ids = Vec::new();
-
-    for row in rows {
-        let session_id = row.get("id");
-        let key = (row.get("user_id"), row.get("device_id"));
-        if session_by_device.insert(key, session_id).is_some() {
-            duplicate_session_ids.push(session_id);
-        }
-    }
-
-    for session_id in duplicate_session_ids {
-        sqlx::query("DELETE FROM authorization_sessions WHERE id = ?")
-            .bind(session_id)
-            .execute(&mut **tx)
-            .await?;
-    }
-
-    let duplicate_placeholders = placeholders(duplicate_mapping_ids.len());
+    let owner = if column_exists(tx, "server_mappings", "auth_method").await? {
+        "m.auth_method='password' AND m.encrypted_token IS NULL"
+    } else {
+        "1"
+    };
+    sqlx::query("CREATE TABLE IF NOT EXISTS retiring_duplicate_sessions(server_url TEXT NOT NULL, token TEXT NOT NULL, format TEXT NOT NULL)").execute(&mut **tx).await?;
+    let slots = placeholders(ids.len());
+    sqlx::query(&format!("INSERT INTO retiring_duplicate_sessions SELECT DISTINCT ?,a.jellyfin_token,{format} FROM authorization_sessions a JOIN server_mappings m ON m.id=a.mapping_id WHERE {owner} AND a.jellyfin_token IS NOT NULL AND m.id IN ({slots})"))
+        .bind(url).try_bind_all(ids)?.execute(&mut **tx).await?;
     sqlx::query(&format!(
-        "UPDATE authorization_sessions SET mapping_id = ? WHERE mapping_id IN ({duplicate_placeholders})"
+        "DELETE FROM authorization_sessions WHERE mapping_id IN ({slots})"
     ))
-    .bind(canonical_mapping_id)
-    .try_bind_all(duplicate_mapping_ids)?
+    .try_bind_all(ids)?
     .execute(&mut **tx)
     .await?;
-
     Ok(())
 }
 
@@ -692,16 +665,12 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        assert_eq!(session_count, 2);
-
-        let same_device_token = sqlx::query_scalar::<_, String>(
-            "SELECT jellyfin_token FROM authorization_sessions WHERE device_id = 'same-device'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(same_device_token, "token-new");
-
+        assert_eq!(session_count, 1);
+        let retired: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM retiring_duplicate_sessions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(retired, 2);
         let media_count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM media_mappings")
             .fetch_one(&pool)
             .await

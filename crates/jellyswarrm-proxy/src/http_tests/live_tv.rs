@@ -189,7 +189,7 @@ async fn assert_backend_tokens(f: &Fixture) {
                 .to_str()
                 .unwrap()
                 .contains(&format!("backend-token-{owner}")));
-            assert!(!request.url.to_string().contains(&f.user.virtual_key));
+            assert!(!request.url.to_string().contains(&f.user.fixture_token));
         }
     }
 }
