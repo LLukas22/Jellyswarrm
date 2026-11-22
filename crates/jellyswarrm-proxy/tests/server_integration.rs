@@ -785,6 +785,10 @@ fn start_proxy(data_dir: TempDir, proxy_port: u16) -> Result<ServerProcess> {
     let mut command = Command::new(env!("CARGO_BIN_EXE_jellyswarrm-proxy"));
     command
         .env("JELLYSWARRM_DATA_DIR", data_dir.path())
+        // The backends are still scanning while tests poll the merged catalog.
+        // A short freshness window lets polling observe later scan results
+        // instead of a snapshot captured mid-scan for the default 5 minutes.
+        .env("JELLYSWARRM_CATALOG_CACHE_FRESH_SECS", "5")
         .env(
             "RUST_LOG",
             std::env::var("JELLYSWARRM_TEST_RUST_LOG")
