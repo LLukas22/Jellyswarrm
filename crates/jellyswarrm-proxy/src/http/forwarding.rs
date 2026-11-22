@@ -33,12 +33,22 @@ pub(crate) async fn forward(
     }
     // Without a token only well-known anonymous endpoints may reach a backend;
     // anything else (scanner probes, unknown paths) is answered locally (#224).
-    if !super::public_routes::may_forward(&req) {
-        debug!(
-            path,
-            "Rejected unauthenticated request outside the public route list"
-        );
-        return Ok(StatusCode::NOT_FOUND.into_response());
+    match super::public_routes::gate(req.uri(), req.headers(), &state.user_authorization)
+        .await
+        .map_err(ApplicationError::Storage)?
+    {
+        super::public_routes::Gate::Forward => {}
+        super::public_routes::Gate::NotFound => {
+            debug!(
+                path,
+                "Rejected unauthenticated request outside the public route list"
+            );
+            return Ok(StatusCode::NOT_FOUND.into_response());
+        }
+        super::public_routes::Gate::Unauthorized => {
+            debug!(path, "Rejected request with an unknown token");
+            return Ok(StatusCode::UNAUTHORIZED.into_response());
+        }
     }
 
     let prepared = prepare(&state, req, action).await.inspect_err(|error| {

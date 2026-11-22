@@ -1,8 +1,8 @@
 //! Gate for the catch-all: which requests without a Jellyfin token may still be
 //! forwarded to a backend.
 //!
-//! Requests that carry a token are always forwarded, whatever the path, so odd
-//! client and plugin routes keep working. Requests without a token only reach a
+//! Requests that carry a token the proxy issued are always forwarded, whatever
+//! the path, so odd client and plugin routes keep working. Requests without a token only reach a
 //! backend when their path is on a small allowlist of endpoints that Jellyfin
 //! itself serves anonymously. Everything else is answered locally with a 404,
 //! so unauthenticated probes (`/config.php`, `/.env`, ...) never reach an
@@ -10,8 +10,8 @@
 //!
 //! Operators can extend the list with `JELLYSWARRM_EXTRA_PUBLIC_ROUTES`, a
 //! comma-separated list of patterns in the same syntax as [`DEFAULT_PUBLIC_ROUTES`].
+use crate::auth::UserAuthorizationService;
 use crate::protocol::caller::JellyfinAuthorization;
-use axum::extract::Request;
 use percent_encoding::percent_decode_str;
 use std::sync::LazyLock;
 use tracing::{info, warn};
@@ -155,34 +155,71 @@ pub(crate) fn is_public_path(path: &str, patterns: &[RoutePattern]) -> bool {
     path_segments(path).is_some_and(|segments| patterns.iter().any(|p| p.matches(&segments)))
 }
 
-/// True when the request carries a Jellyfin access token in any supported form
+/// The Jellyfin access token on the request, in any supported form
 /// (`Authorization`/`X-Emby-Authorization` with `Token=`, `X-Emby-Token`,
 /// `X-MediaBrowser-Token`, or the `api_key`/`ApiKey` query parameter).
-pub(crate) fn has_token(req: &Request) -> bool {
-    let Ok(url) = super::incoming::request_url(req.uri()) else {
-        return false;
-    };
-    JellyfinAuthorization::from_headers_url(req.headers(), &url)
+fn request_token(uri: &http::Uri, headers: &http::HeaderMap) -> Option<String> {
+    let url = super::incoming::request_url(uri).ok()?;
+    JellyfinAuthorization::from_headers_url(headers, &url)
         .as_ref()
         .and_then(JellyfinAuthorization::token_ref)
-        .is_some_and(|token| !token.trim().is_empty())
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(str::to_owned)
+}
+
+/// What the catch-all should do with a request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Gate {
+    /// Public path, or a token that belongs to a known proxy user.
+    Forward,
+    /// No token on a non-public path: answer locally with 404.
+    NotFound,
+    /// A token that does not resolve to any proxy user: answer locally with 401,
+    /// as Jellyfin would, so real clients with a stale session re-authenticate.
+    Unauthorized,
 }
 
 /// Whether the catch-all may forward this request to a backend.
-pub(crate) fn may_forward(req: &Request) -> bool {
-    has_token(req) || is_public_path(req.uri().path(), &PUBLIC_ROUTES)
+///
+/// Public paths are checked first so anonymous endpoints cost no database
+/// lookup. Otherwise the token must resolve to a login token or API key the
+/// proxy issued; merely carrying a `Token=` value is not enough, or a scanner
+/// could send any string and still reach the upstream servers.
+///
+/// Takes the URI and headers rather than the `Request`: the body is not `Sync`,
+/// so holding `&Request` across the lookup would make the handler `!Send`.
+pub(crate) async fn gate(
+    uri: &http::Uri,
+    headers: &http::HeaderMap,
+    authorization: &UserAuthorizationService,
+) -> Result<Gate, sqlx::Error> {
+    if is_public_path(uri.path(), &PUBLIC_ROUTES) {
+        return Ok(Gate::Forward);
+    }
+    let Some(token) = request_token(uri, headers) else {
+        return Ok(Gate::NotFound);
+    };
+    Ok(match authorization.get_user_by_token(&token).await? {
+        Some(_) => Gate::Forward,
+        None => Gate::Unauthorized,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::Body;
+    use axum::{body::Body, extract::Request};
 
     fn defaults() -> Vec<RoutePattern> {
         DEFAULT_PUBLIC_ROUTES
             .iter()
             .map(|p| RoutePattern::parse(p).expect("default pattern parses"))
             .collect()
+    }
+
+    fn token(req: &Request) -> Option<String> {
+        request_token(req.uri(), req.headers())
     }
 
     fn request(uri: &str, headers: &[(&str, &str)]) -> Request {
@@ -300,48 +337,67 @@ mod tests {
 
     #[test]
     fn token_detection_covers_all_supported_forms() {
-        assert!(has_token(&request(
-            "/anything",
-            &[(
-                "Authorization",
-                r#"MediaBrowser Client="x", Device="y", DeviceId="z", Version="1", Token="abc""#
-            )]
-        )));
-        assert!(has_token(&request(
-            "/anything",
-            &[(
-                "X-Emby-Authorization",
-                r#"MediaBrowser Client="x", Device="y", DeviceId="z", Version="1", Token="abc""#
-            )]
-        )));
-        assert!(has_token(&request("/anything", &[("X-Emby-Token", "abc")])));
-        assert!(has_token(&request("/anything?api_key=abc", &[])));
+        assert_eq!(
+            token(&request(
+                "/anything",
+                &[(
+                    "Authorization",
+                    r#"MediaBrowser Client="x", Device="y", DeviceId="z", Version="1", Token="abc""#
+                )]
+            ))
+            .as_deref(),
+            Some("abc")
+        );
+        assert_eq!(
+            token(&request(
+                "/anything",
+                &[(
+                    "X-Emby-Authorization",
+                    r#"MediaBrowser Client="x", Device="y", DeviceId="z", Version="1", Token="abc""#
+                )]
+            ))
+            .as_deref(),
+            Some("abc")
+        );
+        assert_eq!(
+            token(&request("/anything", &[("X-Emby-Token", "abc")])).as_deref(),
+            Some("abc")
+        );
+        assert_eq!(
+            token(&request("/anything?api_key=abc", &[])).as_deref(),
+            Some("abc")
+        );
     }
 
     #[test]
     fn requests_without_a_token_are_anonymous() {
-        assert!(!has_token(&request("/config.php", &[])));
-        assert!(!has_token(&request(
-            "/config.php",
-            &[("User-Agent", "Go-http-client/2.0")]
-        )));
+        assert_eq!(token(&request("/config.php", &[])), None);
+        assert_eq!(
+            token(&request(
+                "/config.php",
+                &[("User-Agent", "Go-http-client/2.0")]
+            )),
+            None
+        );
         // A MediaBrowser header without Token= is how clients log in; it is not a credential.
-        assert!(!has_token(&request(
-            "/config.php",
-            &[(
-                "Authorization",
-                r#"MediaBrowser Client="x", Device="y", DeviceId="z", Version="1""#
-            )]
-        )));
+        assert_eq!(
+            token(&request(
+                "/config.php",
+                &[(
+                    "Authorization",
+                    r#"MediaBrowser Client="x", Device="y", DeviceId="z", Version="1""#
+                )]
+            )),
+            None
+        );
     }
 
     #[test]
-    fn may_forward_combines_token_and_allowlist() {
-        assert!(!may_forward(&request("/config.php", &[])));
-        assert!(may_forward(&request("/System/Ping", &[])));
-        assert!(may_forward(&request(
-            "/config.php",
-            &[("X-Emby-Token", "abc")]
-        )));
+    fn blank_tokens_are_ignored() {
+        assert_eq!(
+            token(&request("/config.php", &[("X-Emby-Token", "  ")])),
+            None
+        );
+        assert_eq!(token(&request("/config.php?api_key=", &[])), None);
     }
 }

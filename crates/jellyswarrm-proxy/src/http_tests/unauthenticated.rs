@@ -82,3 +82,38 @@ async fn authenticated_unknown_routes_are_still_forwarded() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(requests_to(&fixture, "/SomePlugin/Configuration").await, 1);
 }
+
+#[tokio::test]
+async fn unknown_tokens_are_rejected_locally() {
+    let fixture = super::support::Fixture::new().await;
+    fixture.healthy().await;
+    let client = reqwest::Client::new();
+    for (path, header, value) in [
+        ("/config.php", "X-Emby-Token", "not-a-real-token"),
+        (
+            "/SomePlugin/Configuration",
+            "X-MediaBrowser-Token",
+            "deadbeef",
+        ),
+        (
+            "/System/Logs",
+            "Authorization",
+            r#"MediaBrowser Client="x", Device="y", DeviceId="z", Version="1", Token="bogus""#,
+        ),
+    ] {
+        let response = client
+            .get(format!("{}{path}", fixture.url))
+            .header(header, value)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
+    }
+    let response = client
+        .get(format!("{}/config.php?api_key=bogus", fixture.url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    fixture.no_upstream_requests().await;
+}
