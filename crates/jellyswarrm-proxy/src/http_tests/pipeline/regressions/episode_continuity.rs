@@ -128,29 +128,6 @@ async fn playback(
     );
 }
 
-async fn add_device(f: &Fixture, device: &str) {
-    let sessions = f
-        .state
-        .user_authorization
-        .get_user_sessions(&f.user.id, None)
-        .await
-        .unwrap();
-    for (session, server) in sessions {
-        f.state
-            .user_authorization
-            .store_authorization_session(
-                &f.user.id,
-                &server,
-                &Authorization::parse(&auth(&f.user, device)).unwrap(),
-                session.jellyfin_token,
-                session.original_user_id,
-                None,
-            )
-            .await
-            .unwrap();
-    }
-}
-
 #[tokio::test]
 async fn next_episode_prefers_current_server_and_follows_the_fallback_across_seasons() {
     let (f, items, sources) = fixture().await;
@@ -193,7 +170,6 @@ async fn next_episode_prefers_current_server_and_follows_the_fallback_across_sea
 async fn episode_server_preference_is_isolated_by_device_and_viewer() {
     let (f, items, sources) = fixture().await;
     playback(&f, &items[0], "tv", Some(&sources[0]), 1, 1).await;
-    add_device(&f, "phone").await;
     playback(&f, &items[1], "phone", None, 0, 2).await;
     playback(&f, &items[1], "tv", None, 1, 2).await;
 
@@ -201,7 +177,7 @@ async fn episode_server_preference_is_isolated_by_device_and_viewer() {
     let sessions = f
         .state
         .user_authorization
-        .get_user_sessions(&f.user.id, None)
+        .get_user_sessions(&f.user.id)
         .await
         .unwrap();
     for (session, server) in sessions
@@ -215,7 +191,7 @@ async fn episode_server_preference_is_isolated_by_device_and_viewer() {
             .unwrap();
         f.state
             .user_authorization
-            .store_authorization_session(
+            .bind_fixture_login(
                 &f.other.id,
                 &server,
                 &Authorization::parse(&auth(&f.other, "tv")).unwrap(),

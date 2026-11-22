@@ -17,7 +17,7 @@ async fn quick_connect(f: &Fixture) -> (String, String) {
     let user = f
         .state
         .user_authorization
-        .create_user("kodi", &"password".into())
+        .fixture_user("kodi", &"password".into())
         .await
         .unwrap();
     let (_, server) = f
@@ -62,7 +62,7 @@ async fn quick_connect(f: &Fixture) -> (String, String) {
     let initiation: Value = response.json().await.unwrap();
     let response = client
         .post(format!("{}/QuickConnect/Authorize", f.url))
-        .header("X-MediaBrowser-Token", &user.virtual_key)
+        .header("X-MediaBrowser-Token", &user.fixture_token)
         .query(&[("code", initiation["Code"].as_str().unwrap())])
         .send()
         .await
@@ -78,9 +78,10 @@ async fn quick_connect(f: &Fixture) -> (String, String) {
     assert_eq!(response.status(), StatusCode::OK);
     let authentication: Value = response.json().await.unwrap();
     assert_eq!(authentication["User"]["Id"], user.id.as_str());
-    assert_eq!(authentication["AccessToken"], user.virtual_key);
+    let token = authentication["AccessToken"].as_str().unwrap();
+    assert_ne!(token, user.fixture_token);
     (
-        format!("{CLIENT}, UserId={}, Token={}", user.id, user.virtual_key),
+        format!("{CLIENT}, UserId={}, Token={token}", user.id),
         authentication["User"]["Id"].as_str().unwrap().to_owned(),
     )
 }
@@ -199,28 +200,35 @@ async fn kodi_quick_connect_synced_item_plays_in_redirect_mode() {
 }
 
 #[tokio::test]
-async fn kodi_placeholder_device_cannot_borrow_another_users_sessions_or_ignore_a_real_device() {
+async fn kodi_login_survives_device_changes_and_other_callers_cannot_borrow_it() {
     let f = Fixture::new().await;
     f.healthy().await;
     let (authorization, user) = quick_connect(&f).await;
     let token = Authorization::parse(&authorization).unwrap().token.unwrap();
     let client = reqwest::Client::new();
-    let before = f.upstreams[1].received_requests().await.unwrap().len();
-    // Keep the abbreviated-header lookup strict even for a placeholder ID.
-    let response = client
-        .get(format!("{}/Users/{user}/Items/{}", f.url, f.items[1]))
-        .header(
-            "Authorization",
-            format!("MediaBrowser DeviceId=Unknown%20Device%20id, Token={token}"),
+    let original = f.original(1).await;
+    Mock::given(method("GET"))
+        .and(path(format!("/Users/{BACKEND_USER}/Items/{original}")))
+        .and(header_regex("authorization", "kodi-backend-token"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"Id":original,"Type":"Movie"})),
         )
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(
-        f.upstreams[1].received_requests().await.unwrap().len(),
-        before
-    );
+        .expect(2)
+        .mount(&f.upstreams[1])
+        .await;
+    for header in [
+        format!("MediaBrowser DeviceId=Unknown%20Device%20id, Token={token}"),
+        playback_authorization(&user, &token, "different-real-device"),
+    ] {
+        let response = client
+            .get(format!("{}/Users/{user}/Items/{}", f.url, f.items[1]))
+            .header("Authorization", header)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    let before = f.upstreams[1].received_requests().await.unwrap().len();
     // Unrecognized/absent credentials retain backend passthrough behavior, but
     // must never be upgraded to the real user's stored backend credentials.
     Mock::given(method("GET"))
@@ -237,13 +245,8 @@ async fn kodi_placeholder_device_cannot_borrow_another_users_sessions_or_ignore_
         .await;
     for (device_id, token, expected) in [
         (
-            "different-real-device",
-            token.as_str(),
-            StatusCode::SERVICE_UNAVAILABLE,
-        ),
-        (
             "Unknown%20Device%20id",
-            f.other.virtual_key.as_str(),
+            f.other.fixture_token.as_str(),
             StatusCode::FORBIDDEN,
         ),
         (
@@ -290,17 +293,17 @@ async fn placeholder_and_user_agent_devices_use_only_unexpired_token_owner_sessi
     for (header, value) in [
         (
             "Authorization",
-            playback_authorization(&f.user.id, &f.user.virtual_key, "unknown-device-id"),
+            playback_authorization(&f.user.id, &f.user.fixture_token, "unknown-device-id"),
         ),
         (
             "Authorization",
-            playback_authorization(&f.user.id, &f.user.virtual_key, "n/a"),
+            playback_authorization(&f.user.id, &f.user.fixture_token, "n/a"),
         ),
         (
             "X-Emby-Authorization",
-            playback_authorization(&f.user.id, &f.user.virtual_key, "Unknown%20Device%20id"),
+            playback_authorization(&f.user.id, &f.user.fixture_token, "Unknown%20Device%20id"),
         ),
-        ("X-Emby-Token", f.user.virtual_key.clone()),
+        ("X-Emby-Token", f.user.fixture_token.clone()),
     ] {
         let response = client
             .get(format!(
@@ -315,7 +318,7 @@ async fn placeholder_and_user_agent_devices_use_only_unexpired_token_owner_sessi
         assert_eq!(response.status(), StatusCode::OK, "{header}");
         assert_eq!(response.json::<Value>().await.unwrap()["Id"], f.items[0]);
     }
-    sqlx::query("UPDATE authorization_sessions SET expires_at = ? WHERE user_id = ?")
+    sqlx::query("UPDATE login_sessions SET expires_at = ? WHERE user_id = ?")
         .bind(chrono::Utc::now() - chrono::Duration::seconds(1))
         .bind(f.user.id.as_str())
         .execute(&f.pool)
@@ -328,7 +331,7 @@ async fn placeholder_and_user_agent_devices_use_only_unexpired_token_owner_sessi
         ))
         .header(
             "Authorization",
-            playback_authorization(&f.user.id, &f.user.virtual_key, "Unknown%20Device%20id"),
+            playback_authorization(&f.user.id, &f.user.fixture_token, "Unknown%20Device%20id"),
         )
         .send()
         .await

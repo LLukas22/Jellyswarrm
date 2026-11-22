@@ -161,10 +161,12 @@ mod tests {
 
     fn session(id: &str) -> SessionCaller {
         SessionCaller {
+            login_token: None,
             session_id: id.into(),
             user: LocalUser {
                 id: id.into(),
-                virtual_key: "key".into(),
+                login_id: None,
+                fixture_token: "key".into(),
                 original_username: id.into(),
                 local_credential: LocalCredential::Passwordless,
                 created_at: Utc::now(),

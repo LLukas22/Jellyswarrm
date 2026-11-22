@@ -595,7 +595,8 @@ mod tests {
         );
         let user = LocalUser {
             id: "viewer".into(),
-            virtual_key: "proxy-token".into(),
+            login_id: None,
+            fixture_token: "proxy-token".into(),
             original_username: "Viewer".into(),
             local_credential: LocalCredential::Passwordless,
             created_at: chrono::Utc::now(),
@@ -604,7 +605,6 @@ mod tests {
         let session = AuthorizationSession {
             id: 1,
             user_id: user.id.clone(),
-            mapping_id: 1,
             server_url: server.url.to_string(),
             device: Device {
                 client: "Test".into(),
@@ -612,11 +612,9 @@ mod tests {
                 device_id: "player".into(),
                 version: "1".into(),
             },
+            upstream_device_id: None,
             jellyfin_token: "backend-token".into(),
             original_user_id: "backend-viewer".into(),
-            expires_at: None,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
         };
         let context = RequestContext::new(
             &original,

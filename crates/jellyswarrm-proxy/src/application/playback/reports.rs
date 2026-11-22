@@ -177,18 +177,14 @@ mod tests {
     }
 
     fn authorization(server: &Server) -> AuthorizationSession {
-        let now = chrono::Utc::now();
         AuthorizationSession {
             id: server.id.as_i64(),
             user_id: "viewer".into(),
-            mapping_id: server.id.as_i64(),
             server_url: server.url.to_string(),
             device: Device::from_useragent("Test"),
+            upstream_device_id: None,
             jellyfin_token: "token".into(),
             original_user_id: "upstream-viewer".into(),
-            expires_at: None,
-            created_at: now,
-            updated_at: now,
         }
     }
 

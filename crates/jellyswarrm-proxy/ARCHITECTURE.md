@@ -60,7 +60,7 @@ point, `run()`. Startup wires the modules together.
 | `syncplay/` | Group membership, shared queues and synchronized playback control. |
 
 Three kinds of "session" exist and are kept apart by name:
-**authorization sessions** (`auth`) hold backend tokens per device and server,
+**authorization sessions** (`auth`) hold backend tokens per login and backend mapping,
 **playback sessions** (`playback.rs`) track *where media is playing*, and
 **client sessions** (`client_sessions/`) track *which clients are connected*.
 

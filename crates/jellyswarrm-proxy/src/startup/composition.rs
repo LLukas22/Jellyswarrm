@@ -88,19 +88,20 @@ pub(super) fn adapter_state(
         media_storage.clone(),
         selection.clone(),
     );
+    let mapping_authenticator = MappingAuthenticator::new(
+        user_authorization.clone(),
+        clients.api.clone(),
+        credentials.password(),
+    );
     let session_operations = SessionOperations::new(
         user_authorization.clone(),
         client_sessions.clone(),
         syncplay.clone(),
         settings.clone(),
         media_access.clone(),
+        mapping_authenticator.clone(),
     );
     let syncplay_operations = SyncPlayOperations::new(syncplay, media_access);
-    let mapping_authenticator = MappingAuthenticator::new(
-        user_authorization.clone(),
-        clients.api.clone(),
-        credentials.password(),
-    );
     let authentication = application::accounts::AuthenticationService {
         user_authorization: user_authorization.clone(),
         server_storage: server_storage.clone(),
@@ -141,7 +142,7 @@ pub(super) fn adapter_state(
             (&credentials.password()).into(),
             clients.api.clone(),
         ),
-        mapping_authenticator,
+        mapping_authenticator: mapping_authenticator.clone(),
         credentials,
     };
     let settings_state = SettingsState {
@@ -150,6 +151,7 @@ pub(super) fn adapter_state(
         paths: adapter_paths,
     };
     let media = application::media_services::MediaServices {
+        mapping_authenticator,
         reqwest_client: clients.api,
         streaming_reqwest_client: clients.streaming,
         user_authorization,

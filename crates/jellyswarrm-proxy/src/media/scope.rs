@@ -9,6 +9,7 @@ pub(crate) enum MediaScopeKind {
     Latest,
     Search,
     Resume,
+    NextUp,
     /// Home-screen rows without a library, such as favorites.
     Row,
 }
@@ -16,7 +17,10 @@ pub(crate) enum MediaScopeKind {
 impl MediaScopeKind {
     /// Additive, viewer-first scopes whose library is optional.
     fn is_viewer_feed(self) -> bool {
-        matches!(self, Self::Latest | Self::Search | Self::Resume | Self::Row)
+        matches!(
+            self,
+            Self::Latest | Self::Search | Self::Resume | Self::Row | Self::NextUp
+        )
     }
 }
 
@@ -40,6 +44,7 @@ impl<'a> MediaCatalogScope<'a> {
             "search" => MediaScopeKind::Search,
             "resume" => MediaScopeKind::Resume,
             "row" => MediaScopeKind::Row,
+            "nextup" => MediaScopeKind::NextUp,
             _ => return None,
         };
         let middle = parts.next()?;
@@ -76,6 +81,7 @@ impl fmt::Display for MediaCatalogScope<'_> {
             MediaScopeKind::Latest => "latest",
             MediaScopeKind::Search => "search",
             MediaScopeKind::Resume => "resume",
+            MediaScopeKind::NextUp => "nextup",
             MediaScopeKind::Row => "row",
         };
         if self.kind.is_viewer_feed() {
@@ -103,6 +109,8 @@ mod tests {
             "resume:viewer:",
             "resume:viewer:library",
             "row:viewer:",
+            "nextup:viewer:",
+            "nextup:viewer:library",
         ] {
             let scope = MediaCatalogScope::parse(key).unwrap();
             assert_eq!(scope.to_string(), key);

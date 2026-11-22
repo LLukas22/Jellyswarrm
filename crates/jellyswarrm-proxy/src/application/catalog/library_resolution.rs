@@ -169,8 +169,9 @@ pub(crate) async fn resolve_catalog_plan(
         .query_pairs()
         .any(|(key, _)| key.eq_ignore_ascii_case("SearchTerm"));
     let is_resume = endpoint == CatalogEndpoint::Resume;
+    let is_next_up = endpoint == CatalogEndpoint::NextUp;
     let is_row = query.is_uncounted_item_listing();
-    if (is_search || is_resume || is_row || endpoint == CatalogEndpoint::Latest)
+    if (is_search || is_resume || is_next_up || is_row || endpoint == CatalogEndpoint::Latest)
         && state.deduplicate_media_enabled().await
     {
         let viewer = preprocessed
@@ -191,6 +192,8 @@ pub(crate) async fn resolve_catalog_plan(
                     MediaScopeKind::Search
                 } else if is_resume {
                     MediaScopeKind::Resume
+                } else if is_next_up {
+                    MediaScopeKind::NextUp
                 } else if is_row {
                     MediaScopeKind::Row
                 } else {

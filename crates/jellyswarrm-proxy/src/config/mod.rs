@@ -328,6 +328,12 @@ pub(crate) struct AppConfig {
     )]
     pub(crate) auto_create_users_on_login: bool,
 
+    #[serde(default)]
+    pub(crate) login_idle_expiry_days: u32,
+
+    #[serde(default)]
+    pub(crate) preserve_upstream_device_ids: bool,
+
     #[serde(
         default = "default_merge_libraries",
         deserialize_with = "deserialize_merge_libraries"
@@ -389,6 +395,8 @@ impl Default for AppConfig {
             media_streaming_mode: default_media_streaming_mode(),
             server_background_check_interval_secs: default_server_background_check_interval_secs(),
             auto_create_users_on_login: default_auto_create_users_on_login(),
+            login_idle_expiry_days: 0,
+            preserve_upstream_device_ids: false,
             merge_libraries: default_merge_libraries(),
             deduplicate_media: default_deduplicate_media(),
             catalog_cache_size_mb: default_catalog_cache_size_mb(),
@@ -481,7 +489,12 @@ pub(crate) fn load_config_with_session_key(
             .add_source(environment())
     };
 
-    let source = builder.build()?;
+    let source = builder
+        .set_override_option(
+            "preserve_upstream_device_ids",
+            std::env::var("JELLYSWARRM_PRESERVE_UPSTREAM_DEVICE_IDS").ok(),
+        )?
+        .build()?;
     let had_session_key = source.get_string("session_key").is_ok();
     let mut config: AppConfig = source.try_deserialize()?;
     if let Some(existing_key) = existing_key {

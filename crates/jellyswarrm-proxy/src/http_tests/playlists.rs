@@ -59,7 +59,7 @@ impl Fixture {
         let state = AdapterFixture::new(pool.clone(), AppConfig::default()).await;
         let caller = state
             .user_authorization
-            .create_user("caller", &"password".into())
+            .fixture_user("caller", &"password".into())
             .await
             .unwrap();
         let mut upstreams = Vec::new();
@@ -133,7 +133,7 @@ impl Fixture {
             .unwrap();
         state
             .user_authorization
-            .store_authorization_session(
+            .bind_fixture_login(
                 &user.id,
                 server,
                 &authorization(),
@@ -147,7 +147,7 @@ impl Fixture {
 
     async fn request(&self, method: Method, path: &str, body: Option<Value>) -> reqwest::Response {
         let mut request = self.state.reqwest_client.request(method, format!("{}{path}", self.url))
-            .header("Authorization", format!("MediaBrowser Client=\"playlist-test\", Device=\"test\", DeviceId=\"test\", Version=\"1\", Token=\"{}\"", self.caller.virtual_key));
+            .header("Authorization", format!("MediaBrowser Client=\"playlist-test\", Device=\"test\", DeviceId=\"test\", Version=\"1\", Token=\"{}\"", self.caller.fixture_token));
         if let Some(body) = body {
             request = request.json(&body);
         }
@@ -330,14 +330,14 @@ async fn playlist_detail_and_sharing_reads_translate_complete_permissions() {
     let recipient = f
         .state
         .user_authorization
-        .create_user("recipient", &"password".into())
+        .fixture_user("recipient", &"password".into())
         .await
         .unwrap();
     Fixture::map_user(&f.state, &recipient, &f.servers[0], "recipient-backend").await;
     let other = f
         .state
         .user_authorization
-        .create_user("other", &"password".into())
+        .fixture_user("other", &"password".into())
         .await
         .unwrap();
     Fixture::map_user(&f.state, &other, &f.servers[1], "recipient-backend").await;
@@ -411,7 +411,7 @@ async fn playlist_sharing_reads_do_not_choose_between_ambiguous_account_aliases(
     let alias = f
         .state
         .user_authorization
-        .create_user("alias", &"password".into())
+        .fixture_user("alias", &"password".into())
         .await
         .unwrap();
     Fixture::map_user(&f.state, &alias, &f.servers[0], "caller-0").await;
@@ -598,7 +598,7 @@ async fn complete_playlist_sharing_can_be_saved_back_without_losing_recipients()
     let recipient = f
         .state
         .user_authorization
-        .create_user("recipient", &"password".into())
+        .fixture_user("recipient", &"password".into())
         .await
         .unwrap();
     Fixture::map_user(&f.state, &recipient, &f.servers[0], "recipient-backend").await;
@@ -983,7 +983,7 @@ async fn sharing_http_requests_map_recipient_without_changing_caller_auth() {
     let recipient = f
         .state
         .user_authorization
-        .create_user("recipient", &"password".into())
+        .fixture_user("recipient", &"password".into())
         .await
         .unwrap();
     Fixture::map_user(&f.state, &recipient, &f.servers[0], "recipient-0").await;
@@ -1050,7 +1050,7 @@ async fn sharing_http_requests_map_recipient_without_changing_caller_auth() {
     let unmapped = f
         .state
         .user_authorization
-        .create_user("unmapped", &"password".into())
+        .fixture_user("unmapped", &"password".into())
         .await
         .unwrap();
     // A mapping on B must not be substituted into the A-owned playlist.

@@ -19,7 +19,8 @@ pub(crate) struct ClientSession {
     pub(crate) user_id: UserId,
     pub(crate) user_name: String,
     pub(crate) device: Device,
-    pub(super) token: String,
+    pub(crate) login_id: Option<i64>,
+    pub(crate) credential_hash: [u8; 32],
     pub(crate) capabilities: Capabilities,
     pub(crate) last_activity: DateTime<Utc>,
     pub(crate) play_state: Value,
@@ -37,11 +38,6 @@ struct EpisodeServerPreference {
 }
 
 impl ClientSession {
-    /// Used only by application revocation checks and credential-scoped metadata.
-    pub(crate) fn token(&self) -> &str {
-        &self.token
-    }
-
     pub(crate) fn dto(&self, server_id: &str, connections: &ConnectionHub) -> Value {
         let connected = connections.is_connected(&self.id);
         let controllable = connected && self.capabilities.supports_media_control;
@@ -67,7 +63,7 @@ impl ClientSession {
 pub(crate) struct ClientSessionService {
     entries: RwLock<HashMap<String, ClientSession>>,
     pub(crate) connections: ConnectionHub,
-    media_metadata: moka::future::Cache<(String, String), Value>,
+    media_metadata: moka::future::Cache<([u8; 32], String), Value>,
 }
 
 impl ClientSessionService {
@@ -85,6 +81,7 @@ impl ClientSessionService {
     /// Remember only public display fields from already-served media responses.
     /// Remote controls must not fetch metadata from an upstream on their own.
     pub(crate) async fn cache_media_response(&self, token: &str, payload: &Value) {
+        let credential_hash = Self::credential_hash(token);
         let mut pending = vec![payload];
         let mut retained = 0;
         while let Some(value) = pending.pop() {
@@ -123,7 +120,7 @@ impl ClientSessionService {
                             let metadata = Value::Object(metadata);
                             if metadata.to_string().len() <= 16 * 1024 {
                                 self.media_metadata
-                                    .insert((token.to_string(), id.to_string()), metadata)
+                                    .insert((credential_hash, id.to_string()), metadata)
                                     .await;
                                 retained += 1;
                             }
@@ -139,10 +136,21 @@ impl ClientSessionService {
         }
     }
 
+    pub(crate) fn credential_hash(token: &str) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(token.as_bytes()).into()
+    }
+
+    #[cfg(test)]
     pub(crate) async fn media_metadata(&self, token: &str, item_id: &str) -> Option<Value> {
-        self.media_metadata
-            .get(&(token.to_string(), item_id.to_string()))
+        self.metadata_for_hash(Self::credential_hash(token), item_id)
             .await
+    }
+    pub(crate) async fn metadata_for_hash(&self, hash: [u8; 32], item_id: &str) -> Option<Value> {
+        self.media_metadata.get(&(hash, item_id.to_owned())).await
+    }
+    pub(crate) async fn players(&self) -> Vec<ClientSession> {
+        self.entries.read().await.values().cloned().collect()
     }
 
     pub(crate) async fn ensure(
@@ -157,10 +165,13 @@ impl ClientSessionService {
             self.connections.is_connected(id)
                 || now - entry.last_activity < Duration::seconds(SESSION_TTL_SECONDS)
         });
+        let hash = Self::credential_hash(token);
         let device_id = device.map(|d| d.device_id.as_str()).unwrap_or("");
         let candidates: Vec<_> = entries
             .values()
-            .filter(|s| s.user_id == user.id && s.token == token && s.device.device_id == device_id)
+            .filter(|s| {
+                s.user_id == user.id && s.credential_hash == hash && s.device.device_id == device_id
+            })
             .collect();
         let client = device
             .map(|d| d.client.as_str())
@@ -222,7 +233,8 @@ impl ClientSessionService {
                 id: id.clone(),
                 user_id: user.id.clone(),
                 user_name: user.original_username.clone(),
-                token: token.into(),
+                login_id: user.login_id,
+                credential_hash: hash,
                 device: device.unwrap_or(Device {
                     client: "Unknown".into(),
                     device: "Unknown".into(),
@@ -321,7 +333,8 @@ impl ClientSessionService {
             })
             .and_then(|(_, value)| value.as_str());
         let metadata = if let (Some(item_id), Some(session)) = (reported_id, self.get(id).await) {
-            self.media_metadata(&session.token, item_id).await
+            self.metadata_for_hash(session.credential_hash, item_id)
+                .await
         } else {
             None
         };
@@ -391,7 +404,8 @@ mod tests {
     fn user() -> LocalUser {
         LocalUser {
             id: "user".into(),
-            virtual_key: "secret".into(),
+            login_id: None,
+            fixture_token: "secret".into(),
             original_username: "Alice".into(),
             local_credential: crate::auth::service::LocalCredential::Passwordless,
             created_at: Utc::now(),

@@ -43,12 +43,10 @@ pub(crate) async fn setup() -> (
             .bind(upstream.uri())
             .fetch_one(&pool).await.unwrap();
         let server = Server::from_row(row).unwrap();
-        let now = chrono::Utc::now();
         sessions.push((
             AuthorizationSession {
                 id: index,
                 user_id: "viewer".into(),
-                mapping_id: index,
                 server_url: upstream.uri(),
                 device: Device {
                     client: "test".into(),
@@ -56,11 +54,9 @@ pub(crate) async fn setup() -> (
                     device_id: "test".into(),
                     version: "1".into(),
                 },
+                upstream_device_id: None,
                 jellyfin_token: "upstream-token".into(),
                 original_user_id: "backend-user".into(),
-                expires_at: None,
-                created_at: now,
-                updated_at: now,
             },
             server,
         ));
@@ -1943,11 +1939,25 @@ async fn latest_preserves_unknown_identity_and_disabled_behavior() {
             .unwrap(),
         CatalogPlan::Virtual { .. }
     ));
+    let CatalogPlan::Virtual {
+        catalog_scope_key, ..
+    } = resolve_catalog_plan(&state, &request("/Shows/NextUp", &sessions))
+        .await
+        .unwrap()
+    else {
+        panic!("Next Up must merge across servers");
+    };
+    assert!(
+        catalog_scope_key.starts_with("nextup:"),
+        "{catalog_scope_key}"
+    );
     state.config.write().await.deduplicate_media = false;
-    assert!(matches!(
-        resolve_catalog_plan(&state, &request("/UserItems/Resume", &sessions))
-            .await
-            .unwrap(),
-        CatalogPlan::Interleaved(_)
-    ));
+    for path in ["/UserItems/Resume", "/Shows/NextUp"] {
+        assert!(matches!(
+            resolve_catalog_plan(&state, &request(path, &sessions))
+                .await
+                .unwrap(),
+            CatalogPlan::Interleaved(_)
+        ));
+    }
 }

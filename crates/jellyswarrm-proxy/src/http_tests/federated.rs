@@ -94,7 +94,7 @@ async fn http_catalog_input_validates_offline_ids_without_initial_backend_select
     let (state, _, sessions, upstreams) = setup().await;
     let user = state
         .user_authorization
-        .create_user("catalog-input", &"password".into())
+        .fixture_user("catalog-input", &"password".into())
         .await
         .unwrap();
     let authorization = crate::protocol::authorization::Authorization {
@@ -112,7 +112,7 @@ async fn http_catalog_input_validates_offline_ids_without_initial_backend_select
             .unwrap();
         state
             .user_authorization
-            .store_authorization_session(
+            .bind_fixture_login(
                 &user.id,
                 server,
                 &authorization,
@@ -153,7 +153,7 @@ async fn http_catalog_input_validates_offline_ids_without_initial_backend_select
         .with_state(state.services.clone());
     let send = |uri: String| {
         let app = app.clone();
-        let auth = format!("MediaBrowser Client=\"test\", Device=\"test\", DeviceId=\"test\", Version=\"1\", Token=\"{}\"", user.virtual_key);
+        let auth = format!("MediaBrowser Client=\"test\", Device=\"test\", DeviceId=\"test\", Version=\"1\", Token=\"{}\"", user.fixture_token);
         async move {
             app.oneshot(
                 axum::http::Request::builder()
@@ -265,7 +265,7 @@ async fn admin_library_page_discovers_mapped_users_without_prior_catalog_request
     for (index, username) in ["restricted", "complete"].into_iter().enumerate() {
         let user = state
             .user_authorization
-            .create_user(username, &"password".into())
+            .fixture_user(username, &"password".into())
             .await
             .unwrap();
         state
@@ -445,7 +445,7 @@ async fn check_web_album_sorting(sort_by: &str, ascending_names: &[&str]) {
     let (state, _pool, sessions, upstreams) = setup().await;
     let user = state
         .user_authorization
-        .create_user("album-viewer", &"password".into())
+        .fixture_user("album-viewer", &"password".into())
         .await
         .unwrap();
     let authorization = crate::protocol::authorization::Authorization {
@@ -473,7 +473,7 @@ async fn check_web_album_sorting(sort_by: &str, ascending_names: &[&str]) {
             .unwrap();
         state
             .user_authorization
-            .store_authorization_session(
+            .bind_fixture_login(
                 &user.id,
                 server,
                 &authorization,
@@ -539,7 +539,7 @@ async fn check_web_album_sorting(sort_by: &str, ascending_names: &[&str]) {
             }
             for (start, limit) in [(0, 4), (1, 2)] {
                 let mut request = reqwest::Client::new().get(format!("{base_url}/Items"))
-                    .header("Authorization", format!("MediaBrowser Client=\"album-test\", Device=\"test\", DeviceId=\"album-test\", Version=\"1\", Token=\"{}\"", user.virtual_key))
+                    .header("Authorization", format!("MediaBrowser Client=\"album-test\", Device=\"test\", DeviceId=\"album-test\", Version=\"1\", Token=\"{}\"", user.fixture_token))
                     .query(&[
                         ("userId", user.id.as_str()), ("includeItemTypes", "MusicAlbum"),
                         ("recursive", "true"), (order_key, order),

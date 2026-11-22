@@ -651,7 +651,8 @@ mod tests {
     fn make_user(id: &str, name: &str) -> LocalUser {
         LocalUser {
             id: id.into(),
-            virtual_key: format!("vk-{id}"),
+            login_id: None,
+            fixture_token: format!("vk-{id}"),
             original_username: name.to_string(),
             local_credential: LocalCredential::Password(HashedPassword::from_hashed(
                 "0".repeat(64),
@@ -663,6 +664,7 @@ mod tests {
 
     fn make_session(user: LocalUser, device: &str) -> SessionCaller {
         SessionCaller {
+            login_token: None,
             session_id: format!("{}:{}", user.id, device),
             user,
         }

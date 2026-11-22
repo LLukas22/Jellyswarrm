@@ -26,6 +26,7 @@ use super::request::selection::UrlSelection;
 
 #[derive(Clone)]
 pub(crate) struct MediaServices {
+    pub(crate) mapping_authenticator: crate::auth::mapping_authentication::MappingAuthenticator,
     pub(crate) reqwest_client: reqwest::Client,
     pub(crate) streaming_reqwest_client: reqwest::Client,
     pub(crate) user_authorization: Arc<UserAuthorizationService>,
