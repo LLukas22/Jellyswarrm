@@ -11,8 +11,8 @@ use crate::{
     application::request::input::OperationRequest,
     application::request::response::execute_json_request,
     auth::{
-        mapping_authentication::MappingAuthenticator,
-        service::{LocalCredential, LocalUser},
+        mapping_authentication::{BackendLogin, MappingAuthenticator},
+        service::{CallerCredential, LocalCredential, LocalUser},
         UserAuthorizationService,
     },
     client_sessions::ClientSessionService,
@@ -42,6 +42,7 @@ pub(crate) struct AuthenticationService {
 
 /// A parsed caller credential, resolved without incoming-adapter or startup state.
 pub(crate) struct RequestIdentity {
+    pub(crate) credential: Option<CallerCredential>,
     pub(crate) auth: Option<JellyfinAuthorization>,
     pub(crate) user: Option<LocalUser>,
     pub(crate) device: Option<Device>,
@@ -54,18 +55,16 @@ pub(crate) async fn resolve_identity(
 ) -> Result<RequestIdentity, sqlx::Error> {
     let auth = JellyfinAuthorization::from_headers_url(headers, url);
     let device = request_device(headers, url, auth.as_ref());
-    let user = user_for_credential(auth.as_ref(), authorization).await?;
-    Ok(RequestIdentity { auth, user, device })
-}
-
-pub(crate) async fn user_for_credential(
-    auth: Option<&JellyfinAuthorization>,
-    authorization: &UserAuthorizationService,
-) -> Result<Option<LocalUser>, sqlx::Error> {
-    let Some(token) = auth.and_then(JellyfinAuthorization::token_ref) else {
-        return Ok(None);
+    let (user, credential) = match auth.as_ref().and_then(JellyfinAuthorization::token_ref) {
+        Some(token) => authorization.resolve_credential(token).await?.unzip(),
+        None => (None, None),
     };
-    authorization.get_user_by_token(token).await
+    Ok(RequestIdentity {
+        auth,
+        user,
+        credential,
+        device,
+    })
 }
 
 async fn process_user(
@@ -292,6 +291,13 @@ pub(crate) async fn authenticate_by_name(
         return Err(unauthenticated());
     }
 
+    let _device_guard = state
+        .user_authorization
+        .lock_preserved_device(&authentication)
+        .await;
+    let upstream_auth = state
+        .user_authorization
+        .upstream_login_device(&authentication);
     let is_existing_user = existing_user.is_some();
 
     if let Some(user) = existing_user {
@@ -314,7 +320,7 @@ pub(crate) async fn authenticate_by_name(
                     );
                     {
                         let state = state.clone();
-                        let authentication = authentication.clone();
+                        let authentication = upstream_auth.clone();
                         let payload = payload.clone();
                         let order = auth_tasks.len();
                         auth_tasks.spawn(async move {
@@ -348,7 +354,7 @@ pub(crate) async fn authenticate_by_name(
         // For first-time users we still probe all configured servers so mappings can be created.
         for server in servers {
             let state = state.clone();
-            let authentication = authentication.clone();
+            let authentication = upstream_auth.clone();
             let payload = payload.clone();
             info!(
                 "No server mapping found for user '{}' on server '{}'",
@@ -367,6 +373,7 @@ pub(crate) async fn authenticate_by_name(
 
     // Wait for all authentication attempts to complete
     let mut successful_auths = Vec::new();
+    let mut storage_failure = None;
     let mut failures = Vec::new();
     let total_servers = auth_tasks.len();
 
@@ -375,6 +382,19 @@ pub(crate) async fn authenticate_by_name(
             Ok((order, Ok(auth_response))) => {
                 info!("Successfully authenticated user: {}", payload.username);
                 successful_auths.push((order, auth_response));
+            }
+            Ok((
+                _,
+                Err(
+                    AuthError::Storage(error)
+                    | AuthError::Mapping(
+                        crate::auth::mapping_authentication::MappingAuthenticationError::Storage(
+                            error,
+                        ),
+                    ),
+                ),
+            )) => {
+                storage_failure = Some(error);
             }
             Ok((_, Err(e))) => {
                 tracing::debug!("Authentication attempt failed: {:?}", e);
@@ -387,6 +407,9 @@ pub(crate) async fn authenticate_by_name(
         }
     }
 
+    if let Some(error) = storage_failure {
+        return Err(ApplicationError::Storage(error));
+    }
     if successful_auths.is_empty() {
         tracing::warn!(
             "All authentication attempts failed for user: {}",
@@ -397,17 +420,30 @@ pub(crate) async fn authenticate_by_name(
         // Completion order must not change which backend supplies the response.
         successful_auths.sort_by_key(|(order, _)| *order);
         let successful_auths: Vec<_> = successful_auths.into_iter().map(|(_, auth)| auth).collect();
-        let user =
+        let mut user =
             resolve_or_create_login_user(state, &payload.username, &payload.password).await?;
 
-        persist_successful_auths(state, &user, &authentication, &successful_auths).await?;
-
+        let (token, first, login_id) = state
+            .user_authorization
+            .create_login(
+                &user,
+                &authentication,
+                &upstream_auth.device_id,
+                &successful_auths,
+            )
+            .await
+            .map_err(|e| match e {
+                sqlx::Error::RowNotFound => unauthenticated(),
+                e => ApplicationError::Storage(e),
+            })?;
+        user.login_id = Some(login_id);
         let auth_response = decorate_auth_response(
             state,
             &user,
             &payload.username,
             &authentication,
-            &successful_auths[0],
+            &successful_auths[first],
+            token,
         )
         .await;
 
@@ -447,63 +483,15 @@ async fn resolve_or_create_login_user(
         .ok_or_else(unauthenticated)
 }
 
-async fn persist_successful_auths(
-    state: &AuthenticationService,
-    user: &crate::auth::service::LocalUser,
-    login_authorization: &Authorization,
-    successful_auths: &[SuccessfulServerAuth],
-) -> Result<(), ApplicationError> {
-    let mapping_key = user.local_credential.mapping_key();
-
-    for successful in successful_auths {
-        if let Some(final_password) = &successful.final_password {
-            state
-                .user_authorization
-                .add_server_mapping(
-                    &user.id,
-                    &successful.server,
-                    &successful.final_username,
-                    final_password,
-                    Some(&mapping_key),
-                )
-                .await
-                .map_err(|e| {
-                    tracing::error!("Error updating server mapping after authentication: {}", e);
-                    ApplicationError::Storage(e)
-                })?;
-        }
-
-        let mut auth_to_store = login_authorization.clone();
-        auth_to_store.token = Some(successful.auth_response.access_token.clone());
-
-        state
-            .user_authorization
-            .store_authorization_session(
-                &user.id,
-                &successful.server,
-                &auth_to_store,
-                successful.auth_response.access_token.clone(),
-                successful.auth_response.user.id.clone(),
-                None,
-            )
-            .await
-            .map_err(|e| {
-                tracing::error!("Error storing authorization session: {}", e);
-                ApplicationError::Storage(e)
-            })?;
-    }
-
-    Ok(())
-}
-
 async fn decorate_auth_response(
     state: &AuthenticationService,
     user: &crate::auth::service::LocalUser,
     login_username: &str,
     login_authorization: &Authorization,
-    successful_auth: &SuccessfulServerAuth,
+    successful_auth: &BackendLogin,
+    token: String,
 ) -> AuthenticateResponse {
-    let mut auth_response = successful_auth.auth_response.clone();
+    let mut auth_response = successful_auth.login.response.clone();
     let server_id = state.settings.read().await.server_id.clone();
     auth_response.server_id = server_id.clone();
     auth_response.user.server_id = server_id.clone();
@@ -515,7 +503,7 @@ async fn decorate_auth_response(
     // Jellyswarrm and the user's real upstream sessions.
     auth_response.user.policy.is_administrator = is_seerr_client(login_authorization);
     auth_response.user.policy.sync_play_access = SyncPlayUserAccessType::CreateAndJoinGroups;
-    auth_response.access_token = user.virtual_key.clone();
+    auth_response.access_token = token;
     auth_response.user.id = user.id.to_string();
     crate::application::client_sessions::decorate_authentication(
         &state.client_sessions,
@@ -656,7 +644,7 @@ async fn authenticate_on_server(
     payload: AuthenticateRequest,
     server: crate::servers::storage::Server,
     server_mapping: Option<crate::auth::service::ServerMapping>,
-) -> Result<SuccessfulServerAuth, AuthError> {
+) -> Result<BackendLogin, AuthError> {
     let client_info = jellyfin_api::ClientInfo {
         client: authorization.client,
         device: authorization.device,
@@ -686,11 +674,10 @@ async fn authenticate_on_server(
             .await
     }
     .map_err(AuthError::Mapping)?;
-    Ok(SuccessfulServerAuth {
+    Ok(BackendLogin {
         server,
-        auth_response: login.response,
-        final_username: login.username,
-        final_password: login.password,
+        mapping: server_mapping,
+        login,
     })
 }
 
@@ -742,12 +729,4 @@ enum AuthError {
     ParseError(&'static str),
     #[error("authentication storage failed")]
     Storage(#[from] sqlx::Error),
-}
-
-#[derive(Debug, Clone)]
-struct SuccessfulServerAuth {
-    server: crate::servers::storage::Server,
-    auth_response: AuthenticateResponse,
-    final_username: String,
-    final_password: Option<crate::domain::security::Password>,
 }

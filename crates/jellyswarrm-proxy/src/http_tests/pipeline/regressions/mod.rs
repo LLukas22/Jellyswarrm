@@ -182,7 +182,7 @@ async fn regression_redirect_authenticates_at_the_backend() {
         .unwrap();
     for headers in [
         vec![("Authorization", auth(&f.user, "tv"))],
-        vec![("X-MediaBrowser-Token", f.user.virtual_key.clone())],
+        vec![("X-MediaBrowser-Token", f.user.fixture_token.clone())],
     ] {
         let mut request = client.get(format!(
             "{}/Videos/{}/master.m3u8?Static=true",

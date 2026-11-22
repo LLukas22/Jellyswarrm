@@ -28,6 +28,8 @@ pub(crate) struct StartupConfig {
     pub(crate) url_prefix: Option<UrlSegment>,
     pub(crate) session_key: Vec<u8>,
     pub(crate) server_background_check_interval_secs: u64,
+    login_idle_expiry_days: u32,
+    preserve_upstream_device_ids: bool,
     username: String,
     password: Password,
     preconfigured_servers: Vec<PreconfiguredServer>,
@@ -96,6 +98,8 @@ impl AppConfig {
             server_background_check_interval_secs: self.server_background_check_interval_secs,
             username: self.username.clone(),
             password: self.password.clone(),
+            login_idle_expiry_days: self.login_idle_expiry_days,
+            preserve_upstream_device_ids: self.preserve_upstream_device_ids,
             preconfigured_servers: self.preconfigured_servers.clone(),
             debug_user: self.debug_user.clone(),
         }

@@ -61,12 +61,17 @@ impl Fixture {
                 self.media.clone(),
                 self.selection.clone(),
             ),
+            crate::auth::mapping_authentication::MappingAuthenticator::new(
+                self.authorization.clone(),
+                reqwest::Client::new(),
+                "admin".into(),
+            ),
         )
     }
 
     async fn user(&self) -> LocalUser {
         self.authorization
-            .create_user("Alice", &"".into())
+            .fixture_user("Alice", &"".into())
             .await
             .unwrap()
     }
@@ -78,6 +83,7 @@ impl Fixture {
     ) -> (SessionCaller, mpsc::Receiver<String>) {
         let id = self.sessions.ensure(&user, token, None).await;
         let context = SessionCaller {
+            login_token: None,
             user,
             session_id: id,
         };
@@ -124,7 +130,7 @@ async fn authentication_enforces_read_only_keys_and_never_trusts_a_hint_as_a_cre
             .await,
         Err(SessionOperationError::Unauthenticated)
     ));
-    let url = format!("http://proxy/socket?api_key={}", user.virtual_key)
+    let url = format!("http://proxy/socket?api_key={}", user.fixture_token)
         .parse()
         .unwrap();
     let context = operations
@@ -142,7 +148,7 @@ async fn authentication_enforces_read_only_keys_and_never_trusts_a_hint_as_a_cre
     );
     let url = format!(
         "http://proxy/socket?api_key={}&deviceId=explicit",
-        user.virtual_key
+        user.fixture_token
     )
     .parse()
     .unwrap();
@@ -160,9 +166,9 @@ async fn authentication_enforces_read_only_keys_and_never_trusts_a_hint_as_a_cre
         "explicit"
     );
 
-    let key = f
+    let (key, _) = f
         .authorization
-        .create_api_key(&user.id, "reader")
+        .create_api_key(&user, "reader")
         .await
         .unwrap();
     let url = format!("http://proxy/Sessions?api_key={}", key.access_token)
@@ -182,7 +188,11 @@ async fn authentication_enforces_read_only_keys_and_never_trusts_a_hint_as_a_cre
 async fn discovery_removes_invalid_credentials_and_their_group_membership() {
     let f = Fixture::new().await;
     let user = f.user().await;
-    let (revoked, mut rx) = f.connect(user.clone(), "revoked-credential").await;
+    let (revoked, mut rx) = f.connect(user.clone(), &user.fixture_token).await;
+    f.authorization
+        .revoke_login(&user.fixture_token)
+        .await
+        .unwrap();
     assert!(f
         .groups
         .create_group(&revoked, "Group".into())
@@ -201,7 +211,7 @@ async fn discovery_removes_invalid_credentials_and_their_group_membership() {
 async fn command_commit_rechecks_capabilities_and_group_membership_without_an_http_adapter() {
     let f = Fixture::new().await;
     let user = f.user().await;
-    let (caller, mut rx) = f.connect(user.clone(), &user.virtual_key).await;
+    let (caller, mut rx) = f.connect(user.clone(), &user.fixture_token).await;
     let operations = f.operations();
     assert!(operations.target(&caller, &caller.session_id).await.is_ok());
     f.sessions
@@ -254,7 +264,7 @@ async fn command_commit_rechecks_capabilities_and_group_membership_without_an_ht
         .unwrap();
     let message: Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
     assert_eq!(message["Data"]["Name"], "SetVolume");
-    operations.logout(&caller).await;
+    operations.logout(&caller).await.unwrap();
     assert!(!f.groups.is_group_member(&caller.session_id).await);
     assert!(f.sessions.get(&caller.session_id).await.is_none());
 }
@@ -263,7 +273,7 @@ async fn command_commit_rechecks_capabilities_and_group_membership_without_an_ht
 async fn credential_lookup_failures_keep_storage_causes() {
     let f = Fixture::new().await;
     let user = f.user().await;
-    let (caller, _rx) = f.connect(user.clone(), &user.virtual_key).await;
+    let (caller, _rx) = f.connect(user.clone(), &user.fixture_token).await;
     f.pool.close().await;
     let error = match f.operations().target(&caller, &caller.session_id).await {
         Ok(_) => panic!("closed credential storage must fail"),

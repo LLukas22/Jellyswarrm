@@ -403,7 +403,8 @@ mod tests {
             None,
             Some(LocalUser {
                 id: "viewer".into(),
-                virtual_key: "proxy-token".into(),
+                login_id: None,
+                fixture_token: "proxy-token".into(),
                 original_username: "Viewer".into(),
                 local_credential: LocalCredential::Passwordless,
                 created_at: chrono::Utc::now(),

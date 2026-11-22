@@ -193,7 +193,7 @@ impl UserAuthorizationService {
         .await?;
 
         if credentials_changed {
-            let deleted = sqlx::query("DELETE FROM authorization_sessions WHERE mapping_id = ?")
+            let deleted = sqlx::query("DELETE FROM login_sessions WHERE mapping_id = ?")
                 .bind(mapping_id)
                 .execute(&mut *tx)
                 .await?
@@ -206,6 +206,7 @@ impl UserAuthorizationService {
         }
 
         tx.commit().await?;
+        self.session_changes.send_replace(());
 
         info!(
             "Added or updated server mapping for user {} to server {}",
@@ -262,11 +263,12 @@ impl UserAuthorizationService {
         .bind(credential_format.as_str())
         .fetch_one(&mut *tx)
         .await?;
-        sqlx::query("DELETE FROM authorization_sessions WHERE mapping_id = ?")
+        sqlx::query("DELETE FROM login_sessions WHERE mapping_id = ?")
             .bind(id)
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
+        self.session_changes.send_replace(());
         Ok(id)
     }
 
@@ -547,7 +549,7 @@ impl UserAuthorizationService {
         original_user_id: &str,
     ) -> Result<Option<String>, sqlx::Error> {
         let ids: Vec<String> = sqlx::query_scalar(
-            "SELECT DISTINCT auth.user_id FROM authorization_sessions auth \
+            "SELECT DISTINCT auth.user_id FROM login_sessions auth \
              JOIN server_mappings sm ON auth.mapping_id = sm.id \
              JOIN users u ON auth.user_id = u.id \
              WHERE sm.server_id = ? AND auth.original_user_id = ? \
@@ -565,7 +567,7 @@ impl UserAuthorizationService {
     pub(crate) async fn delete_server_mapping(&self, mapping_id: i64) -> Result<bool, sqlx::Error> {
         let mut tx = self.pool.begin().await?;
 
-        sqlx::query("DELETE FROM authorization_sessions WHERE mapping_id = ?")
+        sqlx::query("DELETE FROM login_sessions WHERE mapping_id = ?")
             .bind(mapping_id)
             .execute(&mut *tx)
             .await?;
@@ -576,6 +578,7 @@ impl UserAuthorizationService {
             .await?;
 
         tx.commit().await?;
+        self.session_changes.send_replace(());
 
         Ok(res.rows_affected() > 0)
     }

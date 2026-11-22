@@ -31,17 +31,11 @@ where
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
         let user = identity.user.ok_or(StatusCode::UNAUTHORIZED)?;
-        let token = identity
-            .auth
-            .as_ref()
-            .and_then(|auth| auth.token_ref())
-            .ok_or(StatusCode::UNAUTHORIZED)?;
-
-        if token != user.virtual_key {
-            return Err(StatusCode::FORBIDDEN);
+        use crate::auth::service::CallerCredential;
+        match identity.credential {
+            Some(CallerCredential::Login(_)) => Ok(Self(user)),
+            _ => Err(StatusCode::FORBIDDEN),
         }
-
-        Ok(Self(user))
     }
 }
 

@@ -398,7 +398,7 @@ async fn offline_authorized_sources_retain_sightings_and_recover_without_identit
     let sessions = f
         .state
         .user_authorization
-        .get_user_sessions(&f.user.id, None)
+        .get_user_sessions(&f.user.id)
         .await
         .unwrap();
     let (session, server) = sessions
@@ -434,7 +434,7 @@ async fn offline_authorized_sources_retain_sightings_and_recover_without_identit
     assert!(f.upstreams[1].received_requests().await.unwrap().len() > before);
     f.state
         .user_authorization
-        .store_authorization_session(
+        .bind_fixture_login(
             &f.user.id,
             server,
             &Authorization::parse(&auth(&f.user, "tv")).unwrap(),
@@ -521,7 +521,7 @@ async fn automatic_library_keeps_its_id_and_surviving_member_during_an_outage() 
     let sessions = f
         .state
         .user_authorization
-        .get_user_sessions(&f.user.id, None)
+        .get_user_sessions(&f.user.id)
         .await
         .unwrap();
     let scope = crate::libraries::service::VirtualLibraryAccessScope::new(

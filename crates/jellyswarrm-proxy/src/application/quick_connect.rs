@@ -26,8 +26,7 @@ pub(crate) async fn redeem(
     redemption: Redemption,
     request: Option<Authorization>,
 ) -> Result<AuthenticateResponse, QuickConnectError> {
-    let authorization =
-        redemption_authorization(request, redemption.session(), redemption.user_id());
+    let authorization = redemption_authorization(request, redemption.session());
     redeem_with_hooks(
         state,
         redemption,
@@ -42,7 +41,6 @@ pub(crate) async fn redeem(
 fn redemption_authorization(
     request: Option<Authorization>,
     session: &QuickConnectSession,
-    user_id: &str,
 ) -> Authorization {
     let mut authorization = request.unwrap_or_else(|| {
         tracing::warn!(
@@ -57,30 +55,7 @@ fn redemption_authorization(
         }
     });
     authorization.token = None;
-    if crate::protocol::device::is_android_tv_client(&authorization.client)
-        && !authorization.device_id.is_empty()
-    {
-        let original_device_id = std::mem::take(&mut authorization.device_id);
-        authorization.device_id = derive_android_tv_user_device_id(&original_device_id, user_id);
-        tracing::debug!(
-            "Derived Android TV user-scoped device id for Quick Connect: {} -> {}",
-            original_device_id,
-            authorization.device_id
-        );
-    }
     authorization
-}
-
-fn derive_android_tv_user_device_id(base_device_id: &str, user_id: &str) -> String {
-    use sha1::{Digest, Sha1};
-    let user_id = uuid::Uuid::parse_str(user_id)
-        .map(|id| id.hyphenated().to_string())
-        .unwrap_or_else(|_| user_id.to_string());
-    let mut hasher = Sha1::new();
-    hasher.update(base_device_id.as_bytes());
-    hasher.update(b"+");
-    hasher.update(user_id.as_bytes());
-    hex::encode(hasher.finalize())
 }
 
 // The request owns only the reply receiver, never the worker/reservation
@@ -95,8 +70,25 @@ async fn redeem_with_hooks(
     let (reply, receiver) = tokio::sync::oneshot::channel();
     let state = state.clone();
     tokio::spawn(async move {
-        let result = redeem_owned(&state, redemption, authorization, &reply, &hooks).await;
-        let _ = reply.send(result);
+        let result = redeem_owned(&state, &redemption, authorization, &hooks).await;
+        let success = result.is_ok();
+        match reply.send(result) {
+            Ok(()) if success => redemption.complete(),
+            Ok(()) => drop(redemption),
+            Err(Ok(response)) => {
+                // The receiver disappeared during registration. Retire the undelivered
+                // token before releasing the approval for a retry.
+                if let Err(error) = state
+                    .mapping_authenticator
+                    .logout_login(&response.access_token)
+                    .await
+                {
+                    tracing::error!(%error, "Could not retire undelivered Quick Connect login");
+                }
+                drop(redemption);
+            }
+            Err(Err(_)) => drop(redemption),
+        }
         #[cfg(test)]
         if let Some(finished) = hooks.finished {
             finished.notify_one();
@@ -109,9 +101,8 @@ async fn redeem_with_hooks(
 
 async fn redeem_owned(
     state: &AuthenticationService,
-    redemption: Redemption,
+    redemption: &Redemption,
     authorization: Authorization,
-    reply: &tokio::sync::oneshot::Sender<Result<AuthenticateResponse, QuickConnectError>>,
     hooks: &RegistrationHooks,
 ) -> Result<AuthenticateResponse, QuickConnectError> {
     let user = state
@@ -132,6 +123,13 @@ async fn redeem_owned(
     }
     // Only this coordinator owns these workers. It is not aborted when the
     // request is cancelled, and drains the set before dropping the reservation.
+    let _device_guard = state
+        .user_authorization
+        .lock_preserved_device(&authorization)
+        .await;
+    let upstream_auth = state
+        .user_authorization
+        .upstream_login_device(&authorization);
     let mut tasks = tokio::task::JoinSet::new();
     for (order, mapping) in mappings.into_iter().enumerate() {
         let Some(position) = servers
@@ -143,76 +141,79 @@ async fn redeem_owned(
         let server = servers.remove(position);
         let state = state.clone();
         let user = user.clone();
-        let authorization = authorization.clone();
-        let hooks = hooks.clone();
+        let authorization = upstream_auth.clone();
         tasks.spawn(async move {
-            let result =
-                authenticate_and_register(&state, &user, &server, &mapping, &authorization, &hooks)
-                    .await;
-            (order, result)
+            let response = state
+                .mapping_authenticator
+                .authenticate_login(
+                    &user,
+                    &server,
+                    &mapping,
+                    None,
+                    jellyfin_api::ClientInfo {
+                        client: authorization.client,
+                        device: authorization.device,
+                        device_id: authorization.device_id,
+                        version: authorization.version,
+                    },
+                )
+                .await;
+            (
+                order,
+                response.map(|login| crate::auth::mapping_authentication::BackendLogin {
+                    server,
+                    mapping: Some(mapping),
+                    login,
+                }),
+            )
         });
     }
+    let mut storage_failure = None;
     let mut successful = Vec::new();
     while let Some(result) = tasks.join_next().await {
         match result {
             Ok((order, Ok(response))) => successful.push((order, response)),
+            Ok((
+                _,
+                Err(crate::auth::mapping_authentication::MappingAuthenticationError::Storage(
+                    error,
+                )),
+            )) => storage_failure = Some(error),
             Ok((_, Err(error))) => {
                 tracing::debug!(%error, "Quick Connect backend authentication failed")
             }
             Err(error) => tracing::warn!(%error, "Quick Connect authentication task failed"),
         }
     }
-    if !reply.is_closed() {
-        redemption.complete();
+    if let Some(error) = storage_failure {
+        return Err(error.into());
     }
-    // Otherwise Drop restores approval only now, after every worker terminated.
-    // Preserve mapping priority/order, not completion timing.
     successful.sort_by_key(|(order, _)| *order);
-    successful
-        .into_iter()
-        .next()
-        .map(|(_, response)| response)
-        .ok_or(QuickConnectError::Unauthorized)
-}
-
-async fn authenticate_and_register(
-    state: &AuthenticationService,
-    user: &crate::auth::service::LocalUser,
-    server: &crate::servers::Server,
-    mapping: &crate::auth::service::ServerMapping,
-    authorization: &Authorization,
-    hooks: &RegistrationHooks,
-) -> Result<AuthenticateResponse, crate::auth::mapping_authentication::MappingAuthenticationError> {
-    let mut response = state
-        .mapping_authenticator
-        .authenticate_for_client(
-            user,
-            server,
-            mapping,
-            jellyfin_api::ClientInfo {
-                client: authorization.client.clone(),
-                device: authorization.device.clone(),
-                device_id: authorization.device_id.clone(),
-                version: authorization.version.clone(),
-            },
-        )
-        .await?;
-    let mut backend_authorization = authorization.clone();
-    backend_authorization.token = Some(response.access_token.clone());
+    if successful.is_empty() {
+        return Err(QuickConnectError::Unauthorized);
+    }
     hooks.before_registration().await;
-    state
+    let successful: Vec<_> = successful.into_iter().map(|(_, backend)| backend).collect();
+    let (token, first, login_id) = state
         .user_authorization
-        .store_authorization_session(
-            &user.id,
-            server,
-            &backend_authorization,
-            response.access_token.clone(),
-            response.user.id.clone(),
-            None,
-        )
-        .await?;
+        .create_login(&user, &authorization, &upstream_auth.device_id, &successful)
+        .await
+        .map_err(|e| {
+            if matches!(e, sqlx::Error::RowNotFound) {
+                QuickConnectError::Unauthorized
+            } else {
+                e.into()
+            }
+        })?;
+    let mut user = user;
+    user.login_id = Some(login_id);
     hooks.after_registration().await;
-
+    let mut response = successful
+        .into_iter()
+        .nth(first)
+        .ok_or(QuickConnectError::Unauthorized)?
+        .login
+        .response;
     let server_id = state.settings.read().await.server_id.clone();
     response.server_id = server_id.clone();
     response.user.server_id = server_id.clone();
@@ -223,12 +224,12 @@ async fn authenticate_and_register(
     response.session_info.user_name = user.original_username.clone();
     response.user.policy.is_administrator = false;
     response.user.policy.sync_play_access = SyncPlayUserAccessType::CreateAndJoinGroups;
-    response.access_token = user.virtual_key.clone();
+    response.access_token = token;
     crate::application::client_sessions::decorate_authentication(
         &state.client_sessions,
         &state.settings.read().await.server_id,
-        user,
-        authorization,
+        &user,
+        &authorization,
         &mut response,
     )
     .await;
@@ -378,7 +379,7 @@ mod tests {
             .unwrap();
         caller.abort();
         assert!(caller.await.unwrap_err().is_cancelled());
-        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM authorization_sessions")
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM login_sessions")
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -392,7 +393,7 @@ mod tests {
             .await
             .unwrap();
         // Real registration has committed, but its worker has not returned.
-        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM authorization_sessions")
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM login_sessions")
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -407,32 +408,23 @@ mod tests {
             .unwrap();
         let retry = quick_connect.begin_redemption(&secret).unwrap();
         let response = redeem(&state, retry, Some(client)).await.unwrap();
-        assert_eq!(response.access_token, user.virtual_key);
+        assert_ne!(response.access_token, user.fixture_token);
         assert!(matches!(
             quick_connect.begin_redemption(&secret),
             Err(RedemptionError::NotFound)
         ));
         let sessions = state
             .user_authorization
-            .get_user_sessions(&user.id, None)
+            .get_user_sessions(&user.id)
             .await
             .unwrap();
-        assert_eq!(sessions.len(), 1); // completed registration, then sequential upsert
+        assert_eq!(sessions.len(), 1); // Only the delivered login survives the retry.
         assert_eq!(sessions[0].0.jellyfin_token, "saved-token");
         backend.verify().await;
     }
 
     #[test]
-    fn derives_android_tv_device_id_from_uuid_user_id() {
-        let base_device_id = "androidtv-device-123";
-        let simple_user_id = "550e8400e29b41d4a716446655440000";
-        let derived = derive_android_tv_user_device_id(base_device_id, simple_user_id);
-
-        assert_eq!(derived, "7094964e96c0e66e00671463e263fbdffce6b001");
-    }
-
-    #[test]
-    fn quick_connect_uses_android_tv_user_scoped_device_id() {
+    fn quick_connect_preserves_the_redeeming_players_device_id() {
         let session = QuickConnectStorage::new().initiate(
             "session-device".to_string(),
             "Android TV".to_string(),
@@ -445,12 +437,12 @@ mod tests {
         )
         .ok();
 
-        let auth = redemption_authorization(request, &session, "550e8400e29b41d4a716446655440000");
+        let auth = redemption_authorization(request, &session);
 
         assert_eq!(auth.client, "Jellyfin Android TV");
         assert_eq!(auth.device, "Chromecast");
         assert_eq!(auth.version, "0.18.0");
-        assert_eq!(auth.device_id, "7094964e96c0e66e00671463e263fbdffce6b001");
+        assert_eq!(auth.device_id, "androidtv-device-123");
         assert!(auth.token.is_none());
     }
 
@@ -463,7 +455,7 @@ mod tests {
             "1.0.0".to_string(),
         );
 
-        let auth = redemption_authorization(None, &session, "user-id");
+        let auth = redemption_authorization(None, &session);
 
         assert_eq!(auth.device_id, "session-device");
         assert_eq!(auth.device, "Fallback Device");

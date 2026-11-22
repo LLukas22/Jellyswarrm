@@ -56,7 +56,7 @@ pub(crate) fn auth(user: &LocalUser, id: &str) -> String {
         device: format!("Device {id}"),
         device_id: id.into(),
         version: "1".into(),
-        token: Some(user.virtual_key.clone()),
+        token: Some(user.fixture_token.clone()),
     }
     .to_header_value()
 }
@@ -97,12 +97,12 @@ impl Fixture {
         .await;
         let user = state
             .user_authorization
-            .create_user("alice", &"password".into())
+            .fixture_user("alice", &"password".into())
             .await
             .unwrap();
         let other = state
             .user_authorization
-            .create_user("bob", &"password".into())
+            .fixture_user("bob", &"password".into())
             .await
             .unwrap();
         let mut upstreams = Vec::new();
@@ -139,7 +139,7 @@ impl Fixture {
             };
             state
                 .user_authorization
-                .store_authorization_session(
+                .bind_fixture_login(
                     &user.id,
                     &server,
                     &authorization,
@@ -236,7 +236,7 @@ impl Fixture {
         let url = format!(
             "{}/socket?api_key={}&deviceId={device}",
             self.url.replacen("http", "ws", 1),
-            self.user.virtual_key
+            self.user.fixture_token
         );
         let (mut ws, _) = connect_async(url).await.unwrap();
         let first: Value =
