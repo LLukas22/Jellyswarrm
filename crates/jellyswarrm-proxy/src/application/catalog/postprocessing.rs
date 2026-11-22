@@ -441,8 +441,6 @@ fn to_i32(value: usize) -> i32 {
     value.min(i32::MAX as usize) as i32
 }
 
-/// Page an already grouped/sorted materialization without reconstructing DTOs.
-/// Unknown item and envelope fields survive unchanged.
 #[cfg(test)]
 mod tests {
     use super::*;

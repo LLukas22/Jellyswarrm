@@ -1373,3 +1373,189 @@ async fn large_pages_refresh_user_data_in_bounded_lookups() {
     assert_eq!(lookups.iter().sum::<usize>(), 250);
     assert!(lookups.iter().all(|&ids| ids <= 100), "{lookups:?}");
 }
+
+#[tokio::test]
+async fn a_single_short_page_does_not_shrink_the_rest_of_the_scan() {
+    let (state, _, sessions, upstreams) = setup().await;
+    for (server, upstream) in upstreams.iter().enumerate() {
+        Mock::given(method("GET"))
+            .and(path("/Items"))
+            .respond_with(move |request: &wiremock::Request| {
+                let start = offset(request);
+                let limit: usize = query_value(request, "Limit").unwrap().parse().unwrap();
+                // One page comes back short; every other page is full.
+                let end = 2_300.min(start + if start == 500 { 200 } else { limit });
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "Items": (start..end).map(|index| json!({
+                        "Id": format!("server-{server}-item-{index}"), "Type": "Movie",
+                        "Name": format!("Movie {index:05}"),
+                    })).collect::<Vec<_>>(),
+                    "TotalRecordCount": 2_300, "StartIndex": start
+                }))
+            })
+            .mount(upstream)
+            .await;
+    }
+    let response = get_catalog(
+        &state.services,
+        request("/Items?Recursive=true&Limit=10", &sessions),
+    )
+    .await
+    .unwrap();
+    assert_eq!(response["TotalRecordCount"], 4_600);
+    for upstream in &upstreams {
+        let requests = upstream.received_requests().await.unwrap();
+        assert!(
+            requests
+                .iter()
+                .all(|request| query_value(request, "Limit").as_deref() == Some("500")),
+            "{:?}",
+            requests
+                .iter()
+                .map(|request| query_value(request, "Limit"))
+                .collect::<Vec<_>>()
+        );
+        // The pages fetched alongside the short one are discarded, the next
+        // page is probed alone, and batching resumes from there.
+        assert_eq!(
+            upstream_offsets(&requests),
+            vec![0, 500, 700, 1_000, 1_200, 1_500, 1_700, 2_000, 2_200]
+        );
+    }
+}
+
+fn user_data_lookups(requests: &[wiremock::Request]) -> usize {
+    requests
+        .iter()
+        .filter(|request| query_value(request, "Ids").is_some())
+        .count()
+}
+
+#[tokio::test]
+async fn small_and_large_pages_share_one_snapshot() {
+    let (state, _, sessions, upstreams) = setup().await;
+    let played = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    for (server, upstream) in upstreams.iter().enumerate() {
+        mount_watchable(upstream, server, played.clone()).await;
+    }
+    let page = |query: &'static str| get_catalog(&state.services, request(query, &sessions));
+    page("/Items?Recursive=true&Limit=10").await.unwrap();
+    let scans = listing_scans(&upstreams).await;
+    page("/Items?Recursive=true&Limit=500").await.unwrap();
+    page("/Items?Recursive=true").await.unwrap();
+    assert_eq!(listing_scans(&upstreams).await, scans, "one snapshot");
+
+    // A page too large to refresh by ID waits for a rebuild, which then
+    // serves the small pages too.
+    played.store(true, std::sync::atomic::Ordering::SeqCst);
+    state.catalog_snapshots.user_data_changed("viewer");
+    assert_eq!(
+        watched(&page("/Items?Recursive=true").await.unwrap()),
+        vec![true; 4]
+    );
+    let rebuilt = listing_scans(&upstreams).await;
+    assert!(rebuilt > scans);
+    assert_eq!(
+        watched(&page("/Items?Recursive=true&Limit=10").await.unwrap()),
+        vec![true; 4]
+    );
+    assert_eq!(listing_scans(&upstreams).await, rebuilt);
+    for upstream in &upstreams {
+        let requests = upstream.received_requests().await.unwrap();
+        assert_eq!(user_data_lookups(&requests), 0, "the rebuild is current");
+    }
+}
+
+#[tokio::test]
+async fn refreshed_user_data_is_remembered_until_the_next_change() {
+    let (state, _, sessions, upstreams) = setup().await;
+    let played = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    for (server, upstream) in upstreams.iter().enumerate() {
+        mount_watchable(upstream, server, played.clone()).await;
+    }
+    let listing = || {
+        get_catalog(
+            &state.services,
+            request("/Items?Recursive=true&Limit=10", &sessions),
+        )
+    };
+    let lookups = || async {
+        let mut lookups = 0;
+        for upstream in &upstreams {
+            lookups += user_data_lookups(&upstream.received_requests().await.unwrap());
+        }
+        lookups
+    };
+    listing().await.unwrap();
+    played.store(true, std::sync::atomic::Ordering::SeqCst);
+    state.catalog_snapshots.user_data_changed("viewer");
+    assert_eq!(watched(&listing().await.unwrap()), vec![true; 4]);
+    let refreshed = lookups().await;
+    assert!(refreshed > 0);
+    assert_eq!(watched(&listing().await.unwrap()), vec![true; 4]);
+    assert_eq!(lookups().await, refreshed, "remembered");
+
+    played.store(false, std::sync::atomic::Ordering::SeqCst);
+    state.catalog_snapshots.user_data_changed("viewer");
+    assert_eq!(watched(&listing().await.unwrap()), vec![false; 4]);
+    assert!(
+        lookups().await > refreshed,
+        "refreshed again after a change"
+    );
+}
+
+#[tokio::test]
+async fn bounded_rows_reuse_the_listing_snapshot() {
+    let (state, _, sessions, upstreams) = setup().await;
+    let played = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    for (server, upstream) in upstreams.iter().enumerate() {
+        mount_watchable(upstream, server, played.clone()).await;
+    }
+    let page = |query: &'static str| get_catalog(&state.services, request(query, &sessions));
+    let ids = |response: &serde_json::Value| {
+        response["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["Id"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+    let row = "/Items?Recursive=true&SortBy=SortName&EnableTotalRecordCount=false&Limit=2";
+    let second = page(
+        "/Items?Recursive=true&SortBy=SortName&EnableTotalRecordCount=false&Limit=2&StartIndex=2",
+    )
+    .await
+    .unwrap();
+    let before = all_requests(&upstreams).await;
+    let first = page(row).await.unwrap();
+    assert_eq!(
+        all_requests(&upstreams).await,
+        before,
+        "served from the snapshot"
+    );
+    let mut all = ids(&first);
+    all.extend(ids(&second));
+    let unique = all.iter().collect::<std::collections::BTreeSet<_>>();
+    assert_eq!((all.len(), unique.len()), (4, 4), "{all:?}");
+
+    // Without a snapshot the row is fetched directly and caches nothing.
+    state.catalog_snapshots.expire();
+    let before = all_requests(&upstreams).await;
+    assert_eq!(ids(&page(row).await.unwrap()), ids(&first));
+    assert!(all_requests(&upstreams).await > before);
+    state.catalog_snapshots.settle().await;
+    let before = all_requests(&upstreams).await;
+    page(row).await.unwrap();
+    assert!(
+        all_requests(&upstreams).await > before,
+        "rows build no snapshot"
+    );
+}
+
+async fn all_requests(upstreams: &[wiremock::MockServer]) -> usize {
+    let mut count = 0;
+    for upstream in upstreams {
+        count += upstream.received_requests().await.unwrap().len();
+    }
+    count
+}

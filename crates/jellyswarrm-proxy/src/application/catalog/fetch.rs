@@ -667,6 +667,11 @@ async fn scan_pages(
 
     let mut known_total: Option<usize> = None;
     let mut page_size = UPSTREAM_PAGE_SIZE;
+    // Length of the last short page. A backend that caps its pages returns
+    // the same short length again; one that returned a short page only once
+    // keeps the full page size.
+    let mut short_page: Option<usize> = None;
+    let permits = state.catalog_snapshots.scan_permits(server.id);
     'scan: loop {
         // Once a counted page has told us the size of the listing, fetch the
         // next few pages together. They are still accepted strictly in offset
@@ -674,6 +679,8 @@ async fn scan_pages(
         // inventories and uncounted listings stay sequential.
         let offset = progress.offset();
         let batch = match (policy, known_total) {
+            // Probe the next page alone after a short one.
+            _ if short_page.is_some() => 1,
             (ScanPolicy::Items, Some(total)) => total
                 .saturating_sub(offset)
                 .div_ceil(page_size)
@@ -688,10 +695,15 @@ async fn scan_pages(
             if matches!(policy, ScanPolicy::Items) || offset > 0 {
                 set_upstream_page(page_request.url_mut(), offset + page * page_size, page_size);
             }
-            pages.push(tokio::time::timeout(
-                page_timeout,
-                execute_raw_items_request(index, state.clone(), page_request, server.clone()),
-            ));
+            let permits = Arc::clone(&permits);
+            let page =
+                execute_raw_items_request(index, state.clone(), page_request, server.clone());
+            pages.push(async move {
+                // Wait for a slot before the page timeout starts, so queued
+                // pages do not time out behind other builds' scans.
+                let _permit = permits.acquire_owned().await;
+                tokio::time::timeout(page_timeout, page).await
+            });
         }
         for page in futures_util::future::join_all(pages).await {
             let page = match page {
@@ -735,12 +747,20 @@ async fn scan_pages(
             if received < page_size {
                 // A backend may return a short page before the end. Later
                 // pages of this batch then start at the wrong offset, so drop
-                // them and continue from what was actually received.
+                // them and continue from what was actually received. Two short
+                // pages of the same length mean the backend caps its pages, so
+                // request that size from then on.
                 if known_total.is_some() && matches!(policy, ScanPolicy::Items) {
-                    page_size = received;
+                    if short_page == Some(received) {
+                        page_size = received;
+                        short_page = None;
+                    } else {
+                        short_page = Some(received);
+                    }
                 }
                 continue 'scan;
             }
+            short_page = None;
         }
     }
 

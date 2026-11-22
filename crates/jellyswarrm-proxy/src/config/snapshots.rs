@@ -49,7 +49,32 @@ pub(crate) struct CatalogCacheSettings {
 
 impl Default for CatalogCacheSettings {
     fn default() -> Self {
-        AppConfig::default().startup_config().catalog_cache
+        Self::from_config(
+            super::default_catalog_cache_size_mb(),
+            super::default_catalog_cache_fresh_secs(),
+            super::default_catalog_cache_max_age_secs(),
+        )
+    }
+}
+
+impl CatalogCacheSettings {
+    fn from_config(size_mb: u64, fresh_secs: u64, max_age_secs: u64) -> Self {
+        // Deadlines are computed as `Instant::now() + duration`, which panics
+        // on overflow. Fall back to the default for absurdly long periods.
+        let duration = |seconds, fallback| {
+            std::time::Duration::from_secs(if seconds <= 1_000 * 365 * 24 * 3600 {
+                seconds
+            } else {
+                fallback
+            })
+        };
+        let fresh_for = duration(fresh_secs, super::default_catalog_cache_fresh_secs());
+        Self {
+            max_bytes: size_mb.saturating_mul(1024 * 1024),
+            fresh_for,
+            max_age: duration(max_age_secs, super::default_catalog_cache_max_age_secs())
+                .max(fresh_for),
+        }
     }
 }
 
@@ -124,27 +149,11 @@ impl AppConfig {
     }
 
     fn catalog_cache_settings(&self) -> CatalogCacheSettings {
-        // Moka rejects expiration periods longer than 1,000 years at startup.
-        let duration = |seconds, fallback| {
-            std::time::Duration::from_secs(if seconds <= 1_000 * 365 * 24 * 3600 {
-                seconds
-            } else {
-                fallback
-            })
-        };
-        let fresh_for = duration(
+        CatalogCacheSettings::from_config(
+            self.catalog_cache_size_mb,
             self.catalog_cache_fresh_secs,
-            super::default_catalog_cache_fresh_secs(),
-        );
-        CatalogCacheSettings {
-            max_bytes: self.catalog_cache_size_mb.saturating_mul(1024 * 1024),
-            fresh_for,
-            max_age: duration(
-                self.catalog_cache_max_age_secs,
-                super::default_catalog_cache_max_age_secs(),
-            )
-            .max(fresh_for),
-        }
+            self.catalog_cache_max_age_secs,
+        )
     }
 
     pub(crate) fn runtime_settings(&self) -> RuntimeSettings {

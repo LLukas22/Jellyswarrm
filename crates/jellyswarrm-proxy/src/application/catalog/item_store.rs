@@ -20,7 +20,10 @@ use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
     num::NonZeroU32,
-    sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
+    },
 };
 
 use super::postprocessing::Pagination;
@@ -156,6 +159,8 @@ struct Entry {
 struct Slot {
     generation: u32,
     references: u32,
+    /// References held by listings that are in the cache.
+    cached: u32,
     hash: u64,
     /// Next slot with the same hash.
     next: Option<NonZeroU32>,
@@ -175,6 +180,8 @@ struct Records {
     index: HashMap<u64, NonZeroU32>,
     bytes: usize,
     records: usize,
+    /// Bytes of the records referenced by at least one cached listing.
+    cached_bytes: usize,
 }
 
 impl Records {
@@ -205,6 +212,7 @@ impl Records {
                 self.slots.push(Slot {
                     generation: 0,
                     references: 0,
+                    cached: 0,
                     hash: 0,
                     next: None,
                     bytes: 0,
@@ -219,6 +227,7 @@ impl Records {
         .expect("slot indexes start at one");
         let slot = &mut self.slots[position];
         slot.references = 1;
+        slot.cached = 0;
         slot.hash = hash;
         slot.next = next;
         slot.bytes = bytes;
@@ -258,6 +267,7 @@ impl Records {
         if slot.references > 0 {
             return;
         }
+        debug_assert_eq!(slot.cached, 0, "cached record released");
         let (hash, next) = (slot.hash, slot.next.take());
         self.bytes -= slot.bytes;
         self.records -= 1;
@@ -294,6 +304,27 @@ impl Records {
             self.index = HashMap::new();
         }
     }
+
+    /// Count a cached listing's reference. A record shared by several cached
+    /// listings is charged once.
+    fn retain_cached(&mut self, handle: Handle) {
+        let slot = &mut self.slots[handle.slot()];
+        slot.cached += 1;
+        if slot.cached == 1 {
+            self.cached_bytes += slot.bytes;
+        }
+    }
+
+    fn release_cached(&mut self, handle: Handle) {
+        let slot = &mut self.slots[handle.slot()];
+        slot.cached = slot
+            .cached
+            .checked_sub(1)
+            .expect("cached record released more often than retained");
+        if slot.cached == 0 {
+            self.cached_bytes -= slot.bytes;
+        }
+    }
 }
 
 /// Retained size of the shared records.
@@ -301,6 +332,9 @@ impl Records {
 pub(crate) struct StoreStats {
     pub(crate) records: usize,
     pub(crate) bytes: usize,
+    /// Bytes of the records that cached listings reference. Records held only
+    /// by running scans or by readers of evicted listings are not included.
+    pub(crate) cached_bytes: usize,
 }
 
 #[derive(Default)]
@@ -315,6 +349,7 @@ impl ItemStore {
         StoreStats {
             records: records.records,
             bytes: records.bytes,
+            cached_bytes: records.cached_bytes,
         }
     }
 
@@ -504,6 +539,8 @@ pub(crate) struct StoredListing {
     new_bytes: usize,
     /// Bytes of every record this listing references, as if unshared.
     referenced_bytes: usize,
+    /// Whether the cache currently charges this listing's records.
+    cached: AtomicBool,
 }
 
 impl StoredListing {
@@ -514,6 +551,7 @@ impl StoredListing {
             entries: Vec::new(),
             new_bytes: 0,
             referenced_bytes: 0,
+            cached: AtomicBool::new(false),
         }
     }
 
@@ -662,6 +700,32 @@ impl StoredListing {
         Value::Object(response)
     }
 
+    /// Charge this listing's records to the cache. Idempotent.
+    pub(super) fn mark_cached(&self) {
+        if !self.cached.swap(true, Ordering::AcqRel) {
+            self.update_cached(Records::retain_cached);
+        }
+    }
+
+    /// Stop charging this listing's records to the cache. Idempotent. Readers
+    /// may keep the listing alive; its records then count only as store bytes.
+    pub(super) fn unmark_cached(&self) {
+        if self.cached.swap(false, Ordering::AcqRel) {
+            self.update_cached(Records::release_cached);
+        }
+    }
+
+    fn update_cached(&self, update: fn(&mut Records, Handle)) {
+        for chunk in self.entries.chunks(CHUNK) {
+            let mut records = self.store.write();
+            for entry in chunk {
+                for handle in std::iter::once(entry.item).chain(entry.user_data) {
+                    update(&mut records, handle);
+                }
+            }
+        }
+    }
+
     /// The stored response envelope without its items.
     #[cfg(test)]
     pub(crate) fn envelope(&self) -> Option<&Map<String, Value>> {
@@ -671,6 +735,7 @@ impl StoredListing {
 
 impl Drop for StoredListing {
     fn drop(&mut self) {
+        self.unmark_cached();
         for chunk in self.entries.chunks(CHUNK) {
             let mut records = self.store.write();
             for entry in chunk {

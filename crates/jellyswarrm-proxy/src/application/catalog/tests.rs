@@ -1092,14 +1092,15 @@ async fn catalog_pagination_follows_backend_caps_and_detects_stalled_pages() {
                     .unwrap()
             })
             .collect::<Vec<_>>();
-        // Counted continuations can arrive in either order, even when one proves stalled.
         offsets.sort_unstable();
+        // After a short page the next page is probed alone. A stalled backend
+        // repeats its first page there, which ends the scan.
         assert_eq!(
             offsets,
-            if counted {
-                vec![0, 2, 4]
-            } else {
-                vec![0, 2, 4, 5]
+            match (counted, stalled) {
+                (true, true) => vec![0, 2],
+                (true, false) => vec![0, 2, 4],
+                (false, _) => vec![0, 2, 4, 5],
             }
         );
     }

@@ -387,6 +387,13 @@ fn is_user_data_write(path: &str) -> bool {
         {
             true
         }
+        // Playback start, progress and stop reports by item.
+        [playing, _] | [playing, _, _] if is(playing, "PlayingItems") => true,
+        [users, _, playing, _] | [users, _, playing, _, _]
+            if is(users, "Users") && is(playing, "PlayingItems") =>
+        {
+            true
+        }
         [tag, _] if is(tag, "UserPlayedItems") || is(tag, "UserFavoriteItems") => true,
         [users, _, tag, _] if is(users, "Users") => {
             is(tag, "PlayedItems") || is(tag, "FavoriteItems")
@@ -526,6 +533,10 @@ mod tests {
             "/Users/u/Items/item/Rating",
             "/UserItems/item/Rating",
             "/UserItems/item/UserData",
+            "/PlayingItems/item",
+            "/PlayingItems/item/Progress",
+            "/Users/u/PlayingItems/item",
+            "/Users/u/PlayingItems/item/Progress",
         ] {
             assert!(super::is_user_data_write(path), "{path}");
         }

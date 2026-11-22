@@ -40,7 +40,7 @@ async fn posted_unscoped_guide_advances_upstream_body_pages_without_losing_filte
                 uuid::Uuid::new_v4().simple().to_string()
             };
             Mock::given(method("POST")).and(path("/LiveTv/Programs"))
-                .and(body_json(json!({"UserId":format!("backend-user-{owner}"),"StartIndex":page,"Limit":if page == 0 { 500 } else { 1 },"MinStartDate":"2026-10-11T00:00:00Z","IsMovie":true})))
+                .and(body_json(json!({"UserId":format!("backend-user-{owner}"),"StartIndex":page,"Limit":500,"MinStartDate":"2026-10-11T00:00:00Z","IsMovie":true})))
                 .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Items":[{"Id":id,"Name":format!("Program {owner}-{page}"),"Type":"Program"}],"TotalRecordCount":2,"StartIndex":page})))
                 .expect(1).mount(&f.upstreams[owner]).await;
         }

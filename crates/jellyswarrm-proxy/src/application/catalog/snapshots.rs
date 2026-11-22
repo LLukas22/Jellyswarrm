@@ -10,14 +10,19 @@
 //! snapshot, and the next attempt waits another freshness period.
 //!
 //! Listings keep their items in the shared [`ItemStore`], so two listings of
-//! the same items store each item once. The budget charges every shared record
-//! once and evicts the least recently used listings until the total fits.
+//! the same items store each item once. The budget charges every record that a
+//! cached listing references once and evicts the least recently used listings
+//! until the total fits. Records held only by running scans or by readers of
+//! evicted listings are not charged, so a large scan in progress cannot flush
+//! the cache.
 //!
 //! Two revisions per viewer fence snapshots. Changes to what a viewer may see
 //! or to the library bump the inventory revision, which is part of every key.
 //! Watched, favorite and progress writes bump only the user-data revision:
-//! queries that filter or sort by user data include it in their key, and other
-//! pages are served with their user data refreshed by one batch lookup.
+//! queries that filter or sort by user data include it in their key. Other
+//! item listings share one snapshot per query: small pages refresh their user
+//! data with batch lookups and remember the result, and larger pages wait for
+//! a rebuild that replaces the snapshot for everyone.
 use super::{
     item_store::{ItemStore, StoredListing},
     library_resolution::CatalogFetchTarget,
@@ -48,7 +53,16 @@ pub(crate) struct CatalogSnapshots {
     cache: Mutex<ListingCache>,
     builds: Arc<Mutex<HashMap<String, SharedBuild>>>,
     revisions: Mutex<HashMap<String, ViewerRevisions>>,
+    /// Upstream scan pages in flight per backend, across all builds.
+    scan_permits: Mutex<HashMap<crate::domain::ids::ServerId, Arc<tokio::sync::Semaphore>>>,
 }
+
+/// Scan pages that may be in flight against one backend across every running
+/// build. One scan uses up to [`UPSTREAM_SCAN_CONCURRENCY`] of them, so two
+/// scans can overlap and further scans queue instead of flooding the backend.
+///
+/// [`UPSTREAM_SCAN_CONCURRENCY`]: super::request_policy::UPSTREAM_SCAN_CONCURRENCY
+const SCAN_PAGES_PER_BACKEND: usize = 2 * super::request_policy::UPSTREAM_SCAN_CONCURRENCY;
 
 #[derive(Default, Clone, Copy)]
 struct ViewerRevisions {
@@ -66,6 +80,35 @@ pub(crate) struct Snapshot {
     /// When a hit should start a rebuild. Pushed back by each attempt, so a
     /// failing rebuild is retried once per freshness period, not per request.
     refresh_at: Mutex<Instant>,
+    /// `UserData` fetched after the build, by item ID, with the user-data
+    /// revision it reflects. Repeated pages reuse it instead of looking the
+    /// same items up again.
+    user_data: Mutex<HashMap<String, (u64, serde_json::Value)>>,
+}
+
+impl Snapshot {
+    fn new(
+        listing: StoredListing,
+        report: super::scan::CatalogReport,
+        user_data_revision: u64,
+        refresh_at: Instant,
+    ) -> Self {
+        Self {
+            listing,
+            report,
+            user_data_revision,
+            refresh_at: Mutex::new(refresh_at),
+            user_data: Mutex::default(),
+        }
+    }
+}
+
+/// Stop charging evicted listings to the budget, then drop them outside any
+/// cache lock. Readers may still hold them.
+fn release(snapshots: impl IntoIterator<Item = Arc<Snapshot>>) {
+    for snapshot in snapshots {
+        snapshot.listing.unmark_cached();
+    }
 }
 
 /// Cached listings in least-recently-used order. Their items live in the
@@ -129,7 +172,22 @@ impl CatalogSnapshots {
             cache: Mutex::default(),
             builds: Arc::default(),
             revisions: Mutex::default(),
+            scan_permits: Mutex::default(),
         }
+    }
+
+    /// The semaphore bounding scan pages in flight against `server`.
+    pub(super) fn scan_permits(
+        &self,
+        server: crate::domain::ids::ServerId,
+    ) -> Arc<tokio::sync::Semaphore> {
+        Arc::clone(
+            self.scan_permits
+                .lock()
+                .expect("scan permits poisoned")
+                .entry(server)
+                .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(SCAN_PAGES_PER_BACKEND))),
+        )
     }
 
     pub(super) fn item_store(&self) -> Arc<ItemStore> {
@@ -150,30 +208,27 @@ impl CatalogSnapshots {
         if entry.inserted.elapsed() >= max_age {
             let expired = cache.remove(key);
             drop(cache);
-            drop(expired);
+            release(expired);
             return None;
         }
         entry.last_used = clock;
         Some(Arc::clone(&entry.snapshot))
     }
 
-    /// Retained bytes charged against the budget: shared records once, plus
-    /// what each cached listing owns.
+    /// Bytes charged against the budget: every record a cached listing
+    /// references, once, plus what each cached listing owns.
     fn retained_bytes(&self) -> usize {
-        // Records of uncached listings that are still being served count too,
-        // until their last reader finishes.
-        self.cache().listing_bytes + self.store.stats().bytes
+        self.cache().listing_bytes + self.store.stats().cached_bytes
     }
 
     /// Cache a complete listing, evicting the least recently used ones until
-    /// the budget fits. Victims are dropped outside the cache lock, and the
-    /// budget is checked again against what their release actually freed:
-    /// records shared with other listings or held by readers stay.
+    /// the budget fits. Victims are released outside the cache lock.
     fn admit(&self, key: String, snapshot: Arc<Snapshot>) {
         let budget = usize::try_from(self.settings.max_bytes).unwrap_or(usize::MAX);
         let bytes = snapshot.listing.own_bytes();
         // A listing that cannot fit even in an empty cache must not flush
-        // every other viewer's listings first.
+        // every other viewer's listings first. The listing it replaces is out
+        // of date, so it goes too.
         if snapshot.listing.standalone_bytes() > budget {
             tracing::info!(
                 items = snapshot.listing.len(),
@@ -181,10 +236,24 @@ impl CatalogSnapshots {
                 budget,
                 "Catalog listing exceeds the cache budget and is not retained"
             );
+            let replaced = self.cache().remove(&key);
+            release(replaced);
             return;
         }
+        // Charge the records before the listing becomes visible, so an
+        // eviction racing with this admit always finds it charged.
+        snapshot.listing.mark_cached();
         let replaced = {
             let mut cache = self.cache();
+            // A build that started before a user-data change can finish after
+            // one that started later. Keep the newer listing.
+            if cache.entries.get(&key).is_some_and(|existing| {
+                existing.snapshot.user_data_revision > snapshot.user_data_revision
+            }) {
+                drop(cache);
+                snapshot.listing.unmark_cached();
+                return;
+            }
             cache.clock += 1;
             let clock = cache.clock;
             let replaced = cache.remove(&key);
@@ -200,16 +269,19 @@ impl CatalogSnapshots {
             );
             replaced
         };
-        drop(replaced);
+        release(replaced);
         self.purge_expired();
         let stats = self.store.stats();
         tracing::debug!(
             items = snapshot_len(&self.cache(), &key),
             shared_records = stats.records,
             shared_bytes = stats.bytes,
+            cached_bytes = stats.cached_bytes,
             budget,
             "Cached catalog listing"
         );
+        // Each eviction frees exactly the records no other cached listing
+        // shares, and the admitted listing fits on its own, so this ends.
         while self.retained_bytes() > budget {
             let victim = {
                 let mut cache = self.cache();
@@ -218,15 +290,7 @@ impl CatalogSnapshots {
                 };
                 cache.remove(&victim)
             };
-            drop(victim);
-        }
-        if self.retained_bytes() > budget {
-            // Only pinned readers or uncached builds still hold the excess.
-            tracing::debug!(
-                retained = self.retained_bytes(),
-                budget,
-                "Catalog cache is over budget until active readers finish"
-            );
+            release(victim);
         }
     }
 
@@ -244,9 +308,10 @@ impl CatalogSnapshots {
                 .filter_map(|key| cache.remove(&key))
                 .collect::<Vec<_>>()
         };
-        drop(expired);
+        release(expired);
     }
 
+    #[cfg(test)]
     async fn materialize(
         self: &Arc<Self>,
         key: String,
@@ -255,7 +320,26 @@ impl CatalogSnapshots {
             + Send
             + 'static,
     ) -> Result<Arc<Snapshot>, ApplicationError> {
-        if let Some(snapshot) = self.cached(&key) {
+        self.materialize_with(key, user_data_revision, false, build)
+            .await
+    }
+
+    /// Serve the cached listing for `key`, or build it. With
+    /// `current_user_data`, a listing built before the viewer's latest
+    /// user-data change counts as a miss and the caller waits for a rebuild.
+    async fn materialize_with(
+        self: &Arc<Self>,
+        key: String,
+        user_data_revision: u64,
+        current_user_data: bool,
+        build: impl std::future::Future<Output = Result<SnapshotResponse, ApplicationError>>
+            + Send
+            + 'static,
+    ) -> Result<Arc<Snapshot>, ApplicationError> {
+        let hit = self.cached(&key).filter(|snapshot| {
+            !current_user_data || snapshot.user_data_revision >= user_data_revision
+        });
+        if let Some(snapshot) = hit {
             if self.claim_refresh(&snapshot) {
                 // Serve the stale listing now. The rebuild replaces it for
                 // later requests, and a failed or partial one leaves it alone.
@@ -300,8 +384,12 @@ impl CatalogSnapshots {
             + Send
             + 'static,
     ) -> SharedBuild {
+        // Requests join a running build only if it started at the same
+        // user-data revision, so a caller that needs current user data never
+        // receives a build that predates the change.
+        let build_key = format!("{key}@{user_data_revision}");
         let mut builds = self.builds.lock().expect("snapshot builds poisoned");
-        if let Some(running) = builds.get(&key) {
+        if let Some(running) = builds.get(&build_key) {
             return running.clone();
         }
         let snapshots = Arc::clone(self);
@@ -310,7 +398,7 @@ impl CatalogSnapshots {
         // failed build is never handed to later requests.
         let slot = BuildSlot {
             builds: Arc::clone(&self.builds),
-            key: key.clone(),
+            key: build_key.clone(),
         };
         let fresh_for = self.settings.fresh_for;
         let task = tokio::spawn(async move {
@@ -321,14 +409,14 @@ impl CatalogSnapshots {
                 }) {
                 Ok((listing, report)) => {
                     let complete = report.is_complete_inventory();
-                    let snapshot = Arc::new(Snapshot {
+                    let snapshot = Arc::new(Snapshot::new(
                         listing,
                         report,
                         user_data_revision,
-                        refresh_at: Mutex::new(Instant::now() + fresh_for),
-                    });
+                        Instant::now() + fresh_for,
+                    ));
                     if complete && snapshots.settings.max_bytes > 0 {
-                        snapshots.admit(slot.key.clone(), Arc::clone(&snapshot));
+                        snapshots.admit(key, Arc::clone(&snapshot));
                     }
                     Ok(snapshot)
                 }
@@ -343,7 +431,7 @@ impl CatalogSnapshots {
         }
         .boxed()
         .shared();
-        builds.insert(key, build.clone());
+        builds.insert(build_key, build.clone());
         build
     }
 
@@ -383,7 +471,7 @@ impl CatalogSnapshots {
         }
         drop(revisions);
         let dropped = self.cache().take_all();
-        drop(dropped);
+        release(dropped);
     }
 
     /// Retained size of the shared item records.
@@ -425,7 +513,7 @@ mod registry_invalidation_tests {
 impl CatalogSnapshots {
     pub(crate) fn expire(&self) {
         let dropped = self.cache().take_all();
-        drop(dropped);
+        release(dropped);
     }
 
     /// Make every cached snapshot due for a rebuild.
@@ -500,8 +588,17 @@ pub(crate) struct SnapshotRequest {
     viewer: String,
     user_data_revision: u64,
     /// Refreshes the user data of a served page when the snapshot predates a
-    /// watched or favorite change. `None` when the key already covers it.
+    /// watched or favorite change. `None` when the key already covers it or
+    /// the page is too large to refresh.
     hydration: Option<OperationRequest>,
+    /// The key leaves out the user-data revision, but this page cannot be
+    /// refreshed item by item: a snapshot older than the viewer's latest
+    /// user-data change is rebuilt before serving.
+    current_user_data: bool,
+    /// A bounded row: serve it from the listing's cached snapshot if there is
+    /// one, so it matches the listing's later pages, and otherwise fetch it
+    /// directly. It never starts a full scan.
+    reuse_only: bool,
 }
 
 fn hash_request_identity(
@@ -603,25 +700,39 @@ impl SnapshotRequest {
             .unwrap_or("anonymous")
             .to_string();
         let revisions = state.catalog_snapshots.revisions(&viewer);
-        // Bounded endpoints and rows define their own result window. Do not
+        let uncached = Self {
+            key: None,
+            pagination,
+            token: token.clone(),
+            viewer: viewer.clone(),
+            user_data_revision: revisions.user_data,
+            hydration: None,
+            current_user_data: false,
+            reuse_only: false,
+        };
+        // Feeds and library roots define their own result window. Do not
         // cache across windows or pretend their response is an exhaustive
         // catalog snapshot.
-        if endpoint.is_feed() || endpoint.is_library_root() || query.policy(false).is_bounded_row()
-        {
-            return Self {
-                key: None,
-                pagination,
-                token,
-                viewer,
-                user_data_revision: revisions.user_data,
-                hydration: None,
-            };
+        if endpoint.is_feed() || endpoint.is_library_root() {
+            return uncached;
         }
-        let hydration = (endpoint == super::query::CatalogEndpoint::Items
+        // A bounded row is fetched with one request per backend. It may reuse
+        // the listing's snapshot, except for a random row, which should be a
+        // new sample each time.
+        let policy = query.policy(false);
+        let reuse_only = policy.is_bounded_row();
+        if reuse_only && matches!(policy.sort, super::postprocessing::SortPolicy::Random) {
+            return uncached;
+        }
+        // Item listings whose membership and order do not depend on user data
+        // share one snapshot per query whatever the page size, so the key
+        // leaves out the user-data revision.
+        let patchable =
+            endpoint == super::query::CatalogEndpoint::Items && !depends_on_user_data(&query);
+        let hydration = (patchable
             && pagination
                 .limit
-                .is_some_and(|limit| limit <= MAX_REFRESHED_PAGE)
-            && !depends_on_user_data(&query))
+                .is_some_and(|limit| limit <= MAX_REFRESHED_PAGE))
         .then(|| {
             Some(OperationRequest {
                 original_request: request.original_request.try_clone()?,
@@ -630,9 +741,10 @@ impl SnapshotRequest {
             })
         })
         .flatten();
+        let current_user_data = patchable && hydration.is_none();
         let mut hash = Sha256::new();
         hash.update(revisions.inventory.to_le_bytes());
-        if hydration.is_none() {
+        if !patchable {
             hash.update(revisions.user_data.to_le_bytes());
         }
         hash_request_identity(&mut hash, request, scope, token.as_deref());
@@ -660,23 +772,23 @@ impl SnapshotRequest {
         }
         Self {
             key: Some(hex::encode(hash.finalize())),
-            pagination,
-            token,
-            viewer,
-            user_data_revision: revisions.user_data,
             hydration,
+            current_user_data,
+            reuse_only,
+            ..uncached
         }
     }
 
+    /// Whether the build produces a full snapshot rather than a bounded row.
     pub(super) fn is_materialized(&self) -> bool {
-        self.key.is_some()
+        self.key.is_some() && !self.reuse_only
     }
 
     pub(crate) fn materialization_policy(
         &self,
         request: &OperationRequest,
     ) -> super::request_policy::CatalogRequestPolicy {
-        request.catalog_query().policy(self.key.is_some())
+        request.catalog_query().policy(self.is_materialized())
     }
 
     /// `build` runs as its own task, so it owns everything it uses.
@@ -687,23 +799,46 @@ impl SnapshotRequest {
             + Send
             + 'static,
     ) -> Result<serde_json::Value, ApplicationError> {
-        let response = if let Some(key) = self.key {
-            let snapshot = state
-                .catalog_snapshots
-                .materialize(key, self.user_data_revision, build)
-                .await?;
-            let mut page = snapshot.listing.page(self.pagination);
-            if let Some(template) = self.hydration {
-                let current = state.catalog_snapshots.revisions(&self.viewer).user_data;
-                if snapshot.user_data_revision != current {
-                    refresh_user_data(state, template, &mut page).await;
+        let Self {
+            key,
+            pagination,
+            token,
+            viewer,
+            user_data_revision,
+            hydration,
+            current_user_data,
+            reuse_only,
+        } = self;
+        let serve_page = |snapshot: Arc<Snapshot>| async move {
+            let mut page = snapshot.listing.page(pagination);
+            if let Some(template) = hydration {
+                let current = state.catalog_snapshots.revisions(&viewer).user_data;
+                if snapshot.user_data_revision < current {
+                    refresh_user_data(state, template, &snapshot, current, &mut page).await;
                 }
             }
             page
-        } else {
-            build.await?.response.into_json()?
         };
-        if let Some(token) = self.token.as_deref() {
+        let response = match key {
+            Some(key) if !reuse_only => {
+                let snapshot = state
+                    .catalog_snapshots
+                    .materialize_with(key, user_data_revision, current_user_data, build)
+                    .await?;
+                serve_page(snapshot).await
+            }
+            Some(key) => {
+                let cached = state.catalog_snapshots.cached(&key).filter(|snapshot| {
+                    !current_user_data || snapshot.user_data_revision >= user_data_revision
+                });
+                match cached {
+                    Some(snapshot) => serve_page(snapshot).await,
+                    None => build.await?.response.into_json()?,
+                }
+            }
+            None => build.await?.response.into_json()?,
+        };
+        if let Some(token) = token.as_deref() {
             state
                 .client_sessions
                 .cache_media_response(token, &response)
@@ -723,10 +858,14 @@ const REFRESH_LOOKUP_IDS: usize = 100;
 
 /// Replace the `UserData` of a page's items with the backends' current state,
 /// using batch `Ids` lookups. Membership and order stay as in the snapshot.
+/// Results are remembered on the snapshot at revision `current`, so later
+/// pages look up only items they have not refreshed since the last change.
 /// On failure the page keeps its snapshot user data rather than failing.
 async fn refresh_user_data(
     state: &MediaServices,
     template: OperationRequest,
+    snapshot: &Snapshot,
+    current: u64,
     page: &mut serde_json::Value,
 ) {
     let items = match page {
@@ -738,16 +877,30 @@ async fn refresh_user_data(
         _ => return,
     };
     let url = template.original_request.url();
-    if url
-        .query_pairs()
-        .any(|(key, value)| key.eq_ignore_ascii_case("EnableUserData") && value == "false")
-    {
+    if url.query_pairs().any(|(key, value)| {
+        key.eq_ignore_ascii_case("EnableUserData") && value.eq_ignore_ascii_case("false")
+    }) {
         return;
     }
-    let ids = items
-        .iter()
-        .filter_map(|item| item.get("Id")?.as_str().map(str::to_string))
-        .collect::<Vec<_>>();
+    let mut user_data = HashMap::new();
+    let ids = {
+        let known = snapshot
+            .user_data
+            .lock()
+            .expect("snapshot user data poisoned");
+        items
+            .iter()
+            .filter_map(|item| item.get("Id")?.as_str())
+            .filter(|id| match known.get(*id) {
+                Some((revision, value)) if *revision >= current => {
+                    user_data.insert(id.to_string(), value.clone());
+                    false
+                }
+                _ => true,
+            })
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
     let kept = url
         .query_pairs()
         .filter(|(key, _)| {
@@ -785,7 +938,7 @@ async fn refresh_user_data(
             }
         }
     });
-    let mut user_data = HashMap::new();
+    let mut fetched = Vec::new();
     for fresh in futures_util::future::join_all(lookups).await {
         let fresh = match fresh {
             Ok(Some(fresh)) => fresh,
@@ -799,13 +952,23 @@ async fn refresh_user_data(
             .get("Items")
             .and_then(serde_json::Value::as_array)
             .or_else(|| fresh.as_array());
-        user_data.extend(fresh_items.into_iter().flatten().filter_map(|item| {
+        fetched.extend(fresh_items.into_iter().flatten().filter_map(|item| {
             Some((
                 item.get("Id")?.as_str()?.to_string(),
                 item.get("UserData")?.clone(),
             ))
         }));
     }
+    if !fetched.is_empty() {
+        let mut known = snapshot
+            .user_data
+            .lock()
+            .expect("snapshot user data poisoned");
+        for (id, value) in &fetched {
+            known.insert(id.clone(), (current, value.clone()));
+        }
+    }
+    user_data.extend(fetched);
     for item in items.iter_mut() {
         let Some(id) = item.get("Id").and_then(serde_json::Value::as_str) else {
             continue;
@@ -1134,12 +1297,58 @@ mod materialization_tests {
         assert!(cache.cached_for_test("oversized").is_none());
         assert!(cache.cached_for_test("a").is_some());
         assert!(cache.cached_for_test("c").is_some());
+        // Records held by an uncached reader or a scan in progress are not
+        // charged, so admitting a small listing evicts nothing.
+        assert!(cache.store_stats().bytes > (one * 10 / 4));
+        build(&cache, "d", listing(600..610)).await;
+        assert!(cache.cached_for_test("a").is_some());
+        assert!(cache.cached_for_test("c").is_some());
+        assert!(cache.cached_for_test("d").is_some());
         drop(oversized);
+        assert_eq!(cache.store_stats().records, 210);
+
+        // A rebuild that outgrew the budget retires the listing it replaces.
+        cache.age();
+        cache
+            .materialize("d".into(), 0, async { Ok(listing(1_000..1_300)) })
+            .await
+            .unwrap();
+        cache.settle().await;
+        assert!(cache.cached_for_test("d").is_none());
         assert_eq!(cache.store_stats().records, 200);
 
         cache.invalidate_all();
         assert_eq!(cache.store_stats(), Default::default());
         assert_eq!(cache.retained_bytes(), 0);
+    }
+
+    #[tokio::test]
+    async fn an_older_build_never_replaces_a_listing_with_newer_user_data() {
+        let cache = Arc::new(CatalogSnapshots::default());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let older = {
+            let (cache, release) = (cache.clone(), release.clone());
+            tokio::spawn(async move {
+                cache
+                    .materialize("query".into(), 0, async move {
+                        release.notified().await;
+                        Ok(listing(0..1))
+                    })
+                    .await
+                    .map(|_| ())
+            })
+        };
+        tokio::task::yield_now().await;
+        // A caller that needs revision 1 does not join the revision 0 build.
+        cache
+            .materialize_with("query".into(), 1, true, async { Ok(listing(0..2)) })
+            .await
+            .unwrap();
+        release.notify_one();
+        older.await.unwrap().unwrap();
+        cache.settle().await;
+        let kept = cache.cached_for_test("query").unwrap();
+        assert_eq!((kept.user_data_revision, kept.listing.len()), (1, 2));
     }
 
     #[tokio::test]
