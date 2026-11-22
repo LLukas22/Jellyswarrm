@@ -193,6 +193,20 @@ impl CatalogQuery {
                 .any(|(key, _)| key.eq_ignore_ascii_case("Ids"))
     }
 
+    /// All pages of an uncounted item listing share a reconciliation scope.
+    pub(super) fn is_uncounted_item_listing(&self) -> bool {
+        let mut count_declined = false;
+        for (key, value) in &self.parameters {
+            if key.eq_ignore_ascii_case("EnableTotalRecordCount") {
+                if !value.eq_ignore_ascii_case("false") {
+                    return false;
+                }
+                count_declined = true;
+            }
+        }
+        self.endpoint == CatalogEndpoint::Items && count_declined && !self.is_batch_lookup()
+    }
+
     pub(crate) fn policy(&self, materialize: bool) -> CatalogRequestPolicy {
         CatalogRequestPolicy::from_query(
             self,

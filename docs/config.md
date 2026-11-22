@@ -39,12 +39,16 @@ The table below lists all available configuration options:
 | `preserve_upstream_device_ids` | `false` | `JELLYSWARRM_PRESERVE_UPSTREAM_DEVICE_IDS` | Set to `true` and restart if a backend requires approved client device IDs. By default each login gets its own backend device ID. With preservation enabled, Jellyfin can revoke an earlier backend token when the same device signs in again. |
 | `merge_libraries` | `true` | `JELLYSWARRM_MERGE_LIBRARIES` | Merge libraries with matching names across servers into virtual libraries. |
 | `deduplicate_media` | `true` | `JELLYSWARRM_DEDUPLICATE_MEDIA` | Collapse the same movie or show (series/season/episode) on multiple servers into one item whose versions are served by the different hosts (Jellyfin-style linked versions; Jellyfin v12 adds multi-versions for episodes). Also merges the home feeds: *Recently Added*, *Continue Watching* (resumes from the most recently played version) and *Next Up* (one entry per matched show, at the furthest episode any server reports). Legacy key `deduplicate_movies` / env `JELLYSWARRM_DEDUPLICATE_MOVIES` still loads. |
+| `catalog_cache_size_mb` | `256` | `JELLYSWARRM_CATALOG_CACHE_SIZE_MB` | Estimated cache memory budget in MiB. Active scans use additional memory. `0` disables caching. Requires a restart. |
+| `catalog_cache_fresh_secs` | `300` | `JELLYSWARRM_CATALOG_CACHE_FRESH_SECS` | Seconds before an accessed listing is refreshed in the background. Requires a restart. |
+| `catalog_cache_max_age_secs` | `21600` | `JELLYSWARRM_CATALOG_CACHE_MAX_AGE_SECS` | Maximum age in seconds for a cached listing. At least `catalog_cache_fresh_secs`. Requires a restart. |
 
 ---
 
 ### Notes
 - The `session_key` is generated as a secure 64-byte key if not specified, and is stored in the config file for reuse.  
 - Each server now has its own streaming mode (`Redirect` or `Proxy`). For preconfigured servers, omit `media_streaming_mode` to use the default `Redirect`.
+- An environment variable overrides the top-level key of the same name, e.g. `JELLYSWARRM_SERVER_BACKGROUND_CHECK_INTERVAL_SECS`. A double underscore reaches a nested key, e.g. `JELLYSWARRM_DEBUG_USER__USERNAME`.
 - Configuration files are resolved from the data directory (`./data` by default), which can be overridden with `JELLYSWARRM_DATA_DIR`.
 
 Upgrading to per-login credentials signs players out once. Existing named API keys keep their values and authenticate each mapped backend on first use. For Jellyfin device allowlists, approve the integration device `jellyswarrm-key-<key id>` for password mappings. A Quick Connect mapping uses its own durable credential. Placeholder player device IDs always receive fresh upstream IDs. When a real ID is preserved, Jellyfin may retire the previous upstream token even if the proxy cannot finish saving its replacement.

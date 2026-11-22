@@ -19,7 +19,6 @@ use crate::{
 
 use super::{
     fetch::{fetch_catalog, fetch_show_catalog, FetchMode, FetchedCatalog},
-    finalize_items_response,
     library_resolution::CatalogFetchTarget,
     postprocessing::{FederatedItems, ServerItems},
     query::CatalogEndpoint,
@@ -123,19 +122,20 @@ async fn get_reconciled_catalog(
     )
     .await;
     let policy = snapshot.materialization_policy(&preprocessed);
+    let build_state = state.clone();
     snapshot
-        .serve(
-            state,
+        .serve(state, async move {
             get_reconciled_catalog_uncached(
-                state,
+                &build_state,
                 preprocessed,
                 catalog_scope_key,
                 targets,
                 skipped_targets,
                 context,
                 policy,
-            ),
-        )
+            )
+            .await
+        })
         .await
 }
 
@@ -216,8 +216,14 @@ async fn get_reconciled_catalog_uncached(
         }
     }
     Ok(super::snapshots::SnapshotResponse {
-        response: finalize_items_response(state, &original_request, items, &policy, response_shape)
-            .await?,
+        response: super::finalize_snapshot_response(
+            state,
+            &original_request,
+            items,
+            &policy,
+            response_shape,
+        )
+        .await?,
         report,
     })
 }
@@ -275,8 +281,7 @@ pub(super) async fn reconcile_fetched_catalog(
         .collect::<Vec<_>>();
     let authoritative_inventory = series_group.is_none() && !policy.inventory_types.is_empty();
     let mut snapshots = Vec::new();
-    let mut tagged_items = Vec::new();
-    let mut catalog_aliases = Vec::new();
+    let mut sources = Vec::new();
     // A cold recursive listing can contain both the parent series and its
     // children. Publish provider-matched parents before deriving child aliases,
     // rather than requiring another request to establish the parent identity.
@@ -369,32 +374,33 @@ pub(super) async fn reconcile_fetched_catalog(
                     })
                     .collect(),
             });
-            catalog_aliases.push(aliases);
+            sources.push(
+                items
+                    .into_iter()
+                    .zip(aliases.into_iter().map(Some))
+                    .map(|(item, aliases)| {
+                        let server = server.clone();
+                        (TaggedMediaItem { item, server }, aliases)
+                    })
+                    .collect::<std::collections::VecDeque<_>>(),
+            );
         } else {
-            catalog_aliases.push(vec![BTreeSet::new(); items.len()]);
+            sources.push(
+                items
+                    .into_iter()
+                    .map(|item| {
+                        let server = server.clone();
+                        (TaggedMediaItem { item, server }, None)
+                    })
+                    .collect(),
+            );
         }
-        tagged_items.push(
-            items
-                .into_iter()
-                .map(|item| TaggedMediaItem {
-                    item,
-                    server: server.clone(),
-                })
-                .collect::<Vec<_>>(),
-        );
     }
-    let next_up = policy.endpoint() == CatalogEndpoint::NextUp;
-    // Next Up is ranked upstream by when the previous episode was watched, which
-    // the returned episodes cannot reproduce. Interleave each server's ranking
-    // (as unmerged Next Up does) instead of concatenating whole servers.
-    let (tagged_items, catalog_aliases) = if next_up {
-        interleave_server_lists(tagged_items, catalog_aliases)
-    } else {
-        (
-            tagged_items.into_iter().flatten().collect(),
-            catalog_aliases.into_iter().flatten().collect(),
-        )
-    };
+    // Alternate between backends, as unreconciled listings do. A sort the
+    // proxy cannot apply keeps this order, and a row cut to `Limit` must not
+    // be filled from the first backend alone. Aliases stay paired by index.
+    let (tagged_items, item_aliases): (Vec<_>, Vec<_>) = round_robin(sources).into_iter().unzip();
+    let catalog_aliases = item_aliases.into_iter().flatten().collect::<Vec<_>>();
 
     let mut items = if let ReconciliationMode::Enabled { generation } = reconciliation_generation {
         let plan = MediaDedupPlan::with_aliases(tagged_items, catalog_aliases);
@@ -437,38 +443,21 @@ pub(super) async fn reconcile_fetched_catalog(
             }
         }
     }
-    if next_up && deduplicate_media {
+    if policy.endpoint() == CatalogEndpoint::NextUp && deduplicate_media {
         items =
             FederatedItems::from_merged_items(keep_furthest_episode_per_series(items.into_items()));
     }
     Ok(items)
 }
 
-/// Round-robin each server's ranked list, keeping item/alias pairs aligned.
-fn interleave_server_lists(
-    items: Vec<Vec<TaggedMediaItem>>,
-    aliases: Vec<Vec<BTreeSet<MediaAlias>>>,
-) -> (Vec<TaggedMediaItem>, Vec<BTreeSet<MediaAlias>>) {
-    let mut queues = items
-        .into_iter()
-        .zip(aliases)
-        .map(|(items, aliases)| items.into_iter().zip(aliases))
-        .collect::<Vec<_>>();
-    let mut merged_items = Vec::new();
-    let mut merged_aliases = Vec::new();
-    loop {
-        let mut advanced = false;
-        for queue in &mut queues {
-            if let Some((item, aliases)) = queue.next() {
-                merged_items.push(item);
-                merged_aliases.push(aliases);
-                advanced = true;
-            }
-        }
-        if !advanced {
-            return (merged_items, merged_aliases);
+fn round_robin<T>(mut sources: Vec<std::collections::VecDeque<T>>) -> Vec<T> {
+    let mut items = Vec::with_capacity(sources.iter().map(|source| source.len()).sum());
+    while sources.iter().any(|source| !source.is_empty()) {
+        for source in &mut sources {
+            items.extend(source.pop_front());
         }
     }
+    items
 }
 
 /// Each backend computes Next Up from its own watch history, so a show

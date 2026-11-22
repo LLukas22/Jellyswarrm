@@ -24,20 +24,25 @@ async fn a_mutation_fences_inflight_builds_without_invalidating_another_viewer()
     let old = SnapshotRequest::prepare(&state, &old, &[], "listing").await;
     let other = prepare("other");
     let other = SnapshotRequest::prepare(&state, &other, &[], "listing").await;
-    let value = |name| SnapshotResponse {
-        response: serde_json::json!({"Items": [{"Id": name}], "TotalRecordCount": 1, "StartIndex": 0}),
+    let value = |name: &'static str| SnapshotResponse {
+        response:
+            serde_json::json!({"Items": [{"Id": name}], "TotalRecordCount": 1, "StartIndex": 0})
+                .into(),
         report: crate::application::catalog::scan::CatalogReport::new(Vec::new(), 0),
     };
     let _ = other
-        .serve(&state, async { Ok(value("other")) })
+        .serve(&state, async move { Ok(value("other")) })
         .await
         .unwrap();
-    let started = tokio::sync::Notify::new();
-    let release = tokio::sync::Notify::new();
-    let old_build = old.serve(&state, async {
-        started.notify_one();
-        release.notified().await;
-        Ok(value("old"))
+    let started = std::sync::Arc::new(tokio::sync::Notify::new());
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    let old_build = old.serve(&state, {
+        let (started, release) = (started.clone(), release.clone());
+        async move {
+            started.notify_one();
+            release.notified().await;
+            Ok(value("old"))
+        }
     });
     let mutation = async {
         started.notified().await;
@@ -50,7 +55,7 @@ async fn a_mutation_fences_inflight_builds_without_invalidating_another_viewer()
     let fresh = SnapshotRequest::prepare(&state, &fresh, &[], "listing").await;
     assert_eq!(
         fresh
-            .serve(&state, async { Ok(value("new")) })
+            .serve(&state, async move { Ok(value("new")) })
             .await
             .unwrap()["Items"][0]["Id"],
         "new"

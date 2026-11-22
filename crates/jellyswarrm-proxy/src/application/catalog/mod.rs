@@ -16,6 +16,7 @@ mod episode_queue;
 mod fetch;
 mod filters;
 mod item_lookup;
+pub(crate) mod item_store;
 mod library_resolution;
 mod library_root;
 mod media_reconciliation;
@@ -272,12 +273,71 @@ async fn get_interleaved_root(
     let snapshot =
         snapshots::SnapshotRequest::prepare(state, &preprocessed, &targets, "listing").await;
     let policy = snapshot.materialization_policy(&preprocessed);
+    let compact = snapshot.is_materialized() && policy.episode_start_id.is_none();
+    let build_state = state.clone();
     snapshot
-        .serve(
-            state,
-            get_interleaved_root_uncached(state, preprocessed, targets, policy),
-        )
+        .serve(state, async move {
+            if compact {
+                return build_compact_listing(&build_state, preprocessed, targets, policy).await;
+            }
+            get_interleaved_root_uncached(&build_state, preprocessed, targets, policy).await
+        })
         .await
+}
+
+async fn build_compact_listing(
+    state: &MediaServices,
+    request: OperationRequest,
+    targets: Vec<CatalogFetchTarget>,
+    policy: CatalogRequestPolicy,
+) -> Result<snapshots::SnapshotResponse, ApplicationError> {
+    let skipped_targets = library_resolution::unavailable_source_count(&request, &targets);
+    let name_policy = catalog_name_policy(state).await;
+    let FetchedCatalog {
+        server_items,
+        response_shape,
+        report,
+    } = fetch::fetch_compact_catalog(
+        state,
+        &request.original_request,
+        &policy,
+        targets,
+        skipped_targets,
+        name_policy,
+    )
+    .await?;
+    let mut listing = item_store::StoredListing::new(state.catalog_snapshots.item_store());
+    let keys = server_items
+        .into_iter()
+        .map(|source| {
+            let fetch::CompactSource {
+                listing: source,
+                keys,
+            } = source.server_items;
+            let start = listing.len();
+            listing.append(source);
+            (start..).zip(keys).collect()
+        })
+        .collect();
+    let mut order = postprocessing::interleave_sources(keys, |(_, key)| key.live_tv_view);
+    policy.sort.sort_compact(&mut order);
+    listing.finish(
+        order.into_iter().map(|(index, _)| index).collect(),
+        response_shape,
+    );
+    Ok(snapshots::SnapshotResponse {
+        response: snapshots::SnapshotBody::Stored(listing),
+        report,
+    })
+}
+
+async fn catalog_name_policy(state: &MediaServices) -> crate::media::presentation::ItemNamePolicy {
+    use crate::media::presentation::ItemNamePolicy;
+    if state.config.read().await.include_server_name_in_media {
+        ItemNamePolicy::IncludeServerName
+    } else {
+        ItemNamePolicy::Preserve
+    }
 }
 
 async fn get_interleaved_root_uncached(
@@ -302,11 +362,7 @@ async fn get_interleaved_root_uncached(
     )
     .await?;
     let server_count = server_items.len();
-    let name_policy = if state.config.read().await.include_server_name_in_media {
-        crate::media::presentation::ItemNamePolicy::IncludeServerName
-    } else {
-        crate::media::presentation::ItemNamePolicy::Preserve
-    };
+    let name_policy = catalog_name_policy(state).await;
     let items = FederatedItems::from_servers(
         server_items
             .into_iter()
@@ -318,10 +374,36 @@ async fn get_interleaved_root_uncached(
     debug!("Combined items from {server_count} servers");
 
     Ok(snapshots::SnapshotResponse {
-        response: finalize_items_response(state, &original_request, items, &policy, response_shape)
-            .await?,
+        response: finalize_snapshot_response(
+            state,
+            &original_request,
+            items,
+            &policy,
+            response_shape,
+        )
+        .await?,
         report,
     })
+}
+
+/// Finalize a listing for the snapshot cache. Item listings stay typed so
+/// the item store can convert them one item at a time instead of building a
+/// JSON tree of the whole catalog first.
+pub(super) async fn finalize_snapshot_response(
+    state: &MediaServices,
+    request: &reqwest::Request,
+    items: FederatedItems,
+    policy: &CatalogRequestPolicy,
+    response_shape: ResponseShape,
+) -> Result<snapshots::SnapshotBody, ApplicationError> {
+    if policy.endpoint().is_library_root() {
+        return finalize_items_response(state, request, items, policy, response_shape)
+            .await
+            .map(snapshots::SnapshotBody::Json);
+    }
+    Ok(snapshots::SnapshotBody::Items(
+        items.into_response_with_policy(policy, response_shape),
+    ))
 }
 
 pub(super) async fn finalize_items_response(
@@ -351,6 +433,8 @@ pub(super) async fn finalize_items_response(
 
 #[cfg(test)]
 mod reliability_tests;
+#[cfg(test)]
+mod scale_tests;
 #[cfg(test)]
 mod snapshot_tests;
 #[cfg(test)]

@@ -70,3 +70,4 @@ testcontainers = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tokio-tungstenite = { workspace = true }
 wiremock = { workspace = true }
+cap = { version = "0.1.2", features = ["stats"] }

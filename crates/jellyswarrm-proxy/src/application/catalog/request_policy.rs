@@ -5,6 +5,9 @@ use crate::media::identity::MediaKind;
 use crate::media::storage::MediaStorageService;
 use std::collections::BTreeSet;
 
+/// Largest `Limit` treated as a bounded row. Home-screen rows ask for 12–24.
+const MAX_BOUNDED_ROW_LIMIT: usize = 100;
+
 /// One interpretation of the client query, shared by fetching and finalization.
 pub(crate) struct CatalogRequestPolicy {
     endpoint: CatalogEndpoint,
@@ -14,6 +17,9 @@ pub(crate) struct CatalogRequestPolicy {
     pub(crate) inventory_types: BTreeSet<MediaKind>,
     pub(crate) reconcile_playback: bool,
     playback_filters: Vec<PlaybackFilter>,
+    /// A small first page fetched with one request
+    /// per backend and never treated as inventory evidence.
+    bounded_row: bool,
 }
 
 enum PlaybackFilter {
@@ -57,15 +63,34 @@ impl CatalogRequestPolicy {
         if endpoint == CatalogEndpoint::Resume {
             playback_filters.push(PlaybackFilter::Resumable);
         }
+        // Playback predicates over merged copies need every copy, which the
+        // first items of each backend cannot provide.
+        let bounded_row = query.is_uncounted_item_listing()
+            && query.pagination.start_index == 0
+            && query
+                .pagination
+                .limit
+                .is_some_and(|limit| (1..=MAX_BOUNDED_ROW_LIMIT).contains(&limit))
+            && playback_filters.is_empty();
         Self {
             endpoint,
             pagination,
             sort: super::postprocessing::SortPolicy::from_query(query),
             episode_start_id,
-            inventory_types: authoritative_inventory_types(query),
+            // A row is a sample of a listing, never proof of what is missing.
+            inventory_types: if bounded_row {
+                BTreeSet::new()
+            } else {
+                authoritative_inventory_types(query)
+            },
             reconcile_playback: false,
             playback_filters,
+            bounded_row,
         }
+    }
+
+    pub(super) fn is_bounded_row(&self) -> bool {
+        self.bounded_row
     }
 
     #[cfg(test)]
@@ -121,19 +146,10 @@ impl CatalogRequestPolicy {
                 }
             }
         }
-        if matches!(self.sort, super::postprocessing::SortPolicy::Random) {
-            let pairs = url
-                .query_pairs()
-                .filter(|(key, _)| {
-                    !key.eq_ignore_ascii_case("SortBy") && !key.eq_ignore_ascii_case("SortOrder")
-                })
-                .map(|(key, value)| (key.into_owned(), value.into_owned()))
-                .collect::<Vec<_>>();
-            url.query_pairs_mut()
-                .clear()
-                .extend_pairs(pairs)
-                .append_pair("SortBy", "SortName")
-                .append_pair("SortOrder", "Ascending");
+        // A bounded row is a single request, so each backend can return its
+        // own random sample. Everything else may be scanned page by page.
+        if !self.bounded_row {
+            stabilize_random_sort(url);
         }
         ensure_item_fields(url, &self.sort.required_fields());
         if include_identity {
@@ -155,7 +171,11 @@ impl CatalogRequestPolicy {
     }
 }
 
-pub(super) const UPSTREAM_PAGE_SIZE: usize = 100;
+/// Items per upstream page of a full scan. Large pages keep the number of
+/// round trips low: 22,000 episodes take 44 pages instead of 220.
+pub(super) const UPSTREAM_PAGE_SIZE: usize = 500;
+/// Pages of one scan that may be in flight against one backend at a time.
+pub(super) const UPSTREAM_SCAN_CONCURRENCY: usize = 4;
 
 /// Leave other parent references for the per-server request processor.
 pub(super) fn replace_aggregate_parent_id(
@@ -240,6 +260,64 @@ fn authoritative_inventory_types(query: &CatalogQuery) -> BTreeSet<MediaKind> {
     } else {
         BTreeSet::new()
     }
+}
+
+/// Offset pages of a randomized upstream order are independent shuffles, so a
+/// paged scan would see duplicates and miss items. This applies wherever
+/// `Random` appears, for example `SortBy=IsFavoriteOrLiked,Random`. Keep the
+/// keys before `Random` and finish with `SortName`, so that every page shares
+/// one order. A leading `Random` is reapplied by the proxy after merging.
+fn stabilize_random_sort(url: &mut url::Url) {
+    let values = |name: &str| {
+        url.query_pairs()
+            .filter(|(key, _)| key.eq_ignore_ascii_case(name))
+            .flat_map(|(_, value)| {
+                value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    };
+    let fields = values("SortBy");
+    let Some(random) = fields
+        .iter()
+        .position(|field| field.eq_ignore_ascii_case("Random"))
+    else {
+        return;
+    };
+    let mut orders = values("SortOrder");
+    let mut fields = fields[..random].to_vec();
+    if !fields
+        .iter()
+        .any(|field| field.eq_ignore_ascii_case("SortName"))
+    {
+        fields.push("SortName".into());
+    }
+    // Jellyfin reuses the first order for keys without one. Spell out every
+    // order once any is given, so the appended SortName stays ascending.
+    orders.truncate(random);
+    if orders.is_empty() {
+        orders.push("Ascending".into());
+    } else {
+        let inherited = orders[0].clone();
+        orders.resize(random, inherited);
+        orders.resize(fields.len(), "Ascending".into());
+    }
+    let pairs = url
+        .query_pairs()
+        .filter(|(key, _)| {
+            !key.eq_ignore_ascii_case("SortBy") && !key.eq_ignore_ascii_case("SortOrder")
+        })
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    url.query_pairs_mut()
+        .clear()
+        .extend_pairs(pairs)
+        .append_pair("SortBy", &fields.join(","))
+        .append_pair("SortOrder", &orders.join(","));
 }
 
 pub(super) fn set_upstream_page(url: &mut url::Url, start_index: usize, limit: usize) {
@@ -629,6 +707,109 @@ mod tests {
                 ("SortBy".into(), "Name".into()),
                 ("Fields".into(), "Genres".into()),
             ]
+        );
+    }
+
+    fn sort_pairs(url: &url::Url) -> Vec<(String, String)> {
+        query_pairs(url)
+            .into_iter()
+            .filter(|(key, _)| key == "SortBy" || key == "SortOrder")
+            .collect()
+    }
+
+    #[test]
+    fn paged_scans_drop_random_wherever_it_appears_in_the_sort() {
+        for (query, sort_by, sort_order) in [
+            ("SortBy=Random", "SortName", "Ascending"),
+            (
+                "sortBy=IsFavoriteOrLiked&sortBy=Random",
+                "IsFavoriteOrLiked,SortName",
+                "Ascending",
+            ),
+            (
+                "SortBy=CommunityRating,Random,Name&SortOrder=Descending,Ascending,Descending",
+                "CommunityRating,SortName",
+                "Descending,Ascending",
+            ),
+            (
+                "SortBy=Studio,SeriesSortName,Random&SortOrder=Descending",
+                "Studio,SeriesSortName,SortName",
+                "Descending,Descending,Ascending",
+            ),
+            (
+                "SortBy=Studio,SortName,Random&SortOrder=Descending",
+                "Studio,SortName",
+                "Descending,Descending",
+            ),
+            ("SortBy=SortName,Random", "SortName", "Ascending"),
+        ] {
+            let mut url =
+                url::Url::parse(&format!("http://localhost/Items?{query}&Limit=20")).unwrap();
+            ensure_global_sort_fields(&mut url);
+            assert_eq!(
+                sort_pairs(&url),
+                vec![
+                    ("SortBy".into(), sort_by.into()),
+                    ("SortOrder".into(), sort_order.into()),
+                ],
+                "{query}"
+            );
+        }
+    }
+
+    #[test]
+    fn bounded_rows_are_first_pages_of_small_uncounted_item_listings() {
+        let policy = |query: &str| {
+            CatalogRequestPolicy::from_url(
+                &url::Url::parse(&format!("http://localhost/Users/u/Items?{query}")).unwrap(),
+            )
+        };
+        let row = "Recursive=true&ParentId=library&IncludeItemTypes=Movie";
+        for bounded in [
+            format!("{row}&EnableTotalRecordCount=false&Limit=20"),
+            format!("{row}&enableTotalRecordCount=False&limit=20&StartIndex=0"),
+            "Filters=IsFavorite&Recursive=true&EnableTotalRecordCount=false&Limit=20".into(),
+        ] {
+            let policy = policy(&bounded);
+            assert!(policy.is_bounded_row(), "{bounded}");
+            assert!(policy.inventory_types.is_empty(), "{bounded}");
+        }
+        for strict in [
+            format!("{row}&Limit=20"),
+            format!("{row}&EnableTotalRecordCount=true&Limit=20"),
+            format!("{row}&EnableTotalRecordCount=false"),
+            format!("{row}&EnableTotalRecordCount=false&Limit=0"),
+            format!("{row}&EnableTotalRecordCount=false&Limit=101"),
+            format!("{row}&EnableTotalRecordCount=false&Limit=20&StartIndex=20"),
+            format!("{row}&EnableTotalRecordCount=false&EnableTotalRecordCount=true&Limit=20"),
+            format!("{row}&EnableTotalRecordCount=false&Limit=20&Filters=IsUnplayed"),
+            format!("{row}&EnableTotalRecordCount=false&Limit=20&IsPlayed=false"),
+            format!("{row}&EnableTotalRecordCount=false&Limit=20&Ids=a,b"),
+        ] {
+            assert!(!policy(&strict).is_bounded_row(), "{strict}");
+        }
+        let resume = CatalogRequestPolicy::from_url(
+            &url::Url::parse(
+                "http://localhost/UserItems/Resume?EnableTotalRecordCount=false&Limit=20",
+            )
+            .unwrap(),
+        );
+        assert!(!resume.is_bounded_row());
+    }
+
+    #[test]
+    fn bounded_rows_keep_upstream_random_sampling() {
+        let mut url = url::Url::parse(
+            "http://localhost/Items?limit=20&recursive=true&sortBy=IsFavoriteOrLiked&sortBy=Random&enableTotalRecordCount=false",
+        )
+        .unwrap();
+        CatalogRequestPolicy::from_url(&url).prepare_upstream(&mut url, false);
+        assert_eq!(
+            url.query_pairs()
+                .filter(|(key, _)| key.eq_ignore_ascii_case("SortBy"))
+                .map(|(_, value)| value.into_owned())
+                .collect::<Vec<_>>(),
+            vec!["IsFavoriteOrLiked", "Random"]
         );
     }
 
