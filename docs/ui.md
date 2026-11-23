@@ -22,7 +22,7 @@ To connect your Jellyfin servers to Jellyswarrm, follow these steps:
 4. Fill in the required details:  
    - **Server Name** – A friendly display name for the server.  
    - **Jellyfin URL** – The full URL to your Jellyfin server (e.g. `http://jellyfin.example.com`).  
-   - **Priority** – Determines which server takes precedence for tasks not handled by the proxy (such as theming/styling). Higher numbers = higher priority.  
+   - **Priority** – A number from 1 to 999; **higher numbers win** (a server with 50 is preferred over one with 2). When several servers could answer, Jellyswarrm prefers the one with the highest priority: it is tried first when a user signs in (including Quick Connect), it answers requests the proxy does not handle itself (such as branding and theming), and for media found on several servers it decides whose metadata is shown and which version is listed first and played by default. Servers with the same priority are ordered by name.  
    - **Streaming** – Choose `Redirect` when clients can reach that Jellyfin server directly, or `Proxy` when the stream must pass through Jellyswarrm.  
 
 5. Click **Add** to save the server.  
