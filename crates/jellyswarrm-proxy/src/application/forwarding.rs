@@ -181,8 +181,10 @@ pub(crate) async fn forward(
     let status = response.status();
     if status.is_success() {
         observe_success(state, &prepared, is_mutation).await;
-    } else {
+    } else if is_noteworthy_upstream_status(status) {
         warn!("Upstream server returned error status: {}", status);
+    } else {
+        debug!("Upstream server returned {}", status);
     }
 
     let mut headers = response.headers().clone();
@@ -314,6 +316,13 @@ fn client_response(
     builder
         .body(body)
         .map_err(|error| ApplicationError::Internal(error.into()))
+}
+
+/// Whether a non-success upstream status deserves a warning. A 304 answers a
+/// conditional request from the client's cache, and a 404 is routine (an item
+/// without that artwork, for example); both only clutter the log as warnings.
+fn is_noteworthy_upstream_status(status: StatusCode) -> bool {
+    !(status.is_success() || status == StatusCode::NOT_MODIFIED || status == StatusCode::NOT_FOUND)
 }
 
 /// Proxy-side effects of a request the backend accepted. Runs before the
@@ -566,6 +575,20 @@ mod tests {
         translation::request_analyzer::RequestBodyAnalysisResult,
     };
     use hyper::StatusCode;
+
+    #[test]
+    fn only_unexpected_upstream_statuses_are_warnings() {
+        assert!(!is_noteworthy_upstream_status(StatusCode::OK));
+        assert!(!is_noteworthy_upstream_status(StatusCode::NOT_MODIFIED));
+        assert!(!is_noteworthy_upstream_status(StatusCode::NOT_FOUND));
+        assert!(is_noteworthy_upstream_status(StatusCode::BAD_REQUEST));
+        assert!(is_noteworthy_upstream_status(StatusCode::UNAUTHORIZED));
+        assert!(is_noteworthy_upstream_status(StatusCode::FORBIDDEN));
+        assert!(is_noteworthy_upstream_status(
+            StatusCode::INTERNAL_SERVER_ERROR
+        ));
+        assert!(is_noteworthy_upstream_status(StatusCode::BAD_GATEWAY));
+    }
 
     async fn report_fixture() -> (MediaFixture, OperationRequest, wiremock::MockServer) {
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
