@@ -14,7 +14,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use percent_encoding::percent_decode_str;
-use tracing::error;
+use tracing::{debug, error};
 
 #[axum::debug_handler]
 pub(crate) async fn forward(
@@ -30,6 +30,25 @@ pub(crate) async fn forward(
     let response_profile = ResponseProcessingProfile::for_proxy_request(req.method(), path);
     if let Some(response) = super::assets::serve(&req) {
         return Ok(response.unwrap_or_else(IntoResponse::into_response));
+    }
+    // Without a token only well-known anonymous endpoints may reach a backend;
+    // anything else (scanner probes, unknown paths) is answered locally (#224).
+    match super::public_routes::gate(req.uri(), req.headers(), &state.user_authorization)
+        .await
+        .map_err(ApplicationError::Storage)?
+    {
+        super::public_routes::Gate::Forward => {}
+        super::public_routes::Gate::NotFound => {
+            debug!(
+                path,
+                "Rejected unauthenticated request outside the public route list"
+            );
+            return Ok(StatusCode::NOT_FOUND.into_response());
+        }
+        super::public_routes::Gate::Unauthorized => {
+            debug!(path, "Rejected request with an unknown token");
+            return Ok(StatusCode::UNAUTHORIZED.into_response());
+        }
     }
 
     let prepared = prepare(&state, req, action).await.inspect_err(|error| {
