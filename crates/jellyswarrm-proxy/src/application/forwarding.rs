@@ -18,7 +18,7 @@ use hyper::{
     Method, Response, StatusCode,
 };
 use serde_json::Value;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn, Level};
 
 use crate::{
     application::{
@@ -181,10 +181,12 @@ pub(crate) async fn forward(
     let status = response.status();
     if status.is_success() {
         observe_success(state, &prepared, is_mutation).await;
-    } else if is_noteworthy_upstream_status(status) {
-        warn!("Upstream server returned error status: {}", status);
     } else {
-        debug!("Upstream server returned {}", status);
+        match upstream_status_level(status) {
+            Level::DEBUG => debug!("Upstream server returned {}", status),
+            Level::INFO => info!("Upstream server returned {}", status),
+            _ => warn!("Upstream server returned error status: {}", status),
+        }
     }
 
     let mut headers = response.headers().clone();
@@ -318,11 +320,17 @@ fn client_response(
         .map_err(|error| ApplicationError::Internal(error.into()))
 }
 
-/// Whether a non-success upstream status deserves a warning. A 304 answers a
-/// conditional request from the client's cache, and a 404 is routine (an item
-/// without that artwork, for example); both only clutter the log as warnings.
-fn is_noteworthy_upstream_status(status: StatusCode) -> bool {
-    !(status.is_success() || status == StatusCode::NOT_MODIFIED || status == StatusCode::NOT_FOUND)
+/// Log level for a non-success upstream status. A 304 answers a conditional
+/// request from the client's cache and only matters when debugging. A 404 is
+/// usually routine (an item without that artwork, for example) but can also
+/// point to a real problem, so it stays visible at info. Everything else is a
+/// warning.
+fn upstream_status_level(status: StatusCode) -> Level {
+    match status {
+        StatusCode::NOT_MODIFIED => Level::DEBUG,
+        StatusCode::NOT_FOUND => Level::INFO,
+        _ => Level::WARN,
+    }
 }
 
 /// Proxy-side effects of a request the backend accepted. Runs before the
@@ -577,17 +585,21 @@ mod tests {
     use hyper::StatusCode;
 
     #[test]
-    fn only_unexpected_upstream_statuses_are_warnings() {
-        assert!(!is_noteworthy_upstream_status(StatusCode::OK));
-        assert!(!is_noteworthy_upstream_status(StatusCode::NOT_MODIFIED));
-        assert!(!is_noteworthy_upstream_status(StatusCode::NOT_FOUND));
-        assert!(is_noteworthy_upstream_status(StatusCode::BAD_REQUEST));
-        assert!(is_noteworthy_upstream_status(StatusCode::UNAUTHORIZED));
-        assert!(is_noteworthy_upstream_status(StatusCode::FORBIDDEN));
-        assert!(is_noteworthy_upstream_status(
-            StatusCode::INTERNAL_SERVER_ERROR
-        ));
-        assert!(is_noteworthy_upstream_status(StatusCode::BAD_GATEWAY));
+    fn upstream_status_log_levels() {
+        assert_eq!(
+            upstream_status_level(StatusCode::NOT_MODIFIED),
+            Level::DEBUG
+        );
+        assert_eq!(upstream_status_level(StatusCode::NOT_FOUND), Level::INFO);
+        for status in [
+            StatusCode::BAD_REQUEST,
+            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::BAD_GATEWAY,
+        ] {
+            assert_eq!(upstream_status_level(status), Level::WARN, "{status}");
+        }
     }
 
     async fn report_fixture() -> (MediaFixture, OperationRequest, wiremock::MockServer) {
