@@ -30,7 +30,7 @@ The table below lists all available configuration options:
 | `password` | `jellyswarrm` | `JELLYSWARRM_PASSWORD` | Default admin password (⚠️ change this in production). |
 | `session_key` | *Generated 64-byte key* | `JELLYSWARRM_SESSION_KEY` | Base64-encoded session encryption key. |
 | `timeout` | `20` | `JELLYSWARRM_TIMEOUT` | Request timeout in seconds. |
-| `preconfigured_servers` | `[]` | `JELLYSWARRM_PRECONFIGURED_SERVERS` | Optional list of preconfigured Jellyfin servers (`url`, `name`, `priority`, `media_streaming_mode`). |
+| `preconfigured_servers` | `[]` | `JELLYSWARRM_PRECONFIGURED_SERVERS` | Optional list of preconfigured Jellyfin servers (`url`, `name`, `priority`, `media_streaming_mode`). Higher `priority` numbers are preferred (1–999); see **Priority** in [ui.md](ui.md). |
 | `ui_route` | `ui` | `JELLYSWARRM_UI_ROUTE` | URL path segment for accessing the web UI (e.g., `/ui`). |
 | `url_prefix` | *(none)* | `JELLYSWARRM_URL_PREFIX` | Optional URL prefix for all routes (useful for reverse proxy setups). |
 | `server_background_check_interval_secs` | `30` | `JELLYSWARRM_SERVER_BACKGROUND_CHECK_INTERVAL_SECS` | Interval in seconds for background server health checks. |
@@ -54,3 +54,26 @@ The table below lists all available configuration options:
 Upgrading to per-login credentials signs players out once. Existing named API keys keep their values and authenticate each mapped backend on first use. For Jellyfin device allowlists, approve the integration device `jellyswarrm-key-<key id>` for password mappings. A Quick Connect mapping uses its own durable credential. Placeholder player device IDs always receive fresh upstream IDs. When a real ID is preserved, Jellyfin may retire the previous upstream token even if the proxy cannot finish saving its replacement.
 
 If Jellyfin rejects a saved password during automatic API-key sign-in, Jellyswarrm pauses automatic sign-in for that mapping across all keys and restarts. Update the mapping credentials to resume. When a key already has a healthy backend session, missing healthy backends sign in in the background.
+
+---
+
+### Unauthenticated requests
+
+Requests that have no dedicated route in Jellyswarrm go to the catch-all and are forwarded to a backend server. Requests that carry a valid Jellyswarrm access token (a login token or API key issued by the proxy) are forwarded for any path. The token can be in `Authorization` or `X-Emby-Authorization` with `Token=`, in `X-Emby-Token` or `X-MediaBrowser-Token`, or in the `api_key` query parameter. A token the proxy does not recognise gets a local `401`, the same answer Jellyfin gives for an invalid token, so clients with a stale session are sent back to the login screen. Requests **without** a token are forwarded only when the path is one of the endpoints Jellyfin serves anonymously. Every other unauthenticated request gets a local `404` and never reaches a backend. This stops internet scanners from probing backends through the proxy. Without it, backend admins can see the proxy's IP as the attacker, and fail2ban can ban it.
+
+Default public routes (case-insensitive):
+
+```
+/System/Ping, /System/Info/Public, /Branding/**, /QuickConnect/**, /web/**,
+/Items/*/Images/*/**, /Users/*/Images/*/**, /Persons/*/Images/*/**,
+/Artists/*/Images/*/**, /Genres/*/Images/*/**, /MusicGenres/*/Images/*/**,
+/Studios/*/Images/*/**
+```
+
+A client or plugin may make other unauthenticated calls. You can allow those with `JELLYSWARRM_EXTRA_PUBLIC_ROUTES`, a comma-separated list in the same syntax. `*` matches exactly one path segment, and a trailing `**` matches the rest of the path:
+
+```bash
+JELLYSWARRM_EXTRA_PUBLIC_ROUTES="/Intros/Public/**,/SomePlugin/*/Logo"
+```
+
+This setting is read from the environment at startup only.

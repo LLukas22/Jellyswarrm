@@ -10,6 +10,7 @@ pub(crate) mod forwarding;
 pub(crate) mod health;
 pub(crate) mod incoming;
 pub(crate) mod middleware;
+pub(crate) mod public_routes;
 pub(crate) mod quick_connect;
 pub(crate) mod router;
 pub(crate) mod state;
