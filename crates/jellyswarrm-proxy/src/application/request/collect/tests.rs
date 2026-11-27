@@ -5,7 +5,7 @@ use crate::http::incoming::{collect_operation as extract_request_infos, resolve_
 use crate::protocol::authorization::Authorization;
 use crate::protocol::caller::JellyfinAuthorization;
 use crate::protocol::device::Device;
-use crate::protocol::routes::{matches_case_insensitive, MEDIA_ID_PATH_TAGS, MEDIA_ID_QUERY_TAGS};
+use crate::protocol::routes::{matches_case_insensitive, MEDIA_ID_QUERY_TAGS};
 use crate::protocol::url::contains_id;
 use axum::{
     extract::{OriginalUri, Request},
@@ -54,7 +54,8 @@ fn media_id_tags_cover_audio_paths_and_item_id_queries() {
     ))
     .unwrap();
 
-    let matched_path_id = MEDIA_ID_PATH_TAGS
+    let matched_path_id = crate::plugins::conventions()
+        .media_id_path_tags
         .iter()
         .find_map(|path_segment| contains_id(&audio_url, path_segment));
 

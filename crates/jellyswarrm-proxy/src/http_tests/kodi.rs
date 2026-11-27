@@ -8,6 +8,7 @@ use wiremock::{
 
 const BACKEND_USER: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const ITEM: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+#[cfg(feature = "plugin-kodi-sync-queue")]
 const REMOVED: &str = "cccccccccccccccccccccccccccccccc";
 const CLIENT: &str = "MediaBrowser Client=Jellyfin%20for%20Kodi, Device=Kodi%20Linux, DeviceId=kodi-device, Version=2.2.0";
 
@@ -341,6 +342,7 @@ async fn placeholder_and_user_agent_devices_use_only_unexpired_token_owner_sessi
     assert!(f.upstreams[1].received_requests().await.unwrap().is_empty());
 }
 
+#[cfg(feature = "plugin-kodi-sync-queue")]
 #[tokio::test]
 async fn kodi_sync_queue_translates_user_and_changed_item_ids() {
     let f = Fixture::new().await;
@@ -422,4 +424,35 @@ async fn kodi_sync_queue_translates_user_and_changed_item_ids() {
     assert_eq!(detail["Id"], added);
     f.upstreams[1].verify().await;
     assert!(f.upstreams[0].received_requests().await.unwrap().is_empty());
+}
+
+/// Compiled out, the queue request still takes default routing, but neither the
+/// user ID in the path nor the bare item IDs in the response are translated.
+#[cfg(not(feature = "plugin-kodi-sync-queue"))]
+#[tokio::test]
+async fn kodi_sync_queue_without_plugin_is_forwarded_untranslated() {
+    let f = Fixture::new().await;
+    f.healthy().await;
+    let (authorization, user) = quick_connect(&f).await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/Jellyfin.Plugin.KodiSyncQueue/{user}/GetItems"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ItemsAdded":[ITEM]})))
+        .expect(1)
+        .mount(&f.upstreams[1])
+        .await;
+    let response = reqwest::Client::new()
+        .get(format!(
+            "{}/Jellyfin.Plugin.KodiSyncQueue/{user}/GetItems",
+            f.url
+        ))
+        .header("Authorization", &authorization)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let result: Value = response.json().await.unwrap();
+    assert_eq!(result["ItemsAdded"][0], ITEM);
+    f.upstreams[1].verify().await;
 }

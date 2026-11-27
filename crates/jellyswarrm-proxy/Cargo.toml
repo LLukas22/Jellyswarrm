@@ -13,6 +13,12 @@ license = "MIT OR Apache-2.0"
 workspace = true
 
 [features]
+# Each plugin is one crate behind one feature. All plugins are on by default;
+# a compiled-out plugin registers nothing and its requests take default routing.
+default = ["plugin-trickplay", "plugin-intro-skipper", "plugin-kodi-sync-queue"]
+plugin-trickplay = ["dep:jellyswarrm-plugin-trickplay"]
+plugin-intro-skipper = ["dep:jellyswarrm-plugin-intro-skipper"]
+plugin-kodi-sync-queue = ["dep:jellyswarrm-plugin-kodi-sync-queue"]
 browser-tests = ["dep:playwright-rs"]
 
 [dependencies]
@@ -35,6 +41,10 @@ http-body-util = { workspace = true }
 hyper = { workspace = true }
 jellyfin-api = { workspace = true }
 jellyswarrm-macros = { workspace = true }
+jellyswarrm-plugin-api = { workspace = true }
+jellyswarrm-plugin-intro-skipper = { workspace = true, optional = true }
+jellyswarrm-plugin-kodi-sync-queue = { workspace = true, optional = true }
+jellyswarrm-plugin-trickplay = { workspace = true, optional = true }
 mime_guess = { workspace = true }
 moka = { workspace = true }
 percent-encoding = { workspace = true }

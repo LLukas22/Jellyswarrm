@@ -15,6 +15,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let loaded_config = crate::config::load_config(&paths)?;
     let startup = loaded_config.startup_config();
     info!("Loaded configuration: {:?}", loaded_config);
+    crate::plugins::log_compiled_plugins();
 
     let pool = crate::persistence::database::connect(&paths).await?;
 

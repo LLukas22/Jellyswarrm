@@ -1,5 +1,6 @@
 //! Jellyfin route/query identity conventions shared by routing and translation.
-pub(crate) static MEDIA_ID_PATH_TAGS: &[&str] = &[
+/// Core media-ID path tags; plugins add theirs via `crate::plugins::conventions()`.
+pub(crate) static CORE_MEDIA_ID_PATH_TAGS: &[&str] = &[
     "Items",
     "Items/RemoteSearch/Apply",
     "Audio",
@@ -9,7 +10,6 @@ pub(crate) static MEDIA_ID_PATH_TAGS: &[&str] = &[
     "Collections",
     "PlayedItems",
     "FavoriteItems",
-    "MediaSegments",
     "PlayingItems",
     "Recordings",
     "Channels",
@@ -49,7 +49,8 @@ pub(crate) static MEDIA_ID_QUERY_TAGS: &[&str] = &[
     "ExcludeArtistIds",
 ];
 pub(crate) static API_KEY_QUERY_TAGS: &[&str] = &["api_key", "ApiKey"];
-pub(crate) static USER_ID_PATH_TAGS: &[&str] = &["Users", "Jellyfin.Plugin.KodiSyncQueue"];
+/// Core user-ID path tags; plugins add theirs via `crate::plugins::conventions()`.
+pub(crate) static CORE_USER_ID_PATH_TAGS: &[&str] = &["Users"];
 pub(crate) static USER_ID_QUERY_TAGS: &[&str] = &["UserId"];
 
 pub(crate) fn matches_case_insensitive(value: &str, candidates: &[&str]) -> bool {

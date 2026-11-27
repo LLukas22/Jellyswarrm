@@ -119,9 +119,9 @@ impl RequestContext {
         analysis: Option<&crate::translation::request_analyzer::RequestBodyAnalysisResult>,
         urls: &super::selection::UrlSelection,
     ) -> Result<(), super::routing::RoutingError> {
-        use crate::protocol::routes::{MEDIA_ID_PATH_TAGS, MEDIA_ID_QUERY_TAGS};
+        use crate::protocol::routes::MEDIA_ID_QUERY_TAGS;
         if let Some(scope) = &self.access_scope {
-            for tag in MEDIA_ID_PATH_TAGS {
+            for tag in &crate::plugins::conventions().media_id_path_tags {
                 if let Some(id) = crate::protocol::url::contains_id(url, tag) {
                     urls.validate_media_access(&id.into(), scope).await?;
                 }

@@ -11,6 +11,7 @@ mod libraries;
 mod media;
 mod persistence;
 mod playback;
+mod plugins;
 mod protocol;
 mod servers;
 mod startup;

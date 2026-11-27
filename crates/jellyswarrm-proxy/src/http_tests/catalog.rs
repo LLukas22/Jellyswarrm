@@ -11,6 +11,7 @@ pub(super) enum Shape {
     List,
     Bare,
     Detail,
+    #[cfg(feature = "plugin-intro-skipper")]
     Segments,
     Theme,
     Filters,
@@ -25,9 +26,9 @@ pub(super) enum Shape {
 
 pub(super) const METHOD: &str = "GET";
 macro_rules! contracts {
-    ($($name:ident: $route:literal, $shape:ident;)+) => {
-        pub(super) const ROUTES: &[&str] = &[$($route),+];
-        $(contract_test!($name, read_contract, $route, Shape::$shape);)+
+    ($($(#[$attr:meta])* $name:ident: $route:literal, $shape:ident;)+) => {
+        pub(super) const ROUTES: &[&str] = &[$($(#[$attr])* $route),+];
+        $($(#[$attr])* contract_test!($name, read_contract, $route, Shape::$shape);)+
     };
 }
 
@@ -69,6 +70,7 @@ contracts! {
     playlist_items: "/Playlists/{item}/Items?UserId={user}&StartIndex=0&Limit=100", List;
     playlist_detail: "/Playlists/{item}?UserId={user}", Playlist;
     playlist_user: "/Playlists/{item}/Users/{user}", PlaylistUser;
+    #[cfg(feature = "plugin-intro-skipper")]
     media_segments: "/MediaSegments/{item}?includeSegmentTypes=Intro,Outro", Segments;
     lyrics: "/Audio/{item}/Lyrics", Lyrics;
     image_info: "/Items/{item}/Images", ImageInfo;
@@ -99,6 +101,7 @@ async fn read_contract(route: &str, shape: Shape) {
         Shape::List => json!({"Items":[item],"TotalRecordCount":1,"StartIndex":0}),
         Shape::Bare => json!([item]),
         Shape::Detail => item,
+        #[cfg(feature = "plugin-intro-skipper")]
         Shape::Segments => {
             json!({"Items":[{"Id":"11111111111111111111111111111111","ItemId":original,"Type":"Intro","StartTicks":100,"EndTicks":200}],"TotalRecordCount":1})
         }
@@ -155,6 +158,7 @@ async fn read_contract(route: &str, shape: Shape) {
         }
         Shape::Bare => assert_eq!(result[0]["Id"], f.items[owner]),
         Shape::Detail => assert_eq!(result["Id"], f.items[owner]),
+        #[cfg(feature = "plugin-intro-skipper")]
         Shape::Segments => {
             assert_eq!(result["Items"][0]["ItemId"], f.items[owner]);
             assert_eq!(result["Items"][0]["EndTicks"], 200);
@@ -190,4 +194,31 @@ async fn read_contract(route: &str, shape: Shape) {
         .to_str()
         .unwrap()
         .contains(&format!("backend-token-{owner}")));
+}
+
+/// Compiled out, `/MediaSegments/{id}` takes the catch-all: it is forwarded to
+/// one backend with the virtual ID untranslated, so no segments are found.
+#[cfg(not(feature = "plugin-intro-skipper"))]
+#[tokio::test]
+async fn media_segments_without_plugin_are_forwarded_untranslated() {
+    let f = Fixture::for_scenario(Scenario::NormalServers).await;
+    f.healthy().await;
+    let expected_path = format!("/MediaSegments/{}", f.items[1]);
+    let response = f
+        .request(reqwest::Method::GET, &expected_path, &f.user, "web")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let mut forwarded = Vec::new();
+    for upstream in &f.upstreams {
+        forwarded.extend(upstream.received_requests().await.unwrap());
+    }
+    assert_eq!(
+        forwarded.len(),
+        1,
+        "exactly one backend receives the request"
+    );
+    assert_eq!(forwarded[0].method, reqwest::Method::GET);
+    assert_eq!(forwarded[0].url.path(), expected_path);
 }

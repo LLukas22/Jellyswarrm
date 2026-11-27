@@ -1,5 +1,6 @@
 [workspace]
 members = ["crates/jellyswarrm-proxy", "crates/jellyswarrm-macros", "crates/jellyfin-api",
+    "crates/jellyswarrm-plugin-api", "crates/plugins/*",
 ]
 resolver = "2"
 
@@ -74,6 +75,10 @@ syn = { version = "2.0.111", features = ["full", "extra-traits"] }
 # Workspace crates
 jellyfin-api = { path = "crates/jellyfin-api" }
 jellyswarrm-macros = { path = "crates/jellyswarrm-macros" }
+jellyswarrm-plugin-api = { path = "crates/jellyswarrm-plugin-api" }
+jellyswarrm-plugin-intro-skipper = { path = "crates/plugins/intro-skipper" }
+jellyswarrm-plugin-kodi-sync-queue = { path = "crates/plugins/kodi-sync-queue" }
+jellyswarrm-plugin-trickplay = { path = "crates/plugins/trickplay" }
 
 # Development and tests
 tempfile = "3.23.0"

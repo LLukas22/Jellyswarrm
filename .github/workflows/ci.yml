@@ -44,6 +44,10 @@ jobs:
     - name: Run tests without UI assets
       run: cargo test --locked --workspace --verbose
 
+    # Plugins are Cargo features; a compiled-out plugin must leave default routing intact.
+    - name: Run proxy tests with all plugins compiled out
+      run: cargo test --locked -p jellyswarrm-proxy --no-default-features
+
     - name: Setup Node.js (LTS)
       uses: actions/setup-node@v4
       with:
@@ -62,6 +66,9 @@ jobs:
 
     - name: Lint (clippy)
       run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+    - name: Lint (clippy) with all plugins compiled out
+      run: cargo clippy --locked -p jellyswarrm-proxy --all-targets --no-default-features -- -D warnings
 
     - name: Format check
       run: cargo fmt --all -- --check

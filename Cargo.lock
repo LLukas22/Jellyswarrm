@@ -1866,6 +1866,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "jellyswarrm-plugin-api"
+version = "1.0.0"
+
+[[package]]
+name = "jellyswarrm-plugin-intro-skipper"
+version = "1.0.0"
+dependencies = [
+ "jellyswarrm-plugin-api",
+]
+
+[[package]]
+name = "jellyswarrm-plugin-kodi-sync-queue"
+version = "1.0.0"
+dependencies = [
+ "jellyswarrm-plugin-api",
+]
+
+[[package]]
+name = "jellyswarrm-plugin-trickplay"
+version = "1.0.0"
+dependencies = [
+ "jellyswarrm-plugin-api",
+]
+
+[[package]]
 name = "jellyswarrm-proxy"
 version = "1.0.0"
 dependencies = [
@@ -1890,6 +1915,10 @@ dependencies = [
  "hyper",
  "jellyfin-api",
  "jellyswarrm-macros",
+ "jellyswarrm-plugin-api",
+ "jellyswarrm-plugin-intro-skipper",
+ "jellyswarrm-plugin-kodi-sync-queue",
+ "jellyswarrm-plugin-trickplay",
  "mime_guess",
  "moka",
  "percent-encoding",

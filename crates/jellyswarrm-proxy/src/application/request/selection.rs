@@ -7,7 +7,7 @@ use crate::{
         VirtualLibraryAccessScope, VirtualLibraryResolution, VirtualLibraryService,
     },
     media::storage::{MediaMapping, MediaStorageService, MediaVersionMember},
-    protocol::routes::{matches_case_insensitive, MEDIA_ID_PATH_TAGS, MEDIA_ID_QUERY_TAGS},
+    protocol::routes::{matches_case_insensitive, MEDIA_ID_QUERY_TAGS},
     protocol::url::contains_id,
     servers::compare_routes,
     servers::{Server, ServerStorageService},
@@ -61,7 +61,7 @@ impl UrlSelection {
         scope: Option<&VirtualLibraryAccessScope>,
     ) -> Result<Option<Server>> {
         if let Some(scope) = scope {
-            for tag in MEDIA_ID_PATH_TAGS {
+            for tag in &crate::plugins::conventions().media_id_path_tags {
                 if let Some(id) = contains_id(url, tag) {
                     self.validate_media_access(&id.into(), scope).await?;
                 }
@@ -76,7 +76,7 @@ impl UrlSelection {
         }
         if let Some(source) = selected_media_source(url).map_err(RoutingError::InvalidSelection)? {
             let mut aggregate = None;
-            for tag in MEDIA_ID_PATH_TAGS {
+            for tag in &crate::plugins::conventions().media_id_path_tags {
                 if let Some(id) = contains_id(url, tag) {
                     if let Some(group) = self.media.get_media_version_group(&id.into()).await? {
                         aggregate = Some(group);
@@ -106,7 +106,7 @@ impl UrlSelection {
                 return Ok(Some(server));
             }
         }
-        for tag in MEDIA_ID_PATH_TAGS {
+        for tag in &crate::plugins::conventions().media_id_path_tags {
             if let Some(id) = contains_id(url, tag) {
                 if let Some(server) = self.server_from_media_id(&id.into(), scope).await? {
                     return Ok(Some(server));

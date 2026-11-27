@@ -19,8 +19,7 @@ use crate::{
 use std::sync::Arc;
 
 use crate::protocol::routes::{
-    matches_case_insensitive, API_KEY_QUERY_TAGS, MEDIA_ID_PATH_TAGS, MEDIA_ID_QUERY_TAGS,
-    USER_ID_PATH_TAGS, USER_ID_QUERY_TAGS,
+    matches_case_insensitive, API_KEY_QUERY_TAGS, MEDIA_ID_QUERY_TAGS, USER_ID_QUERY_TAGS,
 };
 
 fn path_media_source_id(url: &url::Url) -> Option<String> {
@@ -241,7 +240,7 @@ impl UrlProcessor {
         session: Option<&AuthorizationSession>,
         server_id: Option<ServerId>,
     ) -> Result<()> {
-        for &tag in USER_ID_PATH_TAGS {
+        for &tag in &crate::plugins::conventions().user_id_path_tags {
             if let (Some(user_id), Some(server_id)) = (contains_id(url, tag), server_id) {
                 match self.user_ids.resolve(&user_id, session, server_id).await {
                     Ok(upstream) => *url = replace_id(url.clone(), &user_id, &upstream),
@@ -263,7 +262,7 @@ impl UrlProcessor {
         // rewriting the item (item/source IDs may be identical on the backend).
         let source_id = path_media_source_id(url);
         let selected_source = selected_media_source(url)?;
-        for &path_segment in MEDIA_ID_PATH_TAGS {
+        for &path_segment in &crate::plugins::conventions().media_id_path_tags {
             if let Some(media_id) = contains_id(url, path_segment) {
                 if let Some(source) = selected_source.as_deref() {
                     if let Some(group) = self
@@ -678,7 +677,9 @@ mod tests {
                 }
                 for (resource, action) in [
                     ("Users", "Views"),
+                    #[cfg(feature = "plugin-kodi-sync-queue")]
                     ("Jellyfin.Plugin.KodiSyncQueue", "GetItems"),
+                    #[cfg(feature = "plugin-kodi-sync-queue")]
                     ("jellyfin.plugin.kodisyncqueue", "GetItems"),
                 ] {
                     let mut url =

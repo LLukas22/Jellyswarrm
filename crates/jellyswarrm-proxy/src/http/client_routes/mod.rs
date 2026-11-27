@@ -68,7 +68,6 @@ pub(crate) fn router() -> Router<AppState> {
                 .route("/{item_id}/LocalTrailers", get(item_list))
                 .route("/{item_id}/SpecialFeatures", get(item_list))
                 .route("/{item_id}/PlaybackInfo", post(playback_info)))
-            .route("/MediaSegments/{item_id}", get(item_list))
             .nest("/Shows", Router::new()
                 .route("/{item_id}/Seasons", get(show_children))
                 .route("/{item_id}/Episodes", get(show_children))
@@ -91,7 +90,6 @@ pub(crate) fn router() -> Router<AppState> {
             .route("/Studios", get(all_servers))
             .nest("/Videos", Router::new()
                 .route("/{item_id}/AdditionalParts", get(item_list))
-                .route("/{stream_id}/Trickplay/{*path}", get(forwarding::forward))
                 .route("/{item_id}/stream", get(stream))
                 .route("/{item_id}/stream.mkv", get(stream))
                 .route("/{item_id}/stream.mp4", get(stream))
@@ -284,7 +282,7 @@ async fn item(
 }
 
 /// Item-scoped lists (similar, trailers, special features, …) without version merging.
-async fn item_list(
+pub(crate) async fn item_list(
     State(state): State<MediaServices>,
     OperationInput(input): OperationInput,
 ) -> JsonResult {

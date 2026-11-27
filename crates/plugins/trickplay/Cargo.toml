@@ -1,0 +1,16 @@
+[package]
+name = "jellyswarrm-plugin-trickplay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+authors.workspace = true
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+description = "Jellyswarrm adapter for Jellyfin trickplay (scrubbing previews)"
+
+[lints]
+workspace = true
+
+[dependencies]
+jellyswarrm-plugin-api = { workspace = true }

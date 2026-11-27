@@ -83,16 +83,10 @@ pub(crate) static DISABLED_BOOL_FIELDS: LazyLock<FieldMatcher> =
 pub(crate) static SERVER_ID_FIELDS: LazyLock<FieldMatcher> =
     LazyLock::new(|| FieldMatcher::new(&["ServerId"]));
 
-pub(crate) static MEDIA_ID_ARRAY_FIELDS: LazyLock<FieldMatcher> = LazyLock::new(|| {
-    FieldMatcher::new(&[
-        "BackdropImageTags",
-        "ParentBackdropImageTags",
-        // KodiSyncQueue returns bare item IDs, not BaseItemDto objects.
-        "ItemsAdded",
-        "ItemsUpdated",
-        "ItemsRemoved",
-    ])
-});
+/// Core response arrays of bare media IDs; plugins add theirs via
+/// `crate::plugins::conventions()`.
+pub(crate) static CORE_MEDIA_ID_ARRAY_FIELDS: &[&str] =
+    &["BackdropImageTags", "ParentBackdropImageTags"];
 
 /// JSON array parents whose string items are media IDs (e.g.
 /// `CreatePlaylistDto { Ids: [...] }`). Array items carry the index as key,
@@ -103,8 +97,9 @@ pub(crate) static MEDIA_ID_LIST_PARENT_FIELDS: LazyLock<FieldMatcher> =
 pub(crate) static MEDIA_ID_MAP_VALUE_FIELDS: LazyLock<FieldMatcher> =
     LazyLock::new(|| FieldMatcher::new(&["ImageTags"]));
 
-pub(crate) static MEDIA_ID_MAP_KEY_FIELDS: LazyLock<FieldMatcher> =
-    LazyLock::new(|| FieldMatcher::new(&["Trickplay"]));
+/// Core response objects keyed by media ID; plugins add theirs via
+/// `crate::plugins::conventions()`.
+pub(crate) static CORE_MEDIA_ID_MAP_KEY_FIELDS: &[&str] = &[];
 
 pub(crate) static MEDIA_ID_NESTED_MAP_KEY_FIELDS: LazyLock<FieldMatcher> =
     LazyLock::new(|| FieldMatcher::new(&["ImageBlurHashes"]));

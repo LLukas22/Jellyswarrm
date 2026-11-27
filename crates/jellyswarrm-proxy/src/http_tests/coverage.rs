@@ -35,6 +35,7 @@ const WORKFLOWS: &[(&str, &str, &str)] = &[
         "/Users/AuthenticateWithQuickConnect",
         "kodi_quick_connect_synced_item_plays_in_redirect_mode",
     ),
+    #[cfg(feature = "plugin-kodi-sync-queue")]
     (
         "GET",
         "/Jellyfin.Plugin.KodiSyncQueue/{userId}/GetItems",
@@ -85,6 +86,23 @@ const WORKFLOWS: &[(&str, &str, &str)] = &[
 // Explicit exclusions: backend administration and remaining media editors,
 // rather than browsing, library state, queues or playback.
 // Exact endpoint patterns make newly introduced client calls fail this check.
+// Routes owned by plugins compiled out of this build. They take default
+// routing by design; their contracts run in builds with the plugin.
+const PLUGIN_GATED: &[(&str, &str, &str)] = &[
+    #[cfg(not(feature = "plugin-trickplay"))]
+    (
+        "GET",
+        "/Videos/{id}/Trickplay/{width}/{index}.jpg",
+        "trickplay plugin compiled out",
+    ),
+    #[cfg(not(feature = "plugin-intro-skipper"))]
+    (
+        "GET",
+        "/MediaSegments/{id}",
+        "intro-skipper plugin compiled out",
+    ),
+];
+
 const OUTSIDE_SCOPE: &[(&str, &str, &str)] = &[
     ("DELETE", "/Items/{id}/Images", "image editor"),
     ("POST", "/Items/{id}/Images", "image editor"),
@@ -175,6 +193,7 @@ fn every_discovered_route_has_a_contract_or_explicit_scope_decision() {
             totals[1] += 1;
         } else if OUTSIDE_SCOPE
             .iter()
+            .chain(PLUGIN_GATED)
             .any(|(m, p, reason)| !reason.is_empty() && matches(m, p))
         {
             totals[2] += 1;

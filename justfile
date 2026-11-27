@@ -86,6 +86,10 @@ http-test-normal:
 http-test-merged:
     cargo test --locked --package jellyswarrm-proxy --lib merged_libraries
 
+# Run the proxy tests with every plugin compiled out (default routing only).
+test-no-plugins:
+    cargo test --locked --package jellyswarrm-proxy --no-default-features
+
 # Refresh the client call-site inventory after installing the UI dependencies.
 http-routes-update:
     node scripts/scan-client-routes.cjs --write

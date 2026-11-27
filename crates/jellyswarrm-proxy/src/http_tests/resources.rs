@@ -7,9 +7,9 @@ use wiremock::{
 };
 
 macro_rules! contracts {
-    ($($name:ident: $route:literal;)+) => {
-        pub(super) const ROUTES: &[&str] = &[$($route),+];
-        $(contract_test!($name, resource_contract, $route);)+
+    ($($(#[$attr:meta])* $name:ident: $route:literal;)+) => {
+        pub(super) const ROUTES: &[&str] = &[$($(#[$attr])* $route),+];
+        $($(#[$attr])* contract_test!($name, resource_contract, $route);)+
     };
 }
 contracts! {
@@ -27,7 +27,9 @@ contracts! {
     audio_segment: "/Audio/{item}/hls1/main/0.ts";
     subtitle: "/Videos/{item}/{item}/Subtitles/2/Stream.vtt";
     attachment: "/Videos/{item}/{item}/Attachments/0";
+    #[cfg(feature = "plugin-trickplay")]
     trickplay_manifest: "/Videos/{item}/Trickplay/320/tiles.m3u8";
+    #[cfg(feature = "plugin-trickplay")]
     trickplay_tile: "/Videos/{item}/Trickplay/320/0.jpg";
     artwork: "/Items/{item}/Images/Primary";
     chapter_artwork: "/Items/{item}/Images/Chapter/0";
@@ -40,7 +42,8 @@ async fn resource_contract(route: &str) {
     let owner = usize::from(route.contains("{item}"));
     let original = f.original(owner).await;
     let upstream_path = route.replace("{item}", &original);
-    let playlist = route.ends_with(".m3u8") && !route.contains("Trickplay");
+    let trickplay = route.to_ascii_lowercase().contains("/trickplay/");
+    let playlist = route.ends_with(".m3u8") && !trickplay;
     let body = if playlist {
         b"#EXTM3U\n#EXT-X-ENDLIST\n".to_vec()
     } else {
@@ -101,10 +104,7 @@ async fn resource_contract(route: &str) {
     let requests = f.upstreams[owner].received_requests().await.unwrap();
     assert_eq!(requests.len(), 1);
     let encoding = requests[0].headers["accept-encoding"].to_str().unwrap();
-    if route.contains("/Images/")
-        || route.contains("/Trickplay/")
-        || route.starts_with("/FallbackFont/")
-    {
+    if route.contains("/Images/") || trickplay || route.starts_with("/FallbackFont/") {
         // Buffered resources use the API client's decoders; media streams
         // retain identity encoding so byte ranges and framing stay intact.
         let encodings: Vec<_> = encoding.split(',').map(str::trim).collect();
@@ -120,6 +120,53 @@ async fn resource_contract(route: &str) {
     let headers = format!("{:?}", requests[0].headers);
     assert!(headers.contains(&format!("backend-token-{owner}")));
     assert!(!headers.contains(&f.user.fixture_token));
+}
+
+/// The trickplay plugin forwards tiles as opaque resources under every spelling
+/// core routes accept (`lowercase_routes!` lowercases the `/Videos` nest and its
+/// routes independently), never through playlist handling.
+#[cfg(feature = "plugin-trickplay")]
+#[tokio::test]
+async fn trickplay_manifest_forwards_under_every_route_spelling() {
+    for route in [
+        "/Videos/{item}/Trickplay/320/tiles.m3u8",
+        "/Videos/{item}/trickplay/320/tiles.m3u8",
+        "/videos/{item}/Trickplay/320/tiles.m3u8",
+        "/videos/{item}/trickplay/320/tiles.m3u8",
+    ] {
+        resource_contract(route).await;
+    }
+}
+
+/// Compiled out, trickplay takes default routing: the generic video resource
+/// route still reaches the owning backend, but as a media stream.
+#[cfg(not(feature = "plugin-trickplay"))]
+#[tokio::test]
+async fn trickplay_without_plugin_falls_through_to_video_resources() {
+    let f = Fixture::for_scenario(Scenario::NormalServers).await;
+    f.healthy().await;
+    let original = f.original(1).await;
+    Mock::given(method("GET"))
+        .and(path(format!("/Videos/{original}/Trickplay/320/0.jpg")))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes([1, 2, 3]))
+        .expect(1)
+        .mount(&f.upstreams[1])
+        .await;
+    let response = f
+        .request(
+            reqwest::Method::GET,
+            &format!("/Videos/{}/Trickplay/320/0.jpg", f.items[1]),
+            &f.user,
+            "tv",
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.bytes().await.unwrap().as_ref(), [1, 2, 3]);
+    let requests = f.upstreams[1].received_requests().await.unwrap();
+    assert_eq!(requests[0].headers["accept-encoding"], "identity");
+    assert!(f.upstreams[0].received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]

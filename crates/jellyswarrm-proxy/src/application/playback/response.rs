@@ -286,6 +286,34 @@ mod tests {
         (MediaFixture::new(pool, config), server)
     }
 
+    /// `Trickplay` is keyed by media source ID. The trickplay plugin owns that
+    /// rule; compiled out, the keys stay upstream IDs.
+    #[tokio::test]
+    async fn trickplay_keys_follow_the_trickplay_plugin() {
+        let (state, server) = create_test_state().await;
+        let source_id = "19191919191919191919191919191919";
+        let mut item = json!({
+            "Id": "11111111111111111111111111111111",
+            "Trickplay": {source_id: {"320": {"Width": 320}}}
+        });
+        state
+            .process_response_json(
+                &mut item,
+                &server,
+                ResponseProcessingProfile::Media,
+                Some("proxy-token"),
+            )
+            .await
+            .unwrap();
+        let keys = item["Trickplay"].as_object().unwrap();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(
+            keys.contains_key(source_id),
+            cfg!(not(feature = "plugin-trickplay")),
+            "{item}"
+        );
+    }
+
     #[tokio::test]
     async fn response_processor_remaps_media_item_fields() {
         let (state, server) = create_test_state().await;

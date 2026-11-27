@@ -8,9 +8,7 @@ use crate::{
     auth::service::AuthorizationSession,
     domain::ids::ServerId,
     libraries::service::VirtualLibraryAccessScope,
-    protocol::routes::{
-        matches_case_insensitive, MEDIA_ID_PATH_TAGS, MEDIA_ID_QUERY_TAGS, USER_ID_QUERY_TAGS,
-    },
+    protocol::routes::{matches_case_insensitive, MEDIA_ID_QUERY_TAGS, USER_ID_QUERY_TAGS},
     protocol::url::{contains_id, decoded_path_segments},
     translation::{url_processor::UrlProcessor, MixedServerSelection},
 };
@@ -51,7 +49,7 @@ pub(crate) async fn validate(
             return Err(unavailable.into());
         }
     }
-    for tag in MEDIA_ID_PATH_TAGS {
+    for tag in &crate::plugins::conventions().media_id_path_tags {
         if let Some(id) = contains_id(url, tag) {
             if urls
                 .mapping_on_server(&id.into(), scope, Some(server_id))

@@ -108,6 +108,7 @@ fn routes() -> Router<AppState> {
                 .route("/SetShuffleMode", post(syncplay::set_shuffle_mode))
                 .route("/Ping", post(syncplay::ping)))
             .merge(super::client_routes::router())
+            .merge(crate::plugins::routes::router(crate::plugins::PLUGINS))
             .route("/{*path}", any(forwarding::forward))
             .fallback(forwarding::forward)
     }

@@ -11,9 +11,9 @@ use crate::{
     translation::{
         delivery_urls::DeliveryUrlTranslator,
         field_matcher::{
-            DELIVERY_URL_FIELDS, DISABLED_BOOL_FIELDS, MEDIA_ID_ARRAY_FIELDS,
-            MEDIA_ID_LIST_PARENT_FIELDS, MEDIA_ID_MAP_KEY_FIELDS, MEDIA_ID_MAP_VALUE_FIELDS,
-            MEDIA_ID_NESTED_MAP_KEY_FIELDS, RESPONSE_MEDIA_ID_FIELDS, SERVER_ID_FIELDS,
+            DELIVERY_URL_FIELDS, DISABLED_BOOL_FIELDS, MEDIA_ID_LIST_PARENT_FIELDS,
+            MEDIA_ID_MAP_VALUE_FIELDS, MEDIA_ID_NESTED_MAP_KEY_FIELDS, RESPONSE_MEDIA_ID_FIELDS,
+            SERVER_ID_FIELDS,
         },
         json_processor::{JsonProcessingContext, JsonProcessingResult, JsonProcessor},
     },
@@ -207,7 +207,9 @@ impl JsonProcessor<ResponseProcessingContext> for ResponseProcessor {
 
         if context.rewrites_media_fields()
             && json_context.is_array_item
-            && (MEDIA_ID_ARRAY_FIELDS.contains(last_segment(&json_context.parent_path))
+            && (crate::plugins::conventions()
+                .media_id_array_fields
+                .contains(last_segment(&json_context.parent_path))
                 || MEDIA_ID_LIST_PARENT_FIELDS.contains(last_segment(&json_context.parent_path)))
         {
             if let Some(id) = value.as_str().map(str::to_string) {
@@ -314,7 +316,9 @@ fn should_remap_map_value(parent_path: &str) -> bool {
 }
 
 fn should_remap_map_key(parent_path: &str) -> bool {
-    MEDIA_ID_MAP_KEY_FIELDS.contains(last_segment(parent_path))
+    crate::plugins::conventions()
+        .media_id_map_key_fields
+        .contains(last_segment(parent_path))
         || parent_contains_nested_map_key_field(parent_path)
 }
 
