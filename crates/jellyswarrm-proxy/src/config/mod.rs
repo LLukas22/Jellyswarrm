@@ -137,6 +137,10 @@ fn default_catalog_cache_max_age_secs() -> u64 {
     6 * 60 * 60
 }
 
+fn default_prefer_best_version() -> bool {
+    false
+}
+
 mod base64_serde {
     use super::*;
     use serde::de::Error as DeError;
@@ -249,6 +253,11 @@ define_fallback_deserializer!(
     deserialize_catalog_cache_max_age_secs,
     u64,
     default_catalog_cache_max_age_secs
+);
+define_fallback_deserializer!(
+    deserialize_prefer_best_version,
+    bool,
+    default_prefer_best_version
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -373,6 +382,15 @@ pub(crate) struct AppConfig {
         deserialize_with = "deserialize_catalog_cache_max_age_secs"
     )]
     pub(crate) catalog_cache_max_age_secs: u64,
+
+    /// Order the versions of a merged item by quality (resolution, then HDR
+    /// format, then bitrate) instead of by server priority, and play that best
+    /// version when a client does not name one. Server priority breaks ties.
+    #[serde(
+        default = "default_prefer_best_version",
+        deserialize_with = "deserialize_prefer_best_version"
+    )]
+    pub(crate) prefer_best_version: bool,
 }
 
 impl Default for AppConfig {
@@ -402,6 +420,7 @@ impl Default for AppConfig {
             catalog_cache_size_mb: default_catalog_cache_size_mb(),
             catalog_cache_fresh_secs: default_catalog_cache_fresh_secs(),
             catalog_cache_max_age_secs: default_catalog_cache_max_age_secs(),
+            prefer_best_version: default_prefer_best_version(),
         }
     }
 }
@@ -443,6 +462,7 @@ impl fmt::Debug for AppConfig {
                 "catalog_cache_max_age_secs",
                 &self.catalog_cache_max_age_secs,
             )
+            .field("prefer_best_version", &self.prefer_best_version)
             .finish()
     }
 }

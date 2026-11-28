@@ -42,6 +42,7 @@ The table below lists all available configuration options:
 | `catalog_cache_size_mb` | `256` | `JELLYSWARRM_CATALOG_CACHE_SIZE_MB` | Estimated cache memory budget in MiB. Active scans use additional memory. `0` disables caching. Requires a restart. |
 | `catalog_cache_fresh_secs` | `300` | `JELLYSWARRM_CATALOG_CACHE_FRESH_SECS` | Seconds before an accessed listing is refreshed in the background. Requires a restart. |
 | `catalog_cache_max_age_secs` | `21600` | `JELLYSWARRM_CATALOG_CACHE_MAX_AGE_SECS` | Maximum age in seconds for a cached listing. At least `catalog_cache_fresh_secs`. Requires a restart. |
+| `prefer_best_version` | `false` | `JELLYSWARRM_PREFER_BEST_VERSION` | With `deduplicate_media`, order the versions of a merged item by quality instead of server priority: higher resolution first (a version that needs transcoding still wins), then the HDR format (Dolby Vision with an HDR10/HDR10+ base, HDR10+, HDR10, HLG, SDR), then bitrate in 5 Mbit/s steps; server priority breaks ties. Clients that pre-select the first version play the best one, and playback started without a version (e.g. from a home-screen card) goes to the server that held the best version in the last detail response. |
 
 ---
 

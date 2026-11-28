@@ -13,6 +13,7 @@ pub(crate) struct SettingsUpdate {
     pub(crate) include_server_name_in_media: bool,
     pub(crate) auto_create_users_on_login: bool,
     pub(crate) deduplicate_media: bool,
+    pub(crate) prefer_best_version: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -80,6 +81,7 @@ impl ConfigurationService {
                 next.include_server_name_in_media = update.include_server_name_in_media;
                 next.auto_create_users_on_login = update.auto_create_users_on_login;
                 next.deduplicate_media = update.deduplicate_media;
+                next.prefer_best_version = update.prefer_best_version;
             },
             persist,
         )
@@ -151,6 +153,7 @@ mod tests {
             include_server_name_in_media: false,
             auto_create_users_on_login: false,
             deduplicate_media: true,
+            prefer_best_version: true,
         }
     }
 
@@ -307,6 +310,8 @@ mod tests {
         assert_eq!(saved.session_key, initial.session_key);
         assert_eq!(saved.port, initial.port);
         assert!(saved.deduplicate_media);
+        assert!(!initial.prefer_best_version);
+        assert!(saved.prefer_best_version);
     }
 
     #[tokio::test]
