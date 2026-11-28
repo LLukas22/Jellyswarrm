@@ -18,7 +18,7 @@ use hyper::{
     Method, Response, StatusCode,
 };
 use serde_json::Value;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn, Level};
 
 use crate::{
     application::{
@@ -182,7 +182,11 @@ pub(crate) async fn forward(
     if status.is_success() {
         observe_success(state, &prepared, is_mutation).await;
     } else {
-        warn!("Upstream server returned error status: {}", status);
+        match upstream_status_level(status) {
+            Level::DEBUG => debug!("Upstream server returned {}", status),
+            Level::INFO => info!("Upstream server returned {}", status),
+            _ => warn!("Upstream server returned error status: {}", status),
+        }
     }
 
     let mut headers = response.headers().clone();
@@ -314,6 +318,19 @@ fn client_response(
     builder
         .body(body)
         .map_err(|error| ApplicationError::Internal(error.into()))
+}
+
+/// Log level for a non-success upstream status. A 304 answers a conditional
+/// request from the client's cache and only matters when debugging. A 404 is
+/// usually routine (an item without that artwork, for example) but can also
+/// point to a real problem, so it stays visible at info. Everything else is a
+/// warning.
+fn upstream_status_level(status: StatusCode) -> Level {
+    match status {
+        StatusCode::NOT_MODIFIED => Level::DEBUG,
+        StatusCode::NOT_FOUND => Level::INFO,
+        _ => Level::WARN,
+    }
 }
 
 /// Proxy-side effects of a request the backend accepted. Runs before the
@@ -566,6 +583,24 @@ mod tests {
         translation::request_analyzer::RequestBodyAnalysisResult,
     };
     use hyper::StatusCode;
+
+    #[test]
+    fn upstream_status_log_levels() {
+        assert_eq!(
+            upstream_status_level(StatusCode::NOT_MODIFIED),
+            Level::DEBUG
+        );
+        assert_eq!(upstream_status_level(StatusCode::NOT_FOUND), Level::INFO);
+        for status in [
+            StatusCode::BAD_REQUEST,
+            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::BAD_GATEWAY,
+        ] {
+            assert_eq!(upstream_status_level(status), Level::WARN, "{status}");
+        }
+    }
 
     async fn report_fixture() -> (MediaFixture, OperationRequest, wiremock::MockServer) {
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
