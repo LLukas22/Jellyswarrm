@@ -138,6 +138,14 @@ Jellyswarrm API key and discovers the merged Movies and Shows libraries through
 their virtual IDs. See
 [`SEERR-COMPATIBILITY.md`](SEERR-COMPATIBILITY.md) for the supported API surface.
 
+### Moonfin
+
+Debug builds also serve the Moonfin plugin against this Seerr
+(`[plugins.moonfin]` in `data/jellyswarrm.dev.toml`). After the Seerr setup
+above, connect a Moonfin client to Jellyswarrm as `test` / `test` and sign in to
+Seerr from the client; requests then go through `/Moonfin/Seerr/Api/*`. See
+[`docs/plugins.md`](../docs/plugins.md).
+
 ## Commands
 
 Run `just` to list all commands. Common workflows are:

@@ -8,7 +8,40 @@
 //! Adapter plugins, where the real plugin or Jellyfin feature runs on the
 //! backends, are plain data: [`Conventions`] tell the translation layer where
 //! media and user IDs appear, and [`ProxiedRoute`]s bind paths to existing
-//! proxy behaviour.
+//! proxy behaviour. Plugins that implement an API themselves return their own
+//! [`Plugin::router`] and reach the proxy only through [`Host`].
+//!
+//! A plugin can bind its state before returning its router. The [`Caller`]
+//! extractor uses the host to authenticate each request, and
+//! `host.settings_as::<T>()` reads the plugin's configuration. Tests build
+//! the router on `testing::TestHost` (feature `testing`).
+//!
+//! ```
+//! use std::sync::Arc;
+//! use axum::{routing::get, Router};
+//! use jellyswarrm_plugin_api::{Caller, Host, Plugin};
+//!
+//! pub struct Example;
+//! pub static PLUGIN: Example = Example;
+//!
+//! impl Plugin for Example {
+//!     fn id(&self) -> &'static str { "example" }
+//!     fn name(&self) -> &'static str { "Example" }
+//!
+//!     fn router(&self, host: Arc<dyn Host>) -> Option<Router> {
+//!         let router = Router::new()
+//!             .route("/Example/Me", get(|caller: Caller| async { caller.user_name }))
+//!             .with_state(host);
+//!         Some(router)
+//!     }
+//! }
+//! ```
+mod host;
+#[cfg(feature = "testing")]
+pub mod testing;
+
+pub use host::{Caller, CredentialKind, Host, HostError, SecretRevision, UserSecret};
+use std::sync::Arc;
 
 /// A compiled-in plugin. Implementations are unit structs exported as a
 /// `pub static PLUGIN`, so the proxy's registry is a static slice.
@@ -28,6 +61,13 @@ pub trait Plugin: Send + Sync + 'static {
     /// Routes bound to existing proxy behaviour.
     fn proxied_routes(&self) -> &'static [ProxiedRoute] {
         &[]
+    }
+
+    /// The plugin's own handlers, built once at startup. Return `None` to skip
+    /// these handlers. The proxy registers [`Self::proxied_routes`] and
+    /// [`Self::conventions`] whenever the plugin is compiled in.
+    fn router(&self, _host: Arc<dyn Host>) -> Option<axum::Router> {
+        None
     }
 }
 

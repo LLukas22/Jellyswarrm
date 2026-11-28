@@ -12,4 +12,16 @@ description = "Contract between Jellyswarrm and its compile-time plugins"
 [lints]
 workspace = true
 
+[features]
+# An in-memory `Host` for plugin tests: `testing::TestHost`.
+testing = []
+
 [dependencies]
+async-trait = { workspace = true }
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+jellyswarrm-plugin-api = { path = ".", features = ["testing"] }
+tokio = { workspace = true, features = ["macros", "rt"] }

@@ -4,6 +4,10 @@ auto_create_users_on_login = true
 username = "test"
 password = "test"
 
+# Serve the Moonfin plugin against the dev stack's Seerr (dev/README.md).
+[plugins.moonfin]
+seerr_url = "http://localhost:5055"
+
 [[preconfigured_servers]]
 url = "http://localhost:8096"
 name = "Movies 1"

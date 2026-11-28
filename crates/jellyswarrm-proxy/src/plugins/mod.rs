@@ -3,6 +3,7 @@
 //! out contributes no routes and no ID rules, so its requests take the default
 //! routing; the core keeps no plugin-specific fallbacks.
 mod conventions;
+mod host;
 pub(crate) mod routes;
 
 pub(crate) use conventions::conventions;
@@ -16,6 +17,8 @@ pub(crate) static PLUGINS: &[&dyn Plugin] = &[
     &jellyswarrm_plugin_intro_skipper::PLUGIN,
     #[cfg(feature = "plugin-kodi-sync-queue")]
     &jellyswarrm_plugin_kodi_sync_queue::PLUGIN,
+    #[cfg(feature = "plugin-moonfin")]
+    &jellyswarrm_plugin_moonfin::PLUGIN,
 ];
 
 /// One startup line listing what this build contains.

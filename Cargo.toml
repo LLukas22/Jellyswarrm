@@ -78,6 +78,7 @@ jellyswarrm-macros = { path = "crates/jellyswarrm-macros" }
 jellyswarrm-plugin-api = { path = "crates/jellyswarrm-plugin-api" }
 jellyswarrm-plugin-intro-skipper = { path = "crates/plugins/intro-skipper" }
 jellyswarrm-plugin-kodi-sync-queue = { path = "crates/plugins/kodi-sync-queue" }
+jellyswarrm-plugin-moonfin = { path = "crates/plugins/moonfin" }
 jellyswarrm-plugin-trickplay = { path = "crates/plugins/trickplay" }
 
 # Development and tests

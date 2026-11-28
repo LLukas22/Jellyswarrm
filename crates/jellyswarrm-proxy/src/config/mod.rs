@@ -9,6 +9,7 @@ pub(crate) use snapshots::CatalogCacheSettings;
 pub(crate) use snapshots::SettingsView;
 pub(crate) use snapshots::StartupConfig;
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::io::Write;
@@ -373,6 +374,11 @@ pub(crate) struct AppConfig {
         deserialize_with = "deserialize_catalog_cache_max_age_secs"
     )]
     pub(crate) catalog_cache_max_age_secs: u64,
+
+    /// Per-plugin settings, `[plugins.<id>]`. Each compiled-in plugin reads
+    /// its own table at startup; tables of plugins not in this build are kept.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) plugins: BTreeMap<String, toml::Table>,
 }
 
 impl Default for AppConfig {
@@ -402,6 +408,7 @@ impl Default for AppConfig {
             catalog_cache_size_mb: default_catalog_cache_size_mb(),
             catalog_cache_fresh_secs: default_catalog_cache_fresh_secs(),
             catalog_cache_max_age_secs: default_catalog_cache_max_age_secs(),
+            plugins: BTreeMap::new(),
         }
     }
 }
@@ -443,6 +450,8 @@ impl fmt::Debug for AppConfig {
                 "catalog_cache_max_age_secs",
                 &self.catalog_cache_max_age_secs,
             )
+            // Plugin tables may hold service URLs or keys; log only which exist.
+            .field("plugins", &self.plugins.keys().collect::<Vec<_>>())
             .finish()
     }
 }
@@ -669,6 +678,25 @@ mod tests {
         assert_eq!(config.catalog_cache_fresh_secs, 60);
         assert_eq!(config.catalog_cache_max_age_secs, 0);
         assert_eq!(config.debug_user.unwrap().username, "debug");
+    }
+
+    #[test]
+    fn plugin_settings_come_from_their_own_table_and_the_environment() {
+        let config = from_environment(&[(
+            "JELLYSWARRM_PLUGINS__MOONFIN__SEERR_URL",
+            "http://seerr:5055",
+        )]);
+        assert_eq!(
+            config.plugins["moonfin"]["seerr_url"].as_str(),
+            Some("http://seerr:5055")
+        );
+        assert_eq!(
+            config.startup_config().plugins["moonfin"],
+            serde_json::json!({"seerr_url": "http://seerr:5055"})
+        );
+        let saved = toml::to_string(&config).unwrap();
+        assert!(saved.contains("[plugins.moonfin]"), "{saved}");
+        assert!(!format!("{config:?}").contains("seerr:5055"));
     }
 
     #[test]

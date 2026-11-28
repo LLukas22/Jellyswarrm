@@ -43,6 +43,8 @@ mod headers;
 mod hls;
 mod kodi;
 mod live_tv;
+#[cfg(feature = "plugin-moonfin")]
+mod moonfin;
 mod mutations;
 mod pipeline;
 mod preferences;

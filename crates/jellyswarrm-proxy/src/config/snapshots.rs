@@ -29,6 +29,8 @@ pub(crate) struct StartupConfig {
     pub(crate) session_key: Vec<u8>,
     pub(crate) server_background_check_interval_secs: u64,
     pub(crate) catalog_cache: CatalogCacheSettings,
+    /// `[plugins.<id>]` tables, read once when plugin routers are built.
+    pub(crate) plugins: std::collections::BTreeMap<String, serde_json::Value>,
     login_idle_expiry_days: u32,
     preserve_upstream_device_ids: bool,
     username: String,
@@ -139,6 +141,15 @@ impl AppConfig {
             session_key: self.session_key.clone(),
             server_background_check_interval_secs: self.server_background_check_interval_secs,
             catalog_cache: self.catalog_cache_settings(),
+            plugins: self
+                .plugins
+                .iter()
+                .filter_map(|(id, table)| {
+                    serde_json::to_value(table)
+                        .ok()
+                        .map(|value| (id.clone(), value))
+                })
+                .collect(),
             username: self.username.clone(),
             password: self.password.clone(),
             login_idle_expiry_days: self.login_idle_expiry_days,

@@ -1868,6 +1868,14 @@ dependencies = [
 [[package]]
 name = "jellyswarrm-plugin-api"
 version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "jellyswarrm-plugin-api",
+ "serde",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "jellyswarrm-plugin-intro-skipper"
@@ -1881,6 +1889,24 @@ name = "jellyswarrm-plugin-kodi-sync-queue"
 version = "1.0.0"
 dependencies = [
  "jellyswarrm-plugin-api",
+]
+
+[[package]]
+name = "jellyswarrm-plugin-moonfin"
+version = "1.0.0"
+dependencies = [
+ "axum",
+ "jellyswarrm-macros",
+ "jellyswarrm-plugin-api",
+ "percent-encoding",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower",
+ "tracing",
+ "url",
+ "wiremock",
 ]
 
 [[package]]
@@ -1918,6 +1944,7 @@ dependencies = [
  "jellyswarrm-plugin-api",
  "jellyswarrm-plugin-intro-skipper",
  "jellyswarrm-plugin-kodi-sync-queue",
+ "jellyswarrm-plugin-moonfin",
  "jellyswarrm-plugin-trickplay",
  "mime_guess",
  "moka",

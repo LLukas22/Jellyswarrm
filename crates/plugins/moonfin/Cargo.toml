@@ -1,0 +1,30 @@
+[package]
+name = "jellyswarrm-plugin-moonfin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+authors.workspace = true
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+description = "Jellyswarrm implementation of the Moonfin companion plugin API"
+
+[lints]
+workspace = true
+
+[dependencies]
+axum = { workspace = true }
+jellyswarrm-macros = { workspace = true }
+jellyswarrm-plugin-api = { workspace = true }
+percent-encoding = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+jellyswarrm-plugin-api = { workspace = true, features = ["testing"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
+tower = { workspace = true, features = ["util"] }
+wiremock = { workspace = true }

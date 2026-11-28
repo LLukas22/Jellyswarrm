@@ -123,6 +123,14 @@ impl MappingEncryptionKey {
         Self::derive(session_key, b"jellyswarrm/authorization-session/v1")
     }
 
+    /// A separate key per plugin, so one plugin cannot read another's values.
+    pub(crate) fn for_plugin(session_key: &[u8], plugin_id: &str) -> Result<Self, EncryptionError> {
+        Self::derive(
+            session_key,
+            format!("jellyswarrm/plugin/{plugin_id}/v1").as_bytes(),
+        )
+    }
+
     fn derive(session_key: &[u8], purpose: &[u8]) -> Result<Self, EncryptionError> {
         if session_key.len() < 32 {
             return Err(EncryptionError::EncryptionFailed(

@@ -43,6 +43,20 @@ The table below lists all available configuration options:
 | `catalog_cache_fresh_secs` | `300` | `JELLYSWARRM_CATALOG_CACHE_FRESH_SECS` | Seconds before an accessed listing is refreshed in the background. Requires a restart. |
 | `catalog_cache_max_age_secs` | `21600` | `JELLYSWARRM_CATALOG_CACHE_MAX_AGE_SECS` | Maximum age in seconds for a cached listing. At least `catalog_cache_fresh_secs`. Requires a restart. |
 
+### Plugins
+
+Plugins are compiled in at build time; the official image includes all of them. Each plugin reads its own `[plugins.<id>]` table at startup, so changes require a restart. A plugin that is not compiled in, or not configured, leaves its requests to normal routing.
+
+| Variable | Default Value | Environment Key | Description |
+|----------|---------------|-----------------|-------------|
+| `plugins.moonfin.seerr_url` | *(none)* | `JELLYSWARRM_PLUGINS__MOONFIN__SEERR_URL` | Seerr base URL as reachable from Jellyswarrm, including any sub-path. When set, Jellyswarrm serves Moonfin's Ping, Discovery and Seerr endpoints itself. When unset, `/Moonfin/*` requests are forwarded to a backend as before. See [plugins](plugins.md#moonfin). |
+| `plugins.moonfin.seerr_display_name` | `Seerr` | `JELLYSWARRM_PLUGINS__MOONFIN__SEERR_DISPLAY_NAME` | Name Moonfin clients show for Seerr. |
+
+```toml
+[plugins.moonfin]
+seerr_url = "http://seerr:5055"
+```
+
 ---
 
 ### Notes

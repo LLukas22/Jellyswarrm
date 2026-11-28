@@ -44,7 +44,13 @@ pub(crate) fn build_router(
     let backend = Backend::new(management.credentials, management.user_authorization);
     let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
 
-    let app = routes()
+    let plugins = crate::plugins::routes::router(
+        crate::plugins::PLUGINS,
+        &crate::application::media_services::MediaServices::from_ref(&state),
+        &startup.plugins,
+        &startup.session_key,
+    );
+    let app = routes(plugins)
         .nest(&format!("/{}", startup.ui_route), crate::ui::ui_routes())
         .layer(
             ServiceBuilder::new()
@@ -69,7 +75,7 @@ pub(crate) fn build_router(
     )
 }
 
-fn routes() -> Router<AppState> {
+fn routes(plugins: Router<AppState>) -> Router<AppState> {
     lowercase_routes! {
         Router::new()
             .merge(client_sessions::router())
@@ -108,7 +114,7 @@ fn routes() -> Router<AppState> {
                 .route("/SetShuffleMode", post(syncplay::set_shuffle_mode))
                 .route("/Ping", post(syncplay::ping)))
             .merge(super::client_routes::router())
-            .merge(crate::plugins::routes::router(crate::plugins::PLUGINS))
+            .merge(plugins)
             .route("/{*path}", any(forwarding::forward))
             .fallback(forwarding::forward)
     }

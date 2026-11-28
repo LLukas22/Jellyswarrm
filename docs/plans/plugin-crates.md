@@ -1,6 +1,6 @@
 # Plan: plugin crates
 
-Status: PR 1 and PR 2 implemented (uncommitted) on `plugin-support`, 2026-11-27. PR 3 (host services, Moonfin Ping/Discovery) is next.
+Status: PRs 1–4 implemented on `plugin-support` (PRs 1–2 committed as 9545b96), 2026-11-27. PR 5 (settings sync) is later work.
 Related issues: #195 (Moonfin), #244 (web UI injection), #225 (plugin manager).
 
 ## 1. Goal
@@ -15,7 +15,7 @@ Move plugin-specific behaviour out of the core proxy into one crate per plugin, 
 | Compile-time gating only | No runtime on/off switches, no plugin manager UI |
 | All plugins on by default | Every plugin feature, Moonfin included, is in `default`, so the official Docker image ships them all |
 | Disabled means absent | A compiled-out plugin registers no routes and no ID rules. Its requests fall back to the proxy's default routing. The core has no plugin-specific exceptions. |
-| Unconfigured means absent | A plugin may decline to mount its router when its config is missing (Moonfin with no Seerr URL). Same fall-through as compiled out. Config changes need a restart. |
+| Optional router | A plugin may skip its own handlers when configuration is missing. Compiled-in proxied routes and ID conventions always apply. Moonfin contributes only handlers, so omitting its Seerr URL gives full fall-through. Config changes need a restart. |
 
 ### Non-goals
 
@@ -109,9 +109,8 @@ pub trait Plugin: Send + Sync + 'static {
     /// Routes bound to existing proxy behaviour (adapters).
     fn proxied_routes(&self) -> &'static [ProxiedRoute] { &[] }
 
-    /// Added in PR 3. Adapters use None. `None` also means "not configured":
-    /// nothing is mounted and requests fall through (Moonfin without a Seerr URL).
-    fn router(&self, _host: Arc<dyn Host>) -> Option<axum::Router<Arc<dyn Host>>> { None }
+    /// Return None to skip the plugin's own handlers (e.g. Moonfin without a Seerr URL).
+    fn router(&self, _host: Arc<dyn Host>) -> Option<axum::Router> { None }
 }
 ```
 
@@ -195,13 +194,13 @@ pub enum Scope<'a> { Global, User(&'a str) }   // User = virtual (proxy) user id
 pub struct Caller {
     pub user_id: String,     // virtual user id
     pub user_name: String,
-    pub read_only: bool,     // read-only API key
+    pub credential: CredentialKind,  // Login or ReadOnlyApiKey
 }
 ```
 
 - **`Caller`** implements `FromRequestParts<S> where Arc<dyn Host>: FromRef<S>`. It rejects with 401 when nobody is signed in.
 - **`OptionalCaller`** is the same extractor without the rejection.
-- **Read-only keys need no plugin code.** The global `enforce_read_only_api_keys` middleware already covers mounted plugin routes (§5.3).
+- The global `enforce_read_only_api_keys` middleware limits application keys to GET and HEAD. Handlers that use the caller's Seerr session also require a user login.
 
 No admin flag in v1. Moonfin's admin endpoints are out of scope, and whether Jellyswarrm player accounts can be admins needs its own decision.
 

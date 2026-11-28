@@ -75,7 +75,7 @@ impl Fixture {
         .await
     }
 
-    async fn with_config(config: AppConfig) -> Self {
+    pub(super) async fn with_config(config: AppConfig) -> Self {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
